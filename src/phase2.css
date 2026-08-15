@@ -293,6 +293,69 @@
   color: #8f96a3;
 }
 
+.aos-layer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.aos-layer-card {
+  border: 1px solid #232833;
+  border-radius: 14px;
+  background: #12151c;
+  padding: 14px 16px;
+}
+
+.aos-layer-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.aos-layer-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.aos-layer-card p {
+  margin: 0;
+  color: #c3c8d2;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.aos-layer-pill {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.aos-layer-pill.live {
+  color: #b8f5c8;
+  background: rgba(46, 160, 90, 0.18);
+}
+
+.aos-layer-pill.partial {
+  color: #f5d78a;
+  background: rgba(184, 140, 32, 0.18);
+}
+
+.aos-layer-pill.missing {
+  color: #f0b4b4;
+  background: rgba(160, 46, 46, 0.18);
+}
+
+.aos-chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 @media (max-width: 900px) {
   .aos-phase2-content {
     margin-left: 0;
@@ -305,7 +368,8 @@
   .aos-status-grid,
   .aos-chat-agents,
   .aos-goal-grid,
-  .aos-studio-grid {
+  .aos-studio-grid,
+  .aos-layer-grid {
     grid-template-columns: 1fr;
   }
 }

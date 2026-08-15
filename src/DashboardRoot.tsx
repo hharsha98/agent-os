@@ -1,27 +1,35 @@
 import { useEffect, useState } from "react";
 import {
   Blocks,
+  BookOpen,
   Bot,
   Clapperboard,
+  Cpu,
   FolderOpen,
   Home,
   KanbanSquare,
   KeyRound,
+  Layers3,
   MessageSquare,
   Monitor,
   NotebookTabs,
+  Search,
   Sparkles,
   Target,
   Workflow,
 } from "lucide-react";
 import AgentOSApp from "./AgentOSApp";
 import { getLocalAgents } from "./api";
+import BlueprintPage from "./pages/BlueprintPage";
+import BrainPage from "./pages/BrainPage";
 import ChatPage from "./pages/ChatPage";
 import GoalsPage from "./pages/GoalsPage";
+import JournalPage from "./pages/JournalPage";
 import KanbanPage from "./pages/KanbanPage";
 import MachineControlPage from "./pages/MachineControlPage";
 import MemoryPage from "./pages/MemoryPage";
 import NotebookPage from "./pages/NotebookPage";
+import SeoPage from "./pages/SeoPage";
 import StudioPage from "./pages/StudioPage";
 import WorkspacePage from "./pages/WorkspacePage";
 import "./phase2.css";
@@ -37,14 +45,18 @@ type LocalAgentStatus = {
 
 type ShellPage =
   | "home"
+  | "layers"
   | "workspace"
   | "chat"
   | "builder"
   | "apis"
+  | "brain"
   | "goals"
   | "kanban"
   | "memory"
   | "notebook"
+  | "journal"
+  | "seo"
   | "studio"
   | "machine"
   | "openclaw"
@@ -53,14 +65,18 @@ type ShellPage =
 const LEGACY_PAGES = new Set<ShellPage>(["home", "builder", "apis", "openclaw", "hermes"]);
 const ALL_PAGES = new Set<ShellPage>([
   "home",
+  "layers",
   "workspace",
   "chat",
   "builder",
   "apis",
+  "brain",
   "goals",
   "kanban",
   "memory",
   "notebook",
+  "journal",
+  "seo",
   "studio",
   "machine",
   "openclaw",
@@ -109,6 +125,9 @@ export default function DashboardRoot() {
           <button className={page === "home" ? "active" : ""} onClick={() => go("home")}>
             <Home size={16} /> Home
           </button>
+          <button className={page === "layers" ? "active" : ""} onClick={() => go("layers")}>
+            <Layers3 size={16} /> 7 Layers
+          </button>
           <button className={page === "workspace" ? "active" : ""} onClick={() => go("workspace")}>
             <FolderOpen size={16} /> Workspace
           </button>
@@ -122,6 +141,9 @@ export default function DashboardRoot() {
             <KeyRound size={16} /> AI APIs
           </button>
           <p>Operate</p>
+          <button className={page === "brain" ? "active" : ""} onClick={() => go("brain")}>
+            <Cpu size={16} /> Brain
+          </button>
           <button className={page === "goals" ? "active" : ""} onClick={() => go("goals")}>
             <Target size={16} /> Goals
           </button>
@@ -133,6 +155,12 @@ export default function DashboardRoot() {
           </button>
           <button className={page === "notebook" ? "active" : ""} onClick={() => go("notebook")}>
             <NotebookTabs size={16} /> Notebook
+          </button>
+          <button className={page === "journal" ? "active" : ""} onClick={() => go("journal")}>
+            <BookOpen size={16} /> Journal
+          </button>
+          <button className={page === "seo" ? "active" : ""} onClick={() => go("seo")}>
+            <Search size={16} /> SEO
           </button>
           <button className={page === "studio" ? "active" : ""} onClick={() => go("studio")}>
             <Clapperboard size={16} /> Studio
@@ -152,10 +180,14 @@ export default function DashboardRoot() {
       <div className="aos-phase2-content">
         {LEGACY_PAGES.has(page) ? (
           <AgentOSApp key={page} />
+        ) : page === "layers" ? (
+          <BlueprintPage />
         ) : page === "workspace" ? (
           <WorkspacePage />
         ) : page === "chat" ? (
           <ChatPage localAgents={localAgents} />
+        ) : page === "brain" ? (
+          <BrainPage />
         ) : page === "goals" ? (
           <GoalsPage localAgents={localAgents} />
         ) : page === "kanban" ? (
@@ -164,6 +196,10 @@ export default function DashboardRoot() {
           <MemoryPage />
         ) : page === "notebook" ? (
           <NotebookPage />
+        ) : page === "journal" ? (
+          <JournalPage />
+        ) : page === "seo" ? (
+          <SeoPage />
         ) : page === "studio" ? (
           <StudioPage />
         ) : (

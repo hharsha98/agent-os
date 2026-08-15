@@ -1,6 +1,6 @@
-import { Loader2, MessageSquare, Send } from "lucide-react";
-import { useMemo, useState } from "react";
-import { sendAgentMessage } from "../api";
+import { Loader2, MessageSquare, Save, Send } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { addMemory, sendAgentMessage } from "../api";
 import { HonestNote, PageFrame } from "./PageFrame";
 
 type ChatAgentId = "cursor" | "claude" | "codex" | "hermes";
@@ -29,6 +29,10 @@ const AGENTS: Array<{ id: ChatAgentId; label: string; moduleId: string | null; h
   { id: "hermes", label: "Hermes", moduleId: "hermes", hint: "Uses the existing dry-run module API." }
 ];
 
+function storageKey(id: ChatAgentId) {
+  return `aos-chat-${id}`;
+}
+
 function badgeFor(agent: typeof AGENTS[number], local: LocalAgent | undefined, mode?: string) {
   if (agent.id === "cursor") {
     return local?.available ? "Ready on PATH · chat not wired" : "Not installed";
@@ -43,12 +47,33 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
   const [agentId, setAgentId] = useState<ChatAgentId>("claude");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const skipSave = useRef(true);
   const agent = AGENTS.find((item) => item.id === agentId) || AGENTS[1];
   const local = useMemo(
     () => localAgents.find((item) => item.id === agentId),
     [localAgents, agentId]
   );
+
+  useEffect(() => {
+    skipSave.current = true;
+    try {
+      const raw = localStorage.getItem(storageKey(agentId));
+      setMessages(raw ? JSON.parse(raw) as ChatMessage[] : []);
+    } catch {
+      setMessages([]);
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    if (skipSave.current) {
+      skipSave.current = false;
+      return;
+    }
+    localStorage.setItem(storageKey(agentId), JSON.stringify(messages));
+  }, [agentId, messages]);
 
   async function send() {
     const text = draft.trim();
@@ -62,6 +87,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
     };
     setMessages((current) => [...current, userMessage]);
     setDraft("");
+    setNotice("");
 
     if (agent.id === "cursor") {
       setMessages((current) => [
@@ -108,11 +134,33 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
     }
   }
 
+  async function saveLoop() {
+    const last = [...messages].reverse().find((message) => message.role === "assistant");
+    if (!last || saving) return;
+    setSaving(true);
+    try {
+      await addMemory({
+        title: `${agent.label} loop ${new Date().toISOString().slice(0, 10)}`,
+        content: last.text,
+        agentId,
+        type: "episodic",
+        privacy: "private",
+        source: "chat-loop",
+        tags: ["loop", agentId]
+      });
+      setNotice("Saved into local Memory. That is Layer 7 on this Mac — not Obsidian.");
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : "Could not save to memory.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <PageFrame
-      kicker="UNIFIED CHAT · DRY RUN"
+      kicker="UNIFIED CHAT · DRY RUN + LOOP"
       title="One box. Four local agents. Honest labels."
-      hint="Claude, Codex, and Hermes send dry-run module calls. Cursor tells the truth if chat routing is missing. This page will not turn on live tool execution."
+      hint="Claude, Codex, and Hermes send dry-run module calls. History now survives a reload in this browser. Saving a reply writes Layer 7 into local memory — not an Obsidian vault."
     >
       <div className="aos-chat-agents">
         {AGENTS.map((item) => {
@@ -130,8 +178,8 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         {messages.length === 0 ? (
           <div className="aos-empty small">
             <MessageSquare size={20} />
-            <strong>No messages this session</strong>
-            <p>History stays in this browser tab only. It is not a fake connected inbox.</p>
+            <strong>No messages for {agent.label} yet</strong>
+            <p>History is stored in this browser per agent. It is not a fake cloud inbox.</p>
           </div>
         ) : (
           messages.map((message) => (
@@ -154,9 +202,15 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
             }
           }}
         />
-        <button className="aos-primary" onClick={() => void send()} disabled={busy || !draft.trim()}>
-          {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} Send
-        </button>
+        <div className="aos-chat-actions">
+          <button className="aos-primary" onClick={() => void send()} disabled={busy || !draft.trim()}>
+            {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} Send
+          </button>
+          <button className="aos-secondary" onClick={() => void saveLoop()} disabled={saving || messages.every((message) => message.role !== "assistant")}>
+            {saving ? <Loader2 className="aos-spin" size={16} /> : <Save size={16} />} Save last reply to Memory
+          </button>
+        </div>
+        {notice ? <p className="aos-honest-note">{notice}</p> : null}
       </div>
     </PageFrame>
   );

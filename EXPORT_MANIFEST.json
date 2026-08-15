@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "exportId": "agent-os-export-2026-07-14T12-18-41-584Z",
+  "package": "agent-os-runtime",
+  "note": "Clean local-first package with an empty user workspace. Configure your own API keys after install.",
+  "createdAt": "2026-07-14T12:18:41.656Z"
+}

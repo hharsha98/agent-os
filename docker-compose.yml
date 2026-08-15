@@ -1,0 +1,47 @@
+services:
+  hermes-agent-os:
+    build:
+      context: .
+    ports:
+      - "${PORT:-4173}:4173"
+    environment:
+      NODE_ENV: production
+      PORT: 4173
+      HERMES_AGENT_OS_HOME: /data/hermes-agent-os
+      HERMES_AGENT_OS_ENABLE_EXEC: "${HERMES_AGENT_OS_ENABLE_EXEC:-0}"
+      HERMES_AGENT_OS_ENABLE_INSTALL: "${HERMES_AGENT_OS_ENABLE_INSTALL:-0}"
+      HERMES_AGENT_OS_SCHEDULER: "${HERMES_AGENT_OS_SCHEDULER:-1}"
+      HERMES_AGENT_OS_SCHEDULER_POLL_MS: "${HERMES_AGENT_OS_SCHEDULER_POLL_MS:-30000}"
+      HERMES_AGENT_OS_PUBLIC_MODE: "${HERMES_AGENT_OS_PUBLIC_MODE:-0}"
+      HERMES_AGENT_OS_REQUIRE_AUTH: "${HERMES_AGENT_OS_REQUIRE_AUTH:-0}"
+      HERMES_AGENT_OS_ADMIN_TOKEN: "${HERMES_AGENT_OS_ADMIN_TOKEN:-}"
+      HERMES_AGENT_HUB_PUBLIC_URL: "${HERMES_AGENT_HUB_PUBLIC_URL:-}"
+      HERMES_AGENT_HUB_GITHUB_REPO: "${HERMES_AGENT_HUB_GITHUB_REPO:-}"
+      HERMES_HOME: "${HERMES_HOME:-/data/hermes}"
+      HERMES_BUILDER_PORT: "${HERMES_BUILDER_PORT:-3100}"
+      NEXT_PUBLIC_CONVEX_URL: "${NEXT_PUBLIC_CONVEX_URL:-}"
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}"
+      CLERK_SECRET_KEY: "${CLERK_SECRET_KEY:-}"
+      CLERK_JWT_ISSUER_DOMAIN: "${CLERK_JWT_ISSUER_DOMAIN:-}"
+      FIRECRAWL_API_KEY: "${FIRECRAWL_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      ARCADE_API_KEY: "${ARCADE_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OLLAMA_HOST: "${OLLAMA_HOST:-}"
+      MINIMAX_API_KEY: "${MINIMAX_API_KEY:-}"
+    volumes:
+      - hermes-agent-os-data:/data/hermes-agent-os
+      - hermes-agent-profiles:/data/hermes
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  hermes-agent-os-data:
+  hermes-agent-profiles:

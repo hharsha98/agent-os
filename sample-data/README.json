@@ -1,0 +1,3 @@
+{
+  "note": "The package starts with one hidden blank builder workflow and no demonstration workflows. User configs, secrets, logs, local profiles, private skill configuration, and private workflow runs are intentionally excluded."
+}

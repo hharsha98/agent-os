@@ -1,0 +1,36 @@
+{
+  "name": "agent-os-runtime",
+  "version": "0.2.15",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
+    "build": "tsc -b && vite build",
+    "start": "node server/index.js",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "tsc -b && vite build",
+    "test": "node --test",
+    "builder:install": "npm --prefix vendor/open-agent-builder install",
+    "builder:start": "node scripts/start-builder.js",
+    "builder:build": "npm --prefix vendor/open-agent-builder run build",
+    "prepare-export": "node scripts/prepare-export.js",
+    "smoke:docker": "node scripts/docker-smoke.js"
+  },
+  "dependencies": {
+    "@elizaos/core": "^1.7.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

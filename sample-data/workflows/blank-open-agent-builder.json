@@ -1,0 +1,29 @@
+{
+  "id": "blank-open-agent-builder",
+  "name": "Blank Agent OS Workflow",
+  "description": "Start visually or describe the workflow you want Codex API to build.",
+  "draft": true,
+  "source": "agent-os-native-builder",
+  "engine": "codex-api",
+  "runtime": "hermes",
+  "nodeTypes": [
+    "start",
+    "agent",
+    "mcp_tool",
+    "transform",
+    "if_else",
+    "while_loop",
+    "user_approval",
+    "end"
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "label": "Start"
+    }
+  ],
+  "edges": [],
+  "createdAt": "sample",
+  "updatedAt": "sample"
+}

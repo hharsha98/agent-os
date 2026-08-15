@@ -1,0 +1,311 @@
+.aos-phase2-shell {
+  min-height: 100vh;
+  background: #07090d;
+}
+
+.aos-phase2-content {
+  margin-left: 248px;
+  width: calc(100% - 248px);
+  min-height: 100vh;
+}
+
+.aos-phase2-shell .aos-phase2-content .aos-sidebar {
+  display: none !important;
+}
+
+.aos-phase2-shell .aos-phase2-content .aos-main {
+  margin-left: 0;
+  width: 100%;
+}
+
+.aos-phase-page {
+  padding-bottom: 64px;
+}
+
+.aos-honest-note {
+  margin: 0 0 16px;
+  color: #8f96a3;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 72ch;
+}
+
+.aos-phase-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 16px;
+}
+
+.aos-phase-toolbar .aos-field {
+  margin-bottom: 0;
+  min-width: 180px;
+}
+
+.aos-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.aos-status-grid article {
+  background: #101318;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.aos-status-grid span,
+.aos-status-grid small {
+  color: #8f96a3;
+  font-size: 11px;
+}
+
+.aos-status-grid strong {
+  display: block;
+  margin: 6px 0 4px;
+  font-size: 18px;
+}
+
+.aos-workspace-layout,
+.aos-split-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 16px;
+  min-height: 420px;
+}
+
+.aos-workspace-list,
+.aos-side-list,
+.aos-chat-log,
+.aos-note-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aos-workspace-list button,
+.aos-side-list > button,
+.aos-chat-agents button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  background: #101318;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: inherit;
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.aos-workspace-list button.active,
+.aos-side-list > button.active,
+.aos-chat-agents button.active {
+  border-color: rgba(255, 122, 47, 0.55);
+}
+
+.aos-workspace-list button span,
+.aos-side-list > button span,
+.aos-chat-agents button span {
+  color: #8f96a3;
+  font-size: 12px;
+}
+
+.aos-workspace-preview,
+.aos-goal-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.aos-workspace-preview header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.aos-workspace-preview header span,
+.aos-workspace-preview header small {
+  color: #8f96a3;
+  font-size: 12px;
+}
+
+.aos-workspace-preview img,
+.aos-workspace-preview video,
+.aos-workspace-preview audio {
+  max-width: 100%;
+  border-radius: 12px;
+}
+
+.aos-workspace-preview iframe {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  background: #0b1220;
+}
+
+.aos-workspace-preview pre,
+.aos-memory-content,
+.aos-goal-panels pre {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow: auto;
+  max-height: 480px;
+  background: #090b0f;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.aos-chat-agents {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.aos-chat-log {
+  min-height: 260px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.35);
+  margin-bottom: 12px;
+}
+
+.aos-chat-bubble {
+  max-width: 80%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.8);
+}
+
+.aos-chat-bubble.role-user {
+  align-self: flex-end;
+  background: rgba(255, 122, 47, 0.16);
+}
+
+.aos-chat-bubble span {
+  display: block;
+  color: #8f96a3;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.aos-chat-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aos-chat-compose textarea {
+  min-height: 88px;
+  resize: vertical;
+  background: #090b0f;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: inherit;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.aos-kanban-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.aos-kanban-card {
+  background: #101318;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.aos-goal-grid,
+.aos-studio-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.aos-timeline {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aos-permission-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aos-permission-list article {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.aos-permission-list .ok,
+.aos-permission-list .missing {
+  flex: 0 0 92px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.aos-permission-list .ok { color: #40d886; }
+.aos-permission-list .missing { color: #e3ac4e; }
+
+.aos-disabled-action {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.aos-disabled-action button:disabled,
+.aos-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.aos-howto {
+  color: #8f96a3;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.aos-list-label {
+  font-size: 12px;
+  color: #8f96a3;
+}
+
+@media (max-width: 900px) {
+  .aos-phase2-content {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .aos-workspace-layout,
+  .aos-split-layout,
+  .aos-kanban-board,
+  .aos-status-grid,
+  .aos-chat-agents,
+  .aos-goal-grid,
+  .aos-studio-grid {
+    grid-template-columns: 1fr;
+  }
+}

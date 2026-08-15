@@ -1,0 +1,149 @@
+{
+  "note": "Export-safe sample skill manifests. Installed state, keys, logs, and private skill configuration are intentionally excluded.",
+  "skills": [
+    {
+      "id": "local-ollama-coder",
+      "label": "Local Ollama Coder",
+      "version": "0.1.0",
+      "category": "code",
+      "description": "Claude Code-style local coding skill routed through a user-owned Ollama model.",
+      "capabilities": [
+        "code",
+        "local-models",
+        "workspace-plans"
+      ],
+      "requiredKeys": [
+        "OLLAMA_HOST"
+      ],
+      "requiredAnyKeys": [],
+      "optionalKeys": [
+        "HERMES_OLLAMA_MODEL"
+      ],
+      "dependencies": [],
+      "updateChannel": "stable",
+      "releaseNotes": [
+        {
+          "version": "0.1.0",
+          "title": "Initial local coding route",
+          "date": null,
+          "channel": "stable",
+          "breaking": false,
+          "items": [
+            "Adds a Claude Code-style local coding skill backed by user-owned Ollama configuration."
+          ]
+        }
+      ],
+      "samplePrompt": "Plan a local code change and keep execution dry-run unless explicitly enabled."
+    },
+    {
+      "id": "seo-research-agent",
+      "label": "SEO Research Agent",
+      "version": "0.1.0",
+      "category": "seo",
+      "description": "Research keywords and page opportunities with Firecrawl plus a configured model provider.",
+      "capabilities": [
+        "crawl",
+        "keyword-research",
+        "content-briefs"
+      ],
+      "requiredKeys": [
+        "FIRECRAWL_API_KEY"
+      ],
+      "requiredAnyKeys": [
+        [
+          "OPENROUTER_API_KEY",
+          "OPENAI_API_KEY",
+          "GEMINI_API_KEY",
+          "MINIMAX_API_KEY",
+          "OLLAMA_HOST"
+        ]
+      ],
+      "optionalKeys": [
+        "HERMES_OPENROUTER_MODEL",
+        "HERMES_OPENAI_MODEL"
+      ],
+      "dependencies": [],
+      "updateChannel": "stable",
+      "releaseNotes": [
+        {
+          "version": "0.1.0",
+          "title": "Initial SEO research workflow",
+          "date": null,
+          "channel": "stable",
+          "breaking": false,
+          "items": [
+            "Connects Firecrawl and a configured model provider for export-safe SEO briefs."
+          ]
+        }
+      ],
+      "samplePrompt": "Crawl a site, extract topics, and produce an SEO brief with source URLs."
+    },
+    {
+      "id": "video-caption-agent",
+      "label": "Video Caption Agent",
+      "version": "0.1.0",
+      "category": "video",
+      "description": "Caption and summarize local videos through user-owned Whisper-compatible providers.",
+      "capabilities": [
+        "transcription",
+        "captions",
+        "summaries"
+      ],
+      "requiredKeys": [],
+      "requiredAnyKeys": [
+        [
+          "GROQ_API_KEY",
+          "OPENAI_API_KEY"
+        ]
+      ],
+      "optionalKeys": [
+        "WHISPER_MODEL_SIZE"
+      ],
+      "dependencies": [],
+      "updateChannel": "stable",
+      "releaseNotes": [
+        {
+          "version": "0.1.0",
+          "title": "Initial caption workflow",
+          "date": null,
+          "channel": "stable",
+          "breaking": false,
+          "items": [
+            "Uses user-owned Whisper-compatible providers for native caption preparation."
+          ]
+        }
+      ],
+      "samplePrompt": "Transcribe this video and create native caption segments without covering the main subject."
+    },
+    {
+      "id": "memory-curator",
+      "label": "Memory Curator",
+      "version": "0.1.0",
+      "category": "memory",
+      "description": "Review notes and workflow outcomes, then promote useful facts into semantic, episodic, or procedural memory.",
+      "capabilities": [
+        "semantic-memory",
+        "episodic-memory",
+        "procedural-memory"
+      ],
+      "requiredKeys": [],
+      "requiredAnyKeys": [],
+      "optionalKeys": [],
+      "dependencies": [],
+      "updateChannel": "stable",
+      "releaseNotes": [
+        {
+          "version": "0.1.0",
+          "title": "Initial memory curation workflow",
+          "date": null,
+          "channel": "stable",
+          "breaking": false,
+          "items": [
+            "Adds a safe sample skill for promoting useful notes into local Agent OS memory."
+          ]
+        }
+      ],
+      "samplePrompt": "Extract durable facts, experiences, and reusable procedures from the latest run notes."
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent OS — product gallery</title>
+    <meta name="description" content="Interactive screenshot tour of Agent OS, a local command center for Cursor, Claude, Codex, and Hermes." />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: #07090d;
+        color: #f4f4f5;
+      }
+      header {
+        padding: 48px 6vw 24px;
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+      header span {
+        color: #ff7a2f;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: .16em;
+      }
+      h1 { font-size: clamp(32px, 5vw, 52px); letter-spacing: -.04em; margin: 10px 0; }
+      header p { color: #9aa3b0; max-width: 62ch; line-height: 1.6; }
+      .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; }
+      a.btn {
+        display: inline-flex; align-items: center; gap: 8px;
+        text-decoration: none; border-radius: 10px; padding: 10px 16px; font-weight: 700; font-size: 14px;
+      }
+      a.primary { background: linear-gradient(135deg, #ff7b32, #ed4d19); color: white; }
+      a.ghost { color: #d6d9de; border: 1px solid rgba(255,255,255,.12); }
+      nav {
+        display: flex; gap: 8px; flex-wrap: wrap;
+        max-width: 1100px; margin: 0 auto 12px; padding: 0 6vw;
+      }
+      nav a {
+        color: #c4c9d1; text-decoration: none; font-size: 13px;
+        border: 1px solid rgba(255,255,255,.1); border-radius: 999px; padding: 6px 12px;
+      }
+      nav a:hover { border-color: #ff7a2f; color: #fff; }
+      figure {
+        max-width: 1100px; margin: 0 auto 48px; padding: 0 6vw;
+      }
+      img {
+        width: 100%; border-radius: 16px;
+        border: 1px solid rgba(255,255,255,.1);
+        box-shadow: 0 30px 80px rgba(0,0,0,.45);
+      }
+      figcaption { color: #8f96a3; font-size: 14px; margin-top: 10px; line-height: 1.5; }
+      footer { color: #66707c; text-align: center; padding: 24px 6vw 64px; font-size: 13px; }
+      footer a { color: #ff9a62; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span>AGENT OS · LOCAL RUNTIME</span>
+      <h1>Click through the product.</h1>
+      <p>
+        Recruiter walkthrough of a local-first agent dashboard. These are real screenshots from the running app —
+        dry-run chat, sandboxed workspace, and machine control with Run command disabled.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/hharsha98/agent-os">View source on GitHub</a>
+        <a class="btn ghost" href="https://github.com/hharsha98/agent-os#run-it-locally">Run it in 3 commands</a>
+      </div>
+    </header>
+    <nav>
+      <a href="#home">Home</a>
+      <a href="#chat">Chat</a>
+      <a href="#workspace">Workspace</a>
+      <a href="#goals">Goals</a>
+      <a href="#kanban">Kanban</a>
+      <a href="#memory">Memory</a>
+      <a href="#studio">Studio</a>
+      <a href="#machine">Machine</a>
+    </nav>
+    <figure id="home">
+      <img src="screenshots/home.png" alt="Mission Control home" />
+      <figcaption>Home — prompt-to-workflow plus live local checks for Cursor, Claude, Codex, and Hermes.</figcaption>
+    </figure>
+    <figure id="chat">
+      <img src="screenshots/chat.png" alt="Unified Chat" />
+      <figcaption>Unified Chat — one box, four agents, dry-run labels. Cursor is honest when chat is not wired.</figcaption>
+    </figure>
+    <figure id="workspace">
+      <img src="screenshots/workspace.png" alt="Workspace sandbox" />
+      <figcaption>Workspace — only the Agent OS sandbox. HTML preview uses a sandboxed iframe.</figcaption>
+    </figure>
+    <figure id="goals">
+      <img src="screenshots/goals.png" alt="Goals" />
+      <figcaption>Goals — Codex Goal Mode shell. Overnight execution is not claimed while the gate is off.</figcaption>
+    </figure>
+    <figure id="kanban">
+      <img src="screenshots/kanban.png" alt="Kanban" />
+      <figcaption>Kanban — To Do / Doing / Done from the real local board API.</figcaption>
+    </figure>
+    <figure id="memory">
+      <img src="screenshots/memory.png" alt="Memory vault" />
+      <figcaption>Memory — counts and search first. Content only after you open an item. Obsidian is not connected.</figcaption>
+    </figure>
+    <figure id="studio">
+      <img src="screenshots/studio.png" alt="Studio" />
+      <figcaption>Studio — parked / not configured. No fake Midjourney or ElevenLabs.</figcaption>
+    </figure>
+    <figure id="machine">
+      <img src="screenshots/machine.png" alt="Machine Control" />
+      <figcaption>Machine Control — status checklist. Run command stays disabled.</figcaption>
+    </figure>
+    <footer>
+      Source: <a href="https://github.com/hharsha98/agent-os">github.com/hharsha98/agent-os</a>
+    </footer>
+  </body>
+</html>

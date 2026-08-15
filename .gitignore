@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+.env
+.data
+*.log
+*.tsbuildinfo
+vendor/open-agent-builder/node_modules
+vendor/open-agent-builder/.next
+vendor/open-agent-builder/.env
+vendor/open-agent-builder/.env.local

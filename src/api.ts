@@ -18,6 +18,7 @@ import type {
   MemoryExport,
   MemoryVectorRebuildResult,
   MemorySearchResult,
+  MemoryContext,
   MemoryState,
   ModuleLogs,
   ModuleRunResult,
@@ -80,6 +81,10 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 export function getHealth() {
   return request<Health>("/api/health");
+}
+
+export function getModule(id: string) {
+  return request<RuntimeModule>(`/api/modules/${id}`);
 }
 
 export async function getRuntimeSnapshot(): Promise<IntegrationSnapshot> {
@@ -354,6 +359,20 @@ export function writeWorkspaceFile(payload: { content: string; name?: string; fo
   });
 }
 
+export function exportWorkspaceVault() {
+  return request<{
+    ok: boolean;
+    folder: string;
+    publicPath: string;
+    count: number;
+    files: Array<{ relativePath: string; id: string }>;
+    publicSummary: string;
+  }>("/api/workspace/vault/export", {
+    method: "POST",
+    body: "{}"
+  });
+}
+
 export async function getLocalAgents() {
   const data = await request<{
     agents: Array<{
@@ -388,6 +407,14 @@ export function searchMemory(params: { query?: string; mode?: string; type?: str
     if (value !== undefined && value !== "" && value !== false) query.set(key, String(value));
   }
   return request<MemorySearchResult>(`/api/memory/search?${query.toString()}`);
+}
+
+export function getMemoryContext(params: { query?: string; limit?: number } = {}) {
+  const query = new URLSearchParams();
+  if (params.query) query.set("query", params.query);
+  if (params.limit) query.set("limit", String(params.limit));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<MemoryContext>(`/api/memory/context${suffix}`);
 }
 
 export function configureMemoryVector(payload: Record<string, unknown>) {
@@ -598,6 +625,13 @@ export function sendAgentMessage(id: string, message: string, options: { dryRun?
   );
 }
 
+export function previewCodexMessage(message: string, runtime = "hermes") {
+  return request<{ ok: boolean; reply: string; mode: string }>("/api/agent-os/codex/preview", {
+    method: "POST",
+    body: JSON.stringify({ message, runtime })
+  });
+}
+
 export function runModuleAction(id: string, payload: Record<string, unknown> = {}) {
   return request<ModuleRunResult>(
     `/api/modules/${id}/run`,
@@ -758,6 +792,13 @@ export function getSelfModule(id: string) {
 export function createSelfModuleItem(id: string, payload: Record<string, string | number | string[]>) {
   return request<SelfModuleState>(`/api/self/${id}/items`, {
     method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateSelfModuleItem(id: string, itemId: string, payload: Record<string, string | number | string[]>) {
+  return request<SelfModuleState>(`/api/self/${id}/items/${itemId}`, {
+    method: "PATCH",
     body: JSON.stringify(payload)
   });
 }

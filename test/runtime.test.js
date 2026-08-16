@@ -244,15 +244,17 @@ test("module registry exposes every dashboard module with sanitized fields", asy
       "goals",
       "notebook",
       "kanban",
-      "usage-credits"
+      "usage-credits",
+      "seo",
+      "video"
     ]) {
       assert.ok(ids.includes(id), `missing module ${id}`);
     }
     assert.equal(ids.includes("kernel"), false);
-    assert.equal(ids.includes("seo"), false);
-    assert.equal(ids.includes("video"), false);
-    assert.equal(isParkedSelfModule("seo"), true);
-    assert.equal(isParkedSelfModule("video"), true);
+    assert.equal(ids.includes("seo"), true);
+    assert.equal(ids.includes("video"), true);
+    assert.equal(isParkedSelfModule("seo"), false);
+    assert.equal(isParkedSelfModule("video"), false);
     assert.equal(isParkedSelfModule("goals"), false);
     assert.equal(isParkedSelfModule("kanban"), false);
     const parked = await getModules({ includeParked: true, includeInternal: true });
@@ -644,40 +646,38 @@ test("scheduler pause and resume controls due execution", async () => {
   });
 });
 
-test("scheduler public targets park SEO and Video while current dashboard focuses core OS modules", async () => {
+test("scheduler public targets include SEO and Video self-module jobs", async () => {
   await withTempRuntime(async () => {
     const state = await getSchedulerState();
     const targetIds = state.targets.selfModules.map((item) => item.id);
-    assert.deepEqual(targetIds, ["goals", "notebook", "kanban", "usage-credits"]);
-    assert.equal(targetIds.includes("seo"), false);
-    assert.equal(targetIds.includes("video"), false);
+    assert.deepEqual(targetIds, ["goals", "notebook", "seo", "video", "kanban", "usage-credits"]);
+    assert.equal(targetIds.includes("seo"), true);
+    assert.equal(targetIds.includes("video"), true);
   });
 });
 
-test("scheduler rejects parked SEO and Video self-module jobs", async () => {
+test("scheduler allows SEO and Video self-module jobs", async () => {
   await withTempRuntime(async () => {
-    await assert.rejects(
-      () => saveSchedulerJob({
-        id: "seo-task",
-        label: "SEO task",
-        targetType: "self_module",
-        targetId: "seo",
-        intervalMinutes: 60,
-        nextRunAt: "2026-07-07T00:00:00.000Z"
-      }),
-      /parked/
-    );
-    await assert.rejects(
-      () => saveSchedulerJob({
-        id: "video-task",
-        label: "Video task",
-        targetType: "self_module",
-        targetId: "video",
-        intervalMinutes: 60,
-        nextRunAt: "2026-07-07T00:00:00.000Z"
-      }),
-      /parked/
-    );
+    const seoJob = await saveSchedulerJob({
+      id: "seo-task",
+      label: "SEO task",
+      targetType: "self_module",
+      targetId: "seo",
+      action: "create_item",
+      intervalMinutes: 60,
+      nextRunAt: "2026-07-07T00:00:00.000Z"
+    });
+    assert.equal(seoJob.targetId, "seo");
+    const videoJob = await saveSchedulerJob({
+      id: "video-task",
+      label: "Video task",
+      targetType: "self_module",
+      targetId: "video",
+      action: "create_item",
+      intervalMinutes: 60,
+      nextRunAt: "2026-07-07T00:00:00.000Z"
+    });
+    assert.equal(videoJob.targetId, "video");
   });
 });
 
@@ -765,7 +765,7 @@ test("scheduler approval gate pauses scheduled goal loops until approved", async
   });
 });
 
-test("scheduler rejects parked SEO audit actions through the OS router", async () => {
+test("scheduler allows SEO create_item jobs and still rejects unsupported seo_audit actions", async () => {
   await withTempRuntime(async () => {
     await withEnv(PROVIDER_ENV_RESET, async () => {
       await configureConnection("provider-openrouter", { OPENROUTER_API_KEY: "placeholder-openrouter-key" });
@@ -777,6 +777,21 @@ test("scheduler rejects parked SEO audit actions through the OS router", async (
       });
       const brief = seo.items[0];
       assert.ok(brief.id);
+      const job = await saveSchedulerJob({
+        id: "scheduled-seo-item",
+        label: "Scheduled SEO brief",
+        targetType: "self_module",
+        targetId: "seo",
+        action: "create_item",
+        intervalMinutes: 60,
+        payload: {
+          title: "Scheduled SEO audit",
+          url: "https://example.com",
+          keyword: "agent os"
+        },
+        nextRunAt: "2026-07-07T00:00:00.000Z"
+      });
+      assert.equal(job.targetId, "seo");
       await assert.rejects(
         () => saveSchedulerJob({
           id: "scheduled-seo-audit",
@@ -792,7 +807,7 @@ test("scheduler rejects parked SEO audit actions through the OS router", async (
           },
           nextRunAt: "2026-07-07T00:00:00.000Z"
         }),
-        /parked|Unsupported scheduler action/
+        /Unsupported scheduler action/
       );
     });
   });

@@ -1,6 +1,7 @@
-import { KanbanSquare, Loader2 } from "lucide-react";
+import { KanbanSquare, Loader2, Repeat } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { createSelfModuleItem, getSelfModule } from "../api";
+import { addMemory, createSelfModuleItem, getSelfModule, updateSelfModuleItem } from "../api";
+import { navigateTo } from "../nav";
 import type { SelfModuleItem, SelfModuleState } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
@@ -52,10 +53,35 @@ export default function KanbanPage() {
     setBusy(true);
     try {
       setState(await createSelfModuleItem("kanban", { title: title.trim(), column, notes, status: "open", priority: "normal" }));
+      await addMemory({
+        title: `Kanban: ${title.trim()}`,
+        content: notes || `Card created in ${column}`,
+        agentId: "kanban",
+        type: "episodic",
+        privacy: "private",
+        source: "kanban",
+        tags: ["loop", "kanban"]
+      }).catch(() => undefined);
       setTitle("");
       setNotes("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create card.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function moveCard(item: SelfModuleItem, nextLane: string) {
+    if (laneFor(item) === nextLane) return;
+    setBusy(true);
+    try {
+      setState(await updateSelfModuleItem("kanban", item.id, {
+        column: nextLane,
+        status: nextLane === "done" ? "done" : "open"
+      }));
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not move card.");
     } finally {
       setBusy(false);
     }
@@ -68,7 +94,7 @@ export default function KanbanPage() {
       hint="Cards come from the Agent OS Kanban store. Empty lanes stay empty. This page does not invent jobs."
     >
       <HonestNote>
-        Create a card to see it land in a lane. Moving cards by drag-and-drop is not wired yet, because the public HTTP API currently creates items rather than updating columns.
+        Create a card, then move it with the lane menu. Open Loop to fold To Do and Doing into today’s briefing. Moves stay in the local Kanban store — not GitHub.
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
       <div className="aos-phase-toolbar">
@@ -89,6 +115,9 @@ export default function KanbanPage() {
         <button className="aos-primary" onClick={() => void createCard()} disabled={busy || !title.trim()}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <KanbanSquare size={16} />} Add card
         </button>
+        <button className="aos-secondary" onClick={() => navigateTo("loop")}>
+          <Repeat size={16} /> Open Loop
+        </button>
       </div>
       <div className="aos-kanban-board">
         {LANES.map((lane) => (
@@ -107,6 +136,16 @@ export default function KanbanPage() {
                   <strong>{item.title}</strong>
                   <p>{item.notes || "No notes"}</p>
                   <small>{item.priority || "normal"} · {item.status || "open"}</small>
+                  <label className="aos-field">
+                    <span>Move to</span>
+                    <select
+                      value={laneFor(item)}
+                      disabled={busy}
+                      onChange={(event) => void moveCard(item, event.target.value)}
+                    >
+                      {LANES.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                    </select>
+                  </label>
                 </article>
               ))
             )}

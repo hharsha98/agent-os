@@ -1084,6 +1084,28 @@ export interface MemorySearchResult {
   results: MemoryRecord[];
 }
 
+export interface MemoryContextHit {
+  id: string;
+  title: string;
+  source: string;
+  reason: string;
+  excerpt: string;
+}
+
+export interface MemoryContext {
+  ok: boolean;
+  query: string;
+  count: number;
+  briefing: {
+    id: string;
+    title: string;
+    updatedAt: string;
+    excerpt: string;
+  } | null;
+  hits: MemoryContextHit[];
+  promptBlock: string;
+}
+
 export interface MemoryVectorRebuildResult {
   ok: boolean;
   status: string;

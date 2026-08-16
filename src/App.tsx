@@ -230,8 +230,8 @@ const selfItems = [
 ];
 
 const allNavItems = [...workspaceItems, ...agentItems, ...providerItems, ...selfItems];
-const localSelfModuleIds = new Set(["goals", "notebook", "kanban", "usage-credits"]);
-const hiddenDashboardModuleIds = new Set(["kernel", "seo", "video"]);
+const localSelfModuleIds = new Set(["goals", "notebook", "kanban", "usage-credits", "seo", "video"]);
+const hiddenDashboardModuleIds = new Set(["kernel"]);
 const modelProviderModuleIds = new Set(["minimax", "provider-anthropic", "provider-openai", "provider-gemini", "provider-openrouter", "provider-ollama", "provider-minimax"]);
 const providerSetupByModuleId: Record<string, string> = {
   minimax: "minimax",

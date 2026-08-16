@@ -250,22 +250,29 @@ Current local Agent OS is a working foundation, but not yet the full public/demo
 
 ### Missing or incomplete compared with public/demo target
 
-- Full demo-style sidebar/pages
-- Workspace asset browser with previews
-- Unified chat/router UI for Cursor / Claude / Codex / Hermes
-- True Codex Goal Mode UI with timeline, scratch directory, files, commands, and logs
-- Full Kanban board with real jobs/cards
-- Memory/vault UI and Obsidian/OMI-like loop
-- NotebookLM-style integration/assets/audio overviews
-- Studio tab for image/video/audio/voice assets
-- Voice/machine-control setup screen
-- Permission checker for Accessibility / Screen Recording / Microphone / Automation / Full Disk Access
-- OpenClaw integration
-- OpenClaude integration
+Now present in this Mac copy (local equivalents, not the paid Boardroom zip):
+
+- Sidebar pages: 7 Layers, Workspace, Chat, Brain, Goals, Kanban, Memory, Notebook, Journal, Loop, SEO, Studio, Swarm
+- Workspace sandbox with previews plus `loop/`, `vault/`, `swarm/`, and `video/` folders
+- Unified chat UI (dry-run; Cursor CLI may be found, chat routing is not wired)
+- Goals dry-run plus optional live loop / overnight `goal_loop` via the local execution-gate config (not `.env` ENABLE_EXEC)
+- Kanban board with create + move-to-lane (PATCH `/api/self/:id/items/:itemId`) and scheduler approve cards
+- Memory filters (All / Loop / Briefings) plus Write vault markdown
+- Journal capture inbox (typed/pasted transcript, not Omi hardware)
+- Loop desk that writes timestamped `workspace/loop/*.md`
+- SEO audit/discover/rank and local video worker (image/voice/music stay Not configured)
+
+Still missing on purpose:
+
+- Julian Goldie’s paid Boardroom zip / pixel-identical UI
+- Midjourney / ElevenLabs / Remotion products
+- Omi wearable + screen capture
+- NotebookLM-style audio overviews
+- Voice/machine-control send/run (status checklist only)
+- OpenClaw / OpenClaude native install
 - Gemini/OpenCode/other demo agents
-- Standalone Codex CLI
 - `cliclick` helper for macOS click/type automation
-- Provider-router cleanup; earlier health reportedly complained about missing Ollama model `llama3.1`
+- Desktop app wrap (Tauri/Electron) — later, after this dashboard loop is solid
 
 ---
 

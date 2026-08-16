@@ -10,8 +10,10 @@ import {
   KanbanSquare,
   KeyRound,
   Layers3,
+  Menu,
   MessageSquare,
   Monitor,
+  Network,
   NotebookTabs,
   Repeat,
   Search,
@@ -33,6 +35,7 @@ import MemoryPage from "./pages/MemoryPage";
 import NotebookPage from "./pages/NotebookPage";
 import SeoPage from "./pages/SeoPage";
 import StudioPage from "./pages/StudioPage";
+import SwarmPage from "./pages/SwarmPage";
 import WorkspacePage from "./pages/WorkspacePage";
 import { navigateTo } from "./nav";
 import "./phase2.css";
@@ -62,6 +65,7 @@ type ShellPage =
   | "loop"
   | "seo"
   | "studio"
+  | "swarm"
   | "machine"
   | "openclaw"
   | "hermes";
@@ -83,6 +87,7 @@ const ALL_PAGES = new Set<ShellPage>([
   "loop",
   "seo",
   "studio",
+  "swarm",
   "machine",
   "openclaw",
   "hermes",
@@ -91,12 +96,13 @@ const ALL_PAGES = new Set<ShellPage>([
 function pageFromUrl(): ShellPage {
   const value = new URLSearchParams(window.location.search).get("page");
   if (value && ALL_PAGES.has(value as ShellPage)) return value as ShellPage;
-  return "home";
+  return "layers";
 }
 
 export default function DashboardRoot() {
   const [page, setPage] = useState<ShellPage>(pageFromUrl);
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     void getLocalAgents()
@@ -119,13 +125,17 @@ export default function DashboardRoot() {
   function go(next: ShellPage) {
     navigateTo(next);
     setPage(next);
+    setMenuOpen(false);
   }
 
   return (
     <div className="aos-phase2-shell">
-      <aside className="aos-sidebar">
-        <div className="aos-brand">
-          <div className="aos-logo">A</div>
+      <button className="aos-icon-button aos-menu-button" aria-label="Open menu" onClick={() => setMenuOpen(true)}>
+        <Menu size={18} />
+      </button>
+      <aside className={`aos-sidebar ${menuOpen ? "is-open" : ""}`}>
+        <div className="aos-logo">
+          <div className="aos-logo-mark">A</div>
           <div>
             <strong>Agent OS</strong>
             <span>Local runtime</span>
@@ -134,7 +144,7 @@ export default function DashboardRoot() {
         <nav className="aos-nav">
           <p>Workspace</p>
           <button className={page === "home" ? "active" : ""} onClick={() => go("home")}>
-            <Home size={16} /> Home
+            <Home size={16} /> Workflow studio
           </button>
           <button className={page === "layers" ? "active" : ""} onClick={() => go("layers")}>
             <Layers3 size={16} /> 7 Layers
@@ -179,6 +189,9 @@ export default function DashboardRoot() {
           <button className={page === "studio" ? "active" : ""} onClick={() => go("studio")}>
             <Clapperboard size={16} /> Studio
           </button>
+          <button className={page === "swarm" ? "active" : ""} onClick={() => go("swarm")}>
+            <Network size={16} /> Swarm
+          </button>
           <button className={page === "machine" ? "active" : ""} onClick={() => go("machine")}>
             <Monitor size={16} /> Machine Control
           </button>
@@ -191,6 +204,7 @@ export default function DashboardRoot() {
           </button>
         </nav>
       </aside>
+      {menuOpen ? <button className="aos-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
       <div className="aos-phase2-content">
         {LEGACY_PAGES.has(page) ? (
           <AgentOSApp key={page} />
@@ -218,6 +232,8 @@ export default function DashboardRoot() {
           <SeoPage />
         ) : page === "studio" ? (
           <StudioPage />
+        ) : page === "swarm" ? (
+          <SwarmPage />
         ) : (
           <MachineControlPage />
         )}

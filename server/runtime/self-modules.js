@@ -51,7 +51,7 @@ const MODULES = {
   }
 };
 
-const PARKED_SELF_MODULE_IDS = new Set(["seo", "video"]);
+const PARKED_SELF_MODULE_IDS = new Set();
 
 const MAX_GOAL_HISTORY = 20;
 const MAX_SEO_HISTORY = 20;

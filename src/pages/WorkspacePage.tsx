@@ -1,7 +1,7 @@
-import { FolderOpen, Loader2, RefreshCcw } from "lucide-react";
+import { FolderOpen, Loader2, RefreshCcw, Repeat, Save } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { getWorkspaceFileDetail, getWorkspaceListing } from "../api";
-import { queryParam } from "../nav";
+import { getWorkspaceFileDetail, getWorkspaceListing, writeWorkspaceFile } from "../api";
+import { navigateTo, queryParam } from "../nav";
 import type { WorkspaceFile, WorkspaceListing } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
@@ -11,24 +11,34 @@ function formatSize(size: number) {
   return `${Math.round(size / 104857.6) / 10} MB`;
 }
 
-function isLoopFile(file: WorkspaceFile) {
-  return file.relativePath.startsWith("loop/") || file.id.includes("/loop/");
+const FOLDERS = ["all", "loop", "vault", "swarm", "video", "inbox"] as const;
+type WorkspaceFolder = typeof FOLDERS[number];
+
+function folderFromUrl(): WorkspaceFolder {
+  const value = queryParam("folder");
+  return (FOLDERS as readonly string[]).includes(value) ? value as WorkspaceFolder : "all";
+}
+
+function matchesFolder(file: WorkspaceFile, folder: WorkspaceFolder) {
+  if (folder === "all") return true;
+  return file.relativePath.startsWith(`${folder}/`) || file.id.includes(`/${folder}/`);
 }
 
 export default function WorkspacePage() {
   const [listing, setListing] = useState<WorkspaceListing | null>(null);
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
-  const [folder, setFolder] = useState(queryParam("folder") === "loop" ? "loop" : "all");
+  const [folder, setFolder] = useState<WorkspaceFolder>(folderFromUrl());
   const [selectedId, setSelectedId] = useState<string | null>(queryParam("file") || null);
   const [previewText, setPreviewText] = useState("");
+  const [noteName, setNoteName] = useState("");
+  const [noteBody, setNoteBody] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const files = useMemo(() => {
     const all = listing?.files || [];
-    if (folder !== "loop") return all;
-    return all.filter(isLoopFile);
+    return all.filter((file) => matchesFolder(file, folder));
   }, [listing, folder]);
 
   const selected = useMemo(
@@ -74,9 +84,50 @@ export default function WorkspacePage() {
     }
   }
 
+  function applyFolder(next: WorkspaceFolder) {
+    setFolder(next);
+    navigateTo("workspace", next === "all" ? {} : { folder: next });
+  }
+
+  useEffect(() => {
+    function sync() {
+      setFolder(folderFromUrl());
+    }
+    window.addEventListener("aos-navigate", sync);
+    window.addEventListener("popstate", sync);
+    return () => {
+      window.removeEventListener("aos-navigate", sync);
+      window.removeEventListener("popstate", sync);
+    };
+  }, []);
+
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [kind, folder]);
+
+  async function saveNote() {
+    const name = noteName.trim() || `note-${new Date().toISOString().slice(0, 10)}`;
+    if (!noteBody.trim()) return;
+    setBusy(true);
+    try {
+      const saved = await writeWorkspaceFile({
+        folder: "notes",
+        name: name.toLowerCase().endsWith(".md") || name.toLowerCase().endsWith(".txt") ? name : `${name}.md`,
+        content: noteBody
+      });
+      setNoteName("");
+      setNoteBody("");
+      setError("");
+      await refresh();
+      if (saved?.file?.id) {
+        setSelectedId(saved.file.id);
+        setPreviewText(saved.previewText || noteBody);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save into the workspace sandbox.");
+      setBusy(false);
+    }
+  }
 
   const rawUrl = selected ? `/api/workspace/raw?id=${encodeURIComponent(selected.id)}` : "";
 
@@ -92,7 +143,7 @@ export default function WorkspacePage() {
       }
     >
       <HonestNote>
-        Empty is honest. Save a briefing on Loop, or drop HTML/images into ~/.hermes-agent-os/workspace, and they will show up here. This page will not browse the rest of your Mac.
+        Empty is honest. Save a briefing on Loop, write a note here, or drop HTML/images into ~/.hermes-agent-os/workspace, and they will show up. This page will not browse the rest of your Mac.
       </HonestNote>
       <div className="aos-phase-toolbar">
         <label className="aos-field">
@@ -111,13 +162,38 @@ export default function WorkspacePage() {
             <option value="text">Text</option>
           </select>
         </label>
-        <button className="aos-secondary" onClick={() => setFolder("all")} disabled={folder === "all"}>
+        <button className="aos-secondary" onClick={() => applyFolder("all")} disabled={folder === "all"}>
           All files
         </button>
-        <button className={folder === "loop" ? "aos-primary" : "aos-secondary"} onClick={() => setFolder("loop")}>
+        <button className={folder === "loop" ? "aos-primary" : "aos-secondary"} onClick={() => applyFolder("loop")}>
           Loop folder
         </button>
+        <button className={folder === "vault" ? "aos-primary" : "aos-secondary"} onClick={() => applyFolder("vault")}>
+          Vault
+        </button>
+        <button className={folder === "swarm" ? "aos-primary" : "aos-secondary"} onClick={() => applyFolder("swarm")}>
+          Swarm
+        </button>
+        <button className={folder === "video" ? "aos-primary" : "aos-secondary"} onClick={() => applyFolder("video")}>
+          Video
+        </button>
+        <button className="aos-secondary" onClick={() => navigateTo("loop")}>
+          <Repeat size={16} /> Open Loop
+        </button>
         <button className="aos-primary" onClick={() => void refresh()} disabled={busy}>Filter</button>
+      </div>
+      <div className="aos-phase-toolbar">
+        <label className="aos-field">
+          <span>New note name</span>
+          <input value={noteName} onChange={(event) => setNoteName(event.target.value)} placeholder="ship-plan" />
+        </label>
+        <label className="aos-field">
+          <span>Note body</span>
+          <input value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder="Lands in workspace/notes/" />
+        </label>
+        <button className="aos-secondary" onClick={() => void saveNote()} disabled={busy || !noteBody.trim()}>
+          {busy ? <Loader2 className="aos-spin" size={16} /> : <Save size={16} />} Save .md into sandbox
+        </button>
       </div>
       {error ? <div className="aos-global-error">{error}</div> : null}
       <div className="aos-workspace-layout">
@@ -137,7 +213,7 @@ export default function WorkspacePage() {
             files.map((file) => (
               <button key={file.id} className={file.id === selectedId ? "active" : ""} onClick={() => void openFile(file)}>
                 <strong>{file.relativePath}</strong>
-                <span>{isLoopFile(file) ? "loop · " : ""}{file.kind} · {formatSize(file.size)}</span>
+                <span>{matchesFolder(file, "loop") ? "loop · " : ""}{file.kind} · {formatSize(file.size)}</span>
               </button>
             ))
           )}

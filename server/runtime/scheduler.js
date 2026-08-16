@@ -12,7 +12,7 @@ const DEFAULT_RETRY_DELAY_SECONDS = 60;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_LOCK_TTL_MS = 120000;
 const LOCK_FILE_NAME = "scheduler.lock.json";
-const PARKED_PUBLIC_SELF_MODULE_IDS = new Set(["seo", "video"]);
+const PARKED_PUBLIC_SELF_MODULE_IDS = new Set();
 const schedulerOwnerId = `${os.hostname()}-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 let schedulerTimer = null;

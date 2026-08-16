@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { execFile } from "node:child_process";
+import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +33,7 @@ import {
   searchMemory,
   updateMemory
 } from "./runtime/memory.js";
+import { getMemoryContext } from "./runtime/memory-context.js";
 import {
   getElizaStatus
 } from "./runtime/eliza.js";
@@ -40,14 +42,25 @@ import { generateAgentWorkflow, refineAgentWorkflow } from "./runtime/agent-os-b
 import { getCodexApiStatus, runCodexPreview, testCodexApi } from "./runtime/codex-api.js";
 import { configureApiIntegration, listApiIntegrations, testApiIntegration } from "./runtime/api-integrations.js";
 import { getAgentOsReadiness, getKernelStatus } from "./runtime/kernel.js";
+import { exportVaultMarkdown } from "./runtime/vault-export.js";
 import { getWorkspaceFile, listWorkspaceFiles, resolveWorkspaceFile, streamWorkspaceFile, writeWorkspaceText } from "./runtime/workspace.js";
 import {
+  cancelVideoRun,
   createSelfModuleItem,
   getSelfModuleState,
+  getVideoRun,
+  getVideoWorkerStatus,
   isLocalSelfModule,
   isParkedSelfModule,
+  queueVideoJob,
+  resolveVideoRunOutput,
   runGoalLoop,
+  runSeoAudit,
+  runSeoDiscovery,
+  runSeoRankSnapshot,
+  runVideoJob,
 } from "./runtime/self-modules.js";
+import { updateSelfModuleItem } from "./runtime/self-item-update.js";
 import {
   configureSkill,
   fetchSkillMarketplaceFeed,
@@ -210,7 +223,7 @@ async function getLocalAgentDashboardStatus() {
       version: firstLine(cursor.output, "Cursor Agent CLI"),
       model: "Cursor Pro model picker",
       connection: cursor.ok ? "~/.local/bin/agent" : "agent CLI missing or not trusted",
-      summary: cursor.ok ? "Cursor Agent is installed and ready for dashboard routing." : "Cursor Agent CLI was not found in the Agent OS server PATH."
+      summary: cursor.ok ? "Cursor Agent CLI is on PATH. Dashboard chat routing is not wired yet." : "Cursor Agent CLI was not found in the Agent OS server PATH."
     },
     {
       id: "claude",
@@ -231,7 +244,7 @@ async function getLocalAgentDashboardStatus() {
       available: codexConnected,
       version: codexCli.ok ? firstLine(codexCli.output, "Codex CLI") : "Standalone codex CLI not installed",
       model: codexApi.model || firstLine(hermesModel.output, "openai-codex/gpt-5.5"),
-      connection: codexApi.configured ? `${codexApi.baseUrl || "OpenAI-compatible"} · ${codexApi.apiMode || "responses"}` : firstLine(hermesModel.output, "Hermes Codex provider"),
+      connection: codexApi.configured ? `${codexApi.baseUrl || "OpenAI-compatible"} ? ${codexApi.apiMode || "responses"}` : firstLine(hermesModel.output, "Hermes Codex provider"),
       summary: codexConnected ? `Codex is connected through Agent OS/Hermes. ${gateway.summary}` : "Connect Codex API or Hermes openai-codex before running goal mode."
     },
     {
@@ -675,6 +688,14 @@ app.get("/api/memory/search", requireAdminWhenPublic, async (req, res, next) => 
   }
 });
 
+app.get("/api/memory/context", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await getMemoryContext(req.query || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/memory/vector/config", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.json(await configureMemoryVector(req.body || {}));
@@ -1064,6 +1085,26 @@ app.post("/api/self/:id/items", requireAdminWhenPublic, async (req, res, next) =
   }
 });
 
+app.patch("/api/self/:id/items/:itemId", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    if (isParkedSelfModule(req.params.id)) {
+      rejectParkedSelfModule(res, req.params.id);
+      return;
+    }
+    if (!isLocalSelfModule(req.params.id)) {
+      res.status(404).json({ ok: false, error: "self module not found" });
+      return;
+    }
+    res.json(await updateSelfModuleItem(req.params.id, req.params.itemId, req.body || {}));
+  } catch (error) {
+    if (error && error.statusCode === 404) {
+      res.status(404).json({ ok: false, error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
 app.post("/api/self/goals/:goalId/loop", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.json(await runGoalLoop(req.params.goalId, req.body || {}));
@@ -1072,40 +1113,80 @@ app.post("/api/self/goals/:goalId/loop", requireAdminWhenPublic, async (req, res
   }
 });
 
-app.post("/api/self/seo/:briefId/audit", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "seo");
+app.post("/api/self/seo/:briefId/audit", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runSeoAudit(req.params.briefId, req.body || {}));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post("/api/self/seo/:briefId/discover", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "seo");
+app.post("/api/self/seo/:briefId/discover", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runSeoDiscovery(req.params.briefId, req.body || {}));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post("/api/self/seo/:briefId/rank", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "seo");
+app.post("/api/self/seo/:briefId/rank", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runSeoRankSnapshot(req.params.briefId, req.body || {}));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/self/video/worker", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "video");
+app.get("/api/self/video/worker", requireAdminWhenPublic, async (_req, res, next) => {
+  try {
+    res.json(await getVideoWorkerStatus());
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post("/api/self/video/:jobId/run", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "video");
+app.post("/api/self/video/:jobId/run", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runVideoJob(req.params.jobId, req.body || {}));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post("/api/self/video/:jobId/queue", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "video");
+app.post("/api/self/video/:jobId/queue", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await queueVideoJob(req.params.jobId, req.body || {}));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/self/video/runs/:runId", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "video");
+app.get("/api/self/video/runs/:runId", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await getVideoRun(req.params.runId));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post("/api/self/video/runs/:runId/cancel", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "video");
+app.post("/api/self/video/runs/:runId/cancel", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await cancelVideoRun(req.params.runId));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/self/video/runs/:runId/download/:fileName", requireAdminWhenPublic, (_req, res) => {
-  rejectParkedSelfModule(res, "video");
+app.get("/api/self/video/runs/:runId/download/:fileName", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    const file = await resolveVideoRunOutput(req.params.runId, req.params.fileName);
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Disposition", `attachment; filename="${String(file.downloadName || "download").replace(/"/g, "")}"`);
+    createReadStream(file.filePath).pipe(res);
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/connections", async (_req, res, next) => {
@@ -1171,6 +1252,14 @@ app.get("/api/workspace/raw", requireAdminWhenPublic, async (req, res, next) => 
 app.post("/api/workspace/files", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.status(201).json(await writeWorkspaceText(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/workspace/vault/export", requireAdminWhenPublic, async (_req, res, next) => {
+  try {
+    res.json(await exportVaultMarkdown());
   } catch (error) {
     next(error);
   }

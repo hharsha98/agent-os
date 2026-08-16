@@ -38,6 +38,24 @@
   margin-bottom: 16px;
 }
 
+.aos-phase-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.aos-phase2-shell > .aos-menu-button {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 40;
+}
+
+.aos-phase2-shell .aos-phase2-content .aos-menu-button {
+  display: none !important;
+}
+
 .aos-phase-toolbar .aos-field {
   margin-bottom: 0;
   min-width: 180px;
@@ -237,6 +255,17 @@
   gap: 12px;
 }
 
+.aos-swarm-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.aos-swarm-card.queued { opacity: 0.72; }
+.aos-swarm-card.running { border-color: #e3ac4e; }
+.aos-swarm-card.done { border-color: #40d886; }
+.aos-swarm-card.error { border-color: #e35d6a; }
+
 .aos-timeline {
   margin: 0;
   padding-left: 18px;
@@ -369,6 +398,7 @@
   .aos-chat-agents,
   .aos-goal-grid,
   .aos-studio-grid,
+  .aos-swarm-grid,
   .aos-layer-grid {
     grid-template-columns: 1fr;
   }

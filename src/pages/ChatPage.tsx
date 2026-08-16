@@ -1,7 +1,9 @@
-import { Loader2, MessageSquare, Save, Send } from "lucide-react";
+import { Loader2, MessageSquare, Repeat, Save, Send } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addMemory, sendAgentMessage } from "../api";
+import { addMemory, getMemoryContext, previewCodexMessage, sendAgentMessage } from "../api";
 import { type ChatAgentId, chatStorageKey } from "../chatHistory";
+import { navigateTo } from "../nav";
+import type { MemoryContext } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
 type ChatMessage = {
@@ -24,7 +26,7 @@ type LocalAgent = {
 const AGENTS: Array<{ id: ChatAgentId; label: string; moduleId: string | null; hint: string }> = [
   { id: "cursor", label: "Cursor", moduleId: null, hint: "CLI can be installed without chat routing." },
   { id: "claude", label: "Claude Code", moduleId: "claude", hint: "Uses the existing dry-run module API." },
-  { id: "codex", label: "Codex", moduleId: "codex", hint: "Uses the existing dry-run module API." },
+  { id: "codex", label: "Codex", moduleId: "codex", hint: "Uses Codex API preview when a key is saved; otherwise dry-run." },
   { id: "hermes", label: "Hermes", moduleId: "hermes", hint: "Uses the existing dry-run module API." }
 ];
 
@@ -45,6 +47,8 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [briefing, setBriefing] = useState<MemoryContext["briefing"]>(null);
+  const [vaultHits, setVaultHits] = useState(0);
   const skipSave = useRef(true);
   const agent = AGENTS.find((item) => item.id === agentId) || AGENTS[1];
   const local = useMemo(
@@ -63,6 +67,18 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
   }, [agentId]);
 
   useEffect(() => {
+    void getMemoryContext({ limit: 6 })
+      .then((data) => {
+        setBriefing(data.briefing);
+        setVaultHits(data.count);
+      })
+      .catch(() => {
+        setBriefing(null);
+        setVaultHits(0);
+      });
+  }, []);
+
+  useEffect(() => {
     if (skipSave.current) {
       skipSave.current = false;
       return;
@@ -70,12 +86,14 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
     localStorage.setItem(chatStorageKey(agentId), JSON.stringify(messages));
   }, [agentId, messages]);
 
-  async function persistAssistant(message: ChatMessage, label: string) {
+  async function persistAssistant(message: ChatMessage, label: string, userText = "") {
     if (message.badge === "Error") return;
+    const asked = userText.trim();
+    const content = asked ? `You: ${asked}\n\n${message.text}` : message.text;
     try {
       await addMemory({
         title: `${label} loop ${new Date().toISOString().slice(0, 10)}`,
-        content: message.text,
+        content,
         agentId: message.agentId,
         type: "episodic",
         privacy: "private",
@@ -113,22 +131,46 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         badge: badgeFor(agent, local)
       };
       setMessages((current) => [...current, assistant]);
-      void persistAssistant(assistant, agent.label);
+      void persistAssistant(assistant, agent.label, text);
       return;
     }
 
     setBusy(true);
     try {
-      const result = await sendAgentMessage(agent.moduleId || agent.id, text, { dryRun: true });
+      const vault = await getMemoryContext({ query: text, limit: 6 }).catch(() => null);
+      if (vault) {
+        setBriefing(vault.briefing);
+        setVaultHits(vault.count);
+      }
+      const payload = vault?.promptBlock ? `${vault.promptBlock}\n\nUser:\n${text}` : text;
+      let reply = "";
+      let mode = "dry_run";
+      if (agent.id === "codex") {
+        try {
+          const preview = await previewCodexMessage(payload);
+          reply = preview.reply || "";
+          mode = preview.mode || "executed";
+        } catch {
+          const result = await sendAgentMessage(agent.moduleId || agent.id, payload, { dryRun: true });
+          reply = result.reply || "";
+          mode = result.mode || "dry_run";
+        }
+      } else {
+        const result = await sendAgentMessage(agent.moduleId || agent.id, payload, { dryRun: true });
+        reply = result.reply || "";
+        mode = result.mode || "dry_run";
+      }
+      const used = vault?.count ? ` Read ${vault.count} memory note${vault.count === 1 ? "" : "s"} before answering.` : "";
+      const replyText = reply || "No reply text was returned.";
       const assistant: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: "assistant",
         agentId,
-        text: result.reply || "No reply text was returned.",
-        badge: badgeFor(agent, local, result.mode)
+        text: `${replyText}${used}`,
+        badge: badgeFor(agent, local, mode)
       };
       setMessages((current) => [...current, assistant]);
-      await persistAssistant(assistant, agent.label);
+      await persistAssistant({ ...assistant, text: replyText }, agent.label, text);
     } catch (caught) {
       setMessages((current) => [
         ...current,
@@ -148,9 +190,11 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
   async function saveLoop() {
     const last = [...messages].reverse().find((message) => message.role === "assistant");
     if (!last || saving) return;
+    const lastIndex = messages.map((message) => message.id).lastIndexOf(last.id);
+    const lastUser = messages.slice(0, lastIndex >= 0 ? lastIndex : messages.length).reverse().find((message) => message.role === "user");
     setSaving(true);
     try {
-      await persistAssistant(last, agent.label);
+      await persistAssistant(last, agent.label, lastUser?.text || "");
     } finally {
       setSaving(false);
     }
@@ -158,9 +202,9 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
 
   return (
     <PageFrame
-      kicker="UNIFIED CHAT · DRY RUN + LOOP"
-      title="One box. Four local agents. Honest labels."
-      hint="Claude, Codex, and Hermes send dry-run module calls. History stays in this browser. Each assistant reply is also saved into local Memory so Loop can read it in the morning."
+      kicker="UNIFIED CHAT · VAULT + LOOP"
+      title="One box. Four local agents. Memory is read first."
+      hint="Claude and Hermes still dry-run the module API. Codex uses the API preview when a key is saved. Every send reads local Memory first, including yesterday’s Loop briefing."
     >
       <div className="aos-chat-agents">
         {AGENTS.map((item) => {
@@ -174,6 +218,20 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         })}
       </div>
       <HonestNote>{agent.hint} {local?.summary || ""} Replies auto-save to Memory. The button below is only a manual retry.</HonestNote>
+      {briefing ? (
+        <div className="aos-panel" style={{ marginBottom: 16 }}>
+          <div className="aos-panel-head">
+            <div>
+              <span>YESTERDAY’S BRIEFING</span>
+              <h2>{briefing.title}</h2>
+            </div>
+          </div>
+          <p>{briefing.excerpt}</p>
+          <small>{vaultHits} memory note{vaultHits === 1 ? "" : "s"} ready for the next send.</small>
+        </div>
+      ) : (
+        <p className="aos-honest-note">No Loop briefing yet. Save one on Loop so tomorrow’s chat starts from yesterday’s notes.</p>
+      )}
       <div className="aos-chat-log">
         {messages.length === 0 ? (
           <div className="aos-empty small">
@@ -208,6 +266,9 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
           </button>
           <button className="aos-secondary" onClick={() => void saveLoop()} disabled={saving || messages.every((message) => message.role !== "assistant")}>
             {saving ? <Loader2 className="aos-spin" size={16} /> : <Save size={16} />} Save last reply again
+          </button>
+          <button className="aos-secondary" onClick={() => navigateTo("loop")}>
+            <Repeat size={16} /> Open Loop
           </button>
         </div>
         {notice ? <p className="aos-honest-note">{notice}</p> : null}

@@ -144,7 +144,7 @@ const INTERNAL_MODULES = [
   }
 ];
 
-const PARKED_MODULE_IDS = new Set(["seo", "video"]);
+const PARKED_MODULE_IDS = new Set();
 const INTERNAL_ONLY_MODULE_IDS = new Set(["kernel"]);
 const ACTIVE_MODULE_SESSIONS = new Map();
 const MAX_SESSION_OUTPUT_CHARS = 12000;

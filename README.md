@@ -68,12 +68,18 @@ This is not a toy chat wrapper. It is a **local-first operations dashboard** for
     </td>
     <td>
       <a href="docs/screenshots/studio.png"><img src="docs/screenshots/studio.png" alt="Studio parked media shell" /></a>
-      <p><strong>Studio / Goals / Kanban / Memory / Notebook</strong> — real local APIs, parked media, no fake Midjourney.</p>
+      <p><strong>Studio / Goals / Kanban / Memory / Notebook</strong> — real local APIs. Video worker can run locally. Image/voice/music stay Not configured. No fake Midjourney. Not Julian Goldie’s Boardroom zip.</p>
     </td>
   </tr>
 </table>
 
 More stills: [Goals](docs/screenshots/goals.png) · [Kanban](docs/screenshots/kanban.png) · [Memory](docs/screenshots/memory.png)
+
+---
+
+## Local equivalents, not a Boardroom clone
+
+This repo is a **local equivalent** of the public 7-layer Agent OS idea. It does **not** include Julian Goldie’s paid Boardroom zip, prompts, or dashboard pixels. SEO, Studio, vault markdown, swarm map, and overnight Goal Mode are local APIs with honest missing states.
 
 ---
 
@@ -98,11 +104,12 @@ flowchart LR
 
 | Surface | State |
 | --- | --- |
-| Home / Mission Control | Live local version checks |
+| 7 Layers (default landing) | Live counts from Memory, Workspace, Loop, Chat, Goals, Kanban |
+| Workflow studio / Mission Control | Live local version checks |
 | Agent Builder + AI APIs | Wired (Codex preview, install guides) |
-| Workspace preview | Live, sandboxed |
+| Workspace preview | Live, sandboxed; Loop briefings in `loop/` |
 | Unified Chat | Dry-run for Claude / Codex / Hermes; Cursor CLI detected, chat not routed |
-| Goals / Kanban / Memory / Notebook | Live local stores |
+| Brain / Goals / Kanban / Memory / Notebook / Journal / Loop | Live local stores; Kanban cards can move lanes; Loop writes timestamped briefings |
 | Studio | Honest **Not configured / Parked** |
 | Machine Control | Status only — no send/run |
 | OpenClaw native install | Not installed on this machine; UI does not fake it |

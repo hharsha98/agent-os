@@ -1,6 +1,7 @@
-import { BookOpen, Loader2 } from "lucide-react";
+import { BookOpen, Loader2, Repeat } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createSelfModuleItem, getSelfModule } from "../api";
+import { navigateTo } from "../nav";
 import type { SelfModuleState } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
@@ -14,6 +15,7 @@ export default function JournalPage() {
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function refresh() {
     try {
@@ -35,6 +37,7 @@ export default function JournalPage() {
       setState(await createSelfModuleItem("notebook", { title: title.trim(), body, tags: ["journal"] }));
       setBody("");
       setTitle(`Journal ${todayStamp()}`);
+      setNotice("Saved. Open Loop to fold this into today’s briefing.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save journal.");
     } finally {
@@ -51,7 +54,7 @@ export default function JournalPage() {
       hint="The public Hermes Agent OS guide puts a journal next to memory. This is a local daily log in the same notebook store. It is not Omi capturing your screen."
     >
       <HonestNote>
-        Omi (wearable / screen capture) is not installed. You type the note. That still feeds Layer 7 if you also save chat replies into Memory.
+        Omi (wearable / screen capture) is not installed. You type the note. Loop reads it automatically when you save today’s briefing.
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
       <div className="aos-split-layout">
@@ -67,6 +70,10 @@ export default function JournalPage() {
           <button className="aos-primary" onClick={() => void save()} disabled={busy || !title.trim() || !body.trim()}>
             {busy ? <Loader2 className="aos-spin" size={16} /> : <BookOpen size={16} />} Save journal
           </button>
+          <button className="aos-secondary" onClick={() => navigateTo("loop")}>
+            <Repeat size={16} /> Open Loop
+          </button>
+          {notice ? <p className="aos-honest-note">{notice}</p> : null}
         </aside>
         <section>
           {entries.length === 0 ? (

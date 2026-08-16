@@ -34,6 +34,7 @@ import NotebookPage from "./pages/NotebookPage";
 import SeoPage from "./pages/SeoPage";
 import StudioPage from "./pages/StudioPage";
 import WorkspacePage from "./pages/WorkspacePage";
+import { navigateTo } from "./nav";
 import "./phase2.css";
 
 type LocalAgentStatus = {
@@ -93,12 +94,6 @@ function pageFromUrl(): ShellPage {
   return "home";
 }
 
-function setPageUrl(page: ShellPage) {
-  const next = new URL(window.location.href);
-  next.searchParams.set("page", page);
-  window.history.replaceState({}, "", next);
-}
-
 export default function DashboardRoot() {
   const [page, setPage] = useState<ShellPage>(pageFromUrl);
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([]);
@@ -109,8 +104,20 @@ export default function DashboardRoot() {
       .catch(() => setLocalAgents([]));
   }, []);
 
+  useEffect(() => {
+    function sync() {
+      setPage(pageFromUrl());
+    }
+    window.addEventListener("aos-navigate", sync);
+    window.addEventListener("popstate", sync);
+    return () => {
+      window.removeEventListener("aos-navigate", sync);
+      window.removeEventListener("popstate", sync);
+    };
+  }, []);
+
   function go(next: ShellPage) {
-    setPageUrl(next);
+    navigateTo(next);
     setPage(next);
   }
 

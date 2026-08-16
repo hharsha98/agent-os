@@ -1,4 +1,4 @@
-import { Loader2, Repeat, Save } from "lucide-react";
+import { FolderOpen, Loader2, Repeat, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   addMemory,
@@ -8,6 +8,8 @@ import {
   getWorkspaceListing,
   writeWorkspaceFile
 } from "../api";
+import { type ChatSnippet, loadRecentChatSnippets } from "../chatHistory";
+import { navigateTo } from "../nav";
 import type { ExecutionGateStatus, MemoryRecord, SelfModuleItem, WorkspaceFileDetail } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
@@ -24,9 +26,14 @@ function isOpenGoal(item: SelfModuleItem) {
   return !["done", "completed", "cancelled", "canceled"].includes(status);
 }
 
+function isChatMemory(item: MemoryRecord) {
+  return item.source === "chat-loop" || ((item.tags || []).includes("loop") && item.source !== "loop-desk");
+}
+
 function buildBriefing(input: {
   journal: SelfModuleItem[];
   goals: SelfModuleItem[];
+  chats: ChatSnippet[];
   memories: MemoryRecord[];
   workspaceCount: number;
   execEnabled: boolean;
@@ -37,6 +44,10 @@ function buildBriefing(input: {
     return `### ${item.title}\n${body}`;
   });
   const goals = input.goals.slice(0, 8).map((item) => `- ${item.title} (${item.status || "open"})`);
+  const chats = input.chats.slice(0, 8).map((item) => {
+    const asked = item.userText ? `You: ${item.userText}\n` : "";
+    return `### ${item.agentId} · ${item.badge}\n${asked}${item.text}`;
+  });
   const memories = input.memories.slice(0, 8).map((item) => `- ${item.title}`);
   return [
     `# Agent OS loop ${date}`,
@@ -52,8 +63,11 @@ function buildBriefing(input: {
     "## Open goals",
     goals.length ? goals.join("\n") : "_No open goals._",
     "",
+    "## Recent chat",
+    chats.length ? chats.join("\n\n") : "_No chat replies in this browser yet._",
+    "",
     "## Loop memories",
-    memories.length ? memories.join("\n") : "_No loop memories yet. Save a chat reply to Memory first._",
+    memories.length ? memories.join("\n") : "_No chat-loop memories stored yet._",
     ""
   ].join("\n");
 }
@@ -61,6 +75,7 @@ function buildBriefing(input: {
 export default function LoopPage() {
   const [journal, setJournal] = useState<SelfModuleItem[]>([]);
   const [goals, setGoals] = useState<SelfModuleItem[]>([]);
+  const [chats, setChats] = useState<ChatSnippet[]>([]);
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [workspaceCount, setWorkspaceCount] = useState(0);
   const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
@@ -80,7 +95,8 @@ export default function LoopPage() {
       ]);
       setJournal((notebook?.items || []).filter(isJournal));
       setGoals((goalState?.items || []).filter(isOpenGoal));
-      setMemories((memory?.memories || []).filter((item) => (item.tags || []).includes("loop")).slice(0, 8));
+      setChats(loadRecentChatSnippets(8));
+      setMemories((memory?.memories || []).filter(isChatMemory).slice(0, 8));
       setWorkspaceCount(listing?.summary.total ?? 0);
       setGate(exec);
       setError("");
@@ -93,16 +109,19 @@ export default function LoopPage() {
     void refresh();
   }, []);
 
+  const preview = {
+    journal,
+    goals,
+    chats,
+    memories,
+    workspaceCount,
+    execEnabled: Boolean(gate?.enabled)
+  };
+
   async function saveBriefing() {
     setBusy(true);
     try {
-      const content = buildBriefing({
-        journal,
-        goals,
-        memories,
-        workspaceCount,
-        execEnabled: Boolean(gate?.enabled)
-      });
+      const content = buildBriefing(preview);
       const file = await writeWorkspaceFile({
         folder: "loop",
         name: `${todayStamp()}.md`,
@@ -131,10 +150,10 @@ export default function LoopPage() {
     <PageFrame
       kicker="LOOP · LAYER 7"
       title="Start the morning from yesterday’s notes."
-      hint="The YouTube video’s last layer is the loop: write work back to one home so tomorrow is smarter. This page gathers journal, goals, and chat-loop memories, then can save one markdown file into the workspace sandbox."
+      hint="This page now reads Chat from this browser automatically. You do not have to click Save to Memory first. Saving still writes one markdown file into the workspace sandbox."
     >
       <HonestNote>
-        Overnight Goal Mode is still off. This does not click your Mac or spend API money. It only writes a text file inside ~/.hermes-agent-os/workspace/loop.
+        Overnight Goal Mode is still off. Chat replies in this browser are included even if Memory is empty. This does not click your Mac or spend API money.
       </HonestNote>
       <div className="aos-status-grid">
         <article>
@@ -148,9 +167,9 @@ export default function LoopPage() {
           <small>Planner only — no overnight run</small>
         </article>
         <article>
-          <span>Loop memories</span>
-          <strong>{memories.length}</strong>
-          <small>From Chat → Save to Memory</small>
+          <span>Chat in this browser</span>
+          <strong>{chats.length}</strong>
+          <small>Read from local Chat history</small>
         </article>
         <article>
           <span>Execution gate</span>
@@ -163,6 +182,15 @@ export default function LoopPage() {
         <aside className="aos-side-list">
           <strong className="aos-list-label">What we will write</strong>
           {journal[0] ? <article className="aos-panel"><strong>{journal[0].title}</strong><p>{(journal[0].body || journal[0].notes || "").slice(0, 240) || "Empty body"}</p></article> : <div className="aos-empty small"><p>No journal yet. Add one on Journal if you want it in the briefing.</p></div>}
+          {chats[0] ? (
+            <article className="aos-panel">
+              <strong>{chats[0].agentId}</strong>
+              <span>{chats[0].badge}</span>
+              <p>{chats[0].userText ? `You: ${chats[0].userText}` : chats[0].text}</p>
+            </article>
+          ) : (
+            <div className="aos-empty small"><p>No Chat replies yet. Send one on Chat, then come back here.</p></div>
+          )}
           {goals.slice(0, 4).map((item) => (
             <article key={item.id} className="aos-panel">
               <strong>{item.title}</strong>
@@ -172,6 +200,14 @@ export default function LoopPage() {
           <button className="aos-primary" onClick={() => void saveBriefing()} disabled={busy}>
             {busy ? <Loader2 className="aos-spin" size={16} /> : <Save size={16} />} Save briefing to Workspace
           </button>
+          {saved ? (
+            <button
+              className="aos-secondary"
+              onClick={() => navigateTo("workspace", { file: saved.file.id, folder: "loop" })}
+            >
+              <FolderOpen size={16} /> Open in Workspace
+            </button>
+          ) : null}
           {notice ? <p className="aos-honest-note">{notice}</p> : null}
         </aside>
         <section className="aos-panel">
@@ -183,14 +219,7 @@ export default function LoopPage() {
             <Repeat size={16} />
           </div>
           <pre className="aos-memory-content">
-            {saved?.previewText
-              || buildBriefing({
-                journal,
-                goals,
-                memories,
-                workspaceCount,
-                execEnabled: Boolean(gate?.enabled)
-              })}
+            {saved?.previewText || buildBriefing(preview)}
           </pre>
         </section>
       </div>

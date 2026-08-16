@@ -4,6 +4,7 @@ import path from "node:path";
 import { ensureRuntimeStore, publicRuntimePath, runtimePaths } from "./store.js";
 
 const ROOT_IDS = new Set(["workspace", "exports"]);
+const WRITE_EXTS = new Set([".md", ".txt", ".html"]);
 const MAX_FILES = 500;
 const MAX_DEPTH = 4;
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
@@ -199,6 +200,47 @@ export async function getWorkspaceFile(id) {
     previewText,
     rawUrl: `/api/workspace/raw?id=${encodeURIComponent(file.id)}`
   };
+}
+
+function sanitizeWriteRelativePath(input = {}) {
+  const requested = String(input.relativePath || "").trim().replace(/\\/g, "/");
+  const folder = String(input.folder || "loop").trim();
+  const name = String(input.name || "").trim();
+  const raw = requested || [folder, name].filter(Boolean).join("/");
+  const parts = raw.split("/").filter(Boolean);
+  if (!parts.length || parts.length > 2) {
+    throw httpError(400, "workspace writes allow a file name and at most one folder");
+  }
+  const cleaned = parts.map((part) => {
+    if (part === "." || part === "..") throw httpError(400, "file path is not allowed");
+    const safe = part.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^\.+/, "").replace(/\.+$/, "");
+    if (!safe) throw httpError(400, "file path is not allowed");
+    return safe;
+  });
+  const fileName = cleaned[cleaned.length - 1];
+  const ext = extnameOf(fileName);
+  if (!WRITE_EXTS.has(ext)) {
+    throw httpError(400, "only .md, .txt, or .html files can be written to the workspace sandbox");
+  }
+  return cleaned.join("/");
+}
+
+export async function writeWorkspaceText(input = {}) {
+  const content = String(input.content ?? "");
+  if (!content.trim()) throw httpError(400, "file content is required");
+  if (Buffer.byteLength(content, "utf8") > MAX_TEXT_PREVIEW_BYTES) {
+    throw httpError(413, "workspace file is too large");
+  }
+  const relativePath = sanitizeWriteRelativePath(input);
+  const root = await rootDir("workspace");
+  const candidate = path.resolve(root, ...relativePath.split("/"));
+  const relative = path.relative(root, candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw httpError(403, "file is outside the Agent OS sandbox");
+  }
+  await fs.mkdir(path.dirname(candidate), { recursive: true });
+  await fs.writeFile(candidate, content, "utf8");
+  return getWorkspaceFile(`workspace/${relativePath}`);
 }
 
 export function streamWorkspaceFile(file, res) {

@@ -40,7 +40,7 @@ import { generateAgentWorkflow, refineAgentWorkflow } from "./runtime/agent-os-b
 import { getCodexApiStatus, runCodexPreview, testCodexApi } from "./runtime/codex-api.js";
 import { configureApiIntegration, listApiIntegrations, testApiIntegration } from "./runtime/api-integrations.js";
 import { getAgentOsReadiness, getKernelStatus } from "./runtime/kernel.js";
-import { getWorkspaceFile, listWorkspaceFiles, resolveWorkspaceFile, streamWorkspaceFile } from "./runtime/workspace.js";
+import { getWorkspaceFile, listWorkspaceFiles, resolveWorkspaceFile, streamWorkspaceFile, writeWorkspaceText } from "./runtime/workspace.js";
 import {
   createSelfModuleItem,
   getSelfModuleState,
@@ -1163,6 +1163,14 @@ app.get("/api/workspace/raw", requireAdminWhenPublic, async (req, res, next) => 
   try {
     const file = await resolveWorkspaceFile(String(req.query?.id || ""));
     streamWorkspaceFile(file, res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/workspace/files", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.status(201).json(await writeWorkspaceText(req.body || {}));
   } catch (error) {
     next(error);
   }

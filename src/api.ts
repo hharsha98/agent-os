@@ -347,6 +347,13 @@ export function getWorkspaceFileDetail(id: string) {
   return request<WorkspaceFileDetail>(`/api/workspace/file?id=${encodeURIComponent(id)}`);
 }
 
+export function writeWorkspaceFile(payload: { content: string; name?: string; folder?: string; relativePath?: string }) {
+  return request<WorkspaceFileDetail>("/api/workspace/files", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export async function getLocalAgents() {
   const data = await request<{
     agents: Array<{

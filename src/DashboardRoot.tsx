@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Monitor,
   NotebookTabs,
+  Repeat,
   Search,
   Sparkles,
   Target,
@@ -26,6 +27,7 @@ import ChatPage from "./pages/ChatPage";
 import GoalsPage from "./pages/GoalsPage";
 import JournalPage from "./pages/JournalPage";
 import KanbanPage from "./pages/KanbanPage";
+import LoopPage from "./pages/LoopPage";
 import MachineControlPage from "./pages/MachineControlPage";
 import MemoryPage from "./pages/MemoryPage";
 import NotebookPage from "./pages/NotebookPage";
@@ -56,6 +58,7 @@ type ShellPage =
   | "memory"
   | "notebook"
   | "journal"
+  | "loop"
   | "seo"
   | "studio"
   | "machine"
@@ -76,6 +79,7 @@ const ALL_PAGES = new Set<ShellPage>([
   "memory",
   "notebook",
   "journal",
+  "loop",
   "seo",
   "studio",
   "machine",
@@ -159,6 +163,9 @@ export default function DashboardRoot() {
           <button className={page === "journal" ? "active" : ""} onClick={() => go("journal")}>
             <BookOpen size={16} /> Journal
           </button>
+          <button className={page === "loop" ? "active" : ""} onClick={() => go("loop")}>
+            <Repeat size={16} /> Loop
+          </button>
           <button className={page === "seo" ? "active" : ""} onClick={() => go("seo")}>
             <Search size={16} /> SEO
           </button>
@@ -198,6 +205,8 @@ export default function DashboardRoot() {
           <NotebookPage />
         ) : page === "journal" ? (
           <JournalPage />
+        ) : page === "loop" ? (
+          <LoopPage />
         ) : page === "seo" ? (
           <SeoPage />
         ) : page === "studio" ? (

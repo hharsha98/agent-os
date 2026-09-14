@@ -16,7 +16,7 @@ type Layer = {
 function label(state: LayerState) {
   if (state === "live") return "Live locally";
   if (state === "partial") return "Partial";
-  return "Not in this copy";
+  return "Missing here";
 }
 
 export default function BlueprintPage() {
@@ -113,11 +113,11 @@ export default function BlueprintPage() {
   return (
     <PageFrame
       kicker="CAPABILITY MAP · LOCAL V1"
-      title="What this copy actually does."
+      title="What this local checkout actually does."
       hint="Seven layers, mapped onto this machine: live, partial, or missing. Nothing here is a hosted Agent OS."
     >
       <HonestNote>
-        Chat can read a Loop briefing and write replies back to Memory. Overnight Goal Mode is optional. Obsidian hardware, NotebookLM audio, and Midjourney are not this copy.
+        Chat can read a Loop briefing and write replies back to Memory. Overnight Goal Mode is optional. Obsidian, NotebookLM audio, and Midjourney are not part of this local v1.
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
       <div className="aos-layer-grid">

@@ -164,7 +164,8 @@ const root = path.resolve(__dirname, "..");
 const dist = path.join(root, "dist");
 const envFile = loadLocalEnv({ root });
 const app = express();
-const port = Number(process.env.PORT || 8090);
+const parsedPort = Number(process.env.PORT || 8090);
+const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8090;
 const originalBuilderUrl = getBuilderUrl();
 
 app.use(cors());

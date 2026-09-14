@@ -102,13 +102,25 @@ export default function DashboardRoot() {
   const [dryRun, setDryRun] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     void getLocalAgents()
-      .then(setLocalAgents)
-      .catch(() => setLocalAgents([]));
+      .then((agents) => {
+        if (!cancelled) setLocalAgents(agents);
+      })
+      .catch(() => {
+        /* Keep the last honest list instead of wiping to "not installed". */
+      });
     void getExecutionGateStatus()
-      .then((gate) => setDryRun(gate.dryRunDefault !== false && !gate.enabled))
-      .catch(() => setDryRun(true));
-  }, [page]);
+      .then((gate) => {
+        if (!cancelled) setDryRun(gate.dryRunDefault !== false && !gate.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setDryRun(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     function sync() {

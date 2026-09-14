@@ -115,7 +115,7 @@ export default function SeoPage() {
         </article>
       </div>
       <HonestNote>
-        This is a local equivalent of the video’s SEO desk, not Keyword Tools as a product. Live scrape/search spends Firecrawl and model credits only when the execution gate is on.
+        This is a local SEO desk, not Keyword Tools as a product. Live scrape/search spends Firecrawl and model credits only when the execution gate is on.
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
       <div className="aos-split-layout">

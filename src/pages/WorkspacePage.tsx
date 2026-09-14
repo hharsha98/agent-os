@@ -135,7 +135,7 @@ export default function WorkspacePage() {
     <PageFrame
       kicker="WORKSPACE · LOCAL ASSETS"
       title="Generated files stay in a sandbox you can preview."
-      hint="This is the production home from the video: work should land here, not in random folders. Loop briefings live in the loop/ folder."
+      hint="Generated work stays in ~/.hermes-agent-os/workspace and exports, not random folders. Loop briefings live in the loop/ folder."
       actions={
         <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <RefreshCcw size={16} />} Refresh

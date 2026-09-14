@@ -1,8 +1,8 @@
 import { Loader2, MessageSquare, Repeat, Save, Send, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addMemory, getExecutionGateStatus, getMemoryContext, previewCodexMessage, sendAgentMessage } from "../api";
+import { addMemory, getExecutionGateStatus, getLocalAgents, getMemoryContext, previewCodexMessage, sendAgentMessage } from "../api";
 import { type ChatAgentId, chatStorageKey } from "../chatHistory";
-import { chatLabel, type LocalAgentRecord } from "../localAgents";
+import { chatLabel, cursorChatNotice, type LocalAgentRecord } from "../localAgents";
 import { navigateTo } from "../nav";
 import type { ExecutionGateStatus, MemoryContext } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
@@ -22,12 +22,22 @@ const AGENTS: Array<{ id: ChatAgentId; label: string; moduleId: string | null; h
   { id: "hermes", label: "Hermes", moduleId: "hermes", hint: "Uses the existing dry-run module API.", example: "Draft a local research plan that does not call tools yet." }
 ];
 
-function sendHint(agent: typeof AGENTS[number], local: LocalAgentRecord | undefined, gateOff: boolean) {
+function sendHint(
+  agent: typeof AGENTS[number],
+  local: LocalAgentRecord | undefined,
+  gateOff: boolean,
+  agentsReady: boolean,
+  agentsError = ""
+) {
   if (agent.id === "cursor") {
+    if (!agentsReady) return "Checking whether the Cursor CLI is on PATH. Nothing is marked connected yet.";
+    if (agentsError && !local) return "Agent status failed to load. Send will not invent an install state.";
     return local?.cli?.found || local?.available
       ? "Send returns an honest notice. Cursor chat is not wired."
       : "Send returns an honest not-installed notice. Nothing is marked connected.";
   }
+  if (!agentsReady) return "Checking local agent status before sending.";
+  if (agentsError && !local) return "Agent status failed to load. Send will not invent an install state.";
   if (agent.id === "codex" && local?.chat?.mode === "preview") {
     return "Send calls the local Codex API preview. That is not a live tool-using run.";
   }
@@ -49,13 +59,43 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
   const [briefing, setBriefing] = useState<MemoryContext["briefing"]>(null);
   const [vaultHits, setVaultHits] = useState(0);
   const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
+  const [probedAgents, setProbedAgents] = useState<LocalAgentRecord[]>(localAgents);
+  const [agentsReady, setAgentsReady] = useState(localAgents.length > 0);
+  const [agentsError, setAgentsError] = useState("");
   const skipSave = useRef(true);
   const agent = AGENTS.find((item) => item.id === agentId) || AGENTS[1];
+  const agents = probedAgents.length ? probedAgents : localAgents;
   const local = useMemo(
-    () => localAgents.find((item) => item.id === agentId),
-    [localAgents, agentId]
+    () => agents.find((item) => item.id === agentId),
+    [agents, agentId]
   );
   const gateOff = gate?.enabled !== true;
+
+  useEffect(() => {
+    if (localAgents.length) {
+      setProbedAgents(localAgents);
+      setAgentsReady(true);
+    }
+  }, [localAgents]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getLocalAgents()
+      .then((next) => {
+        if (cancelled) return;
+        setProbedAgents(next);
+        setAgentsReady(true);
+        setAgentsError("");
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        setAgentsError(caught instanceof Error ? caught.message : "Could not load agent status.");
+        setAgentsReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     skipSave.current = true;
@@ -91,7 +131,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
   }, [agentId, messages]);
 
   async function persistAssistant(message: ChatMessage, label: string, userText = "") {
-    if (message.badge === "Error") return;
+    if (message.badge === "Error" || message.badge === "Checking") return;
     const asked = userText.trim();
     const content = asked ? `You: ${asked}\n\n${message.text}` : message.text;
     try {
@@ -125,17 +165,16 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
     setNotice("");
 
     if (agent.id === "cursor") {
+      const cursorNotice = cursorChatNotice(local, { loaded: agentsReady, error: agentsError });
       const assistant: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: "assistant",
         agentId,
-        text: local?.cli?.found || local?.available
-          ? "Cursor Agent is installed on this machine, but dashboard chat routing is not wired. This is not a fake success."
-          : "Cursor Agent CLI was not found. Install is not part of this page, and this is not marked connected.",
-        badge: chatLabel(local)
+        text: cursorNotice.text,
+        badge: cursorNotice.badge
       };
       setMessages((current) => [...current, assistant]);
-      void persistAssistant(assistant, agent.label, text);
+      if (cursorNotice.persist) void persistAssistant(assistant, agent.label, text);
       return;
     }
 
@@ -214,12 +253,12 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
         <ShieldCheck size={18} />
         <div>
           <strong>{gateOff ? "Dry-run is on" : "Execution gate is on"}</strong>
-          <p>{sendHint(agent, local, gateOff)} Replies can save to local Memory. This is not a cloud inbox.</p>
+          <p>{sendHint(agent, local, gateOff, agentsReady, agentsError)} Replies can save to local Memory. This is not a cloud inbox.</p>
         </div>
       </div>
       <div className="aos-chat-agents">
         {AGENTS.map((item) => {
-          const status = localAgents.find((localAgent) => localAgent.id === item.id);
+          const status = agents.find((localAgent) => localAgent.id === item.id);
           return (
             <button key={item.id} className={agentId === item.id ? "active" : ""} onClick={() => setAgentId(item.id)}>
               <strong>{item.label}</strong>
@@ -249,7 +288,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
             <MessageSquare size={20} />
             <strong>No messages for {agent.label} yet</strong>
             <p>History is stored in this browser per agent. Try the example, or type your own dry-run prompt.</p>
-            <button className="aos-secondary" onClick={() => void send(agent.example)}>{agent.example}</button>
+            <button className="aos-secondary" disabled={busy} onClick={() => void send(agent.example)}>{agent.example}</button>
           </div>
         ) : (
           messages.map((message) => (

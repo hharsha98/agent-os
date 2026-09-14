@@ -56,13 +56,47 @@ export type ProductStatus = {
   firstRun: Array<{ id: string; label: string; done: boolean; detail: string }>;
 };
 
+export function cursorChatNotice(
+  agent: LocalAgentRecord | undefined,
+  options: { loaded: boolean; error?: string } = { loaded: false }
+) {
+  if (!options.loaded) {
+    return {
+      persist: false,
+      badge: "Checking",
+      text: "Still checking whether the Cursor CLI is on PATH. Nothing was marked connected."
+    };
+  }
+  if (!agent && options.error) {
+    return {
+      persist: false,
+      badge: "Error",
+      text: `Could not load agent status (${options.error}). Nothing was marked connected.`
+    };
+  }
+  if (agent?.cli?.found || agent?.available) {
+    return {
+      persist: true,
+      badge: chatLabel(agent),
+      text: "Cursor Agent is installed on this machine, but dashboard chat routing is not wired. This is not a fake success."
+    };
+  }
+  return {
+    persist: true,
+    badge: chatLabel(agent),
+    text: "Cursor Agent CLI was not found. Install is not part of this page, and this is not marked connected."
+  };
+}
+
 export function chatLabel(agent?: LocalAgentRecord | null) {
   if (agent?.chat?.label) return agent.chat.label;
   if (!agent) return "Checking";
   if (agent.id === "cursor") return agent.available ? "CLI found · chat not wired" : "Not installed";
   if (agent.status === "preview") return "API preview";
   if (agent.status === "dry_run") return "Dry run";
-  if (agent.status === "cli_present") return "CLI found · chat not wired";
+  if (agent.status === "cli_present") {
+    return agent.id === "openclaw" ? "CLI found · not in Chat" : "CLI found · chat not wired";
+  }
   if (agent.status === "not_installed" || agent.available === false) return "Not installed";
   return "Dry run";
 }

@@ -73,7 +73,7 @@ export default function MissionControlPage() {
           { id: "runtime", label: "Runtime", done: true, detail: "Dashboard API is up." },
           { id: "env", label: ".env", done: false, detail: "Optional. Copy .env.example if you need keys." },
           { id: "chat", label: "Unified Chat", done: false, detail: "Try a dry-run next." },
-          { id: "exec", label: "Live execution", done: true, detail: gate?.publicSummary || "Off." }
+          { id: "exec", label: "Live execution", done: gate?.enabled !== true, detail: gate?.publicSummary || "Off by default." }
         ]).map((step) => (
           <article key={step.id}>
             <span>{step.done ? "Done" : "Next"}</span>

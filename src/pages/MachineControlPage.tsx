@@ -47,7 +47,7 @@ export default function MachineControlPage() {
   return (
     <PageFrame
       kicker="MACHINE CONTROL · STATUS ONLY"
-      title="See what the Mac would need. Do not click anything."
+      title="See what this machine would need. Do not run commands from here."
       hint="This page reads /api/voice/status. There is no Run command button. OS permissions are per-app: allowing a terminal does not allow Cursor, Hermes, or Node."
       actions={
         <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>

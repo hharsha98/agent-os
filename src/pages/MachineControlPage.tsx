@@ -47,8 +47,8 @@ export default function MachineControlPage() {
   return (
     <PageFrame
       kicker="MACHINE CONTROL · STATUS ONLY"
-      title="See what the Mac would need. Do not click anything."
-      hint="This page reads /api/voice/status. There is no Run command button. macOS permissions are per-app: allowing Terminal does not allow Cursor, Hermes, or Node."
+      title="See what this machine would need. Do not run commands from here."
+      hint="This page reads /api/voice/status. There is no Run command button. OS permissions are per-app: allowing a terminal does not allow Cursor, Hermes, or Node."
       actions={
         <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <RefreshCcw size={16} />} Refresh
@@ -86,7 +86,7 @@ export default function MachineControlPage() {
         <div className="aos-panel-head"><div><span>HOW TO ENABLE LATER</span><h2>You click Allow. This app does not.</h2></div></div>
         <ol className="aos-howto">
           <li>Ask to enable a specific tool, such as cliclick, and hear the risk first.</li>
-          <li>Grant the matching macOS permission in System Settings to the exact app that needs it.</li>
+          <li>Grant the matching OS permission in system settings to the exact app that needs it.</li>
           <li>Keep a way to turn it off: set execution and voice-shell flags back to 0.</li>
         </ol>
       </div>

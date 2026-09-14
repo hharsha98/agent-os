@@ -66,6 +66,7 @@ import type {
   WorkspaceFileDetail,
   WorkspaceListing
 } from "./types";
+import type { LocalAgentDashboard, ProductStatus } from "./localAgents";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -373,18 +374,17 @@ export function exportWorkspaceVault() {
   });
 }
 
+export function getLocalAgentDashboard() {
+  return request<LocalAgentDashboard>("/api/local-agents");
+}
+
 export async function getLocalAgents() {
-  const data = await request<{
-    agents: Array<{
-      id: string;
-      name: string;
-      status: string;
-      available: boolean;
-      version?: string;
-      summary?: string;
-    }>;
-  }>("/api/local-agents");
+  const data = await getLocalAgentDashboard();
   return data.agents || [];
+}
+
+export function getProductStatus() {
+  return request<ProductStatus>("/api/product/status");
 }
 
 export function addMemory(payload: Record<string, unknown>) {

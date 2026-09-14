@@ -23,6 +23,8 @@ type LocalAgent = {
   available: boolean;
   version?: string;
   status: string;
+  chat?: { mode?: string; label?: string };
+  cli?: { found?: boolean; command?: string; version?: string | null };
 };
 
 export default function GoalsPage({ localAgents }: { localAgents: LocalAgent[] }) {
@@ -212,8 +214,8 @@ export default function GoalsPage({ localAgents }: { localAgents: LocalAgent[] }
       <div className="aos-status-grid">
         <article>
           <span>Standalone Codex CLI</span>
-          <strong>{codex?.available ? "Found" : "Missing"}</strong>
-          <small>{codex?.version || "Not reported"}</small>
+          <strong>{codex?.cli?.found ? "Found" : "Missing"}</strong>
+          <small>{codex?.cli?.found ? (codex.cli.version || "on PATH") : "Not on PATH"}</small>
         </article>
         <article>
           <span>Live overnight runs</span>

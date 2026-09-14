@@ -88,7 +88,7 @@ function buildBriefing(input: {
   return [
     `# Agent OS loop ${date}`,
     "",
-    "This briefing was written on this Mac. Overnight Goal Mode stayed off. This is not an Obsidian vault.",
+    "This briefing was written on this machine. Overnight Goal Mode stayed off. This is not an Obsidian vault.",
     "",
     `Execution gate: ${input.execEnabled ? "ON" : "OFF"}`,
     `Workspace files before save: ${input.workspaceCount}`,
@@ -205,7 +205,7 @@ export default function LoopPage() {
       hint="This page now reads Chat, Journal, Notebook, Goals, and Kanban automatically. Saving writes a timestamped markdown file. Chat will load the latest briefing the next time you open it."
     >
       <HonestNote>
-        Overnight Goal Mode is still off. Chat replies in this browser are included even if Memory is empty. This does not click your Mac or spend API money.
+        Overnight Goal Mode is still off. Chat replies in this browser are included even if Memory is empty. This does not click your desktop or spend API money.
       </HonestNote>
       <div className="aos-status-grid">
         <article>

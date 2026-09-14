@@ -3,10 +3,10 @@ services:
     build:
       context: .
     ports:
-      - "${PORT:-4173}:4173"
+      - "${PORT:-8090}:8090"
     environment:
       NODE_ENV: production
-      PORT: 4173
+      PORT: 8090
       HERMES_AGENT_OS_HOME: /data/hermes-agent-os
       HERMES_AGENT_OS_ENABLE_EXEC: "${HERMES_AGENT_OS_ENABLE_EXEC:-0}"
       HERMES_AGENT_OS_ENABLE_INSTALL: "${HERMES_AGENT_OS_ENABLE_INSTALL:-0}"
@@ -36,7 +36,7 @@ services:
       - hermes-agent-os-data:/data/hermes-agent-os
       - hermes-agent-profiles:/data/hermes
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

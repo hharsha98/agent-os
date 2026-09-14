@@ -6,6 +6,7 @@ import {
   Clapperboard,
   Cpu,
   FolderOpen,
+  Gauge,
   Home,
   KanbanSquare,
   KeyRound,
@@ -22,7 +23,8 @@ import {
   Workflow,
 } from "lucide-react";
 import AgentOSApp from "./AgentOSApp";
-import { getLocalAgents } from "./api";
+import { getExecutionGateStatus, getLocalAgents } from "./api";
+import type { LocalAgentRecord } from "./localAgents";
 import BlueprintPage from "./pages/BlueprintPage";
 import BrainPage from "./pages/BrainPage";
 import ChatPage from "./pages/ChatPage";
@@ -32,6 +34,7 @@ import KanbanPage from "./pages/KanbanPage";
 import LoopPage from "./pages/LoopPage";
 import MachineControlPage from "./pages/MachineControlPage";
 import MemoryPage from "./pages/MemoryPage";
+import MissionControlPage from "./pages/MissionControlPage";
 import NotebookPage from "./pages/NotebookPage";
 import SeoPage from "./pages/SeoPage";
 import StudioPage from "./pages/StudioPage";
@@ -40,16 +43,8 @@ import WorkspacePage from "./pages/WorkspacePage";
 import { navigateTo } from "./nav";
 import "./phase2.css";
 
-type LocalAgentStatus = {
-  id: string;
-  name: string;
-  status: string;
-  available: boolean;
-  version?: string;
-  summary?: string;
-};
-
 type ShellPage =
+  | "mission"
   | "home"
   | "layers"
   | "workspace"
@@ -72,6 +67,7 @@ type ShellPage =
 
 const LEGACY_PAGES = new Set<ShellPage>(["home", "builder", "apis", "openclaw", "hermes"]);
 const ALL_PAGES = new Set<ShellPage>([
+  "mission",
   "home",
   "layers",
   "workspace",
@@ -96,18 +92,34 @@ const ALL_PAGES = new Set<ShellPage>([
 function pageFromUrl(): ShellPage {
   const value = new URLSearchParams(window.location.search).get("page");
   if (value && ALL_PAGES.has(value as ShellPage)) return value as ShellPage;
-  return "layers";
+  return "mission";
 }
 
 export default function DashboardRoot() {
   const [page, setPage] = useState<ShellPage>(pageFromUrl);
-  const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([]);
+  const [localAgents, setLocalAgents] = useState<LocalAgentRecord[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dryRun, setDryRun] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     void getLocalAgents()
-      .then(setLocalAgents)
-      .catch(() => setLocalAgents([]));
+      .then((agents) => {
+        if (!cancelled) setLocalAgents(agents);
+      })
+      .catch(() => {
+        /* Keep the last honest list instead of wiping to "not installed". */
+      });
+    void getExecutionGateStatus()
+      .then((gate) => {
+        if (!cancelled) setDryRun(gate.dryRunDefault !== false && !gate.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setDryRun(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -138,33 +150,21 @@ export default function DashboardRoot() {
           <div className="aos-logo-mark">A</div>
           <div>
             <strong>Agent OS</strong>
-            <span>Local runtime</span>
+            <span>Local v1</span>
           </div>
         </div>
         <nav className="aos-nav">
-          <p>Workspace</p>
-          <button className={page === "home" ? "active" : ""} onClick={() => go("home")}>
-            <Home size={16} /> Workflow studio
-          </button>
-          <button className={page === "layers" ? "active" : ""} onClick={() => go("layers")}>
-            <Layers3 size={16} /> 7 Layers
-          </button>
-          <button className={page === "workspace" ? "active" : ""} onClick={() => go("workspace")}>
-            <FolderOpen size={16} /> Workspace
+          <p>Start</p>
+          <button className={page === "mission" ? "active" : ""} onClick={() => go("mission")}>
+            <Gauge size={16} /> Mission Control
           </button>
           <button className={page === "chat" ? "active" : ""} onClick={() => go("chat")}>
             <MessageSquare size={16} /> Chat
           </button>
-          <button className={page === "builder" ? "active" : ""} onClick={() => go("builder")}>
-            <Workflow size={16} /> Agent Builder
-          </button>
-          <button className={page === "apis" ? "active" : ""} onClick={() => go("apis")}>
-            <KeyRound size={16} /> AI APIs
+          <button className={page === "workspace" ? "active" : ""} onClick={() => go("workspace")}>
+            <FolderOpen size={16} /> Workspace
           </button>
           <p>Operate</p>
-          <button className={page === "brain" ? "active" : ""} onClick={() => go("brain")}>
-            <Cpu size={16} /> Brain
-          </button>
           <button className={page === "goals" ? "active" : ""} onClick={() => go("goals")}>
             <Target size={16} /> Goals
           </button>
@@ -174,14 +174,31 @@ export default function DashboardRoot() {
           <button className={page === "memory" ? "active" : ""} onClick={() => go("memory")}>
             <Blocks size={16} /> Memory
           </button>
+          <button className={page === "loop" ? "active" : ""} onClick={() => go("loop")}>
+            <Repeat size={16} /> Loop
+          </button>
           <button className={page === "notebook" ? "active" : ""} onClick={() => go("notebook")}>
             <NotebookTabs size={16} /> Notebook
           </button>
           <button className={page === "journal" ? "active" : ""} onClick={() => go("journal")}>
             <BookOpen size={16} /> Journal
           </button>
-          <button className={page === "loop" ? "active" : ""} onClick={() => go("loop")}>
-            <Repeat size={16} /> Loop
+          <p>Build</p>
+          <button className={page === "home" ? "active" : ""} onClick={() => go("home")}>
+            <Home size={16} /> Workflow studio
+          </button>
+          <button className={page === "builder" ? "active" : ""} onClick={() => go("builder")}>
+            <Workflow size={16} /> Agent Builder
+          </button>
+          <button className={page === "apis" ? "active" : ""} onClick={() => go("apis")}>
+            <KeyRound size={16} /> AI APIs
+          </button>
+          <p>Labs</p>
+          <button className={page === "brain" ? "active" : ""} onClick={() => go("brain")}>
+            <Cpu size={16} /> Brain
+          </button>
+          <button className={page === "layers" ? "active" : ""} onClick={() => go("layers")}>
+            <Layers3 size={16} /> Capability map
           </button>
           <button className={page === "seo" ? "active" : ""} onClick={() => go("seo")}>
             <Search size={16} /> SEO
@@ -195,7 +212,6 @@ export default function DashboardRoot() {
           <button className={page === "machine" ? "active" : ""} onClick={() => go("machine")}>
             <Monitor size={16} /> Machine Control
           </button>
-          <p>Agents</p>
           <button className={page === "openclaw" ? "active" : ""} onClick={() => go("openclaw")}>
             <Bot size={16} /> OpenClaw
           </button>
@@ -203,10 +219,16 @@ export default function DashboardRoot() {
             <Sparkles size={16} /> Hermes
           </button>
         </nav>
+        <div className="aos-sidebar-foot">
+          <span><i className="aos-live-dot" /> {dryRun ? "Dry-run default" : "Live execution allowed"}</span>
+          <small>Local only · not a hosted app</small>
+        </div>
       </aside>
       {menuOpen ? <button className="aos-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
       <div className="aos-phase2-content">
-        {LEGACY_PAGES.has(page) ? (
+        {page === "mission" ? (
+          <MissionControlPage />
+        ) : LEGACY_PAGES.has(page) ? (
           <AgentOSApp key={page} />
         ) : page === "layers" ? (
           <BlueprintPage />

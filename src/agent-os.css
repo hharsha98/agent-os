@@ -48,7 +48,7 @@ button { color: inherit; }
 .aos-logo strong { font-size: 16px; letter-spacing: -.02em; }
 .aos-logo span { color: #6f7682; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; }
 
-.aos-sidebar nav { display: flex; flex-direction: column; gap: 5px; flex: 1; }
+.aos-sidebar nav { display: flex; flex-direction: column; gap: 5px; flex: 1; overflow-y: auto; padding-bottom: 8px; }
 .aos-sidebar nav p { margin: 25px 12px 8px; color: #555d69; font-size: 10px; letter-spacing: .14em; font-weight: 700; }
 .aos-sidebar nav button {
   width: 100%; border: 1px solid transparent; background: transparent; border-radius: 11px; padding: 11px 12px;
@@ -158,7 +158,8 @@ button { color: inherit; }
 .aos-status { white-space: nowrap; display: inline-flex; align-items: center; font-size: 9px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; padding: 5px 8px; border-radius: 999px; color: #939aa4; background: rgba(255,255,255,.05); border: 1px solid var(--line); }
 .aos-status-connected, .aos-status-completed { color: #67dea0; background: rgba(62,211,137,.09); border-color: rgba(62,211,137,.16); }
 .aos-status-missing_dependency, .aos-status-failed { color: #ff7a72; background: rgba(255,89,76,.08); border-color: rgba(255,89,76,.17); }
-.aos-status-ready_to_configure, .aos-status-waiting_for_approval { color: #f0bd64; background: rgba(240,181,72,.08); border-color: rgba(240,181,72,.16); }
+.aos-status-cli_present, .aos-status-dry_run, .aos-status-preview { color: #f0bd64; background: rgba(240,181,72,.08); border-color: rgba(240,181,72,.16); }
+.aos-status-not_installed { color: #ff7a72; background: rgba(255,89,76,.08); border-color: rgba(255,89,76,.17); }
 
 .aos-workflow-section { padding-top: 42px; padding-bottom: 20px; }
 .aos-ops-strip { display: grid; grid-template-columns: repeat(4,1fr); margin-bottom: 14px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #0d1015; }

@@ -1,12 +1,18 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": "http://127.0.0.1:4173"
+export default defineConfig(({ mode }) => {
+  const fileEnv = loadEnv(mode, process.cwd(), "");
+  const parsedPort = Number(process.env.PORT || fileEnv.PORT || 8090);
+  const apiPort = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8090;
+
+  return {
+    plugins: [react()],
+    server: {
+      port: 5173,
+      proxy: {
+        "/api": `http://127.0.0.1:${apiPort}`
+      }
     }
-  }
+  };
 });

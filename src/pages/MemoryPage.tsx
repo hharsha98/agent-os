@@ -115,7 +115,7 @@ export default function MemoryPage() {
       title="Counts and search first. Content only when you open it."
       hint="This is the local Agent OS vault. Chat, Brain, and Goals read it before answering. Loop briefings land here. Obsidian is an optional extra, not required."
     >
-      <HonestNote>Vault here means the Agent OS memory store on this Mac. Chat/Brain/Goals read it before answering. Obsidian sync is optional and not wired.</HonestNote>
+      <HonestNote>Vault here means the Agent OS memory store on this machine. Chat/Brain/Goals read it before answering. Obsidian sync is optional and not wired.</HonestNote>
       <div className="aos-status-grid">
         <article>
           <span>Memories</span>

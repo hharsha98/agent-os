@@ -104,6 +104,13 @@ const SECRET_FIELD_PATTERN = /(^|_)(API_KEY|KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDE
 let videoRunQueue = [];
 let videoQueueActive = false;
 const videoRunControllers = new Map();
+let videoStoreLock = Promise.resolve();
+
+function withVideoStoreLock(fn) {
+  const run = videoStoreLock.then(fn, fn);
+  videoStoreLock = run.then(() => undefined, () => undefined);
+  return run;
+}
 const KANBAN_MATCH_KEYS = [
   "sourceType",
   "sourceId",
@@ -1600,7 +1607,7 @@ function findVideoRun(state, runId) {
   return null;
 }
 
-async function updateVideoRunRecord(runId, updater) {
+async function updateVideoRunRecordUnlocked(runId, updater) {
   const current = await readSelfModuleState("video");
   let updatedRun = null;
   let updatedJob = null;
@@ -1639,6 +1646,10 @@ async function updateVideoRunRecord(runId, updater) {
     run: publicSelfValue(updatedRun),
     state: normalizeState("video", nextState)
   };
+}
+
+async function updateVideoRunRecord(runId, updater) {
+  return withVideoStoreLock(() => updateVideoRunRecordUnlocked(runId, updater));
 }
 
 export async function getVideoRun(runId) {
@@ -1751,6 +1762,7 @@ function startVideoQueueProcessor() {
 }
 
 export async function queueVideoJob(jobId, input = {}) {
+  const queued = await withVideoStoreLock(async () => {
   const current = await readSelfModuleState("video");
   const job = current.items.find((item) => item.id === jobId);
   if (!job) {
@@ -1790,35 +1802,48 @@ export async function queueVideoJob(jobId, input = {}) {
       queuedAt
     }
   });
+  return {
+    runId,
+    jobId,
+    operation,
+    dryRun,
+    queuedAt,
+    nextJob,
+    run,
+    worker,
+    nextState
+  };
+  });
   startVideoQueueProcessor();
   await appendModuleLog("video", {
     level: "info",
     message: "Video run queued",
     details: {
-      jobId,
-      runId,
-      operation,
-      dryRun
+      jobId: queued.jobId,
+      runId: queued.runId,
+      operation: queued.operation,
+      dryRun: queued.dryRun
     }
   });
   return {
     ok: true,
     queued: true,
     mode: "queued",
-    job: publicSelfValue(nextJob),
-    run: publicSelfValue(run),
-    worker,
-    state: normalizeState("video", nextState)
+    job: publicSelfValue(queued.nextJob),
+    run: publicSelfValue(queued.run),
+    worker: queued.worker,
+    state: normalizeState("video", queued.nextState)
   };
 }
 
 export async function cancelVideoRun(runId) {
+  const result = await withVideoStoreLock(async () => {
   const queuedBefore = videoRunQueue.length;
   videoRunQueue = videoRunQueue.filter((item) => item.runId !== runId);
   const wasQueued = videoRunQueue.length !== queuedBefore;
   const controller = videoRunControllers.get(runId);
   if (controller) controller.abort();
-  const result = await updateVideoRunRecord(runId, (run) => {
+  const updated = await updateVideoRunRecordUnlocked(runId, (run) => {
     if (VIDEO_TERMINAL_STATUSES.has(run.status)) return run;
     const canceled = wasQueued && !controller;
     return {
@@ -1836,12 +1861,14 @@ export async function cancelVideoRun(runId) {
       message: canceled ? "Queued video run canceled before start." : "Cancellation requested for running video command."
     };
   });
+  return { updated, wasQueued, running: Boolean(controller) };
+  });
   await appendModuleLog("video", {
     level: "warn",
     message: "Video run cancellation requested",
-    details: { runId, wasQueued, running: Boolean(controller) }
+    details: { runId, wasQueued: result.wasQueued, running: result.running }
   });
-  return result;
+  return result.updated;
 }
 
 export async function resolveVideoRunOutput(runId, fileName) {
@@ -2027,37 +2054,43 @@ export async function runVideoJob(jobId, input = {}) {
     });
   }
 
-  const existingHistory = Array.isArray(job.videoHistory) ? job.videoHistory.filter((entry) => entry.id !== runId) : [];
-  const nextJob = {
-    ...job,
-    status: runStatus,
-    lastOperation: operation,
-    renderPreset: plans.renderPlan.preset || job.renderPreset || "copy",
-    workerRunCount: Number(job.workerRunCount || 0) + 1,
-    lastRunAt: completedAt,
-    lastRunId: runId,
-    captionOutput: publicCaptionOutput || job.captionOutput || "",
-    renderedOutput: publicRenderedOutput || job.renderedOutput || "",
-    durationSeconds: probe?.durationSeconds ?? job.durationSeconds ?? null,
-    hasAudio: probe ? probe.hasAudio : job.hasAudio ?? null,
-    hasVideo: probe ? probe.hasVideo : job.hasVideo ?? null,
-    width: probe?.width ?? job.width ?? null,
-    height: probe?.height ?? job.height ?? null,
-    frameRate: probe?.frameRate || job.frameRate || "",
-    probe,
-    captionPlan: plans.captionPlan,
-    renderPlan: plans.renderPlan,
-    videoHistory: [run, ...existingHistory].slice(0, MAX_VIDEO_HISTORY),
-    updatedAt: completedAt
-  };
-  const items = current.items.map((item) => item.id === jobId ? nextJob : item);
-  const nextState = {
-    ...current,
-    items,
-    updatedAt: completedAt
-  };
-  const file = await fileFor("video");
-  await writeJson(file, nextState);
+  const persisted = await withVideoStoreLock(async () => {
+    const latest = await readSelfModuleState("video");
+    const latestJob = latest.items.find((item) => item.id === jobId) || job;
+    const existingHistory = Array.isArray(latestJob.videoHistory) ? latestJob.videoHistory.filter((entry) => entry.id !== runId) : [];
+    const nextJob = {
+      ...latestJob,
+      status: runStatus,
+      lastOperation: operation,
+      renderPreset: plans.renderPlan.preset || latestJob.renderPreset || "copy",
+      workerRunCount: Number(latestJob.workerRunCount || 0) + 1,
+      lastRunAt: completedAt,
+      lastRunId: runId,
+      captionOutput: publicCaptionOutput || latestJob.captionOutput || "",
+      renderedOutput: publicRenderedOutput || latestJob.renderedOutput || "",
+      durationSeconds: probe?.durationSeconds ?? latestJob.durationSeconds ?? null,
+      hasAudio: probe ? probe.hasAudio : latestJob.hasAudio ?? null,
+      hasVideo: probe ? probe.hasVideo : latestJob.hasVideo ?? null,
+      width: probe?.width ?? latestJob.width ?? null,
+      height: probe?.height ?? latestJob.height ?? null,
+      frameRate: probe?.frameRate || latestJob.frameRate || "",
+      probe,
+      captionPlan: plans.captionPlan,
+      renderPlan: plans.renderPlan,
+      videoHistory: [run, ...existingHistory].slice(0, MAX_VIDEO_HISTORY),
+      updatedAt: completedAt
+    };
+    const items = latest.items.map((item) => item.id === jobId ? nextJob : item);
+    const nextState = {
+      ...latest,
+      items,
+      updatedAt: completedAt
+    };
+    await writeJson(await fileFor("video"), nextState);
+    return { nextJob, nextState };
+  });
+  const nextJob = persisted.nextJob;
+  const nextState = persisted.nextState;
   await appendModuleLog("video", {
     level: runStatus === "error" ? "error" : runStatus === "ready_to_configure" ? "warn" : "info",
     message: runStatus === "ready_to_configure" ? "Video worker needs setup" : "Video worker run recorded",

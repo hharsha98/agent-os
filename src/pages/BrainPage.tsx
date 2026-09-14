@@ -74,7 +74,7 @@ export default function BrainPage() {
     <PageFrame
       kicker="BRAIN · MODEL ROUTER"
       title="Pick the engine. Keep the vehicle."
-      hint="The video’s Layer 3 is routing: hard jobs to a strong model, cheap jobs to a free one. This page shows your local router. It dry-runs. It does not spend money unless you later approve a live call."
+      hint="The Brain page is the local provider router. It dry-runs. It does not spend money unless you later approve a live call."
     >
       <HonestNote>
         Models change. The architecture should not. If a provider is missing, it stays Missing — we do not paint it green.

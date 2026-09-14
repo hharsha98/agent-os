@@ -1,10 +1,21 @@
 # Cursor Agent Handoff — Agent OS Dashboard
 
+## Current product (local v1)
+
+Treat this file as historical context, not the product spec.
+
+- Default landing is **Mission Control** (`?page=mission`), not a YouTube/7-layer clone.
+- Product is a **clone-and-run local dashboard**. Dry-run by default. Not hosted SaaS.
+- Read `README.md` and `docs/V1.md` before following older Mac paths or “connected chat” language below.
+- Do not treat github.io as the runtime.
+
+---
+
 ## Purpose
 
 This file is a safe handoff from Hermes Agent to Cursor Agent.
 
-Goal: continue building Harsha's local Agent OS dashboard so it becomes closer to the public AgentOS guide / YouTube demo, while keeping the Mac safe and avoiding secret leaks.
+Goal: continue the **local** Agent OS dashboard (Mission Control, Unified Chat dry-run, sandboxed workspace) without pretending it is a cloud OS.
 
 **Important:** do not assume everything in this file is still true. First inspect the local codebase and re-run verification commands before editing.
 

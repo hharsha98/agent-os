@@ -224,7 +224,10 @@ function statusLabel(status = "") {
   if (status === "completed") return "Completed";
   if (status === "waiting_for_approval") return "Waiting for you";
   if (status === "ready_to_configure") return "Connect";
-  if (status === "missing_dependency") return "Install";
+  if (status === "missing_dependency" || status === "not_installed") return "Not installed";
+  if (status === "dry_run") return "Dry run";
+  if (status === "preview") return "API preview";
+  if (status === "cli_present") return "CLI found";
   return status.replace(/_/g, " ") || "Checking";
 }
 
@@ -361,11 +364,11 @@ function localAgentIcon(id: string) {
 
 function MissionControlPanel({ localAgents, modules, codexLive, onRefresh, onOpenApis }: { localAgents: LocalAgentStatus[]; modules: RuntimeModule[]; codexLive: boolean; onRefresh: () => void; onOpenApis: () => void }) {
   const moduleReady = modules.filter((module) => module.status === "connected").length;
-  const connected = localAgents.filter((agent) => agent.status === "connected").length;
+  const cliFound = localAgents.filter((agent) => agent.available).length;
   const visibleAgents = localAgents.length ? localAgents : [
     { id: "cursor", name: "Cursor Agent", eyebrow: "IDE CODING AGENT", status: "checking", available: false, summary: "Checking local Cursor Agent CLI…" },
     { id: "claude", name: "Claude Code", eyebrow: "ANTHROPIC CODING AGENT", status: "checking", available: false, summary: "Checking local Claude Code CLI…" },
-    { id: "codex", name: "Codex", eyebrow: "GOAL + WORKFLOW BRAIN", status: codexLive ? "connected" : "checking", available: codexLive, summary: "Checking Agent OS Codex route…" },
+    { id: "codex", name: "Codex", eyebrow: "GOAL + WORKFLOW BRAIN", status: codexLive ? "preview" : "checking", available: codexLive, summary: "Checking Agent OS Codex route…" },
     { id: "hermes", name: "Hermes Agent", eyebrow: "LOCAL TOOL + MEMORY AGENT", status: "checking", available: false, summary: "Checking Hermes CLI and profile…" }
   ];
 
@@ -374,13 +377,13 @@ function MissionControlPanel({ localAgents, modules, codexLive, onRefresh, onOpe
       <div className="aos-mission-shell">
         <div className="aos-mission-head">
           <div>
-            <span>MISSION CONTROL · ONE DASHBOARD</span>
-            <h2>Cursor, Claude, Codex, and Hermes are wired into your Agent OS.</h2>
-            <p>Live local checks from the Agent OS server. Secrets stay server-side; this only shows readiness, model route, and connection path.</p>
+            <span>MISSION CONTROL · LOCAL CHECKS</span>
+            <h2>CLI presence is real. Dashboard chat is still dry-run.</h2>
+            <p>Live local checks from this machine. A binary on PATH is not a connected chat session. Secrets stay server-side.</p>
           </div>
           <div className="aos-mission-score">
-            <strong>{connected || (codexLive ? 1 : 0)}/{visibleAgents.length}</strong>
-            <span>agents ready</span>
+            <strong>{cliFound}/{visibleAgents.length}</strong>
+            <span>CLIs found</span>
             <button className="aos-text-button" onClick={onRefresh}><RefreshCcw size={15} /> Refresh</button>
           </div>
         </div>
@@ -409,7 +412,7 @@ function MissionControlPanel({ localAgents, modules, codexLive, onRefresh, onOpe
         </div>
 
         <div className="aos-mission-footer">
-          <span><CheckCircle2 size={16} /> Codex API: {codexLive ? "connected to the local OpenAI-compatible gateway" : "needs setup"}</span>
+          <span><CheckCircle2 size={16} /> Codex API: {codexLive ? "local key saved (preview, not live tools)" : "needs a local key"}</span>
           <span><WorkflowIcon size={16} /> Agent OS modules ready: {moduleReady}/{modules.length || 2}</span>
           <button className="aos-secondary" onClick={onOpenApis}><Settings2 size={16} /> API settings</button>
         </div>
@@ -462,9 +465,9 @@ function HomePage({
         <div className="aos-hero-orb aos-hero-orb-one" />
         <div className="aos-hero-orb aos-hero-orb-two" />
         <div className="aos-hero-copy">
-          <span className="aos-kicker"><Sparkles size={15} /> BUILD WITH OPENCLAW + HERMES</span>
-          <h1>Describe it.<br /><em>See it. Run it.</em></h1>
-          <p>Build a working AI agent with a prompt, understand every step visually, and test it before you switch it on.</p>
+          <span className="aos-kicker"><Sparkles size={15} /> LOCAL WORKFLOW STUDIO</span>
+          <h1>Describe it.<br /><em>See it. Dry-run it.</em></h1>
+          <p>Build a visual agent workflow from a prompt. Native OpenClaw/Hermes runs stay gated until you enable execution.</p>
         </div>
         <div className="aos-prompt-card">
           <div className="aos-prompt-label"><WandSparkles size={18} /><span>What do you want your agent to do?</span></div>

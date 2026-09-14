@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
@@ -37,7 +36,9 @@ import { getMemoryContext } from "./runtime/memory-context.js";
 import {
   getElizaStatus
 } from "./runtime/eliza.js";
+import { loadLocalEnv } from "./runtime/env.js";
 import { getExecutionGateStatus, setExecutionGateStatus } from "./runtime/execution-gate.js";
+import { getLocalAgentDashboardStatus } from "./runtime/local-agents.js";
 import { generateAgentWorkflow, refineAgentWorkflow } from "./runtime/agent-os-builder.js";
 import { getCodexApiStatus, runCodexPreview, testCodexApi } from "./runtime/codex-api.js";
 import { configureApiIntegration, listApiIntegrations, testApiIntegration } from "./runtime/api-integrations.js";
@@ -161,116 +162,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, "..");
 const dist = path.join(root, "dist");
+const envFile = loadLocalEnv({ root });
 const app = express();
-const port = Number(process.env.PORT || 4173);
+const port = Number(process.env.PORT || 8090);
 const originalBuilderUrl = getBuilderUrl();
-
-function shellEnv() {
-  const home = process.env.HOME || "";
-  return {
-    ...process.env,
-    PATH: `${home}/.local/bin:${home}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`
-  };
-}
-
-function runLocalCheck(command, timeout = 10000) {
-  return new Promise((resolve) => {
-    execFile("/bin/bash", ["-lc", command], { env: shellEnv(), timeout }, (error, stdout = "", stderr = "") => {
-      resolve({
-        ok: !error,
-        output: String(stdout || "").trim(),
-        error: String(stderr || error?.message || "").trim()
-      });
-    });
-  });
-}
-
-function firstLine(value, fallback = "") {
-  return String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || fallback;
-}
-
-async function getFreeLlmGatewayStatus() {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
-    const response = await fetch("http://127.0.0.1:3001/api/ping", { signal: controller.signal });
-    clearTimeout(timeout);
-    return { ok: response.ok, url: "http://127.0.0.1:3001", summary: response.ok ? "FreeLLMAPI gateway is online on port 3001." : `Gateway returned HTTP ${response.status}.` };
-  } catch (_error) {
-    return { ok: false, url: "http://127.0.0.1:3001", summary: "FreeLLMAPI gateway is not reachable on port 3001." };
-  }
-}
-
-async function getLocalAgentDashboardStatus() {
-  const [cursor, claude, hermes, codexCli, hermesModel, codexApi, gateway] = await Promise.all([
-    runLocalCheck('if [ -x "$HOME/.local/bin/agent" ]; then "$HOME/.local/bin/agent" --version; elif command -v agent >/dev/null 2>&1; then agent --version; else exit 127; fi'),
-    runLocalCheck('if command -v claude >/dev/null 2>&1; then claude --version; elif [ -x "$HOME/.local/bin/claude" ]; then "$HOME/.local/bin/claude" --version; else exit 127; fi'),
-    runLocalCheck('if command -v hermes >/dev/null 2>&1; then hermes --version | head -1; else exit 127; fi'),
-    runLocalCheck('if command -v codex >/dev/null 2>&1; then codex --version; else exit 127; fi'),
-    runLocalCheck('if command -v hermes >/dev/null 2>&1; then printf "%s/%s" "$(hermes config get model.provider 2>/dev/null)" "$(hermes config get model.default 2>/dev/null)"; else exit 127; fi'),
-    getCodexApiStatus().catch((error) => ({ configured: false, status: "error", publicSummary: error?.message || "Codex API status unavailable." })),
-    getFreeLlmGatewayStatus()
-  ]);
-
-  const codexConnected = Boolean(codexApi.configured || hermesModel.output?.includes("openai-codex"));
-  const agents = [
-    {
-      id: "cursor",
-      name: "Cursor Agent",
-      eyebrow: "IDE CODING AGENT",
-      status: cursor.ok ? "connected" : "missing_dependency",
-      available: cursor.ok,
-      version: firstLine(cursor.output, "Cursor Agent CLI"),
-      model: "Cursor Pro model picker",
-      connection: cursor.ok ? "~/.local/bin/agent" : "agent CLI missing or not trusted",
-      summary: cursor.ok ? "Cursor Agent CLI is on PATH. Dashboard chat routing is not wired yet." : "Cursor Agent CLI was not found in the Agent OS server PATH."
-    },
-    {
-      id: "claude",
-      name: "Claude Code",
-      eyebrow: "ANTHROPIC CODING AGENT",
-      status: claude.ok ? "connected" : "missing_dependency",
-      available: claude.ok,
-      version: firstLine(claude.output, "Claude Code"),
-      model: "Claude subscription / OAuth",
-      connection: claude.ok ? "claude CLI" : "claude CLI missing",
-      summary: claude.ok ? "Claude Code is installed. OAuth was verified from Hermes before this dashboard upgrade." : "Claude Code CLI is not available to the Agent OS server."
-    },
-    {
-      id: "codex",
-      name: "Codex",
-      eyebrow: "GOAL + WORKFLOW BRAIN",
-      status: codexConnected ? "connected" : "ready_to_configure",
-      available: codexConnected,
-      version: codexCli.ok ? firstLine(codexCli.output, "Codex CLI") : "Standalone codex CLI not installed",
-      model: codexApi.model || firstLine(hermesModel.output, "openai-codex/gpt-5.5"),
-      connection: codexApi.configured ? `${codexApi.baseUrl || "OpenAI-compatible"} ? ${codexApi.apiMode || "responses"}` : firstLine(hermesModel.output, "Hermes Codex provider"),
-      summary: codexConnected ? `Codex is connected through Agent OS/Hermes. ${gateway.summary}` : "Connect Codex API or Hermes openai-codex before running goal mode."
-    },
-    {
-      id: "hermes",
-      name: "Hermes Agent",
-      eyebrow: "LOCAL TOOL + MEMORY AGENT",
-      status: hermes.ok ? "connected" : "missing_dependency",
-      available: hermes.ok,
-      version: firstLine(hermes.output, "Hermes Agent"),
-      model: firstLine(hermesModel.output, "openai-codex/gpt-5.5"),
-      connection: "Hermes profile: default",
-      summary: hermes.ok ? "Hermes is installed and configured as the local tool, memory, and gateway agent." : "Hermes CLI is not available to the Agent OS server."
-    }
-  ];
-
-  return {
-    ok: true,
-    generatedAt: new Date().toISOString(),
-    summary: {
-      connected: agents.filter((agent) => agent.status === "connected").length,
-      total: agents.length,
-      gateway
-    },
-    agents
-  };
-}
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -1221,6 +1116,35 @@ app.get("/api/local-agents", requireAdminWhenPublic, async (_req, res, next) => 
   }
 });
 
+app.get("/api/product/status", requireAdminWhenPublic, async (_req, res, next) => {
+  try {
+    const agents = await getLocalAgentDashboardStatus();
+    res.json({
+      ok: true,
+      hosted: false,
+      edition: "local-v1",
+      name: "Agent OS",
+      publicSummary: "Local-first dashboard. Dry-run by default. Not a hosted multi-tenant app.",
+      port,
+      env: {
+        loaded: Boolean(envFile.loaded),
+        publicMode: process.env.HERMES_AGENT_OS_PUBLIC_MODE === "1",
+        requireAuth: process.env.HERMES_AGENT_OS_REQUIRE_AUTH === "1"
+      },
+      executionGate: agents.executionGate,
+      agents: agents.summary,
+      firstRun: [
+        { id: "runtime", label: "Runtime is up", done: true, detail: `Listening on port ${port}.` },
+        { id: "env", label: "Optional .env loaded", done: Boolean(envFile.loaded), detail: envFile.loaded ? "Local .env values applied without overriding the process environment." : "Copy .env.example to .env only if you need keys. The app runs without it." },
+        { id: "chat", label: "Try Unified Chat in dry-run", done: false, detail: "Claude and Hermes plan only. Cursor stays not wired. Codex previews if a key is saved." },
+        { id: "exec", label: "Keep live execution off", done: !agents.executionGate.enabled, detail: agents.executionGate.publicSummary }
+      ]
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/workspace", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.json(await listWorkspaceFiles({
@@ -1624,6 +1548,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`Agent OS listening on http://localhost:${port}`);
+  console.log(`Agent OS (local v1, dry-run default) http://127.0.0.1:${port}`);
   startSchedulerLoop();
 });

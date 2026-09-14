@@ -101,7 +101,7 @@ export default function SeoPage() {
         <article>
           <span>Firecrawl</span>
           <strong>{firecrawlReady ? "Key saved" : "Not configured"}</strong>
-          <small>{firecrawl?.publicSummary || "No Firecrawl key on this Mac."}</small>
+          <small>{firecrawl?.publicSummary || "No Firecrawl key on this machine."}</small>
         </article>
         <article>
           <span>Run mode</span>

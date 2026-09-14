@@ -1,5 +1,7 @@
 # Hermes Agent OS Real Control Plan
 
+> Historical plan. Local v1 ships at **http://127.0.0.1:8090** with Mission Control as the landing page. See `docs/V1.md`.
+
 This plan narrows Hermes Agent OS around one believable localhost experience: a user opens the dashboard, clicks an agent, connects the real local/API dependency, runs a task, and sees proof through logs, files, memory, Kanban, and workflow replay.
 
 ## Product Focus
@@ -20,7 +22,7 @@ The SEO and Video backend modules can remain in the codebase as future modules, 
 
 ## Localhost User Flow
 
-1. User runs `npm start` and opens `http://localhost:4173`.
+1. User runs `npm start` and opens `http://127.0.0.1:8090`.
 2. Setup shows only the dependencies needed for the core loop: one model route, one controllable agent, memory, Kanban, and workflow runner.
 3. User clicks an agent card, for example `Hermes`, `OpenAI`, `Codex`, or `Claude Code`.
 4. The control room shows real dependency state, configuration fields, install/test actions, run controls, logs, and recent artifacts.

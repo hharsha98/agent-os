@@ -143,7 +143,7 @@ export default function WorkspacePage() {
       }
     >
       <HonestNote>
-        Empty is honest. Save a briefing on Loop, write a note here, or drop HTML/images into ~/.hermes-agent-os/workspace, and they will show up. This page will not browse the rest of your Mac.
+        Empty is honest. Save a briefing on Loop, write a note here, or drop HTML/images into ~/.hermes-agent-os/workspace, and they will show up. This page will not browse the rest of your disk.
       </HonestNote>
       <div className="aos-phase-toolbar">
         <label className="aos-field">

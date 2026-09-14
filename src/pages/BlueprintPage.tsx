@@ -8,7 +8,7 @@ type LayerState = "live" | "partial" | "missing";
 type Layer = {
   id: string;
   name: string;
-  video: string;
+  intent: string;
   here: string;
   state: LayerState;
 };
@@ -44,18 +44,18 @@ export default function BlueprintPage() {
           {
             id: "1",
             name: "Foundation",
-            video: "Your laptop. Everything runs locally. No cloud OS required.",
+            intent: "The dashboard runs on your machine. No cloud OS required.",
             here: health
-              ? `This dashboard is up on your Mac. Voice shell stays ${shellOff ? "off" : "on"}.`
+              ? `Runtime is up. Voice shell stays ${shellOff ? "off" : "on"}.`
               : "Dashboard health did not load.",
             state: health ? "live" : "missing"
           },
           {
             id: "2",
             name: "Memory",
-            video: "Obsidian + Omi: one vault every agent reads before answering.",
+            intent: "One local vault agents can read before answering.",
             here: memory && vault
-              ? `Local vault is live (${memory.summary.total} notes). Chat, Brain, and Goals read it before answering. Latest briefing: ${vault.briefing?.title || "none yet"}. Obsidian/Omi are optional extras, not required.`
+              ? `Local vault is live (${memory.summary.total} notes). Chat, Brain, and Goals can read it. Latest briefing: ${vault.briefing?.title || "none yet"}. Obsidian/Omi are optional extras.`
               : memory
                 ? `Memory store loaded (${memory.summary.total} notes) but the read-before-answer API did not load.`
                 : "Memory API did not load.",
@@ -64,7 +64,7 @@ export default function BlueprintPage() {
           {
             id: "3",
             name: "Brain",
-            video: "Route hard jobs to Claude, cheap jobs to free models. Swap models without rebuilding.",
+            intent: "Route jobs through configured providers. Missing keys stay missing.",
             here: router
               ? `Router status: ${router.status}. Next provider: ${router.nextProvider?.label || "none"}.`
               : "Router API did not load.",
@@ -73,32 +73,32 @@ export default function BlueprintPage() {
           {
             id: "4",
             name: "Agents",
-            video: "Hermes for long jobs, Claude Code for the repo, Open Claude for image/voice. Start with Hermes.",
-            here: `${ready} local CLI(s) found. Chat reads Memory first. Claude/Hermes stay dry-run. Codex uses API preview when a key is saved. Cursor chat is not wired. OpenClaw / OpenClaude stay missing until you approve installs.`,
+            intent: "Detect real CLIs. Do not paint fake connected chat.",
+            here: `${ready} local CLI(s) found. Chat reads Memory first. Claude/Hermes stay dry-run. Codex uses API preview when a key is saved. Cursor chat is not wired. OpenClaw stays missing until you install it.`,
             state: ready > 0 ? "partial" : "missing"
           },
           {
             id: "5",
             name: "Command",
-            video: "One sidebar. Chat, goals, kanban. Without this you only have tools.",
-            here: `This sidebar is the command center. Chat is dry-run. ${goals?.summary.total ?? 0} saved goal(s). ${kanban?.summary.total ?? 0} Kanban card(s). Overnight Goal Mode is optional on the Goals page — it stays off until you enable the local execution gate.`,
+            intent: "One sidebar for chat, goals, and boards.",
+            here: `Mission Control is the default landing. Chat is dry-run. ${goals?.summary.total ?? 0} saved goal(s). ${kanban?.summary.total ?? 0} Kanban card(s). Overnight Goal Mode stays off until you enable the local execution gate.`,
             state: "live"
           },
           {
             id: "6",
             name: "Production",
-            video: "Goals, SEO, studio, notebook, workspace — work lands in one previewable home.",
+            intent: "Work lands in a sandboxed workspace you can preview.",
             here: workspace
-              ? `Workspace sandbox has ${workspace.summary.total} file(s), ${loopFiles} in loop/. You can preview and write .md notes here. Goals, Notebook, Journal, Kanban, SEO, and Studio are live local APIs. Image/voice/music stay Not configured. Overnight Goal Mode is optional.`
+              ? `Workspace sandbox has ${workspace.summary.total} file(s), ${loopFiles} in loop/. Goals, Notebook, Journal, Kanban, SEO, and Studio are local APIs. Image/voice/music stay Not configured.`
               : "Workspace API did not load.",
             state: workspace ? "live" : "missing"
           },
           {
             id: "7",
             name: "Loop",
-            video: "Every output writes back to the vault so tomorrow starts smarter.",
+            intent: "Useful output can write back to Memory and workspace/loop.",
             here: vault
-              ? `Chat auto-saves replies. Journal, Notebook, Goals, Kanban, Brain, Swarm, and Capture write back into Memory. Loop saves timestamped workspace/loop/*.md. Vault markdown can be written to workspace/vault. Overnight Goal Mode is optional via the Goals execution gate.`
+              ? `Chat can save replies. Journal, Notebook, Goals, Kanban, Brain, Swarm, and Capture write back into Memory. Loop saves timestamped workspace/loop/*.md.`
               : "Loop write-back exists, but the read-back API did not load.",
             state: vault ? "live" : "partial"
           }
@@ -112,12 +112,12 @@ export default function BlueprintPage() {
 
   return (
     <PageFrame
-      kicker="SEVEN LAYERS · FROM THE YOUTUBE BLUEPRINT"
-      title="The video’s operating system, mapped onto this Mac."
-      hint="Julian Goldie’s free video is a 7-layer blueprint, not a zip of his paid dashboard. This page shows what that blueprint means here — live, partial, or missing — with no fake connected states."
+      kicker="CAPABILITY MAP · LOCAL V1"
+      title="What this copy actually does."
+      hint="Seven layers, mapped onto this machine: live, partial, or missing. Nothing here is a hosted Agent OS."
     >
       <HonestNote>
-        The last layer in the video is the Loop. Most people skip it. Here, Chat reads yesterday’s briefing, writes replies back to Memory, and Loop saves a markdown file into workspace/loop. Overnight Goal Mode is optional. Obsidian+Omi hardware, NotebookLM audio, and Midjourney are not this copy.
+        Chat can read a Loop briefing and write replies back to Memory. Overnight Goal Mode is optional. Obsidian hardware, NotebookLM audio, and Midjourney are not this copy.
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
       <div className="aos-layer-grid">
@@ -130,13 +130,13 @@ export default function BlueprintPage() {
               </div>
               <em className={`aos-layer-pill ${layer.state}`}>{label(layer.state)}</em>
             </div>
-            <p><strong>In the video:</strong> {layer.video}</p>
-            <p><strong>On this Mac:</strong> {layer.here}</p>
+            <p><strong>Intent:</strong> {layer.intent}</p>
+            <p><strong>On this machine:</strong> {layer.here}</p>
           </article>
         ))}
       </div>
       <p className="aos-honest-note">
-        <Layers3 size={14} /> Source: public YouTube “How to Build Your Own Agent OS” plus agentos.guide. We did not copy the paid Boardroom zip.
+        <Layers3 size={14} /> This map is a local product checklist, not a clone of anyone’s paid dashboard.
       </p>
     </PageFrame>
   );

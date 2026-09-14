@@ -1,102 +1,62 @@
-<p align="center">
-  <img src="docs/cover.png" alt="Agent OS — local command center for Cursor, Claude, Codex, and Hermes" width="100%" />
-</p>
-
 <h1 align="center">Agent OS</h1>
 
 <p align="center">
   <strong>A local command center for AI coding agents.</strong><br />
-  One dashboard. Honest status. Dry-run by default. Execution stays off until you turn it on.
+  Clone it. Run it on your machine. Dry-run by default. Execution stays off until you turn it on.
 </p>
 
 <p align="center">
-  <a href="https://hharsha98.github.io/agent-os/"><img src="https://img.shields.io/badge/Live_gallery-open-ff7a2f?style=for-the-badge" alt="Open live gallery" /></a>
-  <a href="#run-it-locally"><img src="https://img.shields.io/badge/Local_demo-3_commands-111318?style=for-the-badge" alt="Run locally" /></a>
-  <img src="https://img.shields.io/badge/tests-152_passing-40d886?style=for-the-badge" alt="152 tests passing" />
+  <a href="https://hharsha98.github.io/agent-os/"><img src="https://img.shields.io/badge/Static_gallery-open-ff7a2f?style=for-the-badge" alt="Open static gallery" /></a>
+  <a href="#run-it-locally"><img src="https://img.shields.io/badge/Local_v1-clone_and_run-111318?style=for-the-badge" alt="Run locally" /></a>
   <img src="https://img.shields.io/badge/license-MIT-8f96a3?style=for-the-badge" alt="MIT license" />
 </p>
 
 <p align="center">
-  <a href="https://hharsha98.github.io/agent-os/">Click through the product gallery</a>
+  <a href="https://hharsha98.github.io/agent-os/">Static gallery</a>
   ·
-  <a href="docs/DEMO.md">90-second recruiter tour</a>
+  <a href="docs/DEMO.md">Product tour</a>
   ·
-  <a href="#what-a-recruiter-is-looking-at">What this shows</a>
+  <a href="docs/V1.md">What v1 includes</a>
+  ·
+  <a href="SETUP-GUIDE.md">Setup guide</a>
 </p>
 
 ---
 
-## What a recruiter is looking at
+## What this is
 
-This is not a toy chat wrapper. It is a **local-first operations dashboard** for agents that already live on a Mac: Cursor Agent, Claude Code, Codex, and Hermes.
+Agent OS is a **local-first dashboard** for agents that already live on a developer machine: Cursor Agent, Claude Code, Codex, and Hermes.
 
-| You see | What it proves |
+It is **not** a hosted multi-tenant cloud app. The github.io page is a **static gallery**, suitable later for an `os.` subdomain, not the running product.
+
+| You see | What it means |
 | --- | --- |
-| Mission Control with **4/4 local checks** | The UI reports real CLI presence — it does not paint fake “connected” cards |
-| Unified Chat labeled **Dry run** | Safety is a product decision, not a comment in code |
-| Workspace sandbox | File preview is jailed to `~/.hermes-agent-os/workspace` + `exports` — not the whole disk |
-| Machine Control with **Run command disabled** | Computer-control stays gated (`cliclick` missing, execution off, shell off) |
-| **152** automated tests | Backend behavior is checked, including path-travel rejection |
-
-<p align="center">
-  <a href="https://hharsha98.github.io/agent-os/">
-    <img src="docs/screenshots/home.png" alt="Agent OS Mission Control — describe an agent, see local Cursor Claude Codex Hermes status" width="92%" />
-  </a>
-  <br />
-  <sub>Home · Mission Control. Click for the full gallery.</sub>
-</p>
+| Mission Control | Real CLI probes. A binary on PATH is not a connected chat session. |
+| Unified Chat labeled **Dry run** / **API preview** / **chat not wired** | Safety is visible in the UI. Cursor is not faked. |
+| Workspace sandbox | Preview is jailed to `~/.hermes-agent-os/workspace` and `exports`. |
+| Machine Control with **Run command disabled** | Computer-control stays gated. |
+| Honest **Not configured** tiles | Studio image/voice/music and missing keys stay missing. |
 
 ---
 
-## Product tour
+## Local v1 in one pass
 
-<table>
-  <tr>
-    <td width="50%">
-      <a href="docs/screenshots/chat.png"><img src="docs/screenshots/chat.png" alt="Unified Chat dry-run with Cursor Claude Codex Hermes" /></a>
-      <p><strong>Unified Chat</strong> — one box, four agents. Cursor tells the truth if chat routing is missing. Claude / Codex / Hermes stay in dry-run.</p>
-    </td>
-    <td width="50%">
-      <a href="docs/screenshots/workspace.png"><img src="docs/screenshots/workspace.png" alt="Workspace sandbox file list" /></a>
-      <p><strong>Workspace</strong> — search, filter, preview HTML in a sandboxed iframe. Empty is honest until files exist.</p>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <a href="docs/screenshots/machine.png"><img src="docs/screenshots/machine.png" alt="Machine Control status checklist" /></a>
-      <p><strong>Machine Control</strong> — permission checklist only. The dangerous button is disabled on purpose.</p>
-    </td>
-    <td>
-      <a href="docs/screenshots/studio.png"><img src="docs/screenshots/studio.png" alt="Studio parked media shell" /></a>
-      <p><strong>Studio / Goals / Kanban / Memory / Notebook</strong> — real local APIs. Video worker can run locally. Image/voice/music stay Not configured. No fake Midjourney. Not Julian Goldie’s Boardroom zip.</p>
-    </td>
-  </tr>
-</table>
-
-More stills: [Goals](docs/screenshots/goals.png) · [Kanban](docs/screenshots/kanban.png) · [Memory](docs/screenshots/memory.png)
-
----
-
-## Local equivalents, not a Boardroom clone
-
-This repo is a **local equivalent** of the public 7-layer Agent OS idea. It does **not** include Julian Goldie’s paid Boardroom zip, prompts, or dashboard pixels. SEO, Studio, vault markdown, swarm map, and overnight Goal Mode are local APIs with honest missing states.
-
----
-
-## How the pieces fit
+1. Open **Mission Control**. Read CLI / dashboard chat / live-execution for each agent.
+2. Open **Unified Chat**. Send a dry-run. Cursor stays unwired; Claude/Hermes plan; Codex can preview if a local key exists.
+3. Keep `HERMES_AGENT_OS_ENABLE_EXEC=0` unless you later decide to enable live tools.
 
 ```mermaid
 flowchart LR
-  Recruiter["You in the browser"] --> UI["React dashboard :8090"]
+  You["You in the browser"] --> UI["React dashboard"]
   UI --> API["Local Express APIs"]
   API --> Store["Sandbox folders"]
   API --> CLIs["agent / claude / hermes / codex"]
   API --> Gate{"Execution gate"}
   Gate -->|off by default| Dry["Dry-run plan only"]
-  Gate -->|explicitly on later| Live["Native tools — not in this demo"]
+  Gate -->|explicitly on later| Live["Native tools"]
 ```
 
-**Stack:** React 18 + TypeScript + Vite on the front. Node / Express on the back. Lucide icons. Tests with Node’s built-in test runner.
+**Stack:** React 18 + TypeScript + Vite on the front. Node / Express on the back. Tests with Node’s built-in test runner.
 
 ---
 
@@ -104,22 +64,23 @@ flowchart LR
 
 | Surface | State |
 | --- | --- |
-| 7 Layers (default landing) | Live counts from Memory, Workspace, Loop, Chat, Goals, Kanban |
-| Workflow studio / Mission Control | Live local version checks |
-| Agent Builder + AI APIs | Wired (Codex preview, install guides) |
+| Mission Control (default landing) | Live local CLI + chat-capability checks |
+| Unified Chat | Dry-run for Claude / Hermes; Codex API preview when a key is saved; Cursor CLI detected, chat not routed |
 | Workspace preview | Live, sandboxed; Loop briefings in `loop/` |
-| Unified Chat | Dry-run for Claude / Codex / Hermes; Cursor CLI detected, chat not routed |
-| Brain / Goals / Kanban / Memory / Notebook / Journal / Loop | Live local stores; Kanban cards can move lanes; Loop writes timestamped briefings |
-| Studio | Honest **Not configured / Parked** |
+| Workflow studio / Agent Builder + AI APIs | Wired; Codex generation needs a local key; native runs gated |
+| Goals / Kanban / Memory / Notebook / Journal / Loop | Live local stores |
+| Capability map | Live/partial/missing checklist for this machine |
+| Studio | Honest **Not configured / Parked** except local video tools when present |
 | Machine Control | Status only — no send/run |
-| OpenClaw native install | Not installed on this machine; UI does not fake it |
-| Overnight Goal Mode | CLI may exist; **execution stays off** |
+| OpenClaw | Detected if installed; not faked |
+| Overnight Goal Mode | Optional; **execution stays off** by default |
+| Hosted multi-tenant SaaS | **Not this product** |
 
 ---
 
 ## Run it locally
 
-Needs Node 18+ on your machine. This is a **local app**, not a hosted SaaS.
+Needs **Node 18+**. This is a local app.
 
 ```bash
 git clone https://github.com/hharsha98/agent-os.git
@@ -127,10 +88,12 @@ cd agent-os
 cp .env.example .env
 npm ci
 npm run build
-PORT=8090 npm start
+npm start
 ```
 
 Open [http://127.0.0.1:8090](http://127.0.0.1:8090).
+
+The server loads `.env` at startup and **does not override** variables already in the process environment. `.env` is optional if you only want the dry-run dashboard.
 
 Hot reload while hacking:
 
@@ -138,7 +101,9 @@ Hot reload while hacking:
 npm run dev
 ```
 
-Leave these **off** unless you later decide otherwise (they are already `0` in `.env.example`):
+That serves the Vite UI on [http://127.0.0.1:5173](http://127.0.0.1:5173) and proxies `/api` to port **8090** (or `PORT` from the process environment / `.env`).
+
+Leave these **off** unless you later decide otherwise (already `0` in `.env.example`):
 
 ```bash
 HERMES_AGENT_OS_ENABLE_EXEC=0
@@ -148,44 +113,42 @@ HERMES_AGENT_OS_PUBLIC_MODE=0
 
 `.env` is gitignored. Never commit API keys.
 
+Docker is available for a containerized local run (`docker compose up --build`, host port **8090**). Host-installed CLIs are **not** automatically available inside the container.
+
 ---
 
 ## Verify
 
 ```bash
-npm run build          # typecheck + production bundle
+npm run build
 env -u HERMES_HOME npm test
 ```
-
-Last local run: **152 passed / 0 failed**, including workspace path-travel checks (`../` is rejected).
 
 ---
 
 ## Why the safety story matters
 
-Most “agent dashboards” look impressive and then silently run shell on your laptop. This one is built the other way around:
+Most agent dashboards look impressive and then silently run shell. This one is built the other way around:
 
 1. Show what is actually installed.
 2. Let you plan in **dry-run**.
 3. Keep computer-control, installs, and public mode behind explicit flags.
 4. Preview generated files only inside a sandbox.
 
-That is the engineering judgment I want a hiring loop to notice.
-
 ---
 
 ## Repo map
 
 ```text
-src/                 Dashboard (AgentOSApp + Phase 2 pages)
+src/                 Dashboard (Mission Control, Chat, Phase 2 pages)
 server/              Express APIs, workspace sandbox, memory, goals
-test/                Runtime + workspace tests
-docs/                Cover, screenshots, clickable gallery
+test/                Runtime + workspace + local-agent tests
+docs/                Static gallery and product tour
 .env.example         Safe defaults — copy to .env
 ```
 
 ---
 
 <p align="center">
-  <sub>Built as a local-first portfolio system · MIT · <a href="https://github.com/hharsha98">hharsha98</a></sub>
+  <sub>Local-first · MIT · <a href="https://github.com/hharsha98/agent-os">hharsha98/agent-os</a></sub>
 </p>

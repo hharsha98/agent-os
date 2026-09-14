@@ -1,9 +1,10 @@
-import { Loader2, MessageSquare, Repeat, Save, Send } from "lucide-react";
+import { Loader2, MessageSquare, Repeat, Save, Send, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addMemory, getMemoryContext, previewCodexMessage, sendAgentMessage } from "../api";
+import { addMemory, getExecutionGateStatus, getMemoryContext, previewCodexMessage, sendAgentMessage } from "../api";
 import { type ChatAgentId, chatStorageKey } from "../chatHistory";
+import { chatLabel, type LocalAgentRecord } from "../localAgents";
 import { navigateTo } from "../nav";
-import type { MemoryContext } from "../types";
+import type { ExecutionGateStatus, MemoryContext } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
 type ChatMessage = {
@@ -14,33 +15,31 @@ type ChatMessage = {
   badge: string;
 };
 
-type LocalAgent = {
-  id: string;
-  name: string;
-  status: string;
-  available: boolean;
-  version?: string;
-  summary?: string;
-};
-
-const AGENTS: Array<{ id: ChatAgentId; label: string; moduleId: string | null; hint: string }> = [
-  { id: "cursor", label: "Cursor", moduleId: null, hint: "CLI can be installed without chat routing." },
-  { id: "claude", label: "Claude Code", moduleId: "claude", hint: "Uses the existing dry-run module API." },
-  { id: "codex", label: "Codex", moduleId: "codex", hint: "Uses Codex API preview when a key is saved; otherwise dry-run." },
-  { id: "hermes", label: "Hermes", moduleId: "hermes", hint: "Uses the existing dry-run module API." }
+const AGENTS: Array<{ id: ChatAgentId; label: string; moduleId: string | null; hint: string; example: string }> = [
+  { id: "cursor", label: "Cursor", moduleId: null, hint: "CLI can be installed without chat routing.", example: "What would Cursor do with a failing test? (This will not call the CLI.)" },
+  { id: "claude", label: "Claude Code", moduleId: "claude", hint: "Uses the existing dry-run module API.", example: "Plan a dry-run for: add a README section on local v1." },
+  { id: "codex", label: "Codex", moduleId: "codex", hint: "Uses Codex API preview when a key is saved; otherwise dry-run.", example: "Preview a three-step workflow for a morning briefing." },
+  { id: "hermes", label: "Hermes", moduleId: "hermes", hint: "Uses the existing dry-run module API.", example: "Draft a local research plan that does not call tools yet." }
 ];
 
-function badgeFor(agent: typeof AGENTS[number], local: LocalAgent | undefined, mode?: string) {
+function sendHint(agent: typeof AGENTS[number], local: LocalAgentRecord | undefined, gateOff: boolean) {
   if (agent.id === "cursor") {
-    return local?.available ? "Ready on PATH · chat not wired" : "Not installed";
+    return local?.cli?.found || local?.available
+      ? "Send returns an honest notice. Cursor chat is not wired."
+      : "Send returns an honest not-installed notice. Nothing is marked connected.";
   }
-  if (mode === "dry_run") return "Dry run";
-  if (mode === "executed") return "Real reply";
-  if (local?.status === "missing_dependency" || local?.available === false) return "Not installed";
-  return local?.status === "connected" ? "Ready" : "Checking";
+  if (agent.id === "codex" && local?.chat?.mode === "preview") {
+    return "Send calls the local Codex API preview. That is not a live tool-using run.";
+  }
+  if (local?.chat?.mode === "unavailable" || local?.status === "not_installed") {
+    return "Send still dry-runs the module API, which will report the missing CLI instead of faking a reply.";
+  }
+  return gateOff
+    ? "Send asks for a dry-run plan. Live execution stays off."
+    : "The execution gate is on, but this composer still sends dryRun: true.";
 }
 
-export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] }) {
+export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecord[] }) {
   const [agentId, setAgentId] = useState<ChatAgentId>("claude");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,12 +48,14 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [briefing, setBriefing] = useState<MemoryContext["briefing"]>(null);
   const [vaultHits, setVaultHits] = useState(0);
+  const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
   const skipSave = useRef(true);
   const agent = AGENTS.find((item) => item.id === agentId) || AGENTS[1];
   const local = useMemo(
     () => localAgents.find((item) => item.id === agentId),
     [localAgents, agentId]
   );
+  const gateOff = gate?.enabled !== true;
 
   useEffect(() => {
     skipSave.current = true;
@@ -76,6 +77,9 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         setBriefing(null);
         setVaultHits(0);
       });
+    void getExecutionGateStatus()
+      .then(setGate)
+      .catch(() => setGate(null));
   }, []);
 
   useEffect(() => {
@@ -100,14 +104,14 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         source: "chat-loop",
         tags: ["loop", message.agentId]
       });
-      setNotice("Saved into local Memory automatically. Loop can pick this up without an extra click.");
+      setNotice("Saved into local Memory. Loop can read this later. This is on this machine, not a cloud inbox.");
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : "Reply shown, but Memory save failed.");
     }
   }
 
-  async function send() {
-    const text = draft.trim();
+  async function send(textOverride?: string) {
+    const text = (textOverride ?? draft).trim();
     if (!text || busy) return;
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
@@ -125,10 +129,10 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         id: `assistant-${Date.now()}`,
         role: "assistant",
         agentId,
-        text: local?.available
-          ? "Cursor Agent is installed on this Mac, but dashboard chat routing is not wired yet. This is not a fake success. A later phase can add a safe Cursor module after you approve it."
+        text: local?.cli?.found || local?.available
+          ? "Cursor Agent is installed on this machine, but dashboard chat routing is not wired. This is not a fake success."
           : "Cursor Agent CLI was not found. Install is not part of this page, and this is not marked connected.",
-        badge: badgeFor(agent, local)
+        badge: chatLabel(local)
       };
       setMessages((current) => [...current, assistant]);
       void persistAssistant(assistant, agent.label, text);
@@ -167,7 +171,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         role: "assistant",
         agentId,
         text: `${replyText}${used}`,
-        badge: badgeFor(agent, local, mode)
+        badge: mode === "dry_run" ? "Dry run" : mode === "executed" ? (agent.id === "codex" ? "API preview" : "Real reply") : chatLabel(local)
       };
       setMessages((current) => [...current, assistant]);
       await persistAssistant({ ...assistant, text: replyText }, agent.label, text);
@@ -202,22 +206,29 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
 
   return (
     <PageFrame
-      kicker="UNIFIED CHAT · VAULT + LOOP"
-      title="One box. Four local agents. Memory is read first."
-      hint="Claude and Hermes still dry-run the module API. Codex uses the API preview when a key is saved. Every send reads local Memory first, including yesterday’s Loop briefing."
+      kicker="UNIFIED CHAT · DRY-RUN"
+      title="One box. Four local agents. Plans, not silent shell."
+      hint="Claude and Hermes dry-run the module API. Codex uses the API preview when a key is saved. Cursor tells the truth if chat is not wired. History stays in this browser."
     >
+      <div className="aos-product-banner" role="status">
+        <ShieldCheck size={18} />
+        <div>
+          <strong>{gateOff ? "Dry-run is on" : "Execution gate is on"}</strong>
+          <p>{sendHint(agent, local, gateOff)} Replies can save to local Memory. This is not a cloud inbox.</p>
+        </div>
+      </div>
       <div className="aos-chat-agents">
         {AGENTS.map((item) => {
           const status = localAgents.find((localAgent) => localAgent.id === item.id);
           return (
             <button key={item.id} className={agentId === item.id ? "active" : ""} onClick={() => setAgentId(item.id)}>
               <strong>{item.label}</strong>
-              <span>{badgeFor(item, status)}</span>
+              <span>{chatLabel(status)}</span>
             </button>
           );
         })}
       </div>
-      <HonestNote>{agent.hint} {local?.summary || ""} Replies auto-save to Memory. The button below is only a manual retry.</HonestNote>
+      <HonestNote>{agent.hint} {local?.summary || ""} The Send button below does not enable live tools.</HonestNote>
       {briefing ? (
         <div className="aos-panel" style={{ marginBottom: 16 }}>
           <div className="aos-panel-head">
@@ -230,14 +241,15 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
           <small>{vaultHits} memory note{vaultHits === 1 ? "" : "s"} ready for the next send.</small>
         </div>
       ) : (
-        <p className="aos-honest-note">No Loop briefing yet. Save one on Loop so tomorrow’s chat starts from yesterday’s notes.</p>
+        <p className="aos-honest-note">No Loop briefing yet. Save one on Loop so later chat can start from those notes.</p>
       )}
       <div className="aos-chat-log">
         {messages.length === 0 ? (
           <div className="aos-empty small">
             <MessageSquare size={20} />
             <strong>No messages for {agent.label} yet</strong>
-            <p>History is stored in this browser per agent. It is not a fake cloud inbox.</p>
+            <p>History is stored in this browser per agent. Try the example, or type your own dry-run prompt.</p>
+            <button className="aos-secondary" onClick={() => void send(agent.example)}>{agent.example}</button>
           </div>
         ) : (
           messages.map((message) => (
@@ -252,7 +264,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={`Message ${agent.label}…`}
+          placeholder={`Dry-run message for ${agent.label}…`}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
@@ -262,7 +274,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgent[] })
         />
         <div className="aos-chat-actions">
           <button className="aos-primary" onClick={() => void send()} disabled={busy || !draft.trim()}>
-            {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} Send
+            {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} Send dry-run
           </button>
           <button className="aos-secondary" onClick={() => void saveLoop()} disabled={saving || messages.every((message) => message.role !== "assistant")}>
             {saving ? <Loader2 className="aos-spin" size={16} /> : <Save size={16} />} Save last reply again

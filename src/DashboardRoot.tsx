@@ -23,7 +23,8 @@ import {
   Workflow,
 } from "lucide-react";
 import AgentOSApp from "./AgentOSApp";
-import { getExecutionGateStatus, getLocalAgents } from "./api";
+import { getExecutionGateStatus, getLocalAgents, getProductStatus } from "./api";
+import { DEMO_BADGE } from "./demo";
 import type { LocalAgentRecord } from "./localAgents";
 import BlueprintPage from "./pages/BlueprintPage";
 import BrainPage from "./pages/BrainPage";
@@ -33,6 +34,7 @@ import HermesPage from "./pages/HermesPage";
 import JournalPage from "./pages/JournalPage";
 import KanbanPage from "./pages/KanbanPage";
 import LoopPage from "./pages/LoopPage";
+import DemoBuilderPage from "./pages/DemoBuilderPage";
 import MachineControlPage from "./pages/MachineControlPage";
 import MemoryPage from "./pages/MemoryPage";
 import MissionControlPage from "./pages/MissionControlPage";
@@ -102,6 +104,7 @@ export default function DashboardRoot() {
   const [localAgents, setLocalAgents] = useState<LocalAgentRecord[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dryRun, setDryRun] = useState(true);
+  const [demoPublic, setDemoPublic] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +121,13 @@ export default function DashboardRoot() {
       })
       .catch(() => {
         if (!cancelled) setDryRun(true);
+      });
+    void getProductStatus()
+      .then((product) => {
+        if (!cancelled) setDemoPublic(Boolean(product.demoPublic));
+      })
+      .catch(() => {
+        if (!cancelled) setDemoPublic(false);
       });
     return () => {
       cancelled = true;
@@ -136,6 +146,10 @@ export default function DashboardRoot() {
     };
   }, []);
 
+  useEffect(() => {
+    document.title = demoPublic ? "Agent OS — public demo" : "Agent OS — local v1";
+  }, [demoPublic]);
+
   function go(next: ShellPage) {
     navigateTo(next);
     setPage(next);
@@ -152,7 +166,7 @@ export default function DashboardRoot() {
           <div className="aos-logo-mark">A</div>
           <div>
             <strong>Agent OS</strong>
-            <span>Local v1</span>
+            <span>{demoPublic ? "Public demo" : "Local v1"}</span>
           </div>
         </div>
         <nav className="aos-nav">
@@ -186,11 +200,13 @@ export default function DashboardRoot() {
             <BookOpen size={16} /> Journal
           </button>
           <p>Build</p>
-          <button className={page === "home" ? "active" : ""} onClick={() => go("home")}>
-            <Home size={16} /> Workflow studio
-          </button>
-          <button className={page === "builder" ? "active" : ""} onClick={() => go("builder")}>
-            <Workflow size={16} /> Agent Builder
+          {demoPublic ? null : (
+            <button className={page === "home" ? "active" : ""} onClick={() => go("home")}>
+              <Home size={16} /> Workflow studio
+            </button>
+          )}
+          <button className={page === "builder" || (demoPublic && page === "home") ? "active" : ""} onClick={() => go("builder")}>
+            <Workflow size={16} /> {demoPublic ? "Demo canvas" : "Agent Builder"}
           </button>
           <button className={page === "apis" ? "active" : ""} onClick={() => go("apis")}>
             <KeyRound size={16} /> AI APIs
@@ -222,14 +238,16 @@ export default function DashboardRoot() {
           </button>
         </nav>
         <div className="aos-sidebar-foot">
-          <span><i className="aos-live-dot" /> {dryRun ? "Dry-run default" : "Live execution allowed"}</span>
-          <small>Local only · not a hosted app</small>
+          <span><i className={demoPublic ? "aos-live-dot aos-demo-dot" : "aos-live-dot"} /> {demoPublic ? DEMO_BADGE : dryRun ? "Dry-run default" : "Live execution allowed"}</span>
+          <small>{demoPublic ? "Simulated agents · no host shell" : "Local only · not a hosted app"}</small>
         </div>
       </aside>
       {menuOpen ? <button className="aos-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
       <div className="aos-phase2-content">
         {page === "mission" ? (
           <MissionControlPage />
+        ) : demoPublic && (page === "builder" || page === "home") ? (
+          <DemoBuilderPage />
         ) : LEGACY_PAGES.has(page) ? (
           <AgentOSApp key={page} />
         ) : page === "layers" ? (

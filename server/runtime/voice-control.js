@@ -4,6 +4,7 @@ import path from "node:path";
 import { appendModuleLog } from "./module-logs.js";
 import { addMemory } from "./memory.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
+import { isDemoPublic } from "./demo-public.js";
 import { getExecutionGateStatus, isExecutionEnabled } from "./execution-gate.js";
 import { expandHome, runtimePaths } from "./store.js";
 import { redactText, runCommand, sanitizeObject, which } from "./safety.js";
@@ -68,6 +69,7 @@ function voicePlannerDisabled(stored = {}) {
 }
 
 function voiceShellAllowed(stored = {}) {
+  if (isDemoPublic()) return false;
   return configFlag(voiceConfig(stored, "HERMES_VOICE_ALLOW_SHELL", process.env.HERMES_VOICE_ALLOW_SHELL || ""), false);
 }
 

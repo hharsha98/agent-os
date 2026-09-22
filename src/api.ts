@@ -67,6 +67,14 @@ import type {
   WorkspaceListing
 } from "./types";
 import type { LocalAgentDashboard, ProductStatus } from "./localAgents";
+import type {
+  DemoBuilderResult,
+  DemoBuilderRun,
+  DemoChatResult,
+  DemoMachinePreview,
+  DemoStatus,
+  DemoTimelineResult
+} from "./demo";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -385,6 +393,49 @@ export async function getLocalAgents() {
 
 export function getProductStatus() {
   return request<ProductStatus>("/api/product/status");
+}
+
+export function getDemoStatus() {
+  return request<DemoStatus>("/api/demo/status");
+}
+
+export function sendDemoChat(agentId: string, message: string) {
+  return request<DemoChatResult>("/api/demo/chat", {
+    method: "POST",
+    body: JSON.stringify({ agentId, message })
+  });
+}
+
+export function runDemoTimeline(message: string) {
+  return request<DemoTimelineResult>("/api/demo/timeline", {
+    method: "POST",
+    body: JSON.stringify({ message })
+  });
+}
+
+export function previewDemoMachine(scenario: string) {
+  return request<DemoMachinePreview>("/api/demo/machine/preview", {
+    method: "POST",
+    body: JSON.stringify({ scenario })
+  });
+}
+
+export function getDemoBuilder() {
+  return request<DemoBuilderResult>("/api/demo/builder");
+}
+
+export function saveDemoBuilder(payload: { name?: string; nodes: Array<{ id: string; label?: string; prompt?: string }> }) {
+  return request<DemoBuilderResult>("/api/demo/builder", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function runDemoBuilder(message: string) {
+  return request<DemoBuilderRun>("/api/demo/builder/run", {
+    method: "POST",
+    body: JSON.stringify({ message })
+  });
 }
 
 export function addMemory(payload: Record<string, unknown>) {

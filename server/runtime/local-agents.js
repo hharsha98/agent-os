@@ -1,3 +1,4 @@
+import { applyDemoPresentation, isDemoPublic } from "./demo-public.js";
 import { commandVersion, redactText, runCommand, which } from "./safety.js";
 import { getCodexApiStatus } from "./codex-api.js";
 import { getExecutionGateStatus } from "./execution-gate.js";
@@ -309,7 +310,7 @@ export async function getLocalAgentDashboardStatus({
     });
   });
 
-  return {
+  const payload = {
     ok: true,
     hosted: false,
     edition: "local-v1",
@@ -323,6 +324,9 @@ export async function getLocalAgentDashboardStatus({
     summary: summarizeAgents(agents, resolvedGate, resolvedGateway),
     agents
   };
+
+  if (!isDemoPublic()) return payload;
+  return applyDemoPresentation(payload);
 }
 
 export { AGENT_CATALOG };

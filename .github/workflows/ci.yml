@@ -37,3 +37,4 @@ jobs:
             exit 1
           fi
           npm run smoke:local
+          npm run smoke:public

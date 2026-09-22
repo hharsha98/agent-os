@@ -231,6 +231,11 @@
   margin-bottom: 4px;
 }
 
+.aos-chat-bubble p {
+  white-space: pre-wrap;
+  margin: 0;
+}
+
 .aos-chat-compose {
   display: flex;
   flex-direction: column;
@@ -392,6 +397,11 @@
   background: rgba(160, 46, 46, 0.18);
 }
 
+.aos-layer-pill.demo {
+  color: #d5e8ff;
+  background: rgba(70, 140, 220, 0.22);
+}
+
 .aos-chat-actions {
   display: flex;
   flex-wrap: wrap;
@@ -443,6 +453,107 @@
 
 .aos-phase2-shell .aos-sidebar-foot {
   margin-top: auto;
+}
+
+.aos-demo-dot {
+  background: #7eb6ff;
+  box-shadow: 0 0 0 4px rgba(126, 182, 255, 0.18);
+}
+
+.aos-demo-steps {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aos-demo-steps li {
+  margin: 0;
+}
+
+.aos-demo-steps small,
+.aos-demo-steps p {
+  display: block;
+  color: #c3c8d2;
+}
+
+.aos-demo-transcript {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  background: #090b0f;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+}
+
+.aos-demo-builder {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.8fr);
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.aos-demo-canvas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: stretch;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px dashed rgba(126, 182, 255, 0.35);
+  background: rgba(8, 12, 20, 0.45);
+}
+
+.aos-demo-node {
+  min-width: 140px;
+  text-align: left;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #121722;
+  color: inherit;
+  padding: 10px 12px;
+}
+
+.aos-demo-node.active {
+  border-color: rgba(126, 182, 255, 0.8);
+  box-shadow: 0 0 0 1px rgba(126, 182, 255, 0.35);
+}
+
+.aos-demo-node span,
+.aos-demo-node small {
+  display: block;
+  color: #8f96a3;
+  font-size: 11px;
+}
+
+.aos-demo-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aos-demo-inspector textarea,
+.aos-field textarea {
+  min-height: 72px;
+  resize: vertical;
+  background: #090b0f;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: inherit;
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.aos-demo-run {
+  margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+  .aos-demo-builder {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {

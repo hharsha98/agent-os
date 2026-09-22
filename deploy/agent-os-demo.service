@@ -1,0 +1,18 @@
+[Unit]
+Description=Agent OS public demo (sandboxed)
+After=network.target
+
+[Service]
+Type=simple
+User=agentos
+Group=agentos
+WorkingDirectory=/opt/agent-os
+EnvironmentFile=/etc/agent-os/demo.env
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -23,6 +23,7 @@ type LocalAgent = {
   available: boolean;
   version?: string;
   status: string;
+  simulated?: boolean;
   chat?: { mode?: string; label?: string };
   cli?: { found?: boolean; command?: string; version?: string | null };
 };
@@ -40,6 +41,7 @@ export default function GoalsPage({ localAgents }: { localAgents: LocalAgent[] }
   const [intervalMinutes, setIntervalMinutes] = useState(480);
   const [notice, setNotice] = useState("");
   const codex = localAgents.find((agent) => agent.id === "codex");
+  const codexDemo = Boolean(codex?.simulated);
   const selected = useMemo(
     () => state?.items.find((item) => item.id === selectedId) || state?.items[0] || null,
     [state, selectedId]
@@ -136,9 +138,11 @@ export default function GoalsPage({ localAgents }: { localAgents: LocalAgent[] }
         reason: "Overnight Goal Mode from dashboard"
       });
       setGate(next);
-      setNotice(enabled
-        ? "Live execution is on from local config. This is not writing ENABLE_EXEC into .env."
-        : "Live execution is off again.");
+      setNotice(next.demoLocked
+        ? "Public demo keeps live execution locked. No host shell."
+        : enabled
+          ? "Live execution is on from local config. This is not writing ENABLE_EXEC into .env."
+          : "Live execution is off again.");
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not update the execution gate.");
@@ -214,13 +218,13 @@ export default function GoalsPage({ localAgents }: { localAgents: LocalAgent[] }
       <div className="aos-status-grid">
         <article>
           <span>Standalone Codex CLI</span>
-          <strong>{codex?.cli?.found ? "Found" : "Missing"}</strong>
-          <small>{codex?.cli?.found ? (codex.cli.version || "on PATH") : "Not on PATH"}</small>
+          <strong>{codexDemo ? "Demo" : codex?.cli?.found ? "Found" : "Missing"}</strong>
+          <small>{codexDemo ? "Simulated. Your Codex CLI is not connected." : codex?.cli?.found ? (codex.cli.version || "on PATH") : "Not on PATH"}</small>
         </article>
         <article>
           <span>Live overnight runs</span>
           <strong>{liveOn ? "Enabled" : "Disabled"}</strong>
-          <small>{gate?.source || "local-config gate"} · {gate?.reason || "You click Enable once"}</small>
+          <small>{gate?.demoLocked ? "Public demo lock" : gate?.source || "local-config gate"} · {gate?.reason || "You click Enable once"}</small>
         </article>
         <article>
           <span>Goals stored</span>
@@ -234,7 +238,7 @@ export default function GoalsPage({ localAgents }: { localAgents: LocalAgent[] }
       {error ? <div className="aos-global-error">{error}</div> : null}
       {notice ? <p className="aos-honest-note">{notice}</p> : null}
       <div className="aos-phase-toolbar">
-        <button className="aos-secondary" disabled={busy !== "" || liveOn} onClick={() => void toggleGate(true)}>
+        <button className="aos-secondary" disabled={busy !== "" || liveOn || Boolean(gate?.demoLocked)} onClick={() => void toggleGate(true)}>
           {busy === "gate" ? <Loader2 className="aos-spin" size={16} /> : null} Enable live execution
         </button>
         <button className="aos-secondary" disabled={busy !== "" || !liveOn} onClick={() => void toggleGate(false)}>

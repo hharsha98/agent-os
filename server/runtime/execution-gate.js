@@ -1,3 +1,4 @@
+import { isDemoPublic } from "./demo-public.js";
 import { runtimePaths, readJson, writeJson } from "./store.js";
 
 const CONFIG_FILE = "execution-gate.json";
@@ -35,9 +36,24 @@ function publicStatus(config = {}) {
   };
 }
 
+export function applyDemoExecutionLock(status = {}, env = process.env) {
+  if (!isDemoPublic(env)) return status;
+  return {
+    ...status,
+    enabled: false,
+    source: "demo-public-lock",
+    envLocked: false,
+    localEnabled: false,
+    dryRunDefault: true,
+    demoLocked: true,
+    refused: status.refused === true,
+    publicSummary: "Public demo locks live execution off. No host shell runs, even if HERMES_AGENT_OS_ENABLE_EXEC=1."
+  };
+}
+
 export async function getExecutionGateStatus() {
   const config = await readJson(configPath(), {});
-  return publicStatus(config || {});
+  return applyDemoExecutionLock(publicStatus(config || {}));
 }
 
 export async function isExecutionEnabled() {
@@ -45,6 +61,20 @@ export async function isExecutionEnabled() {
 }
 
 export async function setExecutionGateStatus(input = {}, { updatedBy = "local-admin" } = {}) {
+  if (isDemoPublic()) {
+    return applyDemoExecutionLock({
+      enabled: false,
+      source: "demo-public-lock",
+      envLocked: false,
+      localEnabled: false,
+      dryRunDefault: true,
+      updatedAt: now(),
+      updatedBy: "demo-public-lock",
+      reason: "Public demo refuses to enable host execution.",
+      refused: true,
+      publicSummary: ""
+    });
+  }
   const requestedEnabled = input.enabled === true || input.enabled === "true" || input.enabled === 1 || input.enabled === "1";
   const reason = String(input.reason || "").trim().slice(0, 240);
   const config = {

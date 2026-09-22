@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { ensureRuntimeStore, publicRuntimePath, readJson, runtimePaths, writeJson } from "./store.js";
+import { ensureRuntimeStore, publicRuntimePath, runtimePaths, writeJson } from "./store.js";
 
 const ROOT_IDS = new Set(["workspace", "exports"]);
 const WRITE_EXTS = new Set([".md", ".txt", ".html"]);

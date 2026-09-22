@@ -299,7 +299,7 @@ export function buildDryRunPlanReply({
   status,
   prompt = "",
   plannedExecution = null,
-  echoGoal = true,
+  echoGoal = false,
   footer = ""
 } = {}) {
   const raw = String(prompt || "").trim();

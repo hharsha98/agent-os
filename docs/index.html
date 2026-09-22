@@ -60,6 +60,7 @@
       .card small { color: #f0bd64; font-size: 11px; font-weight: 700; }
       .card p { margin: 6px 0 0; color: #9aa3b0; font-size: 12px; }
       figure { margin: 0 0 48px; }
+      figure img { display: block; width: 100%; height: auto; border: 0; }
       figcaption { color: #8f96a3; font-size: 14px; margin-top: 10px; line-height: 1.5; }
       footer { color: #66707c; text-align: center; padding: 24px 6vw 64px; font-size: 13px; }
       footer a { color: #ff9a62; }
@@ -96,48 +97,15 @@
       <figure id="mission">
         <div class="frame">
           <div class="chrome">Agent OS · Mission Control · local v1</div>
-          <div class="layout">
-            <aside class="side">
-              <b>Start</b>
-              <div class="on">Mission Control</div>
-              <div>Chat</div>
-              <div>Workspace</div>
-            </aside>
-            <div class="main">
-              <div class="kicker">MISSION CONTROL · LOCAL V1</div>
-              <h2>See what is actually installed.</h2>
-              <div class="cards">
-                <article class="card"><small>CLI found · chat not wired</small><b>Cursor</b><p>On PATH. Unified Chat does not send to it.</p></article>
-                <article class="card"><small>Dry run</small><b>Claude Code</b><p>Module API returns a plan.</p></article>
-                <article class="card"><small>API preview</small><b>Codex</b><p>Only if a local OpenAI key exists.</p></article>
-                <article class="card"><small>Not installed</small><b>OpenClaw</b><p>Missing stays missing.</p></article>
-              </div>
-            </div>
-          </div>
+          <img src="screenshots/mission.png" alt="Agent OS Mission Control landing" width="1440" height="900" />
         </div>
-        <figcaption>Mission Control — CLI presence, dashboard chat capability, and live execution are separate. This mock is illustrative; your machine’s counts will differ.</figcaption>
+        <figcaption>Mission Control — CLI presence, dashboard chat capability, and live execution are separate. Counts depend on your machine.</figcaption>
       </figure>
 
       <figure id="chat">
         <div class="frame">
           <div class="chrome">Unified Chat · dry-run</div>
-          <div class="layout">
-            <aside class="side">
-              <b>Start</b>
-              <div>Mission Control</div>
-              <div class="on">Chat</div>
-            </aside>
-            <div class="main">
-              <div class="kicker">UNIFIED CHAT · DRY-RUN</div>
-              <h2>One box. Four local agents.</h2>
-              <div class="cards">
-                <article class="card"><small>Cursor</small><p>Chat not wired</p></article>
-                <article class="card"><small>Claude</small><p>Dry run</p></article>
-                <article class="card"><small>Codex</small><p>API preview or dry-run</p></article>
-                <article class="card"><small>Hermes</small><p>Dry run</p></article>
-              </div>
-            </div>
-          </div>
+          <img src="screenshots/chat.png" alt="Agent OS Unified Chat dry-run surface" width="1200" height="720" />
         </div>
         <figcaption>Unified Chat — Send stays a dry-run (or Codex API preview). History is browser-local, not a cloud inbox.</figcaption>
       </figure>
@@ -145,23 +113,15 @@
       <figure id="workspace">
         <div class="frame">
           <div class="chrome">Workspace sandbox</div>
-          <div class="main">
-            <div class="kicker">WORKSPACE</div>
-            <h2>Only ~/.hermes-agent-os/workspace + exports.</h2>
-            <p class="note">Empty is honest until files exist. Path travel with <code>../</code> is rejected. HTML preview uses a sandboxed iframe.</p>
-          </div>
+          <img src="screenshots/workspace.png" alt="Agent OS workspace sandbox" width="1200" height="720" />
         </div>
-        <figcaption>Workspace — sandbox listing and preview. Not your whole disk.</figcaption>
+        <figcaption>Workspace — sandbox listing and preview. First open seeds <code>inbox/welcome.md</code> once. Path travel with <code>../</code> is rejected.</figcaption>
       </figure>
 
       <figure id="machine">
         <div class="frame">
           <div class="chrome">Machine Control · status only</div>
-          <div class="main">
-            <div class="kicker">MACHINE CONTROL</div>
-            <h2>Run command stays disabled.</h2>
-            <p class="note">Execution gate off. Voice shell off. cliclick / Accessibility are reported, not granted from this page.</p>
-          </div>
+          <img src="screenshots/machine.png" alt="Agent OS Machine Control checklist" width="1200" height="720" />
         </div>
         <figcaption>Machine Control — permission checklist, not a remote-control panel.</figcaption>
       </figure>

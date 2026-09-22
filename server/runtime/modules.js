@@ -293,6 +293,45 @@ function commonAgentTaskProfiles(label = "Agent") {
   ];
 }
 
+/** Local dry-run plan for Unified Chat — never claims tools ran. */
+export function buildDryRunPlanReply({
+  label,
+  status,
+  prompt = "",
+  plannedExecution = null,
+  echoGoal = true,
+  footer = ""
+} = {}) {
+  const raw = String(prompt || "").trim();
+  const goalLine = echoGoal && raw
+    ? raw.length > 220 ? `${raw.slice(0, 220)}…` : raw
+    : raw
+      ? `${raw.length}-character task (prompt text is not echoed here).`
+      : "(no prompt provided)";
+  const firstLine = raw.split(/\n/).map((line) => line.trim()).find(Boolean) || "the stated goal";
+  const focus = firstLine.length > 100 ? `${firstLine.slice(0, 100)}…` : firstLine;
+  const lines = [
+    `## Dry-run plan · ${label}`,
+    "",
+    `Goal: ${goalLine}`,
+    "",
+    "Proposed steps (not executed):",
+    `1. Clarify success criteria for: ${echoGoal ? focus : "the received task"}.`,
+    "2. Inspect the local workspace sandbox and any Memory notes already on this machine.",
+    "3. Draft the smallest safe file or command changes — still without running tools.",
+    "4. List verification steps a human can run after enabling live execution.",
+    ""
+  ];
+  if (plannedExecution?.commandPreview) {
+    lines.push(`Would invoke (preview only): \`${plannedExecution.commandPreview}\``, "");
+  }
+  lines.push(
+    `Agent status: ${status || "unknown"}.`,
+    footer || "Live tools stay off until HERMES_AGENT_OS_ENABLE_EXEC=1 and the request sets dryRun:false."
+  );
+  return lines.join("\n");
+}
+
 function voiceControlTaskProfiles() {
   return [
     {
@@ -1381,18 +1420,25 @@ async function runHermesControl(module, input = {}) {
     evidence.push(`queue: ${control.queue}`);
     evidence.push(`cli: ${cli.commandPath ? "available" : cli.configuredPath ? "configured path missing" : "missing"}`);
 
+    const plan = buildDryRunPlanReply({
+      label: module.label,
+      status: module.status,
+      prompt: body,
+      echoGoal: false,
+      footer: "Live Hermes dispatch stays off until HERMES_AGENT_OS_ENABLE_EXEC=1 and the request sets dryRun:false."
+    });
     if (!targetProfile) {
       ok = false;
       mode = "ready_to_configure";
-      reply = "No Hermes profile is available to receive the task. Create or select a Hermes profile first.";
+      reply = `${plan}\n\nNo Hermes profile is available to receive the task. Create or select a Hermes profile first.`;
     } else if (!cli.commandPath) {
       ok = false;
       mode = "ready_to_configure";
       reply = cli.configuredPath
-        ? "Configured HERMES_CLI_PATH was not found. Update the Hermes connection settings."
-        : "Hermes CLI was not found on PATH. Configure HERMES_CLI_PATH to enable real task dispatch.";
+        ? `${plan}\n\nConfigured HERMES_CLI_PATH was not found. Update the Hermes connection settings.`
+        : `${plan}\n\nHermes CLI was not found on PATH. Configure HERMES_CLI_PATH to enable real task dispatch.`;
     } else {
-      reply = `Prepared Hermes Kanban task for ${targetProfile}. Execution requires the trusted execution gate and dryRun:false.`;
+      reply = `${plan}\n\nPrepared Hermes Kanban task for ${targetProfile}. Execution requires the trusted execution gate and dryRun:false.`;
       if (execEnabled && explicitExecution) {
         const args = [
           "kanban",
@@ -2840,6 +2886,16 @@ export async function runModule(id, input = {}) {
         evidence.push("CLI path resolution failed");
       }
     }
+    const reply = buildDryRunPlanReply({
+      label: module.label,
+      status: module.status,
+      prompt: String(input.message || input.prompt || ""),
+      plannedExecution,
+      echoGoal: false,
+      footer: module.type === "cli"
+        ? "Execution requires the trusted execution gate and dryRun:false on a trusted local machine."
+        : "Use the module-specific control room or provider router for execution. Live tools stay off until dryRun:false is explicit."
+    });
     const proof = moduleRunProof(id, module, input, {
       mode: "dry_run",
       execEnabled,
@@ -2849,7 +2905,7 @@ export async function runModule(id, input = {}) {
         : "Use the module-specific control room or provider router for execution.",
       evidence
     });
-    const handoff = await recordAgentRunHandoff(id, module, input, proof, `${module.label} is ${module.status}.`);
+    const handoff = await recordAgentRunHandoff(id, module, input, proof, reply);
     await appendModuleLog(id, {
       message: "Module dry run requested",
       details: {
@@ -2864,7 +2920,7 @@ export async function runModule(id, input = {}) {
     return {
       ok: true,
       mode: "dry_run",
-      reply: `${module.label} is ${module.status}. Execution requires the trusted execution gate and dryRun:false on a trusted local machine.`,
+      reply,
       module,
       plannedExecution,
       proof: handoff.proof,

@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+/**
+ * Optional Docker smoke for Macs with Docker Desktop.
+ * Not used by CI. Exit 0 with a skip message when Docker is unavailable
+ * unless HERMES_DOCKER_SMOKE_REQUIRED=1.
+ */
 import { execFile } from "node:child_process";
 import net from "node:net";
 import path from "node:path";

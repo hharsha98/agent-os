@@ -18,19 +18,28 @@ async function withTempRuntime(fn) {
   }
 }
 
-test("workspace listing starts empty and stays inside sandbox folders", async () => {
-  await withTempRuntime(async () => {
+test("workspace listing seeds a one-time welcome note inside the sandbox", async () => {
+  await withTempRuntime(async (root) => {
     const listing = await listWorkspaceFiles();
     const workspaceRoot = listing.roots.find((item) => item.id === "workspace");
-    assert.equal(listing.files.length, 0);
-    assert.equal(listing.empty, true);
+    assert.equal(listing.files.length, 1);
+    assert.equal(listing.empty, false);
+    assert.equal(listing.files[0].id, "workspace/inbox/welcome.md");
     assert.ok(workspaceRoot);
     assert.match(workspaceRoot.publicPath, /workspace$/);
+    const marker = path.join(root, "config", "workspace-welcome-seeded.json");
+    await fs.access(marker);
+    await fs.rm(path.join(root, "workspace", "inbox", "welcome.md"));
+    const again = await listWorkspaceFiles();
+    assert.equal(again.files.length, 0);
+    assert.equal(again.empty, true);
   });
 });
 
 test("workspace listing includes a file written to the sandbox", async () => {
   await withTempRuntime(async (root) => {
+    await fs.mkdir(path.join(root, "config"), { recursive: true });
+    await fs.writeFile(path.join(root, "config", "workspace-welcome-seeded.json"), "{\"seeded\":true}\n");
     const filePath = path.join(root, "workspace", "hello.txt");
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, "hello");

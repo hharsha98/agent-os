@@ -3613,6 +3613,10 @@ test("module run endpoint dry-runs by default", async () => {
     assert.equal(result.proof.dryRun, true);
     assert.equal(result.proof.promptChars, 5);
     assert.ok(result.proof.runId.startsWith("claude_"));
+    assert.match(result.reply, /Dry-run plan · Claude Code/);
+    assert.match(result.reply, /5-character task/);
+    assert.match(result.reply, /dryRun:false/);
+    assert.equal(result.reply.includes("hello"), false);
 
     await withEnv({ HERMES_AGENT_OS_ENABLE_EXEC: "1" }, async () => {
       const stillDry = await runModule("claude", { message: "hello" });
@@ -5651,7 +5655,7 @@ test("Docker deployment artifacts are present and use persistent runtime storage
   const smoke = await readFile(path.join(root, "scripts", "docker-smoke.js"), "utf8");
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   assert.match(dockerfile, /EXPOSE 8090/);
-  assert.match(compose, /8090:8090/);
+  assert.match(compose, /(?:8090|\$\{PORT:-8090\}):8090/);
   assert.match(smoke, /PORT=8090/);
   assert.doesNotMatch(dockerfile, /EXPOSE 4173/);
   assert.doesNotMatch(compose, /4173/);

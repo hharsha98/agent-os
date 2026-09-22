@@ -29,6 +29,7 @@ import BlueprintPage from "./pages/BlueprintPage";
 import BrainPage from "./pages/BrainPage";
 import ChatPage from "./pages/ChatPage";
 import GoalsPage from "./pages/GoalsPage";
+import HermesPage from "./pages/HermesPage";
 import JournalPage from "./pages/JournalPage";
 import KanbanPage from "./pages/KanbanPage";
 import LoopPage from "./pages/LoopPage";
@@ -36,6 +37,7 @@ import MachineControlPage from "./pages/MachineControlPage";
 import MemoryPage from "./pages/MemoryPage";
 import MissionControlPage from "./pages/MissionControlPage";
 import NotebookPage from "./pages/NotebookPage";
+import OpenClawPage from "./pages/OpenClawPage";
 import SeoPage from "./pages/SeoPage";
 import StudioPage from "./pages/StudioPage";
 import SwarmPage from "./pages/SwarmPage";
@@ -65,7 +67,7 @@ type ShellPage =
   | "openclaw"
   | "hermes";
 
-const LEGACY_PAGES = new Set<ShellPage>(["home", "builder", "apis", "openclaw", "hermes"]);
+const LEGACY_PAGES = new Set<ShellPage>(["home", "builder", "apis"]);
 const ALL_PAGES = new Set<ShellPage>([
   "mission",
   "home",
@@ -256,6 +258,10 @@ export default function DashboardRoot() {
           <StudioPage />
         ) : page === "swarm" ? (
           <SwarmPage />
+        ) : page === "openclaw" ? (
+          <OpenClawPage />
+        ) : page === "hermes" ? (
+          <HermesPage />
         ) : (
           <MachineControlPage />
         )}

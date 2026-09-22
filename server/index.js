@@ -1120,6 +1120,13 @@ app.get("/api/local-agents", requireAdminWhenPublic, async (_req, res, next) => 
 app.get("/api/product/status", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     const agents = await getLocalAgentDashboardStatus();
+    const memory = await getMemoryState().catch(() => null);
+    const chatTried = Boolean(
+      memory?.memories?.some((item) =>
+        item?.namespace === "agent-runs" ||
+        (Array.isArray(item?.tags) && item.tags.includes("agent-run"))
+      )
+    );
     res.json({
       ok: true,
       hosted: false,
@@ -1137,7 +1144,14 @@ app.get("/api/product/status", requireAdminWhenPublic, async (_req, res, next) =
       firstRun: [
         { id: "runtime", label: "Runtime is up", done: true, detail: `Listening on port ${port}.` },
         { id: "env", label: "Optional .env loaded", done: Boolean(envFile.loaded), detail: envFile.loaded ? "Local .env values applied without overriding the process environment." : "Copy .env.example to .env only if you need keys. The app runs without it." },
-        { id: "chat", label: "Try Unified Chat in dry-run", done: false, detail: "Claude and Hermes plan only. Cursor stays not wired. Codex previews if a key is saved." },
+        {
+          id: "chat",
+          label: "Try Unified Chat in dry-run",
+          done: chatTried,
+          detail: chatTried
+            ? "At least one dry-run agent handoff is in local Memory."
+            : "Claude and Hermes return dry-run plans. Cursor stays not wired. Codex previews if a key is saved."
+        },
         { id: "exec", label: "Keep live execution off", done: !agents.executionGate.enabled, detail: agents.executionGate.publicSummary }
       ]
     });

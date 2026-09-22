@@ -1234,7 +1234,7 @@ export default function AgentOSApp() {
   }
 
   const selectedAgent = AGENTS.find((agent) => agent.id === page);
-  const title = page === "home" ? "Mission control" : page === "builder" ? "Visual builder" : page === "apis" ? "AI APIs" : selectedAgent?.name || "Agent OS";
+  const title = page === "home" ? "Workflow studio" : page === "builder" ? "Visual builder" : page === "apis" ? "AI APIs" : selectedAgent?.name || "Agent OS";
 
   return (
     <div className="aos-root">

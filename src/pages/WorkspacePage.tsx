@@ -143,7 +143,7 @@ export default function WorkspacePage() {
       }
     >
       <HonestNote>
-        Empty is honest. Save a briefing on Loop, write a note here, or drop HTML/images into ~/.hermes-agent-os/workspace, and they will show up. This page will not browse the rest of your disk.
+        First open seeds <code>inbox/welcome.md</code> once so the list is not blank. Delete it anytime — it will not come back. Save a Loop briefing, write a note here, or drop HTML/images into ~/.hermes-agent-os/workspace. This page will not browse the rest of your disk.
       </HonestNote>
       <div className="aos-phase-toolbar">
         <label className="aos-field">

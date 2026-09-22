@@ -68,6 +68,19 @@
   margin-bottom: 16px;
 }
 
+.aos-setup-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.aos-setup-grid article span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
 .aos-status-grid article {
   background: #101318;
   border: 1px solid rgba(255, 255, 255, 0.09);

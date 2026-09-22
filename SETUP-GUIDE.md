@@ -9,7 +9,7 @@ Agent OS is a **local-first** dashboard. You clone the repo, run it on your mach
 - Optional local CLIs: Cursor Agent (`agent`), Claude Code (`claude`), Hermes (`hermes`), Codex (`codex`), OpenClaw (`openclaw`)
 - Optional OpenAI API key for Codex preview / workflow generation
 
-macOS and Linux are the expected hosts. Docker is supported for the dashboard process; host CLIs are not injected into the container.
+macOS and Linux are the expected hosts. The supported install path is **Node + npm** (`npm ci` → `npm run build` → `npm start`). Docker Compose is optional for Mac users who already have Docker Desktop; it is never required for CI or verification on cloud VMs.
 
 ## Install and start
 
@@ -86,7 +86,11 @@ HERMES_AGENT_OS_ENABLE_EXEC=1
 
 Default local v1 keeps this off. Missing positions are easier to recover than duplicate live runs.
 
-## Docker
+## Optional: Docker on your Mac
+
+Skip this on Cursor cloud / CI — Docker is often unavailable there. Use native `npm start` instead.
+
+If Docker Desktop is already running on your Mac:
 
 ```bash
 cp .env.example .env
@@ -103,9 +107,13 @@ Compose publishes host port **8090** to the container (`PORT` inside the image i
 - Do not distribute `.env`, the runtime store, or workflow runs.
 - Public/VPS mode is optional and not the v1 product. If you enable it, set `HERMES_AGENT_OS_PUBLIC_MODE=1` and an admin token; it is still a single-operator guard, not multi-tenant accounts.
 
-## Verification
+## Verification (native — no Docker)
 
 ```bash
 npm run build
 env -u HERMES_HOME npm test
+npm start   # separate terminal
+npm run smoke:local
 ```
+
+Hiring-manager demo path (under 10 minutes): Mission Control → Unified Chat dry-run → Workspace sandbox → Machine Control checklist. Leave Labs extras for later.

@@ -113,16 +113,32 @@ HERMES_AGENT_OS_PUBLIC_MODE=0
 
 `.env` is gitignored. Never commit API keys.
 
-Docker is available for a containerized local run (`docker compose up --build`, host port **8090**). Host-installed CLIs are **not** automatically available inside the container.
-
 ---
 
-## Verify
+## Verify (no Docker required)
 
 ```bash
 npm run build
 env -u HERMES_HOME npm test
+npm start   # in one terminal
+npm run smoke:local
 ```
+
+`smoke:local` hits health, Mission Control product status, Unified Chat dry-run plans, workspace, and the execution gate. **CI uses this native path only** — Docker is never required to verify or ship.
+
+---
+
+## Optional: Docker on your Mac
+
+Only if you already have Docker Desktop and prefer a containerized dashboard process:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Host port **8090**. Host-installed CLIs (`agent`, `claude`, `hermes`, `codex`) are **not** injected into the container. Prefer the native `npm start` path for demos that need CLI probes.
+
 
 ---
 
@@ -143,6 +159,7 @@ Most agent dashboards look impressive and then silently run shell. This one is b
 src/                 Dashboard (Mission Control, Chat, Phase 2 pages)
 server/              Express APIs, workspace sandbox, memory, goals
 test/                Runtime + workspace + local-agent tests
+scripts/local-smoke.js   Native smoke (no Docker)
 docs/                Static gallery and product tour
 .env.example         Safe defaults — copy to .env
 ```

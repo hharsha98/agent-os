@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { ensureRuntimeStore, publicRuntimePath, runtimePaths } from "./store.js";
+import { ensureRuntimeStore, publicRuntimePath, runtimePaths, writeJson } from "./store.js";
 
 const ROOT_IDS = new Set(["workspace", "exports"]);
 const WRITE_EXTS = new Set([".md", ".txt", ".html"]);
@@ -129,6 +129,7 @@ async function walkDir(rootId, dir, relativeDir, depth, files) {
 
 export async function listWorkspaceFiles(input = {}) {
   await ensureRuntimeStore();
+  await ensureWelcomeWorkspaceSeed();
   const query = String(input.query || "").trim().toLowerCase();
   const kind = String(input.kind || "").trim().toLowerCase();
   const files = [];
@@ -154,6 +155,38 @@ export async function listWorkspaceFiles(input = {}) {
       shown: filtered.length
     }
   };
+}
+
+const WELCOME_NOTE = `# Welcome to the Agent OS workspace
+
+This folder is the **sandbox** for local v1.
+
+- Path (public): \`~/.hermes-agent-os/workspace\`
+- Loop briefings land in \`loop/\`
+- Memory vault exports land in \`vault/\`
+- You can write \`.md\`, \`.txt\`, or \`.html\` from the dashboard
+
+This file was seeded once so a hiring-manager demo is not an empty list. Delete it anytime — Agent OS will not recreate it after the seed marker is set.
+`;
+
+async function ensureWelcomeWorkspaceSeed() {
+  const paths = runtimePaths();
+  const marker = path.join(paths.config, "workspace-welcome-seeded.json");
+  try {
+    await fs.access(marker);
+    return;
+  } catch {
+    // Seed once per runtime home.
+  }
+  const target = path.join(paths.workspace, "inbox", "welcome.md");
+  try {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.access(target);
+  } catch {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, WELCOME_NOTE, "utf8");
+  }
+  await writeJson(marker, { seededAt: new Date().toISOString(), file: "inbox/welcome.md" });
 }
 
 export async function resolveWorkspaceFile(id) {

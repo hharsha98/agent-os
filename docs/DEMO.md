@@ -12,10 +12,12 @@ Scores are **CLIs found**, not “4/4 agents connected”. Dashboard chat is a s
 
 One composer, four agents. Labels are the product:
 
-- **Dry run** — plan only, no live tools
+- **Dry run** — Claude / Hermes return a structured plan; no live tools
 - **API preview** — Codex with a local key; still not a tool-using run
 - **CLI found · chat not wired** — Cursor is installed, routing is not faked
 - Session history stays in the tab — not a cloud inbox
+
+Try the example prompt. You should see a `## Dry-run plan` reply, not a fake shell transcript.
 
 ## 3. Workspace sandbox
 

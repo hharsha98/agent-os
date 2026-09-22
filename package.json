@@ -3,6 +3,9 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "concurrently \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
     "build": "tsc -b && vite build",
@@ -10,6 +13,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "check": "tsc -b && vite build",
     "test": "node --test",
+    "smoke:local": "node scripts/local-smoke.js",
     "builder:install": "npm --prefix vendor/open-agent-builder install",
     "builder:start": "node scripts/start-builder.js",
     "builder:build": "npm --prefix vendor/open-agent-builder run build",

@@ -1,4 +1,4 @@
-export type ChatMode = "not_wired" | "dry_run" | "preview" | "unavailable" | "not_in_unified_chat";
+export type ChatMode = "not_wired" | "dry_run" | "preview" | "unavailable" | "not_in_unified_chat" | "demo";
 
 export type LocalAgentRecord = {
   id: string;
@@ -11,7 +11,11 @@ export type LocalAgentRecord = {
   connection?: string;
   summary?: string;
   hint?: string;
-  cli?: { found: boolean; command: string; version: string | null };
+  simulated?: boolean;
+  realSession?: boolean;
+  badge?: string;
+  hostCli?: { found: boolean; command: string; version: string | null };
+  cli?: { found: boolean; command: string; version: string | null; simulated?: boolean; online?: boolean };
   chat?: { mode: ChatMode; routed: boolean; label: string; detail: string };
   liveExecution?: { allowed: boolean; label: string; detail: string };
   nextAction?: string;
@@ -39,6 +43,8 @@ export type LocalAgentDashboard = {
     connected: number;
     executionEnabled: boolean;
     dryRunDefault: boolean;
+    simulated?: boolean;
+    demoOnline?: number;
   };
   agents: LocalAgentRecord[];
 };
@@ -47,10 +53,13 @@ export type ProductStatus = {
   ok: boolean;
   hosted: boolean;
   edition: string;
+  demoPublic?: boolean;
+  badge?: string | null;
   name: string;
   publicSummary: string;
   port: number;
-  env: { loaded: boolean; publicMode: boolean; requireAuth: boolean };
+  bind?: string;
+  env: { loaded: boolean; publicMode: boolean; requireAuth: boolean; demoPublic?: boolean };
   executionGate: LocalAgentDashboard["executionGate"];
   agents: LocalAgentDashboard["summary"];
   firstRun: Array<{ id: string; label: string; done: boolean; detail: string }>;
@@ -65,6 +74,13 @@ export function cursorChatNotice(
       persist: false,
       badge: "Checking",
       text: "Still checking whether the Cursor CLI is on PATH. Nothing was marked connected."
+    };
+  }
+  if (agent?.simulated || agent?.chat?.mode === "demo") {
+    return {
+      persist: true,
+      badge: "Demo",
+      text: "Cursor is simulated for this public demo. Your real Cursor session is not connected, and no CLI was started."
     };
   }
   if (!agent && options.error) {
@@ -102,6 +118,7 @@ export function chatLabel(agent?: LocalAgentRecord | null) {
 }
 
 export function statusTone(status = "") {
+  if (status === "demo") return "demo";
   if (status === "dry_run" || status === "preview" || status === "cli_present") return "partial";
   if (status === "not_installed" || status === "unavailable" || status === "missing_dependency") return "missing";
   if (status === "connected") return "live";

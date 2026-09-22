@@ -106,6 +106,7 @@ Compose publishes host port **8090** to the container (`PORT` inside the image i
 - API responses redact secret values and private paths.
 - Do not distribute `.env`, the runtime store, or workflow runs.
 - Public/VPS mode is optional and not the v1 product. If you enable it, set `HERMES_AGENT_OS_PUBLIC_MODE=1` and an admin token; it is still a single-operator guard, not multi-tenant accounts.
+- `DEMO_PUBLIC=1` is a different switch: a sandboxed public walkthrough with simulated agents. Leave `HERMES_AGENT_OS_PUBLIC_MODE=0` for that demo. Deploy notes: `docs/HANDOFF-CONTABO.md`.
 
 ## Verification (native — no Docker)
 

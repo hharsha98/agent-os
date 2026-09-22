@@ -29,6 +29,8 @@ Agent OS is a **local-first dashboard** for agents that already live on a develo
 
 It is **not** a hosted multi-tenant cloud app. The github.io page is a **static gallery**, suitable later for an `os.` subdomain, not the running product.
 
+An optional **public demo** (`DEMO_PUBLIC=1`) can be hosted behind Caddy for a sandboxed walkthrough. That mode simulates agents and labels them **Demo**. It does not attach a visitor’s real Claude.
+
 | You see | What it means |
 | --- | --- |
 | Mission Control | Real CLI probes. A binary on PATH is not a connected chat session. |
@@ -74,6 +76,7 @@ flowchart LR
 | Machine Control | Status only — no send/run |
 | OpenClaw | Detected if installed; not faked |
 | Overnight Goal Mode | Optional; **execution stays off** by default |
+| Public demo (`DEMO_PUBLIC=1`) | Simulated Mission Control, Chat timeline, Workspace notes, gated machine preview, local canvas |
 | Hosted multi-tenant SaaS | **Not this product** |
 
 ---
@@ -91,7 +94,7 @@ npm run build
 npm start
 ```
 
-Open [http://127.0.0.1:8090](http://127.0.0.1:8090).
+Open [http://127.0.0.1:8090](http://127.0.0.1:8090). The process binds `0.0.0.0` so a reverse proxy on the same machine can reach it. `PORT` overrides 8090. `GET /api/health` reports `ok`, `bind`, and `port`.
 
 The server loads `.env` at startup and **does not override** variables already in the process environment. `.env` is optional if you only want the dry-run dashboard.
 
@@ -124,9 +127,47 @@ npm start   # in one terminal
 npm run smoke:local
 ```
 
-`smoke:local` hits health, Mission Control product status, Unified Chat dry-run plans, workspace, and the execution gate. **CI uses this native path only** — Docker is never required to verify or ship.
+`smoke:local` hits health, Mission Control product status, Unified Chat dry-run plans, workspace, and the execution gate. **CI uses this native path** — Docker is never required to verify or ship.
+
+Public demo checks (also in CI, still no Docker):
+
+```bash
+npm run smoke:public
+```
+
+That boots a temporary server with `DEMO_PUBLIC=1` and asserts the simulated fleet, chat plan, timeline note, workspace seed, gated machine preview, and local canvas.
 
 ---
+
+## Public demo / Contabo
+
+`DEMO_PUBLIC=1` is a **sandboxed hosted walkthrough**, not a claim that anyone’s Claude, Cursor, Codex, or Hermes is connected. The badge is **Public demo · sandboxed**.
+
+What a stranger can do at a URL like `https://agentos.169.58.185.43.sslip.io/`:
+
+1. **Mission Control** — simulated agents labeled **Demo**, with the host CLI called out separately when it exists.
+2. **Unified Chat** — a multi-step plan, then **Run simulated timeline**, which writes `demo/latest-timeline.md`.
+3. **Workspace** — seeded briefing plus a note composer (`.md` / `.txt` / `.html` inside the sandbox only).
+4. **Machine Control** — canned transcripts only. **Run command** stays disabled. Arbitrary shell is refused.
+5. **Demo canvas** — local workflow graph. Convex and Clerk are not required.
+
+While `DEMO_PUBLIC=1`, live execution stays locked even if `HERMES_AGENT_OS_ENABLE_EXEC=1`. Leave `HERMES_AGENT_OS_PUBLIC_MODE=0` for an open demo. That flag is an admin lock, not the demo switch. If you set it, visitors need `HERMES_AGENT_OS_ADMIN_TOKEN`.
+
+```bash
+npm ci
+npm run build
+DEMO_PUBLIC=1 PORT=8090 npm start
+```
+
+Suggested layout on one Contabo VPS: Node listens on `127.0.0.1:8090` (`HOST=127.0.0.1`), Caddy terminates TLS and proxies the sslip.io name. The app default bind is `0.0.0.0` when `HOST` is unset. Full unit, env file, and Caddy example: [docs/HANDOFF-CONTABO.md](docs/HANDOFF-CONTABO.md).
+
+```bash
+npm run smoke:public
+# against a server you already started:
+BASE_URL=http://127.0.0.1:8090 npm run smoke:public
+```
+
+The workspace on that host is **shared**. Do not paste secrets into notes.
 
 ## Optional: Docker on your Mac
 

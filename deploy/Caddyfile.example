@@ -1,0 +1,7 @@
+# Replace the IP with the Contabo VPS address.
+# Caddy obtains a certificate for the sslip.io name.
+# Node listens on 127.0.0.1:8090 (see deploy/demo.env.example).
+
+agentos.169.58.185.43.sslip.io {
+	reverse_proxy 127.0.0.1:8090
+}

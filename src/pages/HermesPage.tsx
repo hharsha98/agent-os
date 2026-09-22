@@ -80,8 +80,8 @@ export default function HermesPage() {
       <div className="aos-status-grid">
         <article>
           <span>CLI</span>
-          <strong>{agent?.cli?.found ? agent.cli.command : "Not on PATH"}</strong>
-          <small>{agent?.cli?.version || "Optional until you install Hermes yourself."}</small>
+          <strong>{agent?.simulated ? "Demo · simulated" : agent?.cli?.found ? agent.cli.command : "Not on PATH"}</strong>
+          <small>{agent?.simulated ? "Your real Hermes CLI is not connected." : agent?.cli?.version || "Optional until you install Hermes yourself."}</small>
         </article>
         <article>
           <span>Dashboard chat</span>

@@ -1,6 +1,7 @@
 import { FolderOpen, Loader2, RefreshCcw, Repeat, Save } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { getWorkspaceFileDetail, getWorkspaceListing, writeWorkspaceFile } from "../api";
+import { getProductStatus, getWorkspaceFileDetail, getWorkspaceListing, writeWorkspaceFile } from "../api";
+import { DEMO_BADGE } from "../demo";
 import { navigateTo, queryParam } from "../nav";
 import type { WorkspaceFile, WorkspaceListing } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
@@ -11,7 +12,7 @@ function formatSize(size: number) {
   return `${Math.round(size / 104857.6) / 10} MB`;
 }
 
-const FOLDERS = ["all", "loop", "vault", "swarm", "video", "inbox"] as const;
+const FOLDERS = ["all", "demo", "notes", "loop", "vault", "swarm", "video", "inbox"] as const;
 type WorkspaceFolder = typeof FOLDERS[number];
 
 function folderFromUrl(): WorkspaceFolder {
@@ -35,6 +36,7 @@ export default function WorkspacePage() {
   const [noteBody, setNoteBody] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [demoPublic, setDemoPublic] = useState(false);
 
   const files = useMemo(() => {
     const all = listing?.files || [];
@@ -105,6 +107,12 @@ export default function WorkspacePage() {
     void refresh();
   }, [kind, folder]);
 
+  useEffect(() => {
+    void getProductStatus()
+      .then((product) => setDemoPublic(Boolean(product.demoPublic)))
+      .catch(() => setDemoPublic(false));
+  }, []);
+
   async function saveNote() {
     const name = noteName.trim() || `note-${new Date().toISOString().slice(0, 10)}`;
     if (!noteBody.trim()) return;
@@ -133,9 +141,11 @@ export default function WorkspacePage() {
 
   return (
     <PageFrame
-      kicker="WORKSPACE · LOCAL ASSETS"
-      title="Generated files stay in a sandbox you can preview."
-      hint="Generated work stays in ~/.hermes-agent-os/workspace and exports, not random folders. Loop briefings live in the loop/ folder."
+      kicker={demoPublic ? "WORKSPACE · PUBLIC DEMO" : "WORKSPACE · LOCAL ASSETS"}
+      title={demoPublic ? "Sample notes are already here. Write another." : "Generated files stay in a sandbox you can preview."}
+      hint={demoPublic
+        ? `${DEMO_BADGE}. This sandbox is shared on the demo server. Read demo/briefing.md, then save your own note. Do not paste secrets.`
+        : "Generated work stays in ~/.hermes-agent-os/workspace and exports, not random folders. Loop briefings live in the loop/ folder."}
       actions={
         <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <RefreshCcw size={16} />} Refresh
@@ -143,7 +153,9 @@ export default function WorkspacePage() {
       }
     >
       <HonestNote>
-        First open seeds <code>inbox/welcome.md</code> once so the list is not blank. Delete it anytime — it will not come back. Save a Loop briefing, write a note here, or drop HTML/images into ~/.hermes-agent-os/workspace. This page will not browse the rest of your disk.
+        {demoPublic
+          ? "Seeded files live in demo/ and notes/. Chat timelines overwrite demo/latest-timeline.md. Writes cannot leave the sandbox, and they do not run shell."
+          : "First open seeds inbox/welcome.md once so the list is not blank. Delete it anytime — it will not come back. Save a Loop briefing, write a note here, or drop HTML/images into ~/.hermes-agent-os/workspace. This page will not browse the rest of your disk."}
       </HonestNote>
       <div className="aos-phase-toolbar">
         <label className="aos-field">
@@ -165,6 +177,12 @@ export default function WorkspacePage() {
         <button className="aos-secondary" onClick={() => applyFolder("all")} disabled={folder === "all"}>
           All files
         </button>
+        <button className={folder === "demo" ? "aos-primary" : "aos-secondary"} onClick={() => applyFolder("demo")}>
+          Demo
+        </button>
+        <button className={folder === "notes" ? "aos-primary" : "aos-secondary"} onClick={() => applyFolder("notes")}>
+          Notes
+        </button>
         <button className={folder === "loop" ? "aos-primary" : "aos-secondary"} onClick={() => applyFolder("loop")}>
           Loop folder
         </button>
@@ -185,11 +203,11 @@ export default function WorkspacePage() {
       <div className="aos-phase-toolbar">
         <label className="aos-field">
           <span>New note name</span>
-          <input value={noteName} onChange={(event) => setNoteName(event.target.value)} placeholder="ship-plan" />
+          <input value={noteName} onChange={(event) => setNoteName(event.target.value)} placeholder={demoPublic ? "visitor-note" : "ship-plan"} />
         </label>
         <label className="aos-field">
           <span>Note body</span>
-          <input value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder="Lands in workspace/notes/" />
+          <input value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder={demoPublic ? "A note for the shared public demo sandbox" : "Lands in workspace/notes/"} />
         </label>
         <button className="aos-secondary" onClick={() => void saveNote()} disabled={busy || !noteBody.trim()}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <Save size={16} />} Save .md into sandbox

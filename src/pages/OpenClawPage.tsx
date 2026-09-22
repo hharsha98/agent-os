@@ -61,8 +61,8 @@ export default function OpenClawPage() {
       <div className="aos-status-grid">
         <article>
           <span>CLI</span>
-          <strong>{agent?.cli?.found ? agent.cli.command : "Not on PATH"}</strong>
-          <small>{agent?.cli?.version || module?.installHint || "Optional dependency."}</small>
+          <strong>{agent?.simulated ? "Demo · simulated" : agent?.cli?.found ? agent.cli.command : "Not on PATH"}</strong>
+          <small>{agent?.simulated ? "Your real OpenClaw CLI is not connected." : agent?.cli?.version || module?.installHint || "Optional dependency."}</small>
         </article>
         <article>
           <span>Unified Chat</span>

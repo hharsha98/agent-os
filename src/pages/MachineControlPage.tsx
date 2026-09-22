@@ -1,6 +1,7 @@
 import { Loader2, RefreshCcw, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getVoiceControlStatus } from "../api";
+import { getDemoStatus, getProductStatus, getVoiceControlStatus, previewDemoMachine } from "../api";
+import { DEMO_BADGE, type DemoMachineScenario } from "../demo";
 import type { VoiceControlStatus } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
@@ -13,6 +14,11 @@ export default function MachineControlPage() {
   const [status, setStatus] = useState<VoiceControlStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [demoPublic, setDemoPublic] = useState(false);
+  const [scenarios, setScenarios] = useState<DemoMachineScenario[]>([]);
+  const [scenario, setScenario] = useState("health-check");
+  const [transcript, setTranscript] = useState("");
+  const [previewNote, setPreviewNote] = useState("");
 
   async function refresh() {
     setBusy(true);
@@ -28,7 +34,34 @@ export default function MachineControlPage() {
 
   useEffect(() => {
     void refresh();
+    void getProductStatus()
+      .then((product) => setDemoPublic(Boolean(product.demoPublic)))
+      .catch(() => setDemoPublic(false));
+    void getDemoStatus()
+      .then((demo) => {
+        if (demo.enabled && demo.scenarios?.length) {
+          setScenarios(demo.scenarios);
+          setScenario(demo.scenarios[0].id);
+        }
+      })
+      .catch(() => setScenarios([]));
   }, []);
+
+  async function preview() {
+    setBusy(true);
+    setTranscript("");
+    setPreviewNote("");
+    try {
+      const result = await previewDemoMachine(scenario);
+      setTranscript(result.transcript || "");
+      setPreviewNote(result.note || "Nothing was executed on the host.");
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not preview the canned scenario.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const tools = status?.tools;
   const checks = tools ? [
@@ -46,9 +79,11 @@ export default function MachineControlPage() {
 
   return (
     <PageFrame
-      kicker="MACHINE CONTROL · STATUS ONLY"
-      title="See what this machine would need. Do not run commands from here."
-      hint="This page reads /api/voice/status. There is no Run command button. OS permissions are per-app: allowing a terminal does not allow Cursor, Hermes, or Node."
+      kicker={demoPublic ? "MACHINE CONTROL · GATED DEMO" : "MACHINE CONTROL · STATUS ONLY"}
+      title={demoPublic ? "Preview what a gated command would look like. Nothing runs." : "See what this machine would need. Do not run commands from here."}
+      hint={demoPublic
+        ? `${DEMO_BADGE}. The preview is a canned transcript. There is no command box, and Run stays disabled.`
+        : "This page reads /api/voice/status. There is no Run command button. OS permissions are per-app: allowing a terminal does not allow Cursor, Hermes, or Node."}
       actions={
         <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <RefreshCcw size={16} />} Refresh
@@ -59,11 +94,39 @@ export default function MachineControlPage() {
         To enable computer control later you would need to approve installs, Accessibility, Screen Recording, Microphone, and possibly Automation — each explained first. This phase keeps all of that off.
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
+      {demoPublic ? (
+        <div className="aos-panel aos-demo-machine">
+          <div className="aos-panel-head">
+            <div>
+              <span>{DEMO_BADGE}</span>
+              <h2>Canned preview</h2>
+            </div>
+          </div>
+          <p>Pick a scenario. Agent OS returns a fixed transcript and does not pass text to a shell.</p>
+          <div className="aos-phase-toolbar">
+            <label className="aos-field">
+              <span>Scenario</span>
+              <select value={scenario} onChange={(event) => setScenario(event.target.value)}>
+                {(scenarios.length ? scenarios : [{ id: "health-check", label: "Preview health check", description: "" }]).map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <button className="aos-secondary" onClick={() => void preview()} disabled={busy}>
+              {busy ? <Loader2 className="aos-spin" size={16} /> : null} Preview simulated run
+            </button>
+          </div>
+          {transcript ? <pre className="aos-demo-transcript">{transcript}</pre> : null}
+          {previewNote ? <p className="aos-honest-note">{previewNote}</p> : null}
+        </div>
+      ) : null}
       <div className="aos-panel aos-disabled-action">
         <ShieldCheck size={18} />
         <div>
           <strong>Run command</strong>
-          <p>Disabled. Voice/computer actions stay dry-run until you explicitly approve execution later.</p>
+          <p>{demoPublic
+            ? "Disabled on the public demo. Host shell stays locked even if a visitor asks for a command."
+            : "Disabled. Voice/computer actions stay dry-run until you explicitly approve execution later."}</p>
         </div>
         <button className="aos-primary" disabled>Run command</button>
       </div>

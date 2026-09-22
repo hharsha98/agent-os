@@ -1,6 +1,7 @@
 import { Loader2, MessageSquare, Repeat, Save, Send, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addMemory, getExecutionGateStatus, getLocalAgents, getMemoryContext, previewCodexMessage, sendAgentMessage } from "../api";
+import { addMemory, getExecutionGateStatus, getLocalAgents, getMemoryContext, getProductStatus, previewCodexMessage, runDemoTimeline, sendAgentMessage, sendDemoChat } from "../api";
+import { DEMO_BADGE } from "../demo";
 import { type ChatAgentId, chatStorageKey } from "../chatHistory";
 import { chatLabel, cursorChatNotice, type LocalAgentRecord } from "../localAgents";
 import { navigateTo } from "../nav";
@@ -13,6 +14,7 @@ type ChatMessage = {
   agentId: ChatAgentId;
   text: string;
   badge: string;
+  steps?: Array<{ id: string; agentId: string; title: string; detail: string; status: string }>;
 };
 
 const AGENTS: Array<{ id: ChatAgentId; label: string; moduleId: string | null; hint: string; example: string }> = [
@@ -62,6 +64,8 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
   const [probedAgents, setProbedAgents] = useState<LocalAgentRecord[]>(localAgents);
   const [agentsReady, setAgentsReady] = useState(localAgents.length > 0);
   const [agentsError, setAgentsError] = useState("");
+  const [demoPublic, setDemoPublic] = useState(false);
+  const [demoReady, setDemoReady] = useState(false);
   const skipSave = useRef(true);
   const agent = AGENTS.find((item) => item.id === agentId) || AGENTS[1];
   const agents = probedAgents.length ? probedAgents : localAgents;
@@ -120,6 +124,12 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
     void getExecutionGateStatus()
       .then(setGate)
       .catch(() => setGate(null));
+    void getProductStatus()
+      .then((product) => {
+        setDemoPublic(Boolean(product.demoPublic));
+        setDemoReady(true);
+      })
+      .catch(() => setDemoReady(true));
   }, []);
 
   useEffect(() => {
@@ -144,7 +154,9 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
         source: "chat-loop",
         tags: ["loop", message.agentId]
       });
-      setNotice("Saved into local Memory. Loop can read this later. This is on this machine, not a cloud inbox.");
+      setNotice(demoPublic
+        ? "Saved into the demo server's Memory. This is a shared sandbox, not your Claude account."
+        : "Saved into local Memory. Loop can read this later. This is on this machine, not a cloud inbox.");
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : "Reply shown, but Memory save failed.");
     }
@@ -163,6 +175,36 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
     setMessages((current) => [...current, userMessage]);
     setDraft("");
     setNotice("");
+
+    if (demoPublic) {
+      setBusy(true);
+      try {
+        const result = await sendDemoChat(agent.id, text);
+        const assistant: ChatMessage = {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          agentId,
+          text: result.reply || "No demo plan was returned.",
+          badge: "Demo"
+        };
+        setMessages((current) => [...current, assistant]);
+        await persistAssistant(assistant, agent.label, text);
+      } catch (caught) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: `assistant-${Date.now()}`,
+            role: "assistant",
+            agentId,
+            text: caught instanceof Error ? caught.message : "The demo plan failed.",
+            badge: "Error"
+          }
+        ]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
 
     if (agent.id === "cursor") {
       const cursorNotice = cursorChatNotice(local, { loaded: agentsReady, error: agentsError });
@@ -230,6 +272,53 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
     }
   }
 
+  async function runTimeline() {
+    const text = draft.trim() || agent.example;
+    if (busy || !demoPublic) return;
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      agentId,
+      text,
+      badge: "You"
+    };
+    setMessages((current) => [...current, userMessage]);
+    setDraft("");
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await runDemoTimeline(text);
+      const assistant: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        agentId,
+        text: result.steps?.length
+          ? `${result.badge}\n\nSimulated fleet timeline for: ${result.focus}\nYour real Claude is not connected.\n\n${result.steps.map((step, index) => `${index + 1}. ${step.title} — ${step.detail}`).join("\n")}\n\nSaved ${result.workspaceFile?.relativePath || "a sandbox note"}.`
+          : "The simulated timeline returned no steps.",
+        badge: "Demo timeline",
+        steps: result.steps
+      };
+      setMessages((current) => [...current, assistant]);
+      await persistAssistant(assistant, "Demo fleet", text);
+      setNotice(result.workspaceFile?.relativePath
+        ? `Timeline written to ${result.workspaceFile.relativePath}. Open Workspace to read it. Host shell was not used.`
+        : "Timeline finished. Host shell was not used.");
+    } catch (caught) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          agentId,
+          text: caught instanceof Error ? caught.message : "The simulated timeline failed.",
+          badge: "Error"
+        }
+      ]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveLoop() {
     const last = [...messages].reverse().find((message) => message.role === "assistant");
     if (!last || saving) return;
@@ -245,15 +334,19 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
 
   return (
     <PageFrame
-      kicker="UNIFIED CHAT · DRY-RUN"
-      title="One box. Four local agents. Plans, not silent shell."
-      hint="Claude and Hermes dry-run the module API. Codex uses the API preview when a key is saved. Cursor tells the truth if chat is not wired. History stays in this browser."
+      kicker={demoPublic ? "UNIFIED CHAT · PUBLIC DEMO" : "UNIFIED CHAT · DRY-RUN"}
+      title={demoPublic ? "One box. A simulated fleet. Plans, then a timeline." : "One box. Four local agents. Plans, not silent shell."}
+      hint={demoPublic
+        ? `${DEMO_BADGE}. Demo plans and the multi-agent timeline are simulated. Your real Claude, Cursor, Codex, and Hermes are not connected.`
+        : "Claude and Hermes dry-run the module API. Codex uses the API preview when a key is saved. Cursor tells the truth if chat is not wired. History stays in this browser."}
     >
       <div className="aos-product-banner" role="status">
         <ShieldCheck size={18} />
         <div>
-          <strong>{gateOff ? "Dry-run is on" : "Execution gate is on"}</strong>
-          <p>{sendHint(agent, local, gateOff, agentsReady, agentsError)} Replies can save to local Memory. This is not a cloud inbox.</p>
+          <strong>{demoPublic ? DEMO_BADGE : gateOff ? "Dry-run is on" : "Execution gate is on"}</strong>
+          <p>{demoPublic
+            ? "Send a demo plan, or run the simulated timeline. The timeline writes a note in the shared sandbox and does not start a shell."
+            : `${sendHint(agent, local, gateOff, agentsReady, agentsError)} Replies can save to local Memory. This is not a cloud inbox.`}</p>
         </div>
       </div>
       <div className="aos-chat-agents">
@@ -267,7 +360,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
           );
         })}
       </div>
-      <HonestNote>{agent.hint} {local?.summary || ""} The Send button below does not enable live tools.</HonestNote>
+      <HonestNote>{demoPublic ? `${local?.summary || "Simulated demo agent."} The buttons below do not start a host CLI.` : `${agent.hint} ${local?.summary || ""} The Send button below does not enable live tools.`}</HonestNote>
       {briefing ? (
         <div className="aos-panel" style={{ marginBottom: 16 }}>
           <div className="aos-panel-head">
@@ -287,14 +380,24 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
           <div className="aos-empty small">
             <MessageSquare size={20} />
             <strong>No messages for {agent.label} yet</strong>
-            <p>History is stored in this browser per agent. Try the example, or type your own dry-run prompt.</p>
-            <button className="aos-secondary" disabled={busy} onClick={() => void send(agent.example)}>{agent.example}</button>
+            <p>{demoPublic ? "History stays in this browser. Try the example, then run the simulated timeline." : "History is stored in this browser per agent. Try the example, or type your own dry-run prompt."}</p>
+            <button className="aos-secondary" disabled={busy || !demoReady} onClick={() => void send(agent.example)}>{agent.example}</button>
           </div>
         ) : (
           messages.map((message) => (
             <article key={message.id} className={`aos-chat-bubble role-${message.role}`}>
               <span>{message.badge}</span>
               <p>{message.text}</p>
+              {message.steps?.length ? (
+                <ol className="aos-demo-steps">
+                  {message.steps.map((step) => (
+                    <li key={step.id}>
+                      <strong>{step.title}</strong>
+                      <small>{step.agentId} · {step.status}</small>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
             </article>
           ))
         )}
@@ -303,7 +406,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={`Dry-run message for ${agent.label}…`}
+          placeholder={demoPublic ? `Demo prompt for ${agent.label}…` : `Dry-run message for ${agent.label}…`}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
@@ -312,9 +415,14 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
           }}
         />
         <div className="aos-chat-actions">
-          <button className="aos-primary" onClick={() => void send()} disabled={busy || !draft.trim()}>
-            {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} Send dry-run
+          <button className="aos-primary" onClick={() => void send()} disabled={busy || !demoReady || !draft.trim()}>
+            {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} {demoPublic ? "Send demo plan" : "Send dry-run"}
           </button>
+          {demoPublic ? (
+            <button className="aos-secondary" onClick={() => void runTimeline()} disabled={busy || !demoReady}>
+              {busy ? <Loader2 className="aos-spin" size={16} /> : <Repeat size={16} />} Run simulated timeline
+            </button>
+          ) : null}
           <button className="aos-secondary" onClick={() => void saveLoop()} disabled={saving || messages.every((message) => message.role !== "assistant")}>
             {saving ? <Loader2 className="aos-spin" size={16} /> : <Save size={16} />} Save last reply again
           </button>

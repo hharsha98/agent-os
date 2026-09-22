@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { demoWorkspaceFiles, isDemoPublic } from "./demo-public.js";
 import { ensureRuntimeStore, publicRuntimePath, runtimePaths, writeJson } from "./store.js";
 
 const ROOT_IDS = new Set(["workspace", "exports"]);
@@ -127,9 +128,24 @@ async function walkDir(rootId, dir, relativeDir, depth, files) {
   }
 }
 
+async function ensureDemoWorkspaceFiles() {
+  const root = await rootDir("workspace");
+  for (const file of demoWorkspaceFiles()) {
+    const target = path.join(root, ...file.relativePath.split("/"));
+    try {
+      await fs.access(target);
+    } catch {
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, file.content, "utf8");
+    }
+  }
+}
+
 export async function listWorkspaceFiles(input = {}) {
   await ensureRuntimeStore();
   await ensureWelcomeWorkspaceSeed();
+  const demoOn = input.demoPublic === true || (input.demoPublic !== false && isDemoPublic());
+  if (demoOn) await ensureDemoWorkspaceFiles();
   const query = String(input.query || "").trim().toLowerCase();
   const kind = String(input.kind || "").trim().toLowerCase();
   const files = [];

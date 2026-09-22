@@ -36,6 +36,10 @@ This page is a **permission checklist**, not a remote-control panel. `Run comman
 | Memory | Counts first; content after search/open |
 | Studio | Image / ElevenLabs-style voice / music **not** connected |
 
+## Public demo
+
+Set `DEMO_PUBLIC=1` before `npm start` when the process is the hosted walkthrough. Mission Control shows **Demo** seats, Chat can run a simulated timeline, and Workspace already has sample notes. The badge stays **Public demo · sandboxed**. Machine Control will not run a shell. See `docs/HANDOFF-CONTABO.md`.
+
 ## Run the real app
 
 ```bash

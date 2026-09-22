@@ -1,14 +1,18 @@
 import { Loader2, MessageSquare, RefreshCcw, ShieldCheck, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getExecutionGateStatus, getLocalAgentDashboard, getProductStatus } from "../api";
+import { DEMO_BADGE } from "../demo";
 import { chatLabel, statusTone, type LocalAgentDashboard, type LocalAgentRecord, type ProductStatus } from "../localAgents";
 import { navigateTo } from "../nav";
 import type { ExecutionGateStatus } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
-function scoreLine(dashboard: LocalAgentDashboard | null) {
-  if (!dashboard) return "Checking local CLIs…";
+function scoreLine(dashboard: LocalAgentDashboard | null, demoPublic = false) {
+  if (!dashboard) return demoPublic ? "Loading demo fleet…" : "Checking local CLIs…";
   const { summary } = dashboard;
+  if (demoPublic || summary.simulated) {
+    return `${summary.demoOnline ?? summary.total} demo agents online · host CLIs ${summary.cliFound}/${summary.total} · execution locked`;
+  }
   return `${summary.cliFound}/${summary.total} CLIs found · ${summary.dashboardChatReady} usable in Chat · live execution ${summary.executionEnabled ? "on" : "off"}`;
 }
 
@@ -46,9 +50,11 @@ export default function MissionControlPage() {
 
   return (
     <PageFrame
-      kicker="MISSION CONTROL · LOCAL V1"
-      title="See what is actually installed. Chat stays dry-run."
-      hint="This is a local dashboard you clone and run. github.io is a screenshot gallery, not this runtime. Missing CLIs stay missing."
+      kicker={product?.demoPublic ? "MISSION CONTROL · PUBLIC DEMO" : "MISSION CONTROL · LOCAL V1"}
+      title={product?.demoPublic ? "A simulated fleet, labeled Demo, ready for a walkthrough." : "See what is actually installed. Chat stays dry-run."}
+      hint={product?.demoPublic
+        ? `${DEMO_BADGE}. These seats are simulated. Your real Claude, Cursor, Codex, and Hermes are not connected.`
+        : "This is a local dashboard you clone and run. github.io is a screenshot gallery, not this runtime. Missing CLIs stay missing."}
       actions={
         <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <RefreshCcw size={16} />} Refresh
@@ -58,13 +64,15 @@ export default function MissionControlPage() {
       <div className="aos-product-banner" role="status">
         <ShieldCheck size={18} />
         <div>
-          <strong>Local product · not hosted SaaS</strong>
+          <strong>{product?.demoPublic ? DEMO_BADGE : "Local product · not hosted SaaS"}</strong>
           <p>{product?.publicSummary || "Dry-run by default. Execution, installs, and public mode stay off until you turn them on in .env."}</p>
         </div>
-        <em>{scoreLine(dashboard)}</em>
+        <em>{scoreLine(dashboard, Boolean(product?.demoPublic))}</em>
       </div>
       <HonestNote>
-        A CLI on PATH is not the same as dashboard chat. Cursor can be installed and still unwired. Claude and Hermes return plans. Codex can preview if a key is saved locally.
+        {product?.demoPublic
+          ? "Demo means simulated. A green-looking seat is still not your Claude login. Host CLIs on this server, if any, are listed separately and are not driven from here."
+          : "A CLI on PATH is not the same as dashboard chat. Cursor can be installed and still unwired. Claude and Hermes return plans. Codex can preview if a key is saved locally."}
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
 
@@ -101,8 +109,11 @@ export default function MissionControlPage() {
                 </div>
               </div>
               <dl className="aos-local-agent-details">
-                <div><dt>CLI</dt><dd>{agent.cli?.found ? `${agent.cli.command} · ${agent.cli.version || "found"}` : "Not on PATH"}</dd></div>
-                <div><dt>Dashboard chat</dt><dd>{agent.chat?.label || chatLabel(agent)}</dd></div>
+                <div><dt>{agent.simulated ? "Demo seat" : "CLI"}</dt><dd>{agent.simulated ? "Simulated online · Demo" : agent.cli?.found ? `${agent.cli.command} · ${agent.cli.version || "found"}` : "Not on PATH"}</dd></div>
+                <div>
+                  <dt>{agent.simulated ? "Host CLI" : "Dashboard chat"}</dt>
+                  <dd>{agent.simulated ? (agent.hostCli?.found ? "Present on host · not used" : "Not on this host") : agent.chat?.label || chatLabel(agent)}</dd>
+                </div>
                 <div><dt>Live execution</dt><dd>{agent.liveExecution?.label || "Off"}</dd></div>
               </dl>
               <p className="aos-honest-note">{agent.nextAction}</p>
@@ -113,7 +124,7 @@ export default function MissionControlPage() {
 
       <div className="aos-mission-footer aos-v1-cta">
         <button className="aos-primary" onClick={() => navigateTo("chat")}>
-          <MessageSquare size={16} /> Open Unified Chat (dry-run)
+          <MessageSquare size={16} /> {product?.demoPublic ? "Open Unified Chat" : "Open Unified Chat (dry-run)"}
         </button>
         <button className="aos-secondary" onClick={() => navigateTo("workspace")}>Open Workspace sandbox</button>
         <button className="aos-secondary" onClick={() => navigateTo("machine")}>Machine Control checklist</button>

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { isDemoPublic } from "./demo-public.js";
 
 const INSTALL_RECIPES = {
   claude: {
@@ -146,6 +147,16 @@ export async function prepareInstall(id, { execute = false } = {}) {
     };
   }
   const allowInstall = process.env.HERMES_AGENT_OS_ENABLE_INSTALL === "1";
+  if (isDemoPublic() && execute) {
+    return {
+      ok: true,
+      id,
+      mode: "dry_run",
+      blocked: "demo-public",
+      recipe,
+      message: "Public demo does not run install commands on the host."
+    };
+  }
   if (!execute || !allowInstall || !recipe.safeAutoRun) {
     return {
       ok: true,

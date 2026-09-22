@@ -508,6 +508,10 @@ export interface Health {
   version: string;
   mode: string;
   timestamp: string;
+  bind?: string;
+  port?: number;
+  demoPublic?: boolean;
+  badge?: string | null;
 }
 
 export interface AdminSession {
@@ -527,6 +531,8 @@ export interface ExecutionGateStatus {
   updatedBy: string | null;
   reason: string;
   publicSummary: string;
+  demoLocked?: boolean;
+  refused?: boolean;
 }
 
 export interface SetupStep {

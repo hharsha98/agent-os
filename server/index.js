@@ -39,6 +39,16 @@ import {
 import { loadLocalEnv } from "./runtime/env.js";
 import { getExecutionGateStatus, setExecutionGateStatus } from "./runtime/execution-gate.js";
 import { getLocalAgentDashboardStatus } from "./runtime/local-agents.js";
+import { DEMO_BADGE, isDemoPublic } from "./runtime/demo-public.js";
+import {
+  getPublicDemoBuilder,
+  publicDemoStatus,
+  runPublicDemoBuilder,
+  runPublicDemoChat,
+  runPublicDemoMachine,
+  runPublicDemoTimeline,
+  savePublicDemoBuilder
+} from "./runtime/demo-actions.js";
 import { generateAgentWorkflow, refineAgentWorkflow } from "./runtime/agent-os-builder.js";
 import { getCodexApiStatus, runCodexPreview, testCodexApi } from "./runtime/codex-api.js";
 import { configureApiIntegration, listApiIntegrations, testApiIntegration } from "./runtime/api-integrations.js";
@@ -166,6 +176,11 @@ const envFile = loadLocalEnv({ root });
 const app = express();
 const parsedPort = Number(process.env.PORT || 8090);
 const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8090;
+function bindAddress() {
+  const raw = String(process.env.HOST || "0.0.0.0").trim();
+  return /^[A-Za-z0-9_.:%-]+$/.test(raw) ? raw : "0.0.0.0";
+}
+const bindHost = bindAddress();
 const originalBuilderUrl = getBuilderUrl();
 
 app.use(cors());
@@ -210,12 +225,17 @@ app.post("/api/admin/execution-gate", async (req, res, next) => {
 app.get("/api/health", async (_req, res, next) => {
   try {
     const status = await getOsStatus();
+    const demoPublic = isDemoPublic();
     res.json({
       ok: status.ok,
       service: status.service,
       version: status.version,
       mode: status.mode,
-      timestamp: status.generatedAt
+      timestamp: status.generatedAt,
+      bind: bindHost,
+      port,
+      demoPublic,
+      badge: demoPublic ? DEMO_BADGE : null
     });
   } catch (error) {
     next(error);
@@ -1127,21 +1147,35 @@ app.get("/api/product/status", requireAdminWhenPublic, async (_req, res, next) =
         (Array.isArray(item?.tags) && item.tags.includes("agent-run"))
       )
     );
+    const demoPublic = isDemoPublic();
     res.json({
       ok: true,
       hosted: false,
-      edition: "local-v1",
+      edition: demoPublic ? "public-demo" : "local-v1",
+      demoPublic,
+      badge: demoPublic ? DEMO_BADGE : null,
       name: "Agent OS",
-      publicSummary: "Local-first dashboard. Dry-run by default. Not a hosted multi-tenant app.",
+      publicSummary: demoPublic
+        ? `${DEMO_BADGE}. Simulated agents only. Your Claude, Cursor, Codex, and Hermes are not connected.`
+        : "Local-first dashboard. Dry-run by default. Not a hosted multi-tenant app.",
       port,
+      bind: bindHost,
       env: {
         loaded: Boolean(envFile.loaded),
         publicMode: process.env.HERMES_AGENT_OS_PUBLIC_MODE === "1",
-        requireAuth: process.env.HERMES_AGENT_OS_REQUIRE_AUTH === "1"
+        requireAuth: process.env.HERMES_AGENT_OS_REQUIRE_AUTH === "1",
+        demoPublic
       },
       executionGate: agents.executionGate,
       agents: agents.summary,
-      firstRun: [
+      firstRun: demoPublic
+        ? [
+            { id: "runtime", label: "Public demo is up", done: true, detail: `Listening on ${bindHost}:${port}. ${DEMO_BADGE}.` },
+            { id: "fleet", label: "Demo fleet online", done: true, detail: "Simulated agents are labeled Demo. Your real Claude is not connected." },
+            { id: "chat", label: "Run a simulated timeline", done: chatTried, detail: "Unified Chat returns a multi-step plan and can write a sandbox note." },
+            { id: "exec", label: "Host shell stays locked", done: !agents.executionGate.enabled, detail: agents.executionGate.publicSummary }
+          ]
+        : [
         { id: "runtime", label: "Runtime is up", done: true, detail: `Listening on port ${port}.` },
         { id: "env", label: "Optional .env loaded", done: Boolean(envFile.loaded), detail: envFile.loaded ? "Local .env values applied without overriding the process environment." : "Copy .env.example to .env only if you need keys. The app runs without it." },
         {
@@ -1547,6 +1581,58 @@ app.post("/api/agents/:id/message", requireAdminWhenPublic, async (req, res, nex
   }
 });
 
+app.get("/api/demo/status", requireAdminWhenPublic, (_req, res) => {
+  res.json(publicDemoStatus(isDemoPublic()));
+});
+
+app.post("/api/demo/chat", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runPublicDemoChat(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/demo/timeline", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runPublicDemoTimeline(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/demo/machine/preview", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runPublicDemoMachine(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/demo/builder", requireAdminWhenPublic, async (_req, res, next) => {
+  try {
+    res.json(await getPublicDemoBuilder());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/demo/builder", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await savePublicDemoBuilder(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/demo/builder/run", requireAdminWhenPublic, async (req, res, next) => {
+  try {
+    res.json(await runPublicDemoBuilder(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use(express.static(dist));
 
 app.get("*", (_req, res) => {
@@ -1556,13 +1642,19 @@ app.get("*", (_req, res) => {
 app.use((error, _req, res, _next) => {
   console.error(error);
   res.status(error?.status || 500).json({
+    ...(error?.body || {}),
     ok: false,
     error: error?.message || "Internal server error",
     audit: error?.audit
   });
 });
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`Agent OS (local v1, dry-run default) http://127.0.0.1:${port}`);
+app.listen(port, bindHost, () => {
+  const demoPublic = isDemoPublic();
+  console.log(
+    demoPublic
+      ? `Agent OS public demo · sandboxed http://${bindHost}:${port}`
+      : `Agent OS (local v1, dry-run default) http://${bindHost}:${port}`
+  );
   startSchedulerLoop();
 });

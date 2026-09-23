@@ -120,12 +120,12 @@ Gateway HTTP (preferred on Contabo, where `openclaw-gateway.service` already run
 | `OPENCLAW_GATEWAY_TOKEN` | Bearer token (`OPENCLAW_GATEWAY_TOKEN` / gateway auth token). Omit only if the gateway auth mode is `none` on loopback. |
 | `OPENCLAW_GATEWAY_MODEL` | Default `openclaw/default` |
 
-`POST {base}/chat/completions` with `Authorization: Bearer <token>` when a token is set. The OpenClaw chat-completions endpoint is **disabled in upstream defaults** until `gateway.http.endpoints.chatCompletions.enabled` is true. A 404 is returned as an honest error, then the dispatcher may fall through.
+`POST {base}/chat/completions` with `Authorization: Bearer <token>` when a token is set. The OpenClaw chat-completions endpoint is **disabled in upstream defaults** until `gateway.http.endpoints.chatCompletions.enabled` is true. A 404 or 405, or a connection that never reached the gateway (refused or DNS), falls through. A timeout, reset, or other response stays an error so the same prompt is not sent to a second executor.
 
-CLI fallback, only with the execution gate:
+CLI fallback, only with the execution gate. The message is one argv (`--message=<text>`) so a prompt that starts with `-` is not parsed as a flag:
 
 ```text
-openclaw agent --message <text> --thinking high
+openclaw agent --message=<text> --thinking high
 ```
 
 Same OmniRoute labeled fallback as Hermes when neither gateway nor CLI can run.
@@ -136,16 +136,17 @@ OpenClaw joins Unified Chat.
 
 | Seat | Native (needs CLI + `HERMES_AGENT_OS_ENABLE_EXEC=1`) | Otherwise |
 | --- | --- | --- |
-| Claude | `claude -p <message> --output-format text` | OmniRoute seat, or the existing dry-run plan |
-| Codex | `codex exec --ephemeral --skip-git-repo-check --sandbox read-only --color never <message>` | OmniRoute chat completions; if OmniRoute is unset and an OpenAI key exists, the existing Codex API preview |
-| Cursor | `agent -p <message> --output-format text` (override with `CURSOR_CLI_ARGS` using `{{message}}`) | OmniRoute seat, or the honest not-wired notice when live chat is off |
+| Claude | `claude --output-format text -p -- <message>` | OmniRoute seat, or the existing dry-run plan |
+| Codex | `codex exec --ephemeral --skip-git-repo-check --sandbox read-only --color never -- <message>` | OmniRoute chat completions; if OmniRoute is unset and an OpenAI key exists, the existing Codex API preview |
+| Cursor | `agent -p -- <message>` (override with `CURSOR_CLI_ARGS` using `{{message}}`; `--` is inserted before the prompt) | OmniRoute seat, or the honest not-wired notice when live chat is off |
 
 Native Cursor/Claude/Codex runs can change a workspace. They stay behind the execution gate. Live chat without that gate still gets an OmniRoute answer and says the native CLI did not run.
 
 ## 8. Auth and safety
 
 - Gallery mode keeps the execution lock. Live routes refuse to run while `DEMO_PUBLIC=1`.
-- Prompts are passed as argv or a private query file, never through a shell string.
+- Prompts are passed as argv or a private query file, never through a shell string. Positional prompts sit after `--`.
+- Native CLI children get a short environment (PATH, HOME, and `HERMES_HOME` for Hermes) and a temp working directory. Configured API keys are stripped from replies before they leave the process.
 - Replies and logs go through existing redaction. Status payloads omit secrets and absolute home paths where the current public APIs already do.
 - Machine Control does not gain a shell runner.
 - Installer execution stays behind `HERMES_AGENT_OS_ENABLE_INSTALL`.

@@ -1,7 +1,7 @@
 import { Bot, Loader2, MessageSquare, RefreshCcw, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getLocalAgents, getModule, sendLiveChat } from "../api";
-import { statusTone, type LocalAgentRecord } from "../localAgents";
+import { getLocalAgents, getModule, getProductStatus, sendLiveChat } from "../api";
+import { liveTurnLabel, statusTone, type LocalAgentRecord } from "../localAgents";
 import { navigateTo } from "../nav";
 import type { RuntimeModule } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
@@ -14,16 +14,19 @@ export default function OpenClawPage() {
   const [draft, setDraft] = useState("");
   const [reply, setReply] = useState("");
   const [transport, setTransport] = useState("");
+  const [demoPublic, setDemoPublic] = useState(false);
 
   async function refresh() {
     setBusy(true);
     try {
-      const [agents, openclaw] = await Promise.all([
+      const [agents, openclaw, product] = await Promise.all([
         getLocalAgents(),
-        getModule("openclaw").catch(() => null)
+        getModule("openclaw").catch(() => null),
+        getProductStatus().catch(() => null)
       ]);
       setAgent(agents.find((item) => item.id === "openclaw") || null);
       setModule(openclaw);
+      setDemoPublic(Boolean(product?.demoPublic));
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load OpenClaw status.");
@@ -93,17 +96,18 @@ export default function OpenClawPage() {
             <h2>Send to OpenClaw</h2>
           </div>
         </div>
-        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask the OpenClaw gateway" />
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={demoPublic ? "Gallery mode does not call OpenClaw" : "Ask the OpenClaw gateway"} />
+        {demoPublic ? <p className="aos-honest-note">Public gallery does not call the OpenClaw gateway.</p> : null}
         <div className="aos-chat-actions">
           <button
             className="aos-primary"
-            disabled={busy || !draft.trim()}
+            disabled={busy || !draft.trim() || demoPublic}
             onClick={() => {
               setBusy(true);
               void sendLiveChat({ agentId: "openclaw", message: draft.trim(), dryRun: false })
                 .then((result) => {
                   setReply(result.reply || "No reply.");
-                  setTransport(result.transport || result.mode);
+                  setTransport(liveTurnLabel(result));
                 })
                 .catch((caught) => setReply(caught instanceof Error ? caught.message : "OpenClaw send failed."))
                 .finally(() => setBusy(false));
@@ -113,13 +117,13 @@ export default function OpenClawPage() {
           </button>
           <button
             className="aos-secondary"
-            disabled={busy || !draft.trim()}
+            disabled={busy || !draft.trim() || demoPublic}
             onClick={() => {
               setBusy(true);
               void sendLiveChat({ agentId: "openclaw", message: draft.trim(), dryRun: true })
                 .then((result) => {
                   setReply(result.reply || "No plan.");
-                  setTransport("dry_run");
+                  setTransport(liveTurnLabel(result));
                 })
                 .catch((caught) => setReply(caught instanceof Error ? caught.message : "Dry-run failed."))
                 .finally(() => setBusy(false));
@@ -133,7 +137,7 @@ export default function OpenClawPage() {
       </div>
       <div className="aos-mission-footer aos-v1-cta">
         <button className="aos-primary" onClick={() => navigateTo("mission")}>Back to Mission Control</button>
-        <button className="aos-secondary" onClick={() => navigateTo("chat")}>
+        <button className="aos-secondary" onClick={() => navigateTo("chat", { agent: "openclaw" })}>
           <MessageSquare size={16} /> Open Unified Chat
         </button>
       </div>

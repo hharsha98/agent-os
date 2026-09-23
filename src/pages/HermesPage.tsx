@@ -1,7 +1,7 @@
 import { Loader2, MessageSquare, RefreshCcw, ShieldCheck, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getLocalAgents, getModule, sendLiveChat, testIntegration } from "../api";
-import { statusTone, type LocalAgentRecord } from "../localAgents";
+import { getLocalAgents, getModule, getProductStatus, sendLiveChat, testIntegration } from "../api";
+import { liveTurnLabel, statusTone, type LocalAgentRecord } from "../localAgents";
 import { navigateTo } from "../nav";
 import type { RuntimeModule } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
@@ -15,16 +15,19 @@ export default function HermesPage() {
   const [draft, setDraft] = useState("");
   const [reply, setReply] = useState("");
   const [transport, setTransport] = useState("");
+  const [demoPublic, setDemoPublic] = useState(false);
 
   async function refresh() {
     setBusy(true);
     try {
-      const [agents, hermes] = await Promise.all([
+      const [agents, hermes, product] = await Promise.all([
         getLocalAgents(),
-        getModule("hermes").catch(() => null)
+        getModule("hermes").catch(() => null),
+        getProductStatus().catch(() => null)
       ]);
       setAgent(agents.find((item) => item.id === "hermes") || null);
       setModule(hermes);
+      setDemoPublic(Boolean(product?.demoPublic));
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load Hermes status.");
@@ -105,17 +108,18 @@ export default function HermesPage() {
             <h2>Send to Hermes</h2>
           </div>
         </div>
-        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask Hermes on this machine" />
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={demoPublic ? "Gallery mode does not call Hermes" : "Ask Hermes on this machine"} />
+        {demoPublic ? <p className="aos-honest-note">Public gallery keeps Hermes simulated. Open Unified Chat for a demo plan.</p> : null}
         <div className="aos-chat-actions">
           <button
             className="aos-primary"
-            disabled={busy || !draft.trim()}
+            disabled={busy || !draft.trim() || demoPublic}
             onClick={() => {
               setBusy(true);
               void sendLiveChat({ agentId: "hermes", message: draft.trim(), dryRun: false })
                 .then((result) => {
                   setReply(result.reply || "No reply.");
-                  setTransport(result.transport || result.mode);
+                  setTransport(liveTurnLabel(result));
                 })
                 .catch((caught) => setReply(caught instanceof Error ? caught.message : "Hermes send failed."))
                 .finally(() => setBusy(false));
@@ -125,13 +129,13 @@ export default function HermesPage() {
           </button>
           <button
             className="aos-secondary"
-            disabled={busy || !draft.trim()}
+            disabled={busy || !draft.trim() || demoPublic}
             onClick={() => {
               setBusy(true);
               void sendLiveChat({ agentId: "hermes", message: draft.trim(), dryRun: true })
                 .then((result) => {
                   setReply(result.reply || "No plan.");
-                  setTransport("dry_run");
+                  setTransport(liveTurnLabel(result));
                 })
                 .catch((caught) => setReply(caught instanceof Error ? caught.message : "Dry-run failed."))
                 .finally(() => setBusy(false));
@@ -144,8 +148,8 @@ export default function HermesPage() {
         {reply ? <p>{reply}</p> : null}
       </div>
       <div className="aos-mission-footer aos-v1-cta">
-        <button className="aos-primary" onClick={() => navigateTo("chat")}>
-          <MessageSquare size={16} /> Open Unified Chat (dry-run)
+        <button className="aos-primary" onClick={() => navigateTo("chat", { agent: "hermes" })}>
+          <MessageSquare size={16} /> Open Unified Chat
         </button>
         <button className="aos-secondary" onClick={() => navigateTo("machine")}>Machine Control checklist</button>
       </div>

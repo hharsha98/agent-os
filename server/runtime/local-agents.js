@@ -263,6 +263,22 @@ async function probeGateway() {
 
 function overlayLiveAgent(agent, { execEnabled, omniConfigured, gatewayConfigured }) {
   const native = Boolean(execEnabled && agent.cli?.found);
+  if (agent.id === "openclaw" && gatewayConfigured) {
+    const chat = {
+      mode: "live",
+      routed: true,
+      label: "OpenClaw gateway",
+      detail: "Unified Chat calls the OpenClaw gateway HTTP API before the CLI. Tool use depends on that gateway."
+    };
+    return {
+      ...agent,
+      status: "live",
+      available: true,
+      chat,
+      summary: chat.detail,
+      nextAction: "Open OpenClaw and send a message."
+    };
+  }
   if (native) {
     const chat = {
       mode: "live",
@@ -277,22 +293,6 @@ function overlayLiveAgent(agent, { execEnabled, omniConfigured, gatewayConfigure
       chat,
       summary: chat.detail,
       nextAction: "Open the desk and send with dry-run unchecked."
-    };
-  }
-  if (agent.id === "openclaw" && gatewayConfigured) {
-    const chat = {
-      mode: "live",
-      routed: true,
-      label: "OpenClaw gateway",
-      detail: "Unified Chat calls the OpenClaw gateway HTTP API. Tool use depends on that gateway."
-    };
-    return {
-      ...agent,
-      status: "live",
-      available: true,
-      chat,
-      summary: chat.detail,
-      nextAction: "Open OpenClaw and send a message."
     };
   }
   if (omniConfigured) {

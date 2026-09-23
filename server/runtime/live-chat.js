@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { isDemoPublic } from "./demo-public.js";
 import { isExecutionEnabled } from "./execution-gate.js";
@@ -65,6 +66,55 @@ function splitArgs(value) {
   return args;
 }
 
+const CHILD_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"];
+const SECRET_ENV_KEYS = [
+  "OMNIROUTE_API_KEY",
+  "OPENCLAW_GATEWAY_TOKEN",
+  "HERMES_AGENT_OS_ADMIN_TOKEN",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GROQ_API_KEY",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_MANAGEMENT_KEY",
+  "CLERK_SECRET_KEY",
+  "FIRECRAWL_API_KEY"
+];
+
+function childEnv(env, extra = {}) {
+  const next = {};
+  for (const key of CHILD_ENV_KEYS) {
+    if (env[key]) next[key] = env[key];
+  }
+  for (const [key, value] of Object.entries(extra)) {
+    if (value != null && value !== "") next[key] = String(value);
+  }
+  return next;
+}
+
+function scrubSecrets(text, env = {}) {
+  let out = String(text || "");
+  for (const key of SECRET_ENV_KEYS) {
+    const value = String(env[key] || "");
+    if (value.length >= 4) out = out.replaceAll(value, "configured");
+  }
+  return out;
+}
+
+function withMessageTerminator(args, message) {
+  const next = args.map((arg) => arg.replaceAll("{{message}}", message));
+  let index = -1;
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    if (next[i] === message) {
+      index = i;
+      break;
+    }
+  }
+  if (index === -1 || next[index - 1] === "--") return next;
+  next.splice(index, 0, "--");
+  return next;
+}
+
 function publicHost(url) {
   try {
     return new URL(url).host;
@@ -73,14 +123,14 @@ function publicHost(url) {
   }
 }
 
-function resultShape(agentId, fields) {
+function resultShape(agentId, fields, env = {}) {
   return {
     ok: Boolean(fields.ok),
     mode: fields.mode,
     transport: fields.transport || "none",
     native: Boolean(fields.native),
     agentId,
-    reply: String(fields.reply || ""),
+    reply: scrubSecrets(String(fields.reply || ""), env),
     model: fields.model || null
   };
 }
@@ -156,9 +206,13 @@ export async function getLiveStatus(env = process.env, deps = {}) {
 async function runArgv(commandPath, args, timeoutMs, env, deps, extraEnv = {}) {
   const runner = deps.runCommand || runCommand;
   const result = await runner(commandPath, args, timeoutMs, {
-    env: { ...env, ...extraEnv }
+    env: childEnv(env, extraEnv),
+    cwd: os.tmpdir()
   });
-  const reply = redactText(result.stdout || result.stderr || "Command completed with no output.", [commandPath]);
+  const reply = scrubSecrets(
+    redactText(result.stdout || result.stderr || "Command completed with no output.", [commandPath]),
+    env
+  );
   return {
     ok: Boolean(result.ok && String(result.stdout || "").trim()),
     native: true,
@@ -194,27 +248,28 @@ async function runTemplateCli(agentId, message, env, deps) {
   const specs = {
     claude: {
       names: [env.CLAUDE_CODE_PATH, env.CLAUDE_CLI_PATH, "claude"],
-      args: ["-p", message, "--output-format", "text"],
+      args: withMessageTerminator(["--output-format", "text", "-p", message], message),
       timeout: clampTimeout(env.CLAUDE_TIMEOUT_MS, 120000, 5000, 600000),
       transport: "claude-cli"
     },
     codex: {
       names: [env.CODEX_CLI_PATH, "codex"],
-      args: ["exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never", message],
+      args: withMessageTerminator(["exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never", message], message),
       timeout: clampTimeout(env.CODEX_TIMEOUT_MS, 120000, 5000, 600000),
       transport: "codex-cli"
     },
     cursor: {
       names: [env.CURSOR_AGENT_PATH, "agent"],
-      args: env.CURSOR_CLI_ARGS
-        ? splitArgs(env.CURSOR_CLI_ARGS).map((arg) => arg.replaceAll("{{message}}", message))
-        : ["-p", message],
+      args: withMessageTerminator(
+        env.CURSOR_CLI_ARGS ? splitArgs(env.CURSOR_CLI_ARGS) : ["-p", "{{message}}"],
+        message
+      ),
       timeout: clampTimeout(env.CURSOR_TIMEOUT_MS, 120000, 5000, 600000),
       transport: "cursor-cli"
     },
     openclaw: {
       names: [env.OPENCLAW_CLI_PATH, "openclaw"],
-      args: ["agent", "--message", message, "--thinking", "high"],
+      args: ["agent", `--message=${message}`, "--thinking", "high"],
       timeout: clampTimeout(env.OPENCLAW_TIMEOUT_MS, 120000, 5000, 600000),
       transport: "openclaw-cli"
     }
@@ -279,11 +334,13 @@ async function runOpenClawGateway(message, env, deps) {
     };
   } catch (error) {
     const timedOut = error?.name === "AbortError";
+    const code = error?.cause?.code || error?.code;
+    const neverReached = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"].includes(code);
     return {
       ok: false,
       transport: "openclaw-gateway",
       native: true,
-      fallThrough: !timedOut,
+      fallThrough: !timedOut && neverReached,
       reply: timedOut ? `OpenClaw gateway timed out after ${timeoutMs} ms.` : redactText(error?.message || "OpenClaw gateway request failed.").slice(0, 600)
     };
   } finally {
@@ -369,14 +426,14 @@ export async function dispatchLiveChat(input = {}, deps = {}) {
       ok: false,
       mode: "invalid",
       reply: "message is required"
-    });
+    }, env);
   }
   if (isDemoPublic(env)) {
     return resultShape(agentId, {
       ok: false,
       mode: "demo_locked",
       reply: "Public demo mode is on. Unset DEMO_PUBLIC to call OmniRoute, Hermes, or OpenClaw. Gallery replies stay on /api/demo/chat."
-    });
+    }, env);
   }
   if (input.dryRun !== false) return dryPlan(agentId, message);
   if (!isLiveChatEnabled(env)) {
@@ -384,7 +441,7 @@ export async function dispatchLiveChat(input = {}, deps = {}) {
       ok: false,
       mode: "blocked",
       reply: "Live chat is off. Set AGENT_OS_LIVE_CHAT=1 to call OmniRoute and the OpenClaw gateway. Native CLIs also need HERMES_AGENT_OS_ENABLE_EXEC=1. Send dryRun: true for a plan."
-    });
+    }, env);
   }
 
   const execOn = deps.executionEnabled
@@ -394,25 +451,25 @@ export async function dispatchLiveChat(input = {}, deps = {}) {
   if (agentId === "openclaw") {
     const gateway = await runOpenClawGateway(message, env, deps);
     if (gateway && (gateway.ok || !gateway.fallThrough)) {
-      return resultShape(agentId, { ...gateway, mode: gateway.ok ? "executed" : "error" });
+      return resultShape(agentId, { ...gateway, mode: gateway.ok ? "executed" : "error" }, env);
     }
     if (execOn) {
       const cli = await runTemplateCli("openclaw", message, env, deps);
-      if (cli) return resultShape(agentId, { ...cli, mode: cli.ok ? "executed" : "error" });
+      if (cli) return resultShape(agentId, { ...cli, mode: cli.ok ? "executed" : "error" }, env);
     }
   } else if (execOn) {
     const cli = agentId === "hermes"
       ? await runHermesCli(message, env, deps)
       : await runTemplateCli(agentId, message, env, deps);
-    if (cli) return resultShape(agentId, { ...cli, mode: cli.ok ? "executed" : "error" });
+    if (cli) return resultShape(agentId, { ...cli, mode: cli.ok ? "executed" : "error" }, env);
   }
 
   const omni = await runOmniRouteSeat(agentId, message, env, deps);
-  if (omni) return resultShape(agentId, { ...omni, mode: omni.ok ? "executed" : "error" });
+  if (omni) return resultShape(agentId, { ...omni, mode: omni.ok ? "executed" : "error" }, env);
 
   if (agentId === "codex") {
     const preview = await runCodexApiSeat(message);
-    if (preview) return resultShape(agentId, { ...preview, mode: preview.ok ? "executed" : "error" });
+    if (preview) return resultShape(agentId, { ...preview, mode: preview.ok ? "executed" : "error" }, env);
   }
 
   return unavailable(agentId);

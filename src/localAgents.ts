@@ -118,6 +118,11 @@ export function chatLabel(agent?: LocalAgentRecord | null) {
   return "Dry run";
 }
 
+export function liveTurnLabel(result: { transport?: string; mode?: string }) {
+  if (result.mode && result.mode !== "executed") return result.mode;
+  return result.transport || result.mode || "none";
+}
+
 export function statusTone(status = "") {
   if (status === "demo") return "demo";
   if (status === "dry_run" || status === "preview" || status === "cli_present") return "partial";

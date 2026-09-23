@@ -211,6 +211,93 @@ test("live status and mission note stay free of secrets", async () => {
   });
 });
 
+test("native prompts stay positional and child env drops API keys", async () => {
+  await withTempHome(async () => {
+    let seen = null;
+    const result = await dispatchLiveChat({
+      agentId: "codex",
+      message: "--dangerously-bypass-approvals-and-sandbox",
+      dryRun: false
+    }, {
+      env: {
+        AGENT_OS_LIVE_CHAT: "1",
+        HERMES_AGENT_OS_ENABLE_EXEC: "1",
+        OMNIROUTE_API_KEY: "leak-me-please",
+        PATH: "/usr/bin",
+        HOME: "/tmp/operator"
+      },
+      executionEnabled: async () => true,
+      which: async () => "/usr/bin/codex",
+      runCommand: async (_command, args, _timeout, options) => {
+        seen = { args, env: options.env };
+        return { ok: true, stdout: "echo leak-me-please", stderr: "", code: 0 };
+      }
+    });
+    assert.equal(seen.args.at(-2), "--");
+    assert.equal(seen.args.at(-1), "--dangerously-bypass-approvals-and-sandbox");
+    assert.equal(seen.env.OMNIROUTE_API_KEY, undefined);
+    assert.equal(seen.env.PATH, "/usr/bin");
+    assert.equal(result.reply.includes("leak-me-please"), false);
+    assert.match(result.reply, /configured/);
+  });
+});
+
+test("OpenClaw falls through only when the gateway was never reached", async () => {
+  await withTempHome(async () => {
+    let cliRan = false;
+    const reset = await dispatchLiveChat({
+      agentId: "openclaw",
+      message: "once",
+      dryRun: false
+    }, {
+      env: {
+        AGENT_OS_LIVE_CHAT: "1",
+        OPENCLAW_GATEWAY_URL: "http://127.0.0.1:18789/v1",
+        OMNIROUTE_BASE_URL: "http://omniroute.local/v1",
+        OMNIROUTE_API_KEY: "endpoint-key"
+      },
+      executionEnabled: async () => true,
+      which: async () => "/usr/bin/openclaw",
+      runCommand: async () => {
+        cliRan = true;
+        return { ok: true, stdout: "cli", stderr: "", code: 0 };
+      },
+      fetchImpl: async () => {
+        throw Object.assign(new Error("socket reset"), { cause: { code: "ECONNRESET" } });
+      }
+    });
+    assert.equal(cliRan, false);
+    assert.equal(reset.transport, "openclaw-gateway");
+    assert.equal(reset.mode, "error");
+
+    const refused = await dispatchLiveChat({
+      agentId: "openclaw",
+      message: "fallback",
+      dryRun: false
+    }, {
+      env: {
+        AGENT_OS_LIVE_CHAT: "1",
+        OPENCLAW_GATEWAY_URL: "http://127.0.0.1:18789/v1",
+        OMNIROUTE_BASE_URL: "http://omniroute.local/v1",
+        OMNIROUTE_API_KEY: "endpoint-key"
+      },
+      executionEnabled: async () => false,
+      fetchImpl: async (url) => {
+        if (String(url).includes("18789")) {
+          throw Object.assign(new Error("refused"), { cause: { code: "ECONNREFUSED" } });
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: "omni fallback" } }], model: "auto" })
+        };
+      }
+    });
+    assert.equal(refused.transport, "omniroute");
+    assert.match(refused.reply, /omni fallback/);
+  });
+});
+
 test("provider router can execute OmniRoute on the live lane without the execution gate", async () => {
   await withTempHome(async () => {
     const server = createServer((req, res) => {

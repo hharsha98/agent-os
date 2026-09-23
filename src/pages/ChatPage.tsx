@@ -93,6 +93,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
     [agents, agentId]
   );
   const gateOff = gate?.enabled !== true;
+  const liveSend = !demoPublic && !preferDry && liveChat;
 
   useEffect(() => {
     if (localAgents.length) {
@@ -242,7 +243,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
       return;
     }
 
-    if (!demoPublic && liveChat && !preferDry) {
+    if (liveChat || !preferDry) {
       setBusy(true);
       try {
         const vault = await getMemoryContext({ query: text, limit: 6 }).catch(() => null);
@@ -251,7 +252,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
           setVaultHits(vault.count);
         }
         const payload = vault?.promptBlock ? `${vault.promptBlock}\n\nUser:\n${text}` : text;
-        const result = await sendLiveChat({ agentId: agent.id, message: payload, dryRun: false });
+        const result = await sendLiveChat({ agentId: agent.id, message: payload, dryRun: preferDry });
         const assistant: ChatMessage = {
           id: `assistant-${Date.now()}`,
           role: "assistant",
@@ -406,8 +407,8 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
 
   return (
     <PageFrame
-      kicker={demoPublic ? "UNIFIED CHAT · PUBLIC DEMO" : "UNIFIED CHAT · DRY-RUN"}
-      title={demoPublic ? "One box. A simulated fleet. Plans, then a timeline." : liveChat && !preferDry ? "One box. Live seats on this machine." : "One box. Local agents. Dry-run unless you turn it off."}
+      kicker={demoPublic ? "UNIFIED CHAT · PUBLIC DEMO" : liveSend ? "UNIFIED CHAT · LIVE" : "UNIFIED CHAT · DRY-RUN"}
+      title={demoPublic ? "One box. A simulated fleet. Plans, then a timeline." : liveSend ? "One box. Live seats on this machine." : "One box. Local agents. Dry-run unless you turn it off."}
       hint={demoPublic
         ? `${DEMO_BADGE}. Demo plans and the multi-agent timeline are simulated. Your real Claude, Cursor, Codex, and Hermes are not connected.`
         : "Dry-run stays available. With the toggle off and AGENT_OS_LIVE_CHAT=1, Send calls OmniRoute, the OpenClaw gateway, or a native CLI when that backend exists."}
@@ -415,10 +416,14 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
       <div className="aos-product-banner" role="status">
         <ShieldCheck size={18} />
         <div>
-          <strong>{demoPublic ? DEMO_BADGE : preferDry ? "Dry-run is on" : liveChat ? "Live chat is on" : gateOff ? "Dry-run is on" : "Execution gate is on"}</strong>
+          <strong>{demoPublic ? DEMO_BADGE : preferDry ? "Dry-run is on" : liveChat ? "Live chat is on" : "Live lane is off"}</strong>
           <p>{demoPublic
             ? "Send a demo plan, or run the simulated timeline. The timeline writes a note in the shared sandbox and does not start a shell."
-            : `${preferDry ? sendHint(agent, local, gateOff, agentsReady, agentsError) : "Send calls the live lane. The reply badge names the transport: Hermes CLI, OpenClaw gateway, OmniRoute, or another native CLI."} Replies can save to local Memory.`}</p>
+            : preferDry
+              ? `${liveChat ? "Send asks the live lane for a plan and does not call a model." : sendHint(agent, local, gateOff, agentsReady, agentsError)} Replies can save to local Memory.`
+              : liveChat
+                ? "Send calls the live lane. The reply badge names the transport: Hermes CLI, OpenClaw gateway, OmniRoute, or another native CLI. Replies can save to local Memory."
+                : "Send asks the live lane. AGENT_OS_LIVE_CHAT is off, so the reply explains the block. Check Dry-run only for a plan."}</p>
         </div>
       </div>
       <div className="aos-chat-agents">
@@ -432,7 +437,13 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
           );
         })}
       </div>
-      <HonestNote>{demoPublic ? `${local?.summary || "Simulated demo agent."} The buttons below do not start a host CLI.` : `${agent.hint} ${local?.summary || ""} The Send button below does not enable live tools.`}</HonestNote>
+      <HonestNote>{demoPublic
+        ? `${local?.summary || "Simulated demo agent."} The buttons below do not start a host CLI.`
+        : liveSend
+          ? `${agent.hint} ${local?.summary || ""} The reply badge names the transport that actually ran.`
+          : preferDry
+            ? `${agent.hint} ${local?.summary || ""} This send stays a plan.`
+            : "The live lane is off on this server. Send reports that block instead of running a tool."}</HonestNote>
       {briefing ? (
         <div className="aos-panel" style={{ marginBottom: 16 }}>
           <div className="aos-panel-head">

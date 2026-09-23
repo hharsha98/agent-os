@@ -1,5 +1,5 @@
 [Unit]
-Description=Agent OS public demo (sandboxed)
+Description=Agent OS local screenshot gallery (optional, sandboxed, loopback)
 After=network.target
 
 [Service]

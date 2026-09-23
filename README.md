@@ -1,13 +1,13 @@
 <h1 align="center">Agent OS</h1>
 
 <p align="center">
-  <strong>A local command center for AI coding agents.</strong><br />
-  Clone it. Run it on your machine. Dry-run by default. Execution stays off until you turn it on.
+  <strong>A local command center for the coding agents already on your machine.</strong><br />
+  Clone it. Run it. It stays on 127.0.0.1. Dry-run by default. Execution stays off until you turn it on.
 </p>
 
 <p align="center">
-  <a href="https://hharsha98.github.io/agent-os/"><img src="https://img.shields.io/badge/Static_gallery-open-ff7a2f?style=for-the-badge" alt="Open static gallery" /></a>
-  <a href="#run-it-locally"><img src="https://img.shields.io/badge/Local_v1-clone_and_run-111318?style=for-the-badge" alt="Run locally" /></a>
+  <a href="https://hharsha98.github.io/agent-os/"><img src="https://img.shields.io/badge/Static_gallery-screenshots-ff7a2f?style=for-the-badge" alt="Open static gallery" /></a>
+  <a href="#run-it-locally"><img src="https://img.shields.io/badge/Install-clone_and_run-111318?style=for-the-badge" alt="Run locally" /></a>
   <img src="https://img.shields.io/badge/license-MIT-8f96a3?style=for-the-badge" alt="MIT license" />
 </p>
 
@@ -18,6 +18,8 @@
   ·
   <a href="docs/V1.md">What v1 includes</a>
   ·
+  <a href="docs/HOSTING.md">Hosting</a>
+  ·
   <a href="SETUP-GUIDE.md">Setup guide</a>
 </p>
 
@@ -25,11 +27,56 @@
 
 ## What this is
 
-Agent OS is a **local-first dashboard** for agents that already live on a developer machine: Cursor Agent, Claude Code, Codex, and Hermes.
+Agent OS is a **local operator dashboard** for Cursor Agent, Claude Code, Codex, and Hermes.
 
-It is **not** a hosted multi-tenant cloud app. The github.io page is a **static gallery**, suitable later for an `os.` subdomain, not the running product.
+You install it like a local app: clone, build, open a browser on the same machine. There is no public Live URL. **AgentOps Studio** is the hosted ops product. This repository is not that product.
 
-An optional **public gallery** (`DEMO_PUBLIC=1`) simulates agents and labels them **Demo**. The Contabo production path leaves that flag off and uses the live lane (`AGENT_OS_LIVE_CHAT=1`) so chat and missions call OmniRoute, Hermes, and OpenClaw. See [docs/FULL-PRODUCT-PLAN.md](docs/FULL-PRODUCT-PLAN.md).
+The [static gallery](https://hharsha98.github.io/agent-os/) is screenshots. It does not run agents.
+
+A desktop shell is not in this release. Node on your machine is the v1 install.
+
+---
+
+## Run it locally
+
+Needs **Node 18+**.
+
+```bash
+git clone https://github.com/hharsha98/agent-os.git
+cd agent-os
+cp .env.example .env
+npm ci
+npm run build
+npm start
+```
+
+Open [http://127.0.0.1:8090](http://127.0.0.1:8090).
+
+The server binds **127.0.0.1** unless you set `HOST`. `.env.example` sets that explicitly. `PORT` overrides 8090. `GET /api/health` reports `ok`, `bind`, and `port`.
+
+`.env` is optional for a dry-run dashboard. The server loads it at startup and **does not override** variables already in the process environment. `.env` is gitignored. Never commit API keys.
+
+These stay **off** in `.env.example`:
+
+```bash
+HERMES_AGENT_OS_ENABLE_EXEC=0
+HERMES_AGENT_OS_ENABLE_INSTALL=0
+HERMES_AGENT_OS_PUBLIC_MODE=0
+DEMO_PUBLIC=0
+AGENT_OS_LIVE_CHAT=0
+```
+
+Hot reload while hacking:
+
+```bash
+npm run dev
+```
+
+That serves the Vite UI on [http://127.0.0.1:5173](http://127.0.0.1:5173) and proxies `/api` to port **8090**.
+
+---
+
+## Honest limits
 
 | You see | What it means |
 | --- | --- |
@@ -38,14 +85,11 @@ An optional **public gallery** (`DEMO_PUBLIC=1`) simulates agents and labels the
 | Workspace sandbox | Preview is jailed to `~/.hermes-agent-os/workspace` and `exports`. |
 | Machine Control with **Run command disabled** | Computer-control stays gated. |
 | Honest **Not configured** tiles | Studio image/voice/music and missing keys stay missing. |
-
----
-
-## Local v1 in one pass
-
-1. Open **Mission Control**. Read CLI / dashboard chat / live-execution for each agent.
-2. Open **Unified Chat**. Send a dry-run. Cursor stays unwired; Claude/Hermes plan; Codex can preview if a local key exists.
-3. Keep `HERMES_AGENT_OS_ENABLE_EXEC=0` unless you later decide to enable live tools.
+| Static gallery | Screenshots on github.io. Not the running app. |
+| `DEMO_PUBLIC=1` | Optional local simulation for screenshots. Not a public host. |
+| Live operator lane | For the owner of this machine. Localhost, or a private host behind SSH. |
+| Hosted multi-tenant Live | **Out of scope.** |
+| Public Contabo site | **Retired.** Do not treat any old hostname as a product URL. |
 
 ```mermaid
 flowchart LR
@@ -60,9 +104,7 @@ flowchart LR
 
 **Stack:** React 18 + TypeScript + Vite on the front. Node / Express on the back. Tests with Node’s built-in test runner.
 
----
-
-## Feature status (honest)
+### Feature status
 
 | Surface | State |
 | --- | --- |
@@ -76,50 +118,16 @@ flowchart LR
 | Machine Control | Status only — no send/run |
 | OpenClaw | Detected if installed; not faked |
 | Overnight Goal Mode | Optional; **execution stays off** by default |
-| Public gallery (`DEMO_PUBLIC=1`) | Simulated Mission Control, Chat timeline, Workspace notes, gated machine preview, local canvas |
+| Screenshot gallery (`DEMO_PUBLIC=1`) | Simulated Mission Control, Chat timeline, Workspace notes, gated machine preview, local canvas |
 | Live operator (`AGENT_OS_LIVE_CHAT=1`, gallery off) | OmniRoute chat, OpenClaw gateway HTTP, native CLIs when the execution gate and binaries exist |
+| Desktop installer | Not in v1 |
 | Hosted multi-tenant SaaS | **Not this product** |
 
----
-
-## Run it locally
-
-Needs **Node 18+**. This is a local app.
-
-```bash
-git clone https://github.com/hharsha98/agent-os.git
-cd agent-os
-cp .env.example .env
-npm ci
-npm run build
-npm start
-```
-
-Open [http://127.0.0.1:8090](http://127.0.0.1:8090). The process binds `0.0.0.0` so a reverse proxy on the same machine can reach it. `PORT` overrides 8090. `GET /api/health` reports `ok`, `bind`, and `port`.
-
-The server loads `.env` at startup and **does not override** variables already in the process environment. `.env` is optional if you only want the dry-run dashboard.
-
-Hot reload while hacking:
-
-```bash
-npm run dev
-```
-
-That serves the Vite UI on [http://127.0.0.1:5173](http://127.0.0.1:5173) and proxies `/api` to port **8090** (or `PORT` from the process environment / `.env`).
-
-Leave these **off** unless you later decide otherwise (already `0` in `.env.example`):
-
-```bash
-HERMES_AGENT_OS_ENABLE_EXEC=0
-HERMES_AGENT_OS_ENABLE_INSTALL=0
-HERMES_AGENT_OS_PUBLIC_MODE=0
-```
-
-`.env` is gitignored. Never commit API keys.
+On a fresh clone: open Mission Control, send one Unified Chat dry-run, and leave `HERMES_AGENT_OS_ENABLE_EXEC=0`.
 
 ---
 
-## Verify (no Docker required)
+## Verify
 
 ```bash
 npm run build
@@ -128,9 +136,9 @@ npm start   # in one terminal
 npm run smoke:local
 ```
 
-`smoke:local` hits health, Mission Control product status, Unified Chat dry-run plans, workspace, and the execution gate. **CI uses this native path** — Docker is never required to verify or ship.
+`smoke:local` hits health, Mission Control product status, Unified Chat dry-run plans, workspace, and the execution gate. **CI uses this native path.** Docker is not required.
 
-Public demo checks (also in CI, still no Docker):
+Screenshot-gallery checks (local process, still no Docker):
 
 ```bash
 npm run smoke:public
@@ -148,72 +156,46 @@ That boots with `AGENT_OS_LIVE_CHAT=1` and `DEMO_PUBLIC=0`, then checks `/api/li
 
 ---
 
-## Contabo live operator
+## Optional screenshot gallery
 
-Production on the VPS is **not** `DEMO_PUBLIC=1`. That flag is only the canned gallery.
+`DEMO_PUBLIC=1` is a **local sandboxed walkthrough** for screenshots. It is not a claim that anyone’s Claude, Cursor, Codex, or Hermes is connected. The badge is **Public demo · sandboxed**. While it is on, live execution stays locked even if `HERMES_AGENT_OS_ENABLE_EXEC=1`.
 
-```bash
-# /etc/agent-os/live.env — placeholders are in deploy/live.env.example
-DEMO_PUBLIC=0
-AGENT_OS_LIVE_CHAT=1
-HERMES_AGENT_OS_ENABLE_EXEC=1
-HERMES_AGENT_OS_REQUIRE_AUTH=1
-OMNIROUTE_BASE_URL=https://omniroute.example/v1
-OMNIROUTE_API_KEY=...
-OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789/v1
-OPENCLAW_GATEWAY_TOKEN=...
-HERMES_HOME=~/.hermes
-```
+What it simulates, on your own machine:
 
-Run the unit as the Unix user that owns `HERMES_HOME` and can reach the OpenClaw gateway. Example unit: `deploy/agent-os-live.service`. Caddy still proxies `127.0.0.1:8090`.
-
-What OmniRoute can do without a local CLI: labeled chat and mission text. What still needs the machine: `hermes` (tools, Kanban, gateway restart), `openclaw` or `openclaw-gateway` with chat completions enabled, and `agent` / `claude` / `codex` for native edits. Machine Control does not grow a public shell.
-
-```bash
-npm run smoke:live
-```
-
-## Public gallery / optional demo
-
-`DEMO_PUBLIC=1` is a **sandboxed walkthrough**, not a claim that anyone’s Claude, Cursor, Codex, or Hermes is connected. The badge is **Public demo · sandboxed**. Do not use it for the Contabo host that should call OmniRoute.
-
-What a stranger can do at a URL like `https://agentos.169.58.185.43.sslip.io/`:
-
-1. **Mission Control** — simulated agents labeled **Demo**, with the host CLI called out separately when it exists.
+1. **Mission Control** — agents labeled **Demo**, with the host CLI called out separately when it exists.
 2. **Unified Chat** — a multi-step plan, then **Run simulated timeline**, which writes `demo/latest-timeline.md`.
 3. **Workspace** — seeded briefing plus a note composer (`.md` / `.txt` / `.html` inside the sandbox only).
-4. **Machine Control** — canned transcripts only. **Run command** stays disabled. Arbitrary shell is refused.
+4. **Machine Control** — canned transcripts only. **Run command** stays disabled.
 5. **Demo canvas** — local workflow graph. Convex and Clerk are not required.
 
-While `DEMO_PUBLIC=1`, live execution stays locked even if `HERMES_AGENT_OS_ENABLE_EXEC=1`. Leave `HERMES_AGENT_OS_PUBLIC_MODE=0` for an open demo. That flag is an admin lock, not the demo switch. If you set it, visitors need `HERMES_AGENT_OS_ADMIN_TOKEN`.
-
 ```bash
-npm ci
-npm run build
-DEMO_PUBLIC=1 PORT=8090 npm start
+DEMO_PUBLIC=1 HOST=127.0.0.1 PORT=8090 npm start
 ```
 
-Suggested layout on one Contabo VPS: Node listens on `127.0.0.1:8090` (`HOST=127.0.0.1`), Caddy terminates TLS and proxies the sslip.io name. The app default bind is `0.0.0.0` when `HOST` is unset. Full unit, env file, and Caddy example: [docs/HANDOFF-CONTABO.md](docs/HANDOFF-CONTABO.md).
+`HERMES_AGENT_OS_PUBLIC_MODE` is an admin lock, not the gallery switch. Leave it at `0`.
 
-```bash
-npm run smoke:public
-# against a server you already started:
-BASE_URL=http://127.0.0.1:8090 npm run smoke:public
-```
+Do not publish this process. The workspace is one shared sandbox for whoever can open it.
 
-The workspace on that host is **shared**. Do not paste secrets into notes.
+---
 
-## Optional: Docker on your Mac
+## Private self-host
 
-Only if you already have Docker Desktop and prefer a containerized dashboard process:
+Keep the app on loopback. If you need it from another machine, use an SSH tunnel. Public Internet exposure is discouraged. Auth is required if you ever reverse-proxy it.
+
+The old public Contabo Caddy site was removed. Details, the tunnel command, and the optional private systemd unit: [docs/HOSTING.md](docs/HOSTING.md). Product form: [docs/FULL-PRODUCT-PLAN.md](docs/FULL-PRODUCT-PLAN.md).
+
+---
+
+## Optional: Docker
+
+Only if you already have Docker and want a containerized dashboard process:
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-Host port **8090**. Host-installed CLIs (`agent`, `claude`, `hermes`, `codex`) are **not** injected into the container. Prefer the native `npm start` path for demos that need CLI probes.
-
+The host port is **127.0.0.1:8090**. Inside the container the process uses `HOST=0.0.0.0` so Docker can forward that port. Host-installed CLIs (`agent`, `claude`, `hermes`, `codex`) are **not** injected into the container. Prefer `npm start` when you want CLI probes.
 
 ---
 
@@ -225,6 +207,7 @@ Most agent dashboards look impressive and then silently run shell. This one is b
 2. Let you plan in **dry-run**.
 3. Keep computer-control, installs, and public mode behind explicit flags.
 4. Preview generated files only inside a sandbox.
+5. Stay on localhost unless you deliberately tunnel or proxy it.
 
 ---
 
@@ -235,8 +218,9 @@ src/                 Dashboard (Mission Control, Chat, Phase 2 pages)
 server/              Express APIs, workspace sandbox, memory, goals
 test/                Runtime + workspace + local-agent tests
 scripts/local-smoke.js   Native smoke (no Docker)
-docs/                Static gallery and product tour
+docs/                Static gallery, product tour, hosting, product plan
 .env.example         Safe defaults — copy to .env
+deploy/              Optional private loopback unit, not a public site
 ```
 
 ---

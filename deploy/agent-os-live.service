@@ -1,5 +1,5 @@
 [Unit]
-Description=Agent OS live operator runtime
+Description=Agent OS private operator runtime (loopback only)
 After=network.target omniroute.service openclaw-gateway.service
 
 [Service]

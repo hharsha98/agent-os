@@ -453,7 +453,7 @@ export function demoWorkspaceFiles() {
 
 **${DEMO_BADGE}**
 
-This server is a shared sandbox for a hosted walkthrough. It is not your laptop, and your real Claude, Cursor, Codex, and Hermes are not connected.
+This server is a simulated gallery for screenshots. It is not a connection to the agents on your laptop, and your real Claude, Cursor, Codex, and Hermes are not connected.
 
 ## Walkthrough
 
@@ -463,7 +463,7 @@ This server is a shared sandbox for a hosted walkthrough. It is not your laptop,
 4. Machine Control only previews canned transcripts.
 5. Agent Builder is a local canvas. Convex and Clerk are not required.
 
-Do not paste secrets here. Other visitors can open the same sandbox.
+Do not paste secrets here. Anyone who can open this process sees the same sandbox.
 `
     },
     {

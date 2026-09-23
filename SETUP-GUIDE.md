@@ -22,7 +22,7 @@ npm run build
 npm start
 ```
 
-Open [http://127.0.0.1:8090](http://127.0.0.1:8090).
+Open [http://127.0.0.1:8090](http://127.0.0.1:8090). The server binds `127.0.0.1` unless `HOST` is set. `.env.example` sets `HOST=127.0.0.1`.
 
 Verify:
 
@@ -97,7 +97,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Compose publishes host port **8090** to the container (`PORT` inside the image is also 8090). Host-installed CLIs are not automatically available inside the image.
+Compose publishes **127.0.0.1:8090** on the host. Inside the container `HOST=0.0.0.0` so that published port can connect. Host-installed CLIs are not automatically available inside the image.
 
 ## Security
 
@@ -105,8 +105,9 @@ Compose publishes host port **8090** to the container (`PORT` inside the image i
 - Secret-bearing JSON files use owner-only permissions.
 - API responses redact secret values and private paths.
 - Do not distribute `.env`, the runtime store, or workflow runs.
-- Public/VPS mode is optional and not the v1 product. If you enable it, set `HERMES_AGENT_OS_PUBLIC_MODE=1` and an admin token; it is still a single-operator guard, not multi-tenant accounts.
-- `DEMO_PUBLIC=1` is the canned gallery. It locks host execution. Contabo live mode uses `DEMO_PUBLIC=0` and `AGENT_OS_LIVE_CHAT=1`. Deploy notes: `docs/HANDOFF-CONTABO.md`. Plan: `docs/FULL-PRODUCT-PLAN.md`.
+- Keep the process on `127.0.0.1`. Public Internet exposure is discouraged. Remote personal use is an SSH tunnel. Auth is required if you reverse-proxy it. See `docs/HOSTING.md`.
+- `HERMES_AGENT_OS_PUBLIC_MODE` is an admin lock, not a product mode. Leave it at `0`.
+- `DEMO_PUBLIC=1` is an optional local screenshot gallery. It locks host execution. The live operator lane (`DEMO_PUBLIC=0`, `AGENT_OS_LIVE_CHAT=1`) is for the owner of this machine. Plan: `docs/FULL-PRODUCT-PLAN.md`. The old public Contabo site was removed (`docs/HANDOFF-CONTABO.md`).
 
 ## OmniRoute, Hermes, and OpenClaw
 

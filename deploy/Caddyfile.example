@@ -1,7 +1,13 @@
-# Replace the IP with the Contabo VPS address.
-# Caddy obtains a certificate for the sslip.io name.
-# Node listens on 127.0.0.1:8090 (see deploy/demo.env.example).
-
-agentos.169.58.185.43.sslip.io {
-	reverse_proxy 127.0.0.1:8090
-}
+# Optional private reverse proxy. Public Internet exposure is discouraged.
+# Prefer an SSH tunnel: docs/HOSTING.md
+#
+# If you terminate TLS on this machine:
+# - Node stays on 127.0.0.1:8090 (HOST=127.0.0.1)
+# - Set HERMES_AGENT_OS_REQUIRE_AUTH=1 and a token that is not in git
+# - Set HERMES_AGENT_OS_COOKIE_SECURE=1
+# - Leave port 8090 closed on the firewall
+# - Do not use this file as a public product site
+#
+# your-private-name.example {
+#   reverse_proxy 127.0.0.1:8090
+# }

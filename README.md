@@ -29,7 +29,7 @@ Agent OS is a **local-first dashboard** for agents that already live on a develo
 
 It is **not** a hosted multi-tenant cloud app. The github.io page is a **static gallery**, suitable later for an `os.` subdomain, not the running product.
 
-An optional **public demo** (`DEMO_PUBLIC=1`) can be hosted behind Caddy for a sandboxed walkthrough. That mode simulates agents and labels them **Demo**. It does not attach a visitor’s real Claude.
+An optional **public gallery** (`DEMO_PUBLIC=1`) simulates agents and labels them **Demo**. The Contabo production path leaves that flag off and uses the live lane (`AGENT_OS_LIVE_CHAT=1`) so chat and missions call OmniRoute, Hermes, and OpenClaw. See [docs/FULL-PRODUCT-PLAN.md](docs/FULL-PRODUCT-PLAN.md).
 
 | You see | What it means |
 | --- | --- |
@@ -76,7 +76,8 @@ flowchart LR
 | Machine Control | Status only — no send/run |
 | OpenClaw | Detected if installed; not faked |
 | Overnight Goal Mode | Optional; **execution stays off** by default |
-| Public demo (`DEMO_PUBLIC=1`) | Simulated Mission Control, Chat timeline, Workspace notes, gated machine preview, local canvas |
+| Public gallery (`DEMO_PUBLIC=1`) | Simulated Mission Control, Chat timeline, Workspace notes, gated machine preview, local canvas |
+| Live operator (`AGENT_OS_LIVE_CHAT=1`, gallery off) | OmniRoute chat, OpenClaw gateway HTTP, native CLIs when the execution gate and binaries exist |
 | Hosted multi-tenant SaaS | **Not this product** |
 
 ---
@@ -137,11 +138,44 @@ npm run smoke:public
 
 That boots a temporary server with `DEMO_PUBLIC=1` and asserts the simulated fleet, chat plan, timeline note, workspace seed, gated machine preview, and local canvas.
 
+Live-lane checks (no real keys, no Docker):
+
+```bash
+npm run smoke:live
+```
+
+That boots with `AGENT_OS_LIVE_CHAT=1` and `DEMO_PUBLIC=0`, then checks `/api/live/status`, a dry-run plan, and that a live Hermes turn is not a canned Demo reply.
+
 ---
 
-## Public demo / Contabo
+## Contabo live operator
 
-`DEMO_PUBLIC=1` is a **sandboxed hosted walkthrough**, not a claim that anyone’s Claude, Cursor, Codex, or Hermes is connected. The badge is **Public demo · sandboxed**.
+Production on the VPS is **not** `DEMO_PUBLIC=1`. That flag is only the canned gallery.
+
+```bash
+# /etc/agent-os/live.env — placeholders are in deploy/live.env.example
+DEMO_PUBLIC=0
+AGENT_OS_LIVE_CHAT=1
+HERMES_AGENT_OS_ENABLE_EXEC=1
+HERMES_AGENT_OS_REQUIRE_AUTH=1
+OMNIROUTE_BASE_URL=https://omniroute.example/v1
+OMNIROUTE_API_KEY=...
+OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789/v1
+OPENCLAW_GATEWAY_TOKEN=...
+HERMES_HOME=~/.hermes
+```
+
+Run the unit as the Unix user that owns `HERMES_HOME` and can reach the OpenClaw gateway. Example unit: `deploy/agent-os-live.service`. Caddy still proxies `127.0.0.1:8090`.
+
+What OmniRoute can do without a local CLI: labeled chat and mission text. What still needs the machine: `hermes` (tools, Kanban, gateway restart), `openclaw` or `openclaw-gateway` with chat completions enabled, and `agent` / `claude` / `codex` for native edits. Machine Control does not grow a public shell.
+
+```bash
+npm run smoke:live
+```
+
+## Public gallery / optional demo
+
+`DEMO_PUBLIC=1` is a **sandboxed walkthrough**, not a claim that anyone’s Claude, Cursor, Codex, or Hermes is connected. The badge is **Public demo · sandboxed**. Do not use it for the Contabo host that should call OmniRoute.
 
 What a stranger can do at a URL like `https://agentos.169.58.185.43.sslip.io/`:
 

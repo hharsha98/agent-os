@@ -1,10 +1,10 @@
 import { Loader2, MessageSquare, Repeat, Save, Send, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addMemory, getExecutionGateStatus, getLocalAgents, getMemoryContext, getProductStatus, previewCodexMessage, runDemoTimeline, sendAgentMessage, sendDemoChat } from "../api";
+import { addMemory, getExecutionGateStatus, getLocalAgents, getMemoryContext, getProductStatus, previewCodexMessage, runDemoTimeline, sendAgentMessage, sendDemoChat, sendLiveChat } from "../api";
 import { DEMO_BADGE } from "../demo";
-import { type ChatAgentId, chatStorageKey } from "../chatHistory";
+import { CHAT_AGENT_IDS, type ChatAgentId, chatStorageKey } from "../chatHistory";
 import { chatLabel, cursorChatNotice, type LocalAgentRecord } from "../localAgents";
-import { navigateTo } from "../nav";
+import { navigateTo, queryParam } from "../nav";
 import type { ExecutionGateStatus, MemoryContext } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
 
@@ -18,11 +18,26 @@ type ChatMessage = {
 };
 
 const AGENTS: Array<{ id: ChatAgentId; label: string; moduleId: string | null; hint: string; example: string }> = [
-  { id: "cursor", label: "Cursor", moduleId: null, hint: "CLI can be installed without chat routing.", example: "What would Cursor do with a failing test? (This will not call the CLI.)" },
-  { id: "claude", label: "Claude Code", moduleId: "claude", hint: "Uses the existing dry-run module API.", example: "Plan a dry-run for: add a README section on local v1." },
-  { id: "codex", label: "Codex", moduleId: "codex", hint: "Uses Codex API preview when a key is saved; otherwise dry-run.", example: "Preview a three-step workflow for a morning briefing." },
-  { id: "hermes", label: "Hermes", moduleId: "hermes", hint: "Uses the existing dry-run module API.", example: "Draft a local research plan that does not call tools yet." }
+  { id: "cursor", label: "Cursor", moduleId: "cursor", hint: "Live turns use the Cursor CLI when the execution gate is on, otherwise OmniRoute.", example: "What would Cursor do with a failing test?" },
+  { id: "claude", label: "Claude Code", moduleId: "claude", hint: "Dry-run plans by default. Live turns use the Claude CLI or OmniRoute.", example: "Plan a change for: add a README section on local v1." },
+  { id: "codex", label: "Codex", moduleId: "codex", hint: "Live turns use the Codex CLI, OmniRoute, or the Codex API preview.", example: "Preview a three-step workflow for a morning briefing." },
+  { id: "hermes", label: "Hermes", moduleId: "hermes", hint: "Live turns run hermes chat when the CLI and execution gate are available, otherwise OmniRoute.", example: "Draft a local research plan." },
+  { id: "openclaw", label: "OpenClaw", moduleId: "openclaw", hint: "Live turns call the OpenClaw gateway, then the CLI, then OmniRoute.", example: "Summarize what this OpenClaw gateway can do." }
 ];
+
+function transportBadge(transport = "", mode = "") {
+  if (mode === "dry_run") return "Dry run";
+  if (transport === "hermes-cli") return "Hermes CLI";
+  if (transport === "openclaw-gateway") return "OpenClaw gateway";
+  if (transport === "openclaw-cli") return "OpenClaw CLI";
+  if (transport === "claude-cli") return "Claude CLI";
+  if (transport === "codex-cli") return "Codex CLI";
+  if (transport === "cursor-cli") return "Cursor CLI";
+  if (transport === "codex-api") return "Codex API";
+  if (transport === "omniroute") return "OmniRoute";
+  if (mode === "unavailable" || mode === "blocked" || mode === "demo_locked" || mode === "error") return "Not live";
+  return "Live";
+}
 
 function sendHint(
   agent: typeof AGENTS[number],
@@ -65,15 +80,20 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
   const [agentsReady, setAgentsReady] = useState(localAgents.length > 0);
   const [agentsError, setAgentsError] = useState("");
   const [demoPublic, setDemoPublic] = useState(false);
+  const [liveChat, setLiveChat] = useState(false);
+  const [preferDry, setPreferDry] = useState(true);
   const [demoReady, setDemoReady] = useState(false);
+  const liveDefaultApplied = useRef(false);
   const skipSave = useRef(true);
-  const agent = AGENTS.find((item) => item.id === agentId) || AGENTS[1];
+  const visibleAgents = demoPublic ? AGENTS.filter((item) => item.id !== "openclaw") : AGENTS;
+  const agent = visibleAgents.find((item) => item.id === agentId) || AGENTS.find((item) => item.id === agentId) || AGENTS[1];
   const agents = probedAgents.length ? probedAgents : localAgents;
   const local = useMemo(
     () => agents.find((item) => item.id === agentId),
     [agents, agentId]
   );
   const gateOff = gate?.enabled !== true;
+  const liveSend = !demoPublic && !preferDry && liveChat;
 
   useEffect(() => {
     if (localAgents.length) {
@@ -102,6 +122,18 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
   }, []);
 
   useEffect(() => {
+    function syncAgent() {
+      const requested = queryParam("agent");
+      if ((CHAT_AGENT_IDS as readonly string[]).includes(requested)) {
+        setAgentId(requested as ChatAgentId);
+      }
+    }
+    syncAgent();
+    window.addEventListener("aos-navigate", syncAgent);
+    return () => window.removeEventListener("aos-navigate", syncAgent);
+  }, []);
+
+  useEffect(() => {
     skipSave.current = true;
     try {
       const raw = localStorage.getItem(chatStorageKey(agentId));
@@ -127,6 +159,11 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
     void getProductStatus()
       .then((product) => {
         setDemoPublic(Boolean(product.demoPublic));
+        setLiveChat(Boolean(product.liveChat));
+        if (!liveDefaultApplied.current) {
+          liveDefaultApplied.current = true;
+          setPreferDry(!product.liveChat);
+        }
         setDemoReady(true);
       })
       .catch(() => setDemoReady(true));
@@ -197,6 +234,42 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
             role: "assistant",
             agentId,
             text: caught instanceof Error ? caught.message : "The demo plan failed.",
+            badge: "Error"
+          }
+        ]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    if (liveChat || !preferDry) {
+      setBusy(true);
+      try {
+        const vault = await getMemoryContext({ query: text, limit: 6 }).catch(() => null);
+        if (vault) {
+          setBriefing(vault.briefing);
+          setVaultHits(vault.count);
+        }
+        const payload = vault?.promptBlock ? `${vault.promptBlock}\n\nUser:\n${text}` : text;
+        const result = await sendLiveChat({ agentId: agent.id, message: payload, dryRun: preferDry });
+        const assistant: ChatMessage = {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          agentId,
+          text: result.reply || "No live reply was returned.",
+          badge: transportBadge(result.transport, result.mode)
+        };
+        setMessages((current) => [...current, assistant]);
+        await persistAssistant(assistant, agent.label, text);
+      } catch (caught) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: `assistant-${Date.now()}`,
+            role: "assistant",
+            agentId,
+            text: caught instanceof Error ? caught.message : "The live agent call failed.",
             badge: "Error"
           }
         ]);
@@ -334,23 +407,27 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
 
   return (
     <PageFrame
-      kicker={demoPublic ? "UNIFIED CHAT · PUBLIC DEMO" : "UNIFIED CHAT · DRY-RUN"}
-      title={demoPublic ? "One box. A simulated fleet. Plans, then a timeline." : "One box. Four local agents. Plans, not silent shell."}
+      kicker={demoPublic ? "UNIFIED CHAT · PUBLIC DEMO" : liveSend ? "UNIFIED CHAT · LIVE" : "UNIFIED CHAT · DRY-RUN"}
+      title={demoPublic ? "One box. A simulated fleet. Plans, then a timeline." : liveSend ? "One box. Live seats on this machine." : "One box. Local agents. Dry-run unless you turn it off."}
       hint={demoPublic
         ? `${DEMO_BADGE}. Demo plans and the multi-agent timeline are simulated. Your real Claude, Cursor, Codex, and Hermes are not connected.`
-        : "Claude and Hermes dry-run the module API. Codex uses the API preview when a key is saved. Cursor tells the truth if chat is not wired. History stays in this browser."}
+        : "Dry-run stays available. With the toggle off and AGENT_OS_LIVE_CHAT=1, Send calls OmniRoute, the OpenClaw gateway, or a native CLI when that backend exists."}
     >
       <div className="aos-product-banner" role="status">
         <ShieldCheck size={18} />
         <div>
-          <strong>{demoPublic ? DEMO_BADGE : gateOff ? "Dry-run is on" : "Execution gate is on"}</strong>
+          <strong>{demoPublic ? DEMO_BADGE : preferDry ? "Dry-run is on" : liveChat ? "Live chat is on" : "Live lane is off"}</strong>
           <p>{demoPublic
             ? "Send a demo plan, or run the simulated timeline. The timeline writes a note in the shared sandbox and does not start a shell."
-            : `${sendHint(agent, local, gateOff, agentsReady, agentsError)} Replies can save to local Memory. This is not a cloud inbox.`}</p>
+            : preferDry
+              ? `${liveChat ? "Send asks the live lane for a plan and does not call a model." : sendHint(agent, local, gateOff, agentsReady, agentsError)} Replies can save to local Memory.`
+              : liveChat
+                ? "Send calls the live lane. The reply badge names the transport: Hermes CLI, OpenClaw gateway, OmniRoute, or another native CLI. Replies can save to local Memory."
+                : "Send asks the live lane. AGENT_OS_LIVE_CHAT is off, so the reply explains the block. Check Dry-run only for a plan."}</p>
         </div>
       </div>
       <div className="aos-chat-agents">
-        {AGENTS.map((item) => {
+        {visibleAgents.map((item) => {
           const status = agents.find((localAgent) => localAgent.id === item.id);
           return (
             <button key={item.id} className={agentId === item.id ? "active" : ""} onClick={() => setAgentId(item.id)}>
@@ -360,7 +437,13 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
           );
         })}
       </div>
-      <HonestNote>{demoPublic ? `${local?.summary || "Simulated demo agent."} The buttons below do not start a host CLI.` : `${agent.hint} ${local?.summary || ""} The Send button below does not enable live tools.`}</HonestNote>
+      <HonestNote>{demoPublic
+        ? `${local?.summary || "Simulated demo agent."} The buttons below do not start a host CLI.`
+        : liveSend
+          ? `${agent.hint} ${local?.summary || ""} The reply badge names the transport that actually ran.`
+          : preferDry
+            ? `${agent.hint} ${local?.summary || ""} This send stays a plan.`
+            : "The live lane is off on this server. Send reports that block instead of running a tool."}</HonestNote>
       {briefing ? (
         <div className="aos-panel" style={{ marginBottom: 16 }}>
           <div className="aos-panel-head">
@@ -406,7 +489,7 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={demoPublic ? `Demo prompt for ${agent.label}…` : `Dry-run message for ${agent.label}…`}
+          placeholder={demoPublic ? `Demo prompt for ${agent.label}…` : preferDry ? `Dry-run message for ${agent.label}…` : `Live message for ${agent.label}…`}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
@@ -416,8 +499,14 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
         />
         <div className="aos-chat-actions">
           <button className="aos-primary" onClick={() => void send()} disabled={busy || !demoReady || !draft.trim()}>
-            {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} {demoPublic ? "Send demo plan" : "Send dry-run"}
+            {busy ? <Loader2 className="aos-spin" size={16} /> : <Send size={16} />} {demoPublic ? "Send demo plan" : preferDry ? "Send dry-run" : "Send live"}
           </button>
+          {demoPublic ? null : (
+            <label className="aos-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" checked={preferDry} onChange={(event) => setPreferDry(event.target.checked)} />
+              <span>Dry-run only</span>
+            </label>
+          )}
           {demoPublic ? (
             <button className="aos-secondary" onClick={() => void runTimeline()} disabled={busy || !demoReady}>
               {busy ? <Loader2 className="aos-spin" size={16} /> : <Repeat size={16} />} Run simulated timeline

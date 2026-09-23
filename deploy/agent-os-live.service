@@ -1,0 +1,19 @@
+[Unit]
+Description=Agent OS live operator runtime
+After=network.target omniroute.service openclaw-gateway.service
+
+[Service]
+Type=simple
+# Change User and Group to the account that owns HERMES_HOME and can reach
+# the OpenClaw gateway on 127.0.0.1. The nologin demo user cannot see ~/.hermes.
+User=REPLACE_WITH_OPERATOR
+Group=REPLACE_WITH_OPERATOR
+WorkingDirectory=/opt/agent-os
+EnvironmentFile=/etc/agent-os/live.env
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

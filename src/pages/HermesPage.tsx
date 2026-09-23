@@ -1,7 +1,7 @@
 import { Loader2, MessageSquare, RefreshCcw, ShieldCheck, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getLocalAgents, getModule, testIntegration } from "../api";
-import { statusTone, type LocalAgentRecord } from "../localAgents";
+import { getLocalAgents, getModule, getProductStatus, sendLiveChat, testIntegration } from "../api";
+import { liveTurnLabel, statusTone, type LocalAgentRecord } from "../localAgents";
 import { navigateTo } from "../nav";
 import type { RuntimeModule } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
@@ -12,16 +12,22 @@ export default function HermesPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState("");
+  const [draft, setDraft] = useState("");
+  const [reply, setReply] = useState("");
+  const [transport, setTransport] = useState("");
+  const [demoPublic, setDemoPublic] = useState(false);
 
   async function refresh() {
     setBusy(true);
     try {
-      const [agents, hermes] = await Promise.all([
+      const [agents, hermes, product] = await Promise.all([
         getLocalAgents(),
-        getModule("hermes").catch(() => null)
+        getModule("hermes").catch(() => null),
+        getProductStatus().catch(() => null)
       ]);
       setAgent(agents.find((item) => item.id === "hermes") || null);
       setModule(hermes);
+      setDemoPublic(Boolean(product?.demoPublic));
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load Hermes status.");
@@ -51,7 +57,7 @@ export default function HermesPage() {
     <PageFrame
       kicker="HERMES · LOCAL RUNTIME"
       title="Detect the real Hermes install. Do not fake a connected gateway."
-      hint="This page is a status desk for the local Hermes Agent runtime. Unified Chat can still dry-run a plan without a profile. Live gateway / Kanban dispatch stays gated."
+      hint="Send runs hermes chat --oneshot when the CLI and execution gate are on. Otherwise the same turn goes through OmniRoute and the badge says so. Kanban dispatch stays on the existing gated controls."
       actions={
         <>
           <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
@@ -95,9 +101,55 @@ export default function HermesPage() {
         </article>
       </div>
       {probe ? <p className="aos-honest-note">{probe}</p> : null}
+      <div className="aos-panel">
+        <div className="aos-panel-head">
+          <div>
+            <span>HERMES MESSAGE</span>
+            <h2>Send to Hermes</h2>
+          </div>
+        </div>
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={demoPublic ? "Gallery mode does not call Hermes" : "Ask Hermes on this machine"} />
+        {demoPublic ? <p className="aos-honest-note">Public gallery keeps Hermes simulated. Open Unified Chat for a demo plan.</p> : null}
+        <div className="aos-chat-actions">
+          <button
+            className="aos-primary"
+            disabled={busy || !draft.trim() || demoPublic}
+            onClick={() => {
+              setBusy(true);
+              void sendLiveChat({ agentId: "hermes", message: draft.trim(), dryRun: false })
+                .then((result) => {
+                  setReply(result.reply || "No reply.");
+                  setTransport(liveTurnLabel(result));
+                })
+                .catch((caught) => setReply(caught instanceof Error ? caught.message : "Hermes send failed."))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Send live
+          </button>
+          <button
+            className="aos-secondary"
+            disabled={busy || !draft.trim() || demoPublic}
+            onClick={() => {
+              setBusy(true);
+              void sendLiveChat({ agentId: "hermes", message: draft.trim(), dryRun: true })
+                .then((result) => {
+                  setReply(result.reply || "No plan.");
+                  setTransport(liveTurnLabel(result));
+                })
+                .catch((caught) => setReply(caught instanceof Error ? caught.message : "Dry-run failed."))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Dry-run plan
+          </button>
+        </div>
+        {transport ? <p className="aos-honest-note">Transport: {transport}</p> : null}
+        {reply ? <p>{reply}</p> : null}
+      </div>
       <div className="aos-mission-footer aos-v1-cta">
-        <button className="aos-primary" onClick={() => navigateTo("chat")}>
-          <MessageSquare size={16} /> Open Unified Chat (dry-run)
+        <button className="aos-primary" onClick={() => navigateTo("chat", { agent: "hermes" })}>
+          <MessageSquare size={16} /> Open Unified Chat
         </button>
         <button className="aos-secondary" onClick={() => navigateTo("machine")}>Machine Control checklist</button>
       </div>

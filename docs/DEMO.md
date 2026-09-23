@@ -36,9 +36,11 @@ This page is a **permission checklist**, not a remote-control panel. `Run comman
 | Memory | Counts first; content after search/open |
 | Studio | Image / ElevenLabs-style voice / music **not** connected |
 
-## Public demo
+## Public gallery
 
-Set `DEMO_PUBLIC=1` before `npm start` when the process is the hosted walkthrough. Mission Control shows **Demo** seats, Chat can run a simulated timeline, and Workspace already has sample notes. The badge stays **Public demo · sandboxed**. Machine Control will not run a shell. See `docs/HANDOFF-CONTABO.md`.
+Set `DEMO_PUBLIC=1` before `npm start` only for the canned walkthrough. Mission Control shows **Demo** seats, Chat can run a simulated timeline, and Workspace already has sample notes. The badge stays **Public demo · sandboxed**. Machine Control will not run a shell.
+
+The Contabo host that should call OmniRoute, Hermes, and OpenClaw must leave `DEMO_PUBLIC=0` and set `AGENT_OS_LIVE_CHAT=1`. See `docs/FULL-PRODUCT-PLAN.md` and `docs/HANDOFF-CONTABO.md`.
 
 ## Run the real app
 

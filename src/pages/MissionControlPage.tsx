@@ -1,6 +1,6 @@
 import { Loader2, MessageSquare, RefreshCcw, ShieldCheck, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getExecutionGateStatus, getLocalAgentDashboard, getProductStatus } from "../api";
+import { getExecutionGateStatus, getLocalAgentDashboard, getProductStatus, runLiveMission } from "../api";
 import { DEMO_BADGE } from "../demo";
 import { chatLabel, statusTone, type LocalAgentDashboard, type LocalAgentRecord, type ProductStatus } from "../localAgents";
 import { navigateTo } from "../nav";
@@ -22,6 +22,7 @@ export default function MissionControlPage() {
   const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [missionNote, setMissionNote] = useState("");
 
   async function refresh() {
     setBusy(true);
@@ -51,10 +52,10 @@ export default function MissionControlPage() {
   return (
     <PageFrame
       kicker={product?.demoPublic ? "MISSION CONTROL · PUBLIC DEMO" : "MISSION CONTROL · LOCAL V1"}
-      title={product?.demoPublic ? "A simulated fleet, labeled Demo, ready for a walkthrough." : "See what is actually installed. Chat stays dry-run."}
+      title={product?.demoPublic ? "A simulated fleet, labeled Demo, ready for a walkthrough." : product?.liveChat ? "Live seats on this machine. Dry-run stays a toggle." : "See what is actually installed. Chat stays dry-run until you turn the live lane on."}
       hint={product?.demoPublic
         ? `${DEMO_BADGE}. These seats are simulated. Your real Claude, Cursor, Codex, and Hermes are not connected.`
-        : "This is a local dashboard you clone and run. github.io is a screenshot gallery, not this runtime. Missing CLIs stay missing."}
+        : "This is one operator's runtime, not multi-tenant SaaS. Missing CLIs stay missing. OmniRoute answers are labeled OmniRoute."}
       actions={
         <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
           {busy ? <Loader2 className="aos-spin" size={16} /> : <RefreshCcw size={16} />} Refresh
@@ -64,7 +65,7 @@ export default function MissionControlPage() {
       <div className="aos-product-banner" role="status">
         <ShieldCheck size={18} />
         <div>
-          <strong>{product?.demoPublic ? DEMO_BADGE : "Local product · not hosted SaaS"}</strong>
+          <strong>{product?.demoPublic ? DEMO_BADGE : product?.liveChat ? "Live operator · single machine" : "Local product · not hosted SaaS"}</strong>
           <p>{product?.publicSummary || "Dry-run by default. Execution, installs, and public mode stay off until you turn them on in .env."}</p>
         </div>
         <em>{scoreLine(dashboard, Boolean(product?.demoPublic))}</em>
@@ -72,7 +73,7 @@ export default function MissionControlPage() {
       <HonestNote>
         {product?.demoPublic
           ? "Demo means simulated. A green-looking seat is still not your Claude login. Host CLIs on this server, if any, are listed separately and are not driven from here."
-          : "A CLI on PATH is not the same as dashboard chat. Cursor can be installed and still unwired. Claude and Hermes return plans. Codex can preview if a key is saved locally."}
+          : "A CLI on PATH is not the same as a live tool run. Live chat uses OmniRoute or the OpenClaw gateway without shell. Native Hermes, Claude, Codex, and Cursor CLIs still need the execution gate."}
       </HonestNote>
       {error ? <div className="aos-global-error">{error}</div> : null}
 
@@ -117,6 +118,12 @@ export default function MissionControlPage() {
                 <div><dt>Live execution</dt><dd>{agent.liveExecution?.label || "Off"}</dd></div>
               </dl>
               <p className="aos-honest-note">{agent.nextAction}</p>
+              <button
+                className="aos-secondary"
+                onClick={() => navigateTo(agent.id === "hermes" ? "hermes" : agent.id === "openclaw" ? "openclaw" : "chat", { agent: agent.id })}
+              >
+                Open {agent.name}
+              </button>
             </article>
           ))
         )}
@@ -124,11 +131,37 @@ export default function MissionControlPage() {
 
       <div className="aos-mission-footer aos-v1-cta">
         <button className="aos-primary" onClick={() => navigateTo("chat")}>
-          <MessageSquare size={16} /> {product?.demoPublic ? "Open Unified Chat" : "Open Unified Chat (dry-run)"}
+          <MessageSquare size={16} /> {product?.demoPublic ? "Open Unified Chat" : product?.liveChat ? "Open Unified Chat" : "Open Unified Chat (dry-run)"}
         </button>
+        {product?.demoPublic ? null : (
+          <button
+            className="aos-secondary"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setMissionNote("");
+              void runLiveMission({
+                message: "Check Hermes and OpenClaw on this host and name one next safe action."
+              })
+                .then((result) => {
+                  const path = result.workspaceFile?.relativePath;
+                  const hermes = result.hermes?.transport || "none";
+                  const openclaw = result.openclaw?.transport || "none";
+                  setMissionNote(path
+                    ? `Mission wrote ${path}. Hermes: ${hermes}. OpenClaw: ${openclaw}.`
+                    : `Mission finished. Hermes: ${hermes}. OpenClaw: ${openclaw}.`);
+                })
+                .catch((caught) => setMissionNote(caught instanceof Error ? caught.message : "Mission failed."))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Run Hermes + OpenClaw mission
+          </button>
+        )}
         <button className="aos-secondary" onClick={() => navigateTo("workspace")}>Open Workspace sandbox</button>
         <button className="aos-secondary" onClick={() => navigateTo("machine")}>Machine Control checklist</button>
       </div>
+      {missionNote ? <p className="aos-honest-note">{missionNote}</p> : null}
     </PageFrame>
   );
 }

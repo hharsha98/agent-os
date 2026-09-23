@@ -23,7 +23,7 @@ import {
   Workflow,
 } from "lucide-react";
 import AgentOSApp from "./AgentOSApp";
-import { getExecutionGateStatus, getLocalAgents, getProductStatus } from "./api";
+import { adminLogin, getAdminSession, getExecutionGateStatus, getLocalAgents, getProductStatus } from "./api";
 import { DEMO_BADGE } from "./demo";
 import type { LocalAgentRecord } from "./localAgents";
 import BlueprintPage from "./pages/BlueprintPage";
@@ -105,6 +105,12 @@ export default function DashboardRoot() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [dryRun, setDryRun] = useState(true);
   const [demoPublic, setDemoPublic] = useState(false);
+  const [liveChat, setLiveChat] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
+  const [loginError, setLoginError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -124,15 +130,56 @@ export default function DashboardRoot() {
       });
     void getProductStatus()
       .then((product) => {
-        if (!cancelled) setDemoPublic(Boolean(product.demoPublic));
+        if (!cancelled) {
+          setDemoPublic(Boolean(product.demoPublic));
+          setLiveChat(Boolean(product.liveChat));
+        }
       })
       .catch(() => {
         if (!cancelled) setDemoPublic(false);
+      });
+    void getAdminSession()
+      .then((session) => {
+        if (cancelled) return;
+        setAuthRequired(session.required);
+        setAuthenticated(session.authenticated);
+        setSessionReady(true);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthenticated(true);
+          setSessionReady(true);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!sessionReady || (authRequired && !authenticated)) return;
+    let cancelled = false;
+    void getProductStatus()
+      .then((product) => {
+        if (cancelled) return;
+        setDemoPublic(Boolean(product.demoPublic));
+        setLiveChat(Boolean(product.liveChat));
+      })
+      .catch(() => undefined);
+    void getLocalAgents()
+      .then((agents) => {
+        if (!cancelled) setLocalAgents(agents);
+      })
+      .catch(() => undefined);
+    void getExecutionGateStatus()
+      .then((gate) => {
+        if (!cancelled) setDryRun(gate.dryRunDefault !== false && !gate.enabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionReady, authRequired, authenticated]);
 
   useEffect(() => {
     function sync() {
@@ -147,8 +194,52 @@ export default function DashboardRoot() {
   }, []);
 
   useEffect(() => {
-    document.title = demoPublic ? "Agent OS — public demo" : "Agent OS — local v1";
-  }, [demoPublic]);
+    document.title = demoPublic ? "Agent OS — public demo" : liveChat ? "Agent OS — live" : "Agent OS — local v1";
+  }, [demoPublic, liveChat]);
+
+  if (!sessionReady) {
+    return (
+      <div className="aos-phase2-shell">
+        <main className="aos-main"><p className="aos-honest-note">Checking operator session…</p></main>
+      </div>
+    );
+  }
+
+  if (authRequired && !authenticated) {
+    return (
+      <div className="aos-phase2-shell">
+        <main className="aos-main">
+          <form
+            className="aos-panel"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setLoginError("");
+              void adminLogin(adminToken)
+                .then((result) => {
+                  setAuthenticated(result.session.authenticated);
+                  setAuthRequired(result.session.required);
+                })
+                .catch((caught) => setLoginError(caught instanceof Error ? caught.message : "Admin login failed."));
+            }}
+          >
+            <div className="aos-panel-head">
+              <div>
+                <span>OPERATOR LOGIN</span>
+                <h2>This runtime is locked</h2>
+              </div>
+            </div>
+            <p>Enter the admin token from HERMES_AGENT_OS_ADMIN_TOKEN. It stays in an HttpOnly cookie on this host.</p>
+            <label className="aos-field">
+              <span>Admin token</span>
+              <input type="password" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} autoComplete="current-password" />
+            </label>
+            {loginError ? <p className="aos-global-error">{loginError}</p> : null}
+            <button className="aos-primary" type="submit" disabled={!adminToken.trim()}>Unlock</button>
+          </form>
+        </main>
+      </div>
+    );
+  }
 
   function go(next: ShellPage) {
     navigateTo(next);
@@ -166,7 +257,7 @@ export default function DashboardRoot() {
           <div className="aos-logo-mark">A</div>
           <div>
             <strong>Agent OS</strong>
-            <span>{demoPublic ? "Public demo" : "Local v1"}</span>
+            <span>{demoPublic ? "Public demo" : liveChat ? "Live operator" : "Local v1"}</span>
           </div>
         </div>
         <nav className="aos-nav">
@@ -238,8 +329,8 @@ export default function DashboardRoot() {
           </button>
         </nav>
         <div className="aos-sidebar-foot">
-          <span><i className={demoPublic ? "aos-live-dot aos-demo-dot" : "aos-live-dot"} /> {demoPublic ? DEMO_BADGE : dryRun ? "Dry-run default" : "Live execution allowed"}</span>
-          <small>{demoPublic ? "Simulated agents · no host shell" : "Local only · not a hosted app"}</small>
+          <span><i className={demoPublic ? "aos-live-dot aos-demo-dot" : "aos-live-dot"} /> {demoPublic ? DEMO_BADGE : liveChat ? "Live chat lane" : dryRun ? "Dry-run default" : "Live execution allowed"}</span>
+          <small>{demoPublic ? "Simulated agents · no host shell" : liveChat ? "OmniRoute and native agents · single operator" : "Local only · not a hosted app"}</small>
         </div>
       </aside>
       {menuOpen ? <button className="aos-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}

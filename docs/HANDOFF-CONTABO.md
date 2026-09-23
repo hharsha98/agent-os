@@ -1,6 +1,27 @@
-# Handoff — public demo on Contabo
+# Handoff — Contabo
 
-Host a sandboxed Agent OS walkthrough. Visitors get Mission Control, Unified Chat, Workspace, a gated Machine Control preview, and a local workflow canvas. They do **not** get a shell, and the UI must not claim their Claude, Cursor, Codex, or Hermes is connected.
+## Live operator (use this for the public host)
+
+The running problem is `agent-os-demo.service` with `DEMO_PUBLIC=1`. That mode never calls OmniRoute, Hermes, or OpenClaw.
+
+Switch the host to the live unit:
+
+1. Build `/opt/agent-os` (`npm ci && npm run build`).
+2. Copy `deploy/live.env.example` to `/etc/agent-os/live.env` (`chmod 600`).
+3. Set `OMNIROUTE_API_KEY`, `OPENCLAW_GATEWAY_TOKEN`, `HERMES_AGENT_OS_ADMIN_TOKEN`, and `HERMES_HOME`.
+4. Edit `deploy/agent-os-live.service` so `User=` / `Group=` are the account that owns Hermes and the OpenClaw gateway. Install it to `/etc/systemd/system/agent-os-live.service`.
+5. `sudo systemctl disable --now agent-os-demo` and `sudo systemctl enable --now agent-os-live`.
+6. Caddy stays `reverse_proxy 127.0.0.1:8090` for `agentos.169.58.185.43.sslip.io`.
+
+Expect `GET /api/health` to report `"demoPublic": false` and `"liveChat": true`. `GET /api/live/status` reports OmniRoute and the gateway host, never the key. The UI asks for the admin token before chat runs.
+
+OpenClaw chat completions are disabled in upstream defaults until `gateway.http.endpoints.chatCompletions.enabled` is true. Hermes tools run only when `hermes` is on PATH for that user and `HERMES_AGENT_OS_ENABLE_EXEC=1`.
+
+Point Hermes's own model provider at OmniRoute if you want the Hermes process itself to use that gateway. Agent OS does not invent that key.
+
+## Optional public gallery
+
+Host a sandboxed walkthrough only when you explicitly want canned Demo seats. Visitors get Mission Control, Unified Chat, Workspace, a gated Machine Control preview, and a local workflow canvas. They do **not** get a shell, and the UI must not claim their Claude, Cursor, Codex, or Hermes is connected.
 
 Badge everywhere: **Public demo · sandboxed**.
 

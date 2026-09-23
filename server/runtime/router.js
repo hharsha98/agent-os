@@ -5,8 +5,19 @@ import { ensureRuntimeStore, readJson, runtimePaths, writeJson } from "./store.j
 import { redactValue, sanitizeObject } from "./safety.js";
 import { assertUsageBudget, estimateUsage, recordUsageEvent } from "./usage.js";
 import { isExecutionEnabled } from "./execution-gate.js";
+import { isLiveChatEnabled } from "./live-flags.js";
+import { completeViaOmniRoute, resolveOmniRouteConfig } from "./omniroute.js";
 
 const PROVIDERS = [
+  {
+    id: "omniroute",
+    label: "OmniRoute",
+    connectionIds: ["provider-router"],
+    required: ["OMNIROUTE_BASE_URL", "OMNIROUTE_API_KEY"],
+    defaultModel: "auto",
+    endpoint: "omniroute /v1/chat/completions",
+    healthEndpoint: "omniroute /v1/models"
+  },
   {
     id: "ollama",
     label: "Ollama",
@@ -63,7 +74,7 @@ const PROVIDERS = [
   }
 ];
 
-const DEFAULT_FALLBACK = ["ollama", "openrouter", "minimax", "openai", "anthropic", "gemini"];
+const DEFAULT_FALLBACK = ["omniroute", "ollama", "openrouter", "minimax", "openai", "anthropic", "gemini"];
 
 function now() {
   return new Date().toISOString();
@@ -86,6 +97,29 @@ function valueFor(stored, provider, key) {
 }
 
 function providerState(stored, provider, config) {
+  if (provider.id === "omniroute") {
+    const profile = stored?.["ai-source-omniroute"] || {};
+    const baseSet = Boolean(process.env.OMNIROUTE_BASE_URL || profile.BASE_URL);
+    const keySet = Boolean(process.env.OMNIROUTE_API_KEY || profile.API_KEY);
+    const missing = [
+      baseSet ? null : "OMNIROUTE_BASE_URL",
+      keySet ? null : "OMNIROUTE_API_KEY"
+    ].filter(Boolean);
+    const model = config.models?.omniroute || process.env.OMNIROUTE_MODEL || profile.MODEL || provider.defaultModel;
+    return {
+      id: provider.id,
+      label: provider.label,
+      status: missing.length ? "ready_to_configure" : "connected",
+      configured: missing.length === 0,
+      missing,
+      model,
+      endpoint: provider.endpoint,
+      healthEndpoint: provider.healthEndpoint,
+      publicSummary: missing.length
+        ? "Set OMNIROUTE_BASE_URL and OMNIROUTE_API_KEY to enable OmniRoute."
+        : "OmniRoute is available for router dispatch."
+    };
+  }
   const missing = provider.required.filter((key) => !valueFor(stored, provider, key));
   return {
     id: provider.id,
@@ -273,6 +307,43 @@ export async function checkProviderHealth(providerId) {
   }
   const state = providerState(stored, provider, config);
   const checkedAt = now();
+  if (provider.id === "omniroute") {
+    if (!state.configured) {
+      return {
+        id: provider.id,
+        label: provider.label,
+        ok: false,
+        status: "ready_to_configure",
+        configured: false,
+        missing: state.missing,
+        checkedAt,
+        latencyMs: 0,
+        httpStatus: null,
+        endpoint: state.healthEndpoint,
+        message: state.publicSummary
+      };
+    }
+    const configResolved = await resolveOmniRouteConfig();
+    const result = await fetchWithTimeout(`${configResolved.baseUrl}/models`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${configResolved.apiKey}` }
+    });
+    const status = result.ok ? "healthy" : "error";
+    return {
+      id: provider.id,
+      label: provider.label,
+      ok: result.ok,
+      status,
+      configured: true,
+      missing: [],
+      checkedAt,
+      latencyMs: result.latencyMs,
+      httpStatus: result.status,
+      endpoint: state.healthEndpoint,
+      message: result.ok ? "OmniRoute health check succeeded." : `OmniRoute health check failed${result.status ? ` with HTTP ${result.status}` : ""}.`,
+      modelCount: Array.isArray(result.body?.data) ? result.body.data.length : undefined
+    };
+  }
   if (!state.configured) {
     return {
       id: provider.id,
@@ -518,16 +589,18 @@ export async function runRouter(input = {}) {
     model: selected.model,
     inputText: prompt
   });
+  const liveLane = selected.id === "omniroute" && isLiveChatEnabled();
+  const allowExecute = (execEnabled || liveLane) && input.dryRun === false;
   const plannedRequest = providerCallPlan({
     selected,
     prompt,
     operation,
     source,
-    execEnabled,
-    dryRun: !execEnabled || input.dryRun !== false,
+    execEnabled: execEnabled || liveLane,
+    dryRun: !allowExecute,
     plannedUsage
   });
-  if (!execEnabled || input.dryRun !== false) {
+  if (!allowExecute) {
     const usageRecord = await recordUsageEvent({
       provider: selected.id,
       model: selected.model,
@@ -567,7 +640,17 @@ export async function runRouter(input = {}) {
   const stored = await getStoredConnectionConfig();
   const provider = providerById(selected.id);
   let result;
-  if (provider.id === "ollama") result = await runOllama(provider, selected, prompt, stored);
+  if (provider.id === "omniroute") {
+    try {
+      const completed = await completeViaOmniRoute({
+        messages: [{ role: "user", content: prompt }],
+        model: selected.model
+      });
+      result = { ok: true, status: completed.status, text: completed.text || "OmniRoute returned an empty completion." };
+    } catch (error) {
+      result = { ok: false, status: error.status || 502, text: error.message || "OmniRoute call failed." };
+    }
+  } else if (provider.id === "ollama") result = await runOllama(provider, selected, prompt, stored);
   else if (provider.id === "anthropic") result = await runAnthropic(provider, selected, prompt, stored);
   else if (provider.id === "gemini") result = await runGemini(provider, selected, prompt, stored);
   else result = await runOpenAiCompatible(provider, selected, prompt, stored);

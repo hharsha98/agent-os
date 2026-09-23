@@ -1,4 +1,4 @@
-export type ChatMode = "not_wired" | "dry_run" | "preview" | "unavailable" | "not_in_unified_chat" | "demo";
+export type ChatMode = "not_wired" | "dry_run" | "preview" | "unavailable" | "not_in_unified_chat" | "demo" | "live" | "omniroute";
 
 export type LocalAgentRecord = {
   id: string;
@@ -54,6 +54,7 @@ export type ProductStatus = {
   hosted: boolean;
   edition: string;
   demoPublic?: boolean;
+  liveChat?: boolean;
   badge?: string | null;
   name: string;
   publicSummary: string;
@@ -117,10 +118,15 @@ export function chatLabel(agent?: LocalAgentRecord | null) {
   return "Dry run";
 }
 
+export function liveTurnLabel(result: { transport?: string; mode?: string }) {
+  if (result.mode && result.mode !== "executed") return result.mode;
+  return result.transport || result.mode || "none";
+}
+
 export function statusTone(status = "") {
   if (status === "demo") return "demo";
   if (status === "dry_run" || status === "preview" || status === "cli_present") return "partial";
   if (status === "not_installed" || status === "unavailable" || status === "missing_dependency") return "missing";
-  if (status === "connected") return "live";
+  if (status === "connected" || status === "live" || status === "omniroute") return "live";
   return "partial";
 }

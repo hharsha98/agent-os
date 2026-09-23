@@ -7,10 +7,10 @@
     "node": ">=18"
   },
   "scripts": {
-    "dev": "concurrently \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
+    "dev": "concurrently \"node --watch server/index.js\" \"vite --host 127.0.0.1\"",
     "build": "tsc -b && vite build",
     "start": "node server/index.js",
-    "preview": "vite preview --host 0.0.0.0",
+    "preview": "vite preview --host 127.0.0.1",
     "check": "tsc -b && vite build",
     "test": "node --test",
     "smoke:local": "node scripts/local-smoke.js",

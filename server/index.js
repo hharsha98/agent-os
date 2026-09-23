@@ -179,8 +179,10 @@ const app = express();
 const parsedPort = Number(process.env.PORT || 8090);
 const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8090;
 function bindAddress() {
-  const raw = String(process.env.HOST || "0.0.0.0").trim();
-  return /^[A-Za-z0-9_.:%-]+$/.test(raw) ? raw : "0.0.0.0";
+  // Loopback unless HOST is set. Containers set HOST=0.0.0.0 so a published
+  // host port can reach the process; publish that port on 127.0.0.1.
+  const raw = String(process.env.HOST || "127.0.0.1").trim();
+  return /^[A-Za-z0-9_.:%-]+$/.test(raw) ? raw : "127.0.0.1";
 }
 const bindHost = bindAddress();
 const originalBuilderUrl = getBuilderUrl();

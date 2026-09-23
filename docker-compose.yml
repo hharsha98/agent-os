@@ -3,10 +3,12 @@ services:
     build:
       context: .
     ports:
-      - "${PORT:-8090}:8090"
+      - "127.0.0.1:${PORT:-8090}:8090"
     environment:
       NODE_ENV: production
       PORT: 8090
+      # Inside the container only, so the published loopback port can connect.
+      HOST: "0.0.0.0"
       HERMES_AGENT_OS_HOME: /data/hermes-agent-os
       HERMES_AGENT_OS_ENABLE_EXEC: "${HERMES_AGENT_OS_ENABLE_EXEC:-0}"
       HERMES_AGENT_OS_ENABLE_INSTALL: "${HERMES_AGENT_OS_ENABLE_INSTALL:-0}"

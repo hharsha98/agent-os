@@ -8,8 +8,11 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+# HOST=0.0.0.0 is inside the container so Docker port publishing works.
+# Publish the host side on 127.0.0.1 (docker-compose.yml).
 ENV NODE_ENV=production \
     PORT=8090 \
+    HOST=0.0.0.0 \
     HERMES_AGENT_OS_HOME=/data/hermes-agent-os \
     HERMES_AGENT_OS_ENABLE_EXEC=0 \
     HERMES_AGENT_OS_ENABLE_INSTALL=0 \

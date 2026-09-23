@@ -1,10 +1,31 @@
-# Full product plan — live local + Contabo Agent OS
+# Full product plan — local-first Agent OS
 
-This plan turns Agent OS from a dry-run dashboard plus a simulated public demo into a **single-operator live runtime**. The Contabo host at `https://agentos.169.58.185.43.sslip.io/` should call real backends when keys and CLIs exist. `DEMO_PUBLIC=1` stays an explicit gallery switch. It is not the production path.
+Agent OS is a **local-first operator OS**. The product you ship is a clone-and-run Node app on the machine that already has the agents. A desktop shell is not part of this release.
+
+Hosted multi-tenant Live is out of scope. **AgentOps Studio** remains the hosted ops product. This repository does not replace it and does not publish a public Live URL.
+
+The earlier public Contabo Caddy site was removed. Do not bring that hostname back as a product URL. A private loopback process for the owner (`127.0.0.1:8090`, or the same port on a VPS reached by SSH) may remain. That process is an operator console, not a marketing demo.
+
+## Product form
+
+| Surface | What it is |
+| --- | --- |
+| Clone / `npm start` | Primary distribution. Binds `127.0.0.1:8090`. Dry-run until the owner turns a gate on. |
+| [github.io static gallery](https://hharsha98.github.io/agent-os/) | Marketing screenshots. Not a runtime. |
+| `DEMO_PUBLIC=1` | Optional local gallery for screenshots. Simulated agents, execution locked. Not a public host. |
+| Live operator lane (`AGENT_OS_LIVE_CHAT=1`, gallery off) | Text and, only if execution is on, native CLIs — for the owner of that machine. |
+| Private VPS | Optional. Bind loopback. Reach it with an SSH tunnel. If anything reverse-proxies it, require auth. See [HOSTING.md](HOSTING.md). |
+| Public Internet Live | Out of scope. |
+
+Defaults in `.env.example` stay safe: execution off, install off, public mode off, gallery off, live chat off, `HOST=127.0.0.1`.
+
+The sections below describe the live operator lane that already exists in this repo. They are implementation notes for that lane on one machine. They are not a plan to host Agent OS for strangers.
 
 This is not multi-tenant SaaS. There is no billing, no Cloudflare card flow, and no invented provider keys.
 
-## 1. What the repo does today
+## 1. What the repo did before the live lane
+
+This table is the snapshot from before the live operator lane. Sections 2–7 are that lane, and it is in the repo now. Distribution is the product-form table above.
 
 | Layer | Reality |
 | --- | --- |
@@ -16,7 +37,7 @@ This is not multi-tenant SaaS. There is no billing, no Cloudflare card flow, and
 | OmniRoute | Catalog entry in `server/runtime/api-integrations.js`. Save + `GET {base}/models` test. **No chat completion path** uses it. |
 | Provider router | `server/runtime/router.js` knows Ollama, OpenRouter, MiniMax, OpenAI, Anthropic, Gemini. OmniRoute is not a provider. Execution still needs the execution gate. |
 | Public demo | `DEMO_PUBLIC=1` (`server/runtime/demo-public.js`) rewrites the fleet as simulated **Demo** seats. `applyDemoExecutionLock` forces the execution gate off even if `HERMES_AGENT_OS_ENABLE_EXEC=1`. Chat calls `/api/demo/chat` and `/api/demo/timeline`. |
-| Contabo unit | `deploy/agent-os-demo.service` + `deploy/demo.env.example` set `DEMO_PUBLIC=1` and `User=agentos`. That user does not own `~/.hermes` or the OpenClaw gateway. |
+| Private units | `deploy/agent-os-live.service` is an optional loopback operator unit. `deploy/agent-os-demo.service` is an optional local screenshot gallery (`DEMO_PUBLIC=1`). Neither is a public product URL. The gallery user does not own `~/.hermes` or the OpenClaw gateway. |
 | Auth | `HERMES_AGENT_OS_REQUIRE_AUTH=1` or `HERMES_AGENT_OS_PUBLIC_MODE=1` requires `HERMES_AGENT_OS_ADMIN_TOKEN`. Login exists (`/api/admin/login`) but the v1 shell does not prompt for it. |
 
 ## 2. Target architecture
@@ -57,13 +78,13 @@ Two gates stay separate:
 | Live chat | `AGENT_OS_LIVE_CHAT=1` | OmniRoute chat completions and OpenClaw gateway HTTP | Arbitrary shell, installs, Machine Control run |
 | Host execution | `HERMES_AGENT_OS_ENABLE_EXEC=1` | Known agent CLIs (Hermes oneshot, OpenClaw agent, Claude `-p`, Codex `exec` read-only, Cursor print) and existing Kanban/gateway controls | A free-form shell box |
 
-`AGENT_OS_LIVE_CHAT=0` forces the live lane off even if the execution gate is on. Default in `.env.example` stays `0`, so a fresh clone remains dry-run. Contabo **live** env sets it to `1`.
+`AGENT_OS_LIVE_CHAT=0` forces the live lane off even if the execution gate is on. Default in `.env.example` stays `0`, so a fresh clone remains dry-run. A private operator file may set the live lane to `1` on that machine only. It does not publish a URL. `deploy/live.env.example` leaves execution off until the owner turns it on.
 
 Machine Control stays a checklist. This plan does not add a public “run any command” button.
 
 ## 3. Gaps this change closes
 
-1. Production Contabo must stop shipping `DEMO_PUBLIC=1`.
+1. Do not ship Agent OS as a public Live site. `DEMO_PUBLIC=1` is a local screenshot switch, not production.
 2. Unified Chat Send must be able to call a real transport, with an explicit dry-run toggle.
 3. Hermes and OpenClaw pages need a message box that uses the same dispatcher as chat.
 4. Mission Control cards should open the matching desk and show transport truth (CLI, gateway, OmniRoute), not a Demo badge, when the gallery flag is off.
@@ -77,7 +98,7 @@ Required env (never commit values):
 
 | Variable | Role |
 | --- | --- |
-| `OMNIROUTE_BASE_URL` | OpenAI-compatible base, including `/v1`. Example shape: `https://omniroute.169.58.185.43.sslip.io/v1` |
+| `OMNIROUTE_BASE_URL` | OpenAI-compatible base, including `/v1`. Example shape: `http://127.0.0.1:20128/v1` on the same machine. |
 | `OMNIROUTE_API_KEY` | Endpoint key from the OmniRoute dashboard. Sent only as `Authorization: Bearer` from the server. |
 | `OMNIROUTE_MODEL` | Optional. Default `auto`. |
 
@@ -112,7 +133,7 @@ Kanban dispatch, gateway restart, and task controls stay on their existing endpo
 
 ## 6. OpenClaw wiring
 
-Gateway HTTP (preferred on Contabo, where `openclaw-gateway.service` already runs):
+Gateway HTTP (preferred when `openclaw-gateway` already runs on the same machine):
 
 | Variable | Role |
 | --- | --- |
@@ -150,27 +171,31 @@ Native Cursor/Claude/Codex runs can change a workspace. They stay behind the exe
 - Replies and logs go through existing redaction. Status payloads omit secrets and absolute home paths where the current public APIs already do.
 - Machine Control does not gain a shell runner.
 - Installer execution stays behind `HERMES_AGENT_OS_ENABLE_INSTALL`.
-- Contabo live example sets `HERMES_AGENT_OS_REQUIRE_AUTH=1` and leaves `HERMES_AGENT_OS_ADMIN_TOKEN` empty in git. The operator fills the token on the server.
-- The v1 shell shows a token login when `/api/admin/session` says auth is required and the cookie is missing, so a locked public URL is usable by the operator.
-- Bind `HOST=127.0.0.1` behind Caddy. Do not publish port 8090.
-- The workspace on that host is still one shared sandbox. Do not paste upstream provider secrets into notes.
+- The private operator example sets `HERMES_AGENT_OS_REQUIRE_AUTH=1` and leaves `HERMES_AGENT_OS_ADMIN_TOKEN` empty in git. The owner fills the token on that machine.
+- The v1 shell shows a token login when `/api/admin/session` says auth is required and the cookie is missing.
+- Bind `HOST=127.0.0.1`. Do not publish port 8090. Remote personal use is an SSH tunnel. See `docs/HOSTING.md`.
+- The workspace on a shared process is one sandbox. Do not paste upstream provider secrets into notes.
 
-## 9. Contabo deploy
+## 9. Private operator host
 
-Keep `deploy/agent-os-demo.service` for an optional gallery. Add a **live** unit and env example:
+The primary install is still `npm start` on the laptop. A systemd unit is optional, for a machine the owner already administers.
 
+`deploy/agent-os-demo.service` is only the local screenshot gallery. `deploy/agent-os-live.service` plus `deploy/live.env.example` are the private operator lane:
+
+- `HOST=127.0.0.1`
 - `DEMO_PUBLIC=0`
-- `AGENT_OS_LIVE_CHAT=1`
-- `HERMES_AGENT_OS_ENABLE_EXEC=1` so Hermes/OpenClaw/Claude/Codex/Cursor CLIs can run when present
+- `HERMES_AGENT_OS_PUBLIC_MODE=0`
+- `AGENT_OS_LIVE_CHAT=1` so the owner can use OmniRoute and the gateway
+- `HERMES_AGENT_OS_ENABLE_EXEC=0` until the owner explicitly wants native CLIs
 - `HERMES_AGENT_OS_ENABLE_INSTALL=0`
 - `HERMES_AGENT_OS_REQUIRE_AUTH=1`
-- OmniRoute and OpenClaw gateway variables as placeholders
+- OmniRoute and OpenClaw gateway variables as placeholders, no public product host
 - `HERMES_HOME` pointing at the real profile directory
 - `User=` / `Group=` = the Unix account that already runs Hermes and OpenClaw (often the human operator, not `agentos` with a nologin home)
 
-Caddy site block stays `reverse_proxy 127.0.0.1:8090` for `agentos.169.58.185.43.sslip.io`. OmniRoute remains its own host and systemd unit. This repo does not reinstall OmniRoute or OpenClaw.
+Do not publish port 8090. Do not put a public reverse proxy in front of this app. Remote use is an SSH tunnel; auth is required if a proxy is ever added. See `docs/HOSTING.md`. OmniRoute stays its own process. This repo does not reinstall OmniRoute or OpenClaw.
 
-Switching the running VPS is an operator step: install the new unit, put secrets in `/etc/agent-os/live.env` (mode `0600`), disable `agent-os-demo.service`, enable the live unit, then `curl` `/api/health` and `/api/live/status`. This repository change cannot SSH to Contabo.
+Installing that unit is an owner step: secrets go in `/etc/agent-os/live.env` (mode `0600`), then `curl` `/api/health` and `/api/live/status` on loopback. This repository does not open a public site.
 
 ## 10. UI contract
 
@@ -193,9 +218,9 @@ Automated in this repo (no VPS, no real keys):
 - `npm run smoke:public` still passes for the gallery.
 - `npm run smoke:live` boots with `AGENT_OS_LIVE_CHAT=1` and `DEMO_PUBLIC=0`, asserts `/api/live/status`, and asserts a live chat without a key is `unavailable` (not a Demo plan).
 
-Manual on Contabo after the operator installs env:
+Manual on the owner's machine after a private env is installed:
 
-- `/api/health` has `demoPublic: false`.
+- `/api/health` has `demoPublic: false` and `bind` of `127.0.0.1` when `HOST=127.0.0.1`.
 - `/api/live/status` shows OmniRoute configured and the gateway URL host.
 - Unified Chat Hermes and OpenClaw return a non-canned reply.
 - A mission writes `missions/latest.md` in the sandbox.
@@ -205,7 +230,7 @@ Manual on Contabo after the operator installs env:
 1. **Plan** — this file, committed before product code.
 2. **Live lane** — `server/runtime/omniroute.js`, `server/runtime/live-chat.js`, routes `/api/live/status`, `/api/live/chat`, `/api/live/mission`, router provider.
 3. **UI** — Chat toggle and OpenClaw seat, Hermes/OpenClaw composers, Mission Control links and mission action, admin login wall when auth is required.
-4. **Deploy + docs** — `deploy/live.env.example`, `deploy/agent-os-live.service`, README, setup guide, Contabo handoff, v1 status.
+4. **Deploy + docs** — local README, `docs/HOSTING.md`, private `deploy/live.env.example`. No public product URL.
 5. **Verification** — unit tests, `smoke:local`, `smoke:public`, `smoke:live`, TypeScript build.
 
 ## 13. Honest leftovers
@@ -218,6 +243,18 @@ Manual on Contabo after the operator installs env:
 | | Claude Code repo edits (`claude` CLI + execution gate) |
 | | Codex sandbox exec (`codex` CLI + execution gate) |
 | | Studio image/voice/music, Firecrawl builder (Convex/Clerk), SEO/video providers |
-| | Actually restarting systemd on the VPS (operator) |
+| | Restarting a private systemd unit (owner) |
 
-Parked on purpose: payments, multi-tenant accounts, Cloudflare, and a public shell.
+Parked on purpose: payments, multi-tenant accounts, a public Live URL, a desktop shell, Cloudflare, and a public shell.
+
+## 14. Distribution decision
+
+Recorded after the live lane shipped:
+
+- Primary distribution is clone and run: Node 18+, `npm ci`, `npm run build`, `npm start`, [http://127.0.0.1:8090](http://127.0.0.1:8090).
+- A desktop shell waits until a local Node install is not enough.
+- github.io stays a static gallery.
+- `DEMO_PUBLIC=1` stays an optional local simulation for screenshots.
+- The live operator lane is for the owner of the machine: localhost, or a private VPS behind SSH. Auth is required if that process is ever reverse-proxied.
+- Public multi-tenant Live, including the removed Contabo Caddy site, is not the product.
+- AgentOps Studio remains the hosted ops product.

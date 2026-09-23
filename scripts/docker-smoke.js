@@ -149,6 +149,8 @@ async function main() {
       "-e",
       "PORT=8090",
       "-e",
+      "HOST=0.0.0.0",
+      "-e",
       "HERMES_AGENT_OS_HOME=/data/hermes-agent-os",
       "-e",
       "HERMES_AGENT_OS_ENABLE_EXEC=0",

@@ -6,6 +6,8 @@ import type {
   BuilderLogs,
   BuilderSmokeTest,
   AdminSession,
+  LiveChatResult,
+  LiveMissionResult,
   ConnectionsResponse,
   ExecutionGateStatus,
   GoalLoopResult,
@@ -663,6 +665,20 @@ export function testIntegration(id: string) {
   return request<{ ok: boolean; message: string; details: unknown }>(`/api/modules/${id}/test`, {
     method: "POST",
     body: "{}"
+  });
+}
+
+export function sendLiveChat(payload: { agentId: string; message: string; dryRun?: boolean }) {
+  return request<LiveChatResult>("/api/live/chat", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function runLiveMission(payload: { message?: string; dryRun?: boolean } = {}) {
+  return request<LiveMissionResult>("/api/live/mission", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
 }
 

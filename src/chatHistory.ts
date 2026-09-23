@@ -1,4 +1,4 @@
-export const CHAT_AGENT_IDS = ["cursor", "claude", "codex", "hermes"] as const;
+export const CHAT_AGENT_IDS = ["cursor", "claude", "codex", "hermes", "openclaw"] as const;
 
 export type ChatAgentId = (typeof CHAT_AGENT_IDS)[number];
 

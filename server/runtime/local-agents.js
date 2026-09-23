@@ -1,4 +1,6 @@
 import { applyDemoPresentation, isDemoPublic } from "./demo-public.js";
+import { isLiveChatEnabled } from "./live-flags.js";
+import { publicOmniRouteStatus, resolveOmniRouteConfig } from "./omniroute.js";
 import { commandVersion, redactText, runCommand, which } from "./safety.js";
 import { getCodexApiStatus } from "./codex-api.js";
 import { getExecutionGateStatus } from "./execution-gate.js";
@@ -194,6 +196,7 @@ export function summarizeAgents(agents, executionGate, gateway) {
   const cliFound = list.filter((agent) => agent.cli?.found).length;
   const chatDryRun = list.filter((agent) => agent.chat?.mode === "dry_run").length;
   const chatPreview = list.filter((agent) => agent.chat?.mode === "preview").length;
+  const chatLive = list.filter((agent) => agent.chat?.mode === "live" || agent.chat?.mode === "omniroute").length;
   const notWired = list.filter((agent) => agent.chat?.mode === "not_wired").length;
   const notInstalled = list.filter((agent) => agent.status === "not_installed").length;
   const connectedLegacy = list.filter((agent) => agent.status === "connected").length;
@@ -204,7 +207,7 @@ export function summarizeAgents(agents, executionGate, gateway) {
     chatPreview,
     notWired,
     notInstalled,
-    dashboardChatReady: chatDryRun + chatPreview,
+    dashboardChatReady: chatDryRun + chatPreview + chatLive,
     connected: connectedLegacy,
     executionEnabled: Boolean(executionGate?.enabled),
     dryRunDefault: executionGate?.dryRunDefault !== false,
@@ -256,6 +259,59 @@ async function probeGateway() {
       summary: "Optional local gateway on port 3001 is not running. Agent OS does not require it."
     };
   }
+}
+
+function overlayLiveAgent(agent, { execEnabled, omniConfigured, gatewayConfigured }) {
+  const native = Boolean(execEnabled && agent.cli?.found);
+  if (native) {
+    const chat = {
+      mode: "live",
+      routed: true,
+      label: "Live CLI",
+      detail: `${agent.name} can run its local CLI because the execution gate is on.`
+    };
+    return {
+      ...agent,
+      status: "live",
+      available: true,
+      chat,
+      summary: chat.detail,
+      nextAction: "Open the desk and send with dry-run unchecked."
+    };
+  }
+  if (agent.id === "openclaw" && gatewayConfigured) {
+    const chat = {
+      mode: "live",
+      routed: true,
+      label: "OpenClaw gateway",
+      detail: "Unified Chat calls the OpenClaw gateway HTTP API. Tool use depends on that gateway."
+    };
+    return {
+      ...agent,
+      status: "live",
+      available: true,
+      chat,
+      summary: chat.detail,
+      nextAction: "Open OpenClaw and send a message."
+    };
+  }
+  if (omniConfigured) {
+    const chat = {
+      mode: "omniroute",
+      routed: true,
+      label: "OmniRoute",
+      detail: `${agent.name} answers through OmniRoute until a native CLI run is available.`
+    };
+    return {
+      ...agent,
+      status: agent.cli?.found ? agent.status : "omniroute",
+      available: true,
+      chat,
+      summary: chat.detail,
+      nextAction: "Open Unified Chat. The badge says OmniRoute when the native runtime did not run."
+    };
+  }
+  return agent;
 }
 
 export async function getLocalAgentDashboardStatus({
@@ -310,6 +366,16 @@ export async function getLocalAgentDashboardStatus({
     });
   });
 
+  const liveChat = isLiveChatEnabled();
+  const omni = liveChat ? publicOmniRouteStatus(await resolveOmniRouteConfig()) : null;
+  const presentedAgents = liveChat
+    ? agents.map((agent) => overlayLiveAgent(agent, {
+        execEnabled: executionEnabled,
+        omniConfigured: Boolean(omni?.configured),
+        gatewayConfigured: Boolean(String(process.env.OPENCLAW_GATEWAY_URL || "").trim())
+      }))
+    : agents;
+
   const payload = {
     ok: true,
     hosted: false,
@@ -321,8 +387,9 @@ export async function getLocalAgentDashboardStatus({
       dryRunDefault: resolvedGate?.dryRunDefault !== false,
       publicSummary: resolvedGate?.publicSummary || "Trusted live execution is disabled."
     },
-    summary: summarizeAgents(agents, resolvedGate, resolvedGateway),
-    agents
+    summary: summarizeAgents(presentedAgents, resolvedGate, resolvedGateway),
+    liveChat,
+    agents: presentedAgents
   };
 
   if (!isDemoPublic()) return payload;

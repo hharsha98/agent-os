@@ -178,6 +178,10 @@ const PROVIDER_ENV_RESET = {
   MINIMAX_API_KEY: null,
   OPENAI_API_KEY: null,
   OPENAI_BASE_URL: null,
+  OMNIROUTE_BASE_URL: null,
+  OMNIROUTE_API_KEY: null,
+  OMNIROUTE_MODEL: null,
+  AGENT_OS_LIVE_CHAT: null,
   OPENAI_ADMIN_KEY: null,
   ANTHROPIC_API_KEY: null,
   GEMINI_API_KEY: null,
@@ -919,8 +923,9 @@ test("provider health reports setup state without network calls when providers a
   await withTempRuntime(async () => {
     await withEnv(PROVIDER_ENV_RESET, async () => {
       const health = await getRouterHealth();
-      assert.equal(health.summary.total, 6);
-      assert.equal(health.summary.setup, 6);
+      assert.equal(health.summary.total, 7);
+      assert.equal(health.summary.setup, 7);
+      assert.equal(health.checks.find((check) => check.id === "omniroute")?.status, "ready_to_configure");
       assert.equal(health.summary.healthy, 0);
       assert.ok(health.checks.find((check) => check.id === "openrouter")?.missing.includes("OPENROUTER_API_KEY"));
       assert.equal(JSON.stringify(health).includes(os.homedir()), false);

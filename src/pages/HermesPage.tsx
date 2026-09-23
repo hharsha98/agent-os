@@ -1,6 +1,6 @@
 import { Loader2, MessageSquare, RefreshCcw, ShieldCheck, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getLocalAgents, getModule, testIntegration } from "../api";
+import { getLocalAgents, getModule, sendLiveChat, testIntegration } from "../api";
 import { statusTone, type LocalAgentRecord } from "../localAgents";
 import { navigateTo } from "../nav";
 import type { RuntimeModule } from "../types";
@@ -12,6 +12,9 @@ export default function HermesPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState("");
+  const [draft, setDraft] = useState("");
+  const [reply, setReply] = useState("");
+  const [transport, setTransport] = useState("");
 
   async function refresh() {
     setBusy(true);
@@ -51,7 +54,7 @@ export default function HermesPage() {
     <PageFrame
       kicker="HERMES · LOCAL RUNTIME"
       title="Detect the real Hermes install. Do not fake a connected gateway."
-      hint="This page is a status desk for the local Hermes Agent runtime. Unified Chat can still dry-run a plan without a profile. Live gateway / Kanban dispatch stays gated."
+      hint="Send runs hermes chat --oneshot when the CLI and execution gate are on. Otherwise the same turn goes through OmniRoute and the badge says so. Kanban dispatch stays on the existing gated controls."
       actions={
         <>
           <button className="aos-secondary" onClick={() => void refresh()} disabled={busy}>
@@ -95,6 +98,51 @@ export default function HermesPage() {
         </article>
       </div>
       {probe ? <p className="aos-honest-note">{probe}</p> : null}
+      <div className="aos-panel">
+        <div className="aos-panel-head">
+          <div>
+            <span>HERMES MESSAGE</span>
+            <h2>Send to Hermes</h2>
+          </div>
+        </div>
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask Hermes on this machine" />
+        <div className="aos-chat-actions">
+          <button
+            className="aos-primary"
+            disabled={busy || !draft.trim()}
+            onClick={() => {
+              setBusy(true);
+              void sendLiveChat({ agentId: "hermes", message: draft.trim(), dryRun: false })
+                .then((result) => {
+                  setReply(result.reply || "No reply.");
+                  setTransport(result.transport || result.mode);
+                })
+                .catch((caught) => setReply(caught instanceof Error ? caught.message : "Hermes send failed."))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Send live
+          </button>
+          <button
+            className="aos-secondary"
+            disabled={busy || !draft.trim()}
+            onClick={() => {
+              setBusy(true);
+              void sendLiveChat({ agentId: "hermes", message: draft.trim(), dryRun: true })
+                .then((result) => {
+                  setReply(result.reply || "No plan.");
+                  setTransport("dry_run");
+                })
+                .catch((caught) => setReply(caught instanceof Error ? caught.message : "Dry-run failed."))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Dry-run plan
+          </button>
+        </div>
+        {transport ? <p className="aos-honest-note">Transport: {transport}</p> : null}
+        {reply ? <p>{reply}</p> : null}
+      </div>
       <div className="aos-mission-footer aos-v1-cta">
         <button className="aos-primary" onClick={() => navigateTo("chat")}>
           <MessageSquare size={16} /> Open Unified Chat (dry-run)

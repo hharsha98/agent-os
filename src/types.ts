@@ -511,7 +511,27 @@ export interface Health {
   bind?: string;
   port?: number;
   demoPublic?: boolean;
+  liveChat?: boolean;
   badge?: string | null;
+}
+
+export interface LiveChatResult {
+  ok: boolean;
+  mode: string;
+  transport: string;
+  native: boolean;
+  agentId: string;
+  reply: string;
+  model?: string | null;
+}
+
+export interface LiveMissionResult {
+  ok: boolean;
+  mode: string;
+  dryRun?: boolean;
+  hermes: LiveChatResult | null;
+  openclaw: LiveChatResult | null;
+  workspaceFile?: { relativePath?: string; name?: string; error?: string } | null;
 }
 
 export interface AdminSession {

@@ -106,7 +106,29 @@ Compose publishes host port **8090** to the container (`PORT` inside the image i
 - API responses redact secret values and private paths.
 - Do not distribute `.env`, the runtime store, or workflow runs.
 - Public/VPS mode is optional and not the v1 product. If you enable it, set `HERMES_AGENT_OS_PUBLIC_MODE=1` and an admin token; it is still a single-operator guard, not multi-tenant accounts.
-- `DEMO_PUBLIC=1` is a different switch: a sandboxed public walkthrough with simulated agents. Leave `HERMES_AGENT_OS_PUBLIC_MODE=0` for that demo. Deploy notes: `docs/HANDOFF-CONTABO.md`.
+- `DEMO_PUBLIC=1` is the canned gallery. It locks host execution. Contabo live mode uses `DEMO_PUBLIC=0` and `AGENT_OS_LIVE_CHAT=1`. Deploy notes: `docs/HANDOFF-CONTABO.md`. Plan: `docs/FULL-PRODUCT-PLAN.md`.
+
+## OmniRoute, Hermes, and OpenClaw
+
+```bash
+AGENT_OS_LIVE_CHAT=1
+OMNIROUTE_BASE_URL=https://omniroute.example/v1
+OMNIROUTE_API_KEY=
+OMNIROUTE_MODEL=auto
+OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789/v1
+OPENCLAW_GATEWAY_TOKEN=
+OPENCLAW_GATEWAY_MODEL=openclaw/default
+HERMES_HOME=~/.hermes
+HERMES_AGENT_OS_ENABLE_EXEC=0
+```
+
+`AGENT_OS_LIVE_CHAT=1` lets Unified Chat, the Hermes page, the OpenClaw page, and Mission Control call OmniRoute `POST /v1/chat/completions` and the OpenClaw gateway. Set `HERMES_AGENT_OS_ENABLE_EXEC=1` only when you also want `hermes chat --oneshot`, `openclaw agent`, `claude -p`, `codex exec`, or the Cursor `agent` CLI to spawn. Dry-run remains a checkbox in Unified Chat.
+
+Check without a browser:
+
+```bash
+npm run smoke:live
+```
 
 ## Verification (native — no Docker)
 

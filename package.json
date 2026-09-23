@@ -15,6 +15,7 @@
     "test": "node --test",
     "smoke:local": "node scripts/local-smoke.js",
     "smoke:public": "node scripts/public-smoke.js",
+    "smoke:live": "node scripts/live-smoke.js",
     "builder:install": "npm --prefix vendor/open-agent-builder install",
     "builder:start": "node scripts/start-builder.js",
     "builder:build": "npm --prefix vendor/open-agent-builder run build",

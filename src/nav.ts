@@ -5,7 +5,7 @@ export function queryParam(name: string) {
 export function navigateTo(page: string, extra: Record<string, string> = {}) {
   const next = new URL(window.location.href);
   next.searchParams.set("page", page);
-  for (const key of ["file", "folder", "filter"]) {
+  for (const key of ["file", "folder", "filter", "agent"]) {
     if (extra[key]) next.searchParams.set(key, extra[key]);
     else next.searchParams.delete(key);
   }

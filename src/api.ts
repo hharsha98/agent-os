@@ -85,7 +85,11 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     ...options
   });
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    const body = await response.json().catch(() => null);
+    if (response.status === 401 && body?.error === "session_required") {
+      window.dispatchEvent(new CustomEvent("agentos:locked"));
+    }
+    throw new Error(body?.error || `${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<T>;
 }
@@ -169,7 +173,7 @@ export function getExecutionGateStatus() {
   return request<ExecutionGateStatus>("/api/execution-gate");
 }
 
-export function updateExecutionGate(payload: { enabled: boolean; reason?: string }) {
+export function updateExecutionGate(payload: { enabled: boolean; reason?: string; confirm?: boolean }) {
   return request<ExecutionGateStatus>("/api/admin/execution-gate", {
     method: "POST",
     body: JSON.stringify(payload)

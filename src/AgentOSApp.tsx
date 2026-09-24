@@ -214,7 +214,12 @@ async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
     ...options
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `${response.status} ${response.statusText}`);
+  if (!response.ok) {
+    if (response.status === 401 && body.error === "session_required") {
+      window.dispatchEvent(new CustomEvent("agentos:locked"));
+    }
+    throw new Error(body.error || `${response.status} ${response.statusText}`);
+  }
   return body as T;
 }
 
@@ -1138,7 +1143,7 @@ export default function AgentOSApp() {
       try {
         const next = await api<ExecutionGate>("/api/admin/execution-gate", {
           method: "POST",
-          body: JSON.stringify({ enabled: true, reason: `Enabled from Agent OS native ${runtime} run` })
+          body: JSON.stringify({ enabled: true, reason: `Enabled from Agent OS native ${runtime} run`, confirm: true })
         });
         setExecutionGate(next);
       } catch (caught) {

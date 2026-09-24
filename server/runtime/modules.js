@@ -2,8 +2,10 @@ import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { containsBlockedFlag } from "./agent-flags.js";
 import { getBuilderStatus } from "./builder-service.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
+import { withMessageTerminator } from "./live-chat.js";
 import { getElizaStatus } from "./eliza.js";
 import { getInstallRecipe } from "./installers.js";
 import { addMemory } from "./memory.js";
@@ -525,16 +527,18 @@ async function resolveWorkspace(definition, stored, input = {}) {
   return { ok: true, cwd: resolved, configured: true };
 }
 
-function buildCliArgs(definition, stored, input = {}) {
+export function buildCliArgs(definition, stored, input = {}) {
   const prefix = cliPrefix(definition);
   const message = String(input.message || input.prompt || "").slice(0, 4000);
-  const template = String(input.argsTemplate || getConfiguredValue(stored, definition.id, `${prefix}_CLI_ARGS`) || "").trim();
+  // Only the stored/env <PREFIX>_CLI_ARGS setting may provide a template —
+  // a request body can never supply argsTemplate directly.
+  const template = String(getConfiguredValue(stored, definition.id, `${prefix}_CLI_ARGS`) || "").trim();
   if (!template) {
     const configuredCodexPath = definition.id === "codex"
       ? getConfiguredValue(stored, definition.id, "CODEX_CLI_PATH")
       : null;
     if (definition.id === "codex" && !configuredCodexPath && message) {
-      return [
+      return withMessageTerminator([
         "exec",
         "--ephemeral",
         "--skip-git-repo-check",
@@ -543,18 +547,24 @@ function buildCliArgs(definition, stored, input = {}) {
         "--color",
         "never",
         message
-      ];
+      ], message);
     }
     if (definition.id === "openclaw" && message) {
+      // "--message" binds its very next token as the value regardless of a
+      // leading "-", so no terminator is needed here.
       return ["agent", "--message", message, "--thinking", "high"];
     }
-    return message ? [message] : [];
+    return message ? withMessageTerminator([message], message) : [];
   }
-  const args = splitArgsTemplate(template).map((arg) => arg
-    .replaceAll("{{message}}", message)
-    .replaceAll("{{prompt}}", message));
+  // Defence in depth: configure-time checks already reject blocked flags,
+  // but filter again here in case a stored value predates that check.
+  const args = splitArgsTemplate(template)
+    .filter((arg) => !containsBlockedFlag(arg))
+    .map((arg) => arg
+      .replaceAll("{{message}}", message)
+      .replaceAll("{{prompt}}", message));
   if (!args.some((arg) => arg.includes(message)) && message) args.push(message);
-  return args;
+  return withMessageTerminator(args, message);
 }
 
 async function buildCliInvocation(definition, stored, input, commandPath, resolved) {
@@ -1623,9 +1633,10 @@ async function readJsonIfExists(file, fallback = null) {
   }
 }
 
-function hermesHomeFrom(stored = {}, input = {}) {
+function hermesHomeFrom(stored = {}) {
+  // Request input can never override where we look for the Hermes profile
+  // store — only stored/env config may set it.
   return expandHome(
-    input.hermesHome ||
     getConfiguredValue(stored, "gateway", "HERMES_HOME") ||
     getConfiguredValue(stored, "hermes", "HERMES_HOME") ||
     process.env.HERMES_HOME

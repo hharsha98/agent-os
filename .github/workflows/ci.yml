@@ -19,6 +19,8 @@ jobs:
       - run: npm run build
       - run: env -u HERMES_HOME npm test
       - name: Start server and smoke
+        env:
+          AGENT_OS_TOKEN: ci-smoke-token
         run: |
           cp -n .env.example .env || true
           node server/index.js &

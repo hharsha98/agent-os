@@ -25,7 +25,6 @@
   "dependencies": {
     "@elizaos/core": "^1.7.2",
     "@vitejs/plugin-react": "^4.3.4",
-    "cors": "^2.8.5",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",

@@ -26,6 +26,7 @@ import AgentOSApp from "./AgentOSApp";
 import { adminLogin, getAdminSession, getExecutionGateStatus, getLocalAgents, getProductStatus } from "./api";
 import { DEMO_BADGE } from "./demo";
 import type { LocalAgentRecord } from "./localAgents";
+import LockedScreen from "./LockedScreen";
 import BlueprintPage from "./pages/BlueprintPage";
 import BrainPage from "./pages/BrainPage";
 import ChatPage from "./pages/ChatPage";
@@ -111,6 +112,17 @@ export default function DashboardRoot() {
   const [sessionReady, setSessionReady] = useState(false);
   const [adminToken, setAdminToken] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [locked, setLocked] = useState(false);
+
+  useEffect(() => {
+    function onLocked() {
+      setLocked(true);
+    }
+    window.addEventListener("agentos:locked", onLocked);
+    return () => {
+      window.removeEventListener("agentos:locked", onLocked);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,6 +208,10 @@ export default function DashboardRoot() {
   useEffect(() => {
     document.title = demoPublic ? "Agent OS — public demo" : liveChat ? "Agent OS — live" : "Agent OS — local v1";
   }, [demoPublic, liveChat]);
+
+  if (locked) {
+    return <LockedScreen />;
+  }
 
   if (!sessionReady) {
     return (

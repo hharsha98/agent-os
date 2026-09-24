@@ -1,10 +1,18 @@
 import express from "express";
-import cors from "cors";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertAdminRequest, clearAdminCookie, requireAdminWhenPublic, sessionStatus, setAdminCookie } from "./runtime/auth.js";
+import { assertAdminRequest, authRequired, clearAdminCookie, requireAdminWhenPublic, sessionStatus, setAdminCookie } from "./runtime/auth.js";
+import {
+  claimSessionHandler,
+  hostAllowlistMiddleware,
+  localSessionGate,
+  localSessionStatusHandler,
+  loginLine,
+  originCheckMiddleware,
+  securityHeadersMiddleware
+} from "./runtime/local-session.js";
 import {
   getBuilderReplayOverlay,
   injectBuilderReplayOverlay
@@ -37,7 +45,7 @@ import {
   getElizaStatus
 } from "./runtime/eliza.js";
 import { loadLocalEnv } from "./runtime/env.js";
-import { getExecutionGateStatus, setExecutionGateStatus } from "./runtime/execution-gate.js";
+import { getExecutionGateStatus, isExecutionEnabled, setExecutionGateStatus } from "./runtime/execution-gate.js";
 import { getLocalAgentDashboardStatus } from "./runtime/local-agents.js";
 import { DEMO_BADGE, isDemoPublic } from "./runtime/demo-public.js";
 import { isLiveChatEnabled } from "./runtime/live-flags.js";
@@ -187,8 +195,21 @@ function bindAddress() {
 const bindHost = bindAddress();
 const originalBuilderUrl = getBuilderUrl();
 
-app.use(cors());
+// Host allow-list and Origin check run first, in every mode, before body
+// parsing — a request from a browser tab on an untrusted origin never
+// reaches a route handler. No wildcard CORS: same-origin is everything the
+// UI needs, so no Access-Control-Allow-Origin is ever sent.
+app.use(hostAllowlistMiddleware());
+app.use(originCheckMiddleware());
+app.use(securityHeadersMiddleware());
 app.use(express.json({ limit: "2mb" }));
+// Local-mode only: every /api, /agent-builder-source, /_next request needs
+// the session cookie or the x-agent-os-token header. Demo and public mode
+// use their own gates (demo stays anonymous; public keeps the admin token).
+app.use(localSessionGate(port));
+
+app.get("/api/session", localSessionStatusHandler(port));
+app.post("/api/session/claim", claimSessionHandler(port));
 
 app.get("/api/admin/session", (req, res) => {
   res.json(sessionStatus(req));
@@ -220,6 +241,11 @@ app.get("/api/execution-gate", requireAdminWhenPublic, async (_req, res, next) =
 app.post("/api/admin/execution-gate", async (req, res, next) => {
   try {
     assertAdminRequest(req);
+    const enabling = req.body?.enabled === true || req.body?.enabled === "true" || req.body?.enabled === 1 || req.body?.enabled === "1";
+    if (enabling && req.body?.confirm !== true) {
+      res.status(400).json({ ok: false, error: "confirm required" });
+      return;
+    }
     res.json(await setExecutionGateStatus(req.body || {}, { updatedBy: "dashboard-admin" }));
   } catch (error) {
     next(error);
@@ -300,6 +326,10 @@ app.get("/api/voice/status", requireAdminWhenPublic, async (_req, res, next) => 
 
 app.get("/api/voice/context", requireAdminWhenPublic, async (req, res, next) => {
   try {
+    if (!(await isExecutionEnabled())) {
+      res.status(403).json({ error: "execution_gate_off" });
+      return;
+    }
     res.json(await getDesktopContext({
       includeUiElements: req.query?.ui !== "0" && req.query?.ui !== "false"
     }));
@@ -1120,7 +1150,7 @@ app.get("/api/connections", async (_req, res, next) => {
 
 app.post("/api/connections/:id/configure", requireAdminWhenPublic, async (req, res, next) => {
   try {
-    res.json(await configureConnection(req.params.id, req.body?.fields || {}));
+    res.json(await configureConnection(req.params.id, req.body?.fields || {}, { confirm: req.body?.confirm === true }));
   } catch (error) {
     next(error);
   }
@@ -1699,5 +1729,8 @@ app.listen(port, bindHost, () => {
       ? `Agent OS public demo · sandboxed http://${bindHost}:${port}`
       : `Agent OS (local v1, dry-run default) http://${bindHost}:${port}`
   );
+  if (!demoPublic && !authRequired()) {
+    console.log(loginLine(port, bindHost));
+  }
   startSchedulerLoop();
 });

@@ -124,6 +124,13 @@ async function withEnv(updates, fn) {
   }
 }
 
+// setting a *_CLI_PATH field now requires the execution gate
+// on and confirm:true. Scope the gate to just the configure call so tests
+// that expect dry-run afterward are unaffected.
+async function configureCliPath(id, fields) {
+  return withEnv({ HERMES_AGENT_OS_ENABLE_EXEC: "1" }, () => configureConnection(id, fields, { confirm: true }));
+}
+
 function withHttpServer(handler, fn) {
   const server = createServer(handler);
   return new Promise((resolve, reject) => {
@@ -3800,7 +3807,9 @@ test("voice control dashboard config enables planner model and shell gate", asyn
       await withEnv({
         ...PROVIDER_ENV_RESET,
         HERMES_AGENT_OS_ENABLE_EXEC: null,
-        HERMES_VOICE_ALLOW_SHELL: null,
+        // HERMES_VOICE_ALLOW_SHELL is env-only: set it
+        // directly here rather than through configureConnection.
+        HERMES_VOICE_ALLOW_SHELL: "1",
         HERMES_VOICE_MODEL: null,
         HERMES_VOICE_OPENAI_URL: null,
         HERMES_VOICE_USE_CODEX_GPT: null
@@ -3809,13 +3818,12 @@ test("voice control dashboard config enables planner model and shell gate", asyn
         const template = connections.templates.find((item) => item.id === "voice-control");
         assert.ok(template);
         assert.ok(template.fields.includes("OPENAI_API_KEY"));
-        assert.ok(template.fields.includes("HERMES_VOICE_ALLOW_SHELL"));
+        assert.ok(!template.fields.includes("HERMES_VOICE_ALLOW_SHELL"));
 
         await configureConnection("voice-control", {
           OPENAI_API_KEY: "placeholder-voice-openai-key",
           HERMES_VOICE_MODEL: "gpt-voice-local",
-          HERMES_VOICE_OPENAI_URL: `${baseUrl}/chat/completions`,
-          HERMES_VOICE_ALLOW_SHELL: "1"
+          HERMES_VOICE_OPENAI_URL: `${baseUrl}/chat/completions`
         });
 
         const status = await getVoiceControlStatus();
@@ -4355,11 +4363,11 @@ test("Hermes task dispatch prepares a real Kanban create command without leaking
       platforms: {},
       updated_at: "2026-07-07T00:00:00.000Z"
     }));
-    const cli = path.join(dir, "hermes-test-cli.sh");
+    const cli = path.join(dir, "hermes");
     await writeFile(cli, "#!/bin/sh\necho should-not-run\n");
     await chmod(cli, 0o755);
 
-    await configureConnection("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
+    await configureCliPath("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
     const result = await runModule("hermes", {
       action: "task",
       profile: "agentalpha",
@@ -4388,11 +4396,11 @@ test("Hermes profile sessions dispatch messages through Hermes control without l
       platforms: {},
       updated_at: "2026-07-07T00:00:00.000Z"
     }));
-    const cli = path.join(dir, "hermes-test-cli.sh");
+    const cli = path.join(dir, "hermes");
     await writeFile(cli, "#!/bin/sh\necho should-not-run\n");
     await chmod(cli, 0o755);
 
-    await configureConnection("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
+    await configureCliPath("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
     const privatePrompt = `private Hermes session request ${os.homedir()}`;
     const opened = await startModuleSession("hermes", { profile: "agentalpha" });
     assert.equal(opened.ok, true);
@@ -4440,7 +4448,7 @@ test("Hermes task dispatch can execute through configured CLI when server gate i
       platforms: {},
       updated_at: "2026-07-07T00:00:00.000Z"
     }));
-    const cli = path.join(dir, "hermes-test-cli.sh");
+    const cli = path.join(dir, "hermes");
     await writeFile(cli, [
       "#!/bin/sh",
       "printf '%s\\n' \"$*\" > \"$HERMES_HOME/last-args.txt\"",
@@ -4450,7 +4458,7 @@ test("Hermes task dispatch can execute through configured CLI when server gate i
     ].join("\n"));
     await chmod(cli, 0o755);
 
-    await configureConnection("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli });
+    await configureCliPath("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli });
     await withEnv({ HERMES_AGENT_OS_ENABLE_EXEC: "1" }, async () => {
       const result = await runModule("hermes", {
         action: "dispatch",
@@ -4486,7 +4494,7 @@ test("Hermes task status refresh reads Kanban task state without recording hando
       platforms: {},
       updated_at: "2026-07-07T00:00:00.000Z"
     }));
-    const cli = path.join(dir, "hermes-test-cli.sh");
+    const cli = path.join(dir, "hermes");
     await writeFile(cli, [
       "#!/bin/sh",
       "printf '%s\\n' \"$*\" > \"$HERMES_HOME/status-args.txt\"",
@@ -4517,7 +4525,7 @@ test("Hermes task status refresh reads Kanban task state without recording hando
     ].join("\n"));
     await chmod(cli, 0o755);
 
-    await configureConnection("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
+    await configureCliPath("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
     const result = await runModule("hermes", {
       action: "task_status",
       taskId: "t-123",
@@ -4568,7 +4576,7 @@ test("Hermes task controls are dry-run-first and execute real Kanban commands wh
       platforms: {},
       updated_at: "2026-07-07T00:00:00.000Z"
     }));
-    const cli = path.join(dir, "hermes-test-cli.sh");
+    const cli = path.join(dir, "hermes");
     await writeFile(cli, [
       "#!/bin/sh",
       "printf '%s\\n' \"$*\" >> \"$HERMES_HOME/control-args.txt\"",
@@ -4578,7 +4586,7 @@ test("Hermes task controls are dry-run-first and execute real Kanban commands wh
     ].join("\n"));
     await chmod(cli, 0o755);
 
-    await configureConnection("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
+    await configureCliPath("hermes", { HERMES_HOME: hermesHome, HERMES_CLI_PATH: cli, HERMES_KANBAN_BOARD: "agent-os" });
 
     const prepared = await runModule("hermes", {
       action: "task_block",
@@ -4619,13 +4627,16 @@ test("Hermes task controls are dry-run-first and execute real Kanban commands wh
 
 test("module run uses structured configured CLI adapter when explicitly enabled", async () => {
   await withTempRuntime(async (dir) => {
-    const script = path.join(dir, "codex-test-cli.sh");
+    const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
     await mkdir(workspace, { recursive: true });
     const fakeKey = `${"sk"}-testbadbadbadbadbadbadbad`;
-    await writeFile(script, "#!/bin/sh\necho configured-codex-path:$1\necho cwd:$(pwd)\necho token:$2\n");
+    // buildCliArgs now runs the args through withMessageTerminator,
+    // which inserts a "--" immediately before an arg that is exactly the raw
+    // message, so the message lands at $2 (after "--") and "token-placeholder" at $3.
+    await writeFile(script, "#!/bin/sh\necho configured-codex-path:$2\necho cwd:$(pwd)\necho token:$3\n");
     await chmod(script, 0o755);
-    await configureConnection("codex", {
+    await configureCliPath("codex", {
       CODEX_CLI_PATH: script,
       CODEX_WORKSPACE: workspace,
       CODEX_CLI_ARGS: "{{message}} token-placeholder",
@@ -4643,7 +4654,7 @@ test("module run uses structured configured CLI adapter when explicitly enabled"
       assert.equal(JSON.stringify(result).includes(workspace), false);
       assert.equal(result.execution.adapterId, "codex-cli");
       assert.equal(result.execution.command, "codex");
-      assert.equal(result.execution.argsCount, 2);
+      assert.equal(result.execution.argsCount, 3);
       assert.equal(result.execution.workspace.configured, true);
       assert.equal(result.execution.workspace.used, true);
       assert.equal(result.execution.timeoutMs, 30000);
@@ -4666,12 +4677,12 @@ test("module run uses structured configured CLI adapter when explicitly enabled"
 
 test("module CLI dry-runs expose sanitized execution plans", async () => {
   await withTempRuntime(async (dir) => {
-    const script = path.join(dir, "codex-plan-cli.sh");
+    const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
     await mkdir(workspace, { recursive: true });
     await writeFile(script, "#!/bin/sh\necho should-not-run\n");
     await chmod(script, 0o755);
-    await configureConnection("codex", {
+    await configureCliPath("codex", {
       CODEX_CLI_PATH: script,
       CODEX_WORKSPACE: workspace,
       CODEX_CLI_ARGS: "--ask {{message}}",
@@ -4683,8 +4694,10 @@ test("module CLI dry-runs expose sanitized execution plans", async () => {
     assert.equal(result.ok, true);
     assert.equal(result.mode, "dry_run");
     assert.equal(result.plannedExecution.command, "codex");
-    assert.equal(result.plannedExecution.commandPreview, "codex <arg:1> <arg:2>");
-    assert.equal(result.plannedExecution.argsCount, 2);
+    // withMessageTerminator inserts a "--" right before the
+    // message arg, adding one extra arg to the plan preview.
+    assert.equal(result.plannedExecution.commandPreview, "codex <arg:1> <arg:2> <arg:3>");
+    assert.equal(result.plannedExecution.argsCount, 3);
     assert.equal(result.plannedExecution.workspace.configured, true);
     assert.equal(result.plannedExecution.workspace.used, true);
     assert.match(result.plannedExecution.workspacePolicy, /configured workspace policy/);
@@ -4695,16 +4708,16 @@ test("module CLI dry-runs expose sanitized execution plans", async () => {
     const logs = await getModuleLogs("codex");
     assert.equal(JSON.stringify(logs).includes(privatePrompt), false);
     assert.equal(JSON.stringify(logs).includes(script), false);
-    assert.ok(logs.logs.some((entry) => entry.details?.plannedExecution?.commandPreview === "codex <arg:1> <arg:2>"));
+    assert.ok(logs.logs.some((entry) => entry.details?.plannedExecution?.commandPreview === "codex <arg:1> <arg:2> <arg:3>"));
   });
 });
 
 test("module CLI sessions are dry-run-first and persisted without local paths", async () => {
   await withTempRuntime(async (dir) => {
-    const script = path.join(dir, "codex-session-cli.sh");
+    const script = path.join(dir, "codex");
     await writeFile(script, "#!/bin/sh\necho should-not-start\n");
     await chmod(script, 0o755);
-    await configureConnection("codex", { CODEX_CLI_PATH: script, CODEX_CLI_ARGS: "{{message}}" });
+    await configureCliPath("codex", { CODEX_CLI_PATH: script, CODEX_CLI_ARGS: "{{message}}" });
     delete process.env.HERMES_AGENT_OS_ENABLE_EXEC;
 
     const modules = await getModules();
@@ -4716,14 +4729,16 @@ test("module CLI sessions are dry-run-first and persisted without local paths", 
     assert.equal(prepared.session.status, "prepared");
     assert.equal(prepared.session.pid, null);
     assert.equal(prepared.session.dryRun, true);
-    assert.equal(prepared.session.commandPreview, "codex <arg:1>");
+    // withMessageTerminator inserts a "--" right before the
+    // bare message arg, adding one extra arg to the plan preview.
+    assert.equal(prepared.session.commandPreview, "codex <arg:1> <arg:2>");
     assert.equal(JSON.stringify(prepared).includes(os.homedir()), false);
     assert.equal(JSON.stringify(prepared).includes(script), false);
 
     const sessions = await getModuleSessions("codex");
     assert.equal(sessions.sessions[0].sessionId, prepared.session.sessionId);
     assert.equal(sessions.sessions[0].status, "prepared");
-    assert.equal(sessions.sessions[0].commandPreview, "codex <arg:1>");
+    assert.equal(sessions.sessions[0].commandPreview, "codex <arg:1> <arg:2>");
     const logs = await getModuleLogs("codex");
     assert.ok(logs.logs.some((entry) => entry.message === "Module session start prepared"));
     assert.equal(JSON.stringify(logs).includes(script), false);
@@ -4732,7 +4747,7 @@ test("module CLI sessions are dry-run-first and persisted without local paths", 
 
 test("module CLI sessions start stop and expose sanitized output tails", async () => {
   await withTempRuntime(async (dir) => {
-    const script = path.join(dir, "codex-session-cli.sh");
+    const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
     await mkdir(workspace, { recursive: true });
     await writeFile(script, [
@@ -4744,7 +4759,7 @@ test("module CLI sessions start stop and expose sanitized output tails", async (
     ].join("\n"));
     await chmod(script, 0o755);
     const fakeKey = `${"sk"}-sessionbadbadbadbadbad`;
-    await configureConnection("codex", {
+    await configureCliPath("codex", {
       CODEX_CLI_PATH: script,
       CODEX_WORKSPACE: workspace,
       CODEX_CLI_ARGS: "{{message}} {{prompt}}"
@@ -4795,14 +4810,14 @@ test("module CLI sessions start stop and expose sanitized output tails", async (
 
 test("module CLI adapter blocks workspace overrides outside configured policy", async () => {
   await withTempRuntime(async (dir) => {
-    const script = path.join(dir, "codex-test-cli.sh");
+    const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
     const outside = path.join(dir, "outside");
     await mkdir(workspace, { recursive: true });
     await mkdir(outside, { recursive: true });
     await writeFile(script, "#!/bin/sh\necho should-not-run\n");
     await chmod(script, 0o755);
-    await configureConnection("codex", { CODEX_CLI_PATH: script, CODEX_WORKSPACE: workspace });
+    await configureCliPath("codex", { CODEX_CLI_PATH: script, CODEX_WORKSPACE: workspace });
 
     await withEnv({ HERMES_AGENT_OS_ENABLE_EXEC: "1" }, async () => {
       const result = await runModule("codex", { message: "hello", workspace: outside, dryRun: false });
@@ -5076,10 +5091,10 @@ test("workflow agent nodes route through the provider router and record usage", 
 
 test("workflow agent nodes retry failed CLI executions", async () => {
   await withTempRuntime(async (dir) => {
-    const script = path.join(dir, "failing-codex.sh");
+    const script = path.join(dir, "codex");
     await writeFile(script, "#!/bin/sh\nexit 2\n");
     await chmod(script, 0o755);
-    await configureConnection("codex", { CODEX_CLI_PATH: script });
+    await configureCliPath("codex", { CODEX_CLI_PATH: script });
 
     await withEnv({ HERMES_AGENT_OS_ENABLE_EXEC: "1" }, async () => {
       await saveWorkflow({
@@ -5112,9 +5127,9 @@ test("workflow agent nodes retry failed CLI executions", async () => {
 
 test("native OpenClaw workflows execute the official one-shot CLI shape behind the trusted gate", async () => {
   await withTempRuntime(async (dir) => {
-    const cli = path.join(dir, "openclaw-test.sh");
+    const cli = path.join(dir, "openclaw");
     await writeExecutable(cli, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
-    await configureConnection("openclaw", { OPENCLAW_CLI_PATH: cli });
+    await configureCliPath("openclaw", { OPENCLAW_CLI_PATH: cli });
     await withEnv({ HERMES_AGENT_OS_ENABLE_EXEC: null }, async () => {
       await setExecutionGateStatus({ enabled: true, reason: "native OpenClaw workflow test" });
       await saveWorkflow({
@@ -5590,9 +5605,9 @@ test("connections return templates without secret values", async () => {
 
 test("connection saves are reflected by the module registry for dashboard control rooms", async () => {
   await withTempRuntime(async (dir) => {
-    const cli = path.join(dir, "codex-test-cli.sh");
+    const cli = path.join(dir, "codex");
     await writeExecutable(cli, "#!/bin/sh\necho codex-dashboard-config\n");
-    await configureConnection("codex", { CODEX_CLI_PATH: cli });
+    await configureCliPath("codex", { CODEX_CLI_PATH: cli });
     const modules = await getModules();
     const codex = modules.find((module) => module.id === "codex");
     assert.equal(codex?.status, "connected");

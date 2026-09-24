@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BLOCKED_AGENT_FLAGS } from "./agent-flags.js";
 import { isDemoPublic } from "./demo-public.js";
 import { isExecutionEnabled } from "./execution-gate.js";
 import { isLiveChatEnabled } from "./live-flags.js";
@@ -101,7 +102,7 @@ function scrubSecrets(text, env = {}) {
   return out;
 }
 
-function withMessageTerminator(args, message) {
+export function withMessageTerminator(args, message) {
   const next = args.map((arg) => arg.replaceAll("{{message}}", message));
   let index = -1;
   for (let i = next.length - 1; i >= 0; i -= 1) {
@@ -261,7 +262,11 @@ async function runTemplateCli(agentId, message, env, deps) {
     cursor: {
       names: [env.CURSOR_AGENT_PATH, "agent"],
       args: withMessageTerminator(
-        env.CURSOR_CLI_ARGS ? splitArgs(env.CURSOR_CLI_ARGS) : ["-p", "{{message}}"],
+        env.CURSOR_CLI_ARGS
+          // Defence in depth: configure-time checks already reject blocked
+          // flags, but filter again here in case a value predates that check.
+          ? splitArgs(env.CURSOR_CLI_ARGS).filter((arg) => !BLOCKED_AGENT_FLAGS.some((flag) => arg.includes(flag)))
+          : ["-p", "{{message}}"],
         message
       ),
       timeout: clampTimeout(env.CURSOR_TIMEOUT_MS, 120000, 5000, 600000),

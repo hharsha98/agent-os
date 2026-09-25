@@ -5,10 +5,19 @@
 import { stopSchedulerLoop } from "./scheduler.js";
 import { killAllTracked, killAllTrackedSync } from "./process-tree.js";
 import { activeLiveChatChildren } from "./live-chat.js";
+import { getRunManager } from "./runs/run-manager.js";
 
 export async function shutdown({ server } = {}) {
   try {
     stopSchedulerLoop();
+  } catch {
+    // best effort
+  }
+
+  // Mark every active run "stopped" before the raw kill sweep below, so the
+  // run's own metadata reflects why it ended instead of just going silent.
+  try {
+    await getRunManager().stopAll();
   } catch {
     // best effort
   }

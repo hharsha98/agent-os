@@ -72,7 +72,15 @@ function splitArgs(value) {
   return args;
 }
 
-const CHILD_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"];
+// The Windows entries are not secrets; without SystemRoot, USERPROFILE and
+// friends, node, python and most CLIs fail to start at all on Windows.
+const CHILD_ENV_KEYS = [
+  "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP",
+  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+  "SystemRoot", "SYSTEMROOT", "windir", "ComSpec", "PATHEXT", "USERPROFILE", "USERNAME",
+  "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "ProgramFiles", "ProgramFiles(x86)",
+  "ProgramData", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"
+];
 const SECRET_ENV_KEYS = [
   "OMNIROUTE_API_KEY",
   "OPENCLAW_GATEWAY_TOKEN",
@@ -87,7 +95,9 @@ const SECRET_ENV_KEYS = [
   "FIRECRAWL_API_KEY"
 ];
 
-function childEnv(env, extra = {}) {
+// Exported so the run manager can build the same minimal, allow-listed
+// environment for spawned agent CLIs without duplicating the list.
+export function childEnv(env, extra = {}) {
   const next = {};
   for (const key of CHILD_ENV_KEYS) {
     if (env[key]) next[key] = env[key];

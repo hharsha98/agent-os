@@ -178,6 +178,8 @@ import {
 } from "./runtime/workflows.js";
 import { getDesktopContext, getVoiceControlStatus, runVoiceCommand } from "./runtime/voice-control.js";
 import { installShutdownHandlers } from "./runtime/shutdown.js";
+import { getRunManager } from "./runtime/runs/run-manager.js";
+import { createRunsRouter } from "./runtime/runs/routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -962,6 +964,9 @@ app.get("/api/agent-runs", requireAdminWhenPublic, async (req, res, next) => {
     next(error);
   }
 });
+
+// List/read/stream/stop only — starting a run is never reachable over HTTP.
+app.use("/api/runs", requireAdminWhenPublic, createRunsRouter());
 
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {
@@ -1759,6 +1764,9 @@ const server = app.listen(port, bindHost, () => {
     console.log(loginLine(port, bindHost));
   }
   startSchedulerLoop();
+  // Any run left "running"/"queued" on disk belonged to a process that is
+  // gone now; mark it interrupted instead of leaving stale state around.
+  getRunManager().recoverStaleRuns().catch((error) => console.error(error));
 });
 
 installShutdownHandlers(server);

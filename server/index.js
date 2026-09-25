@@ -180,6 +180,7 @@ import { getDesktopContext, getVoiceControlStatus, runVoiceCommand } from "./run
 import { installShutdownHandlers } from "./runtime/shutdown.js";
 import { getRunManager } from "./runtime/runs/run-manager.js";
 import { createRunsRouter } from "./runtime/runs/routes.js";
+import { createAgentsRouter } from "./runtime/agents/routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -967,6 +968,10 @@ app.get("/api/agent-runs", requireAdminWhenPublic, async (req, res, next) => {
 
 // List/read/stream/stop only — starting a run is never reachable over HTTP.
 app.use("/api/runs", requireAdminWhenPublic, createRunsRouter());
+
+// Fixed adapters only (Hermes, OpenClaw, …): no route here accepts a
+// command, args, or binary path from the request body.
+app.use("/api/agents", requireAdminWhenPublic, createAgentsRouter());
 
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {

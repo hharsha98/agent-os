@@ -54,7 +54,9 @@ function quoteArg(value) {
   return /\s/.test(value) ? JSON.stringify(value) : value;
 }
 
-function buildCommandPreview(plan) {
+// Exported so routes that only preview a plan (never spawning it) can show
+// the same redacted string the run itself would record.
+export function buildCommandPreview(plan) {
   const raw = [plan.command, ...plan.args].map(quoteArg).join(" ");
   return redactSecrets(redactText(raw, plan.redact || []), plan.redact || []);
 }
@@ -216,6 +218,15 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     await enqueue(state, () => {
       broadcast(state, { type: "end", status: state.meta.status });
     });
+    // Best-effort plan cleanup (e.g. an adapter deleting its query file).
+    // Never allowed to throw: cleanup failing must not affect run status.
+    if (typeof state.plan?.onExit === "function") {
+      try {
+        await state.plan.onExit(state.meta);
+      } catch {
+        // cleanup is best-effort only
+      }
+    }
   }
 
   async function startRun(plan) {
@@ -247,6 +258,7 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     const state = {
       meta,
       dir,
+      plan,
       subscribers: new Set(),
       nextSeq: 0,
       storedBytes: 0,
@@ -288,8 +300,10 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
 
     const output = attachOutputHandlers(state, plan, child);
 
+    // Only flag the timeout here; the status flips to "timed_out" in the close
+    // handler, once the process tree is really gone and output is flushed.
     state.timeoutHandle = setTimeout(() => {
-      state.meta.status = "timed_out";
+      state.timedOut = true;
       appendEvent(state, { stream: "system", type: "system", text: "Run timed out." }).catch(() => {});
       killProcessTree(child.pid).catch(() => {});
     }, clampTimeoutMs(plan.timeoutMs));
@@ -305,16 +319,31 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       finishRun(state, { status: "failed", error: error?.message || "Process error." }).catch(() => {});
     });
 
+    // An event-listener's returned promise is never awaited by Node, so any
+    // rejection here (e.g. the run folder was removed) would be an unhandled
+    // rejection that can crash the server. Storage failures are contained and
+    // subscribers are still told the run ended.
     child.once("close", async (code, signal) => {
       if (settled) return;
       settled = true;
-      await output.flush();
-      const status = state.meta.status === "timed_out" || state.meta.status === "stopped"
-        ? state.meta.status
-        : code === 0
-          ? "succeeded"
-          : "failed";
-      await finishRun(state, { status, exitCode: code, signal });
+      try {
+        await output.flush();
+      } catch {
+        // output storage is best-effort once the process has exited
+      }
+      const status = state.timedOut
+        ? "timed_out"
+        : state.meta.status === "stopped"
+          ? "stopped"
+          : code === 0
+            ? "succeeded"
+            : "failed";
+      try {
+        await finishRun(state, { status, exitCode: code, signal });
+      } catch {
+        state.meta.status = status;
+        broadcast(state, { type: "end", status });
+      }
     });
 
     return { ...meta };

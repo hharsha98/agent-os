@@ -64,6 +64,21 @@ export async function runVersion(binPath, timeoutMs = 5000) {
   return (result.stdout || result.stderr || "").trim();
 }
 
+// Some CLIs (Hermes) print several lines from --version, including an
+// absolute install path; only the first line belongs in the short
+// `version` shown everywhere, with the full text kept (home folder
+// redacted) in `versionFull` for anyone who wants the rest.
+export function splitVersion(text) {
+  const raw = String(text ?? "");
+  const home = os.homedir();
+  const withTilde = home ? raw.split(home).join("~") : raw;
+  const firstLine = raw.split(/\r?\n/)[0] || "";
+  return {
+    version: firstLine.trim().slice(0, 80),
+    versionFull: withTilde.trim().slice(0, 1000)
+  };
+}
+
 // Returns both the exit outcome and the combined text, since "the help
 // succeeds" (OpenClaw's agentExec feature) needs the exit code, not just text.
 export async function runHelp(binPath, args, timeoutMs = 5000) {

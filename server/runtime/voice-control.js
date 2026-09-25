@@ -5,7 +5,7 @@ import { appendModuleLog } from "./module-logs.js";
 import { addMemory } from "./memory.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
 import { isDemoPublic } from "./demo-public.js";
-import { getExecutionGateStatus, isExecutionEnabled } from "./execution-gate.js";
+import { getExecutionGateStatus, isExecutionEnabled, isMachineControlActive } from "./execution-gate.js";
 import { expandHome, runtimePaths } from "./store.js";
 import { redactText, runCommand, sanitizeObject, which } from "./safety.js";
 
@@ -929,6 +929,22 @@ export async function getDesktopContext({ includeUiElements = true, timeoutMs = 
   });
 }
 
+// Reading the screen, typing, clicking, running shell commands, and deleting
+// files need level 2 (machine control armed), not just the execution gate.
+// Dry-run previews of these are still allowed at any level.
+const MACHINE_CONTROL_ACTION_TYPES = new Set([
+  "inspect_context",
+  "screenshot",
+  "type_text",
+  "paste_text",
+  "hotkey",
+  "press_key",
+  "click",
+  "click_text",
+  "trash_selection",
+  "shell_command"
+]);
+
 async function executeAction(action, context) {
   const type = cleanText(action?.type, 80);
   const dryRun = context.dryRun;
@@ -942,9 +958,17 @@ async function executeAction(action, context) {
     error: null
   };
 
+  if (!dryRun && MACHINE_CONTROL_ACTION_TYPES.has(type) && !context.machineControlActive) {
+    result.ok = false;
+    result.error = "machine_control_off";
+    result.output = result.error;
+    return result;
+  }
+
   if (type === "inspect_context") {
     result.summary = "Inspect active desktop context.";
     result.command = "osascript System Events front app/window/UI labels";
+    if (dryRun) return result;
     const desktop = await getDesktopContext({ includeUiElements: true, timeoutMs: 10000 });
     result.ok = Boolean(desktop.ok);
     result.output = desktop;
@@ -1324,6 +1348,12 @@ async function executeAction(action, context) {
       return result;
     }
     if (!dryRun) {
+      if (!context.confirmShell) {
+        result.ok = false;
+        result.error = "confirmShell must be true for shell_command actions.";
+        result.output = result.error;
+        return result;
+      }
       const executed = await runCommand("/bin/zsh", ["-lc", command], Number(action.timeoutMs || 15000));
       result.ok = executed.ok;
       result.output = redactText(executed.stdout || executed.stderr);
@@ -1398,6 +1428,8 @@ export async function runVoiceCommand(input = {}, handlers = {}) {
   const context = {
     dryRun,
     shellAllowed: voiceShellAllowed(stored),
+    machineControlActive: await isMachineControlActive(),
+    confirmShell: input.confirmShell === true,
     codexTimeoutMs: voiceCodexTimeoutMs(stored),
     transcript,
     runWorkflow: handlers.runWorkflow,

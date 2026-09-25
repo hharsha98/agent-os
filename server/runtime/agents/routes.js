@@ -90,6 +90,24 @@ function requireAdapter(req, res, next) {
   next();
 }
 
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "stopped", "timed_out", "interrupted"]);
+
+// Safety actions are quick config-set commands (a handful of seconds at
+// most; see each adapter's SAFETY_ACTION_TIMEOUT_MS), so it's fine for the
+// request to wait for one to finish before deciding whether a gateway
+// restart follow-up is needed.
+function waitForRunTerminal(id, timeoutMs) {
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 0) + 2000;
+  return (async function poll() {
+    while (Date.now() < deadline) {
+      const run = await getRunManager().getRun(id);
+      if (run && TERMINAL_RUN_STATUSES.has(run.status)) return run;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return getRunManager().getRun(id);
+  })();
+}
+
 function mapStartRunError(error, res, next) {
   if (error?.code === "too_many_runs") {
     res.status(429).json({ error: "too_many_runs" });
@@ -254,7 +272,7 @@ export function createAgentsRouter() {
     try {
       const adapter = req.adapter;
       const action = req.params.action;
-      if (!adapter.service || !["start", "stop"].includes(action)) {
+      if (!adapter.service || !["start", "stop", "restart"].includes(action)) {
         res.status(404).json({ ok: false, error: "unknown service action" });
         return;
       }
@@ -300,12 +318,26 @@ export function createAgentsRouter() {
         res.status(404).json({ ok: false, error: "unknown safety action" });
         return;
       }
+      let run;
       try {
-        const run = await getRunManager().startRun(plan);
-        res.json(run);
+        run = await getRunManager().startRun(plan);
       } catch (error) {
         mapStartRunError(error, res, next);
+        return;
       }
+      const finished = await waitForRunTerminal(run.id, plan.timeoutMs);
+      let followUp = null;
+      if (plan.restartsGateway && finished?.status === "succeeded" && adapter.service) {
+        const serviceStatus = await adapter.service.status(detected);
+        if (serviceStatus?.running) {
+          try {
+            followUp = await getRunManager().startRun(adapter.service.restart(detected));
+          } catch {
+            followUp = null; // best-effort: the safety change itself already succeeded
+          }
+        }
+      }
+      res.json({ run: finished || run, followUp });
     } catch (error) {
       next(error);
     }

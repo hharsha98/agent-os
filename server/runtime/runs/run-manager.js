@@ -54,6 +54,19 @@ function quoteArg(value) {
   return /\s/.test(value) ? JSON.stringify(value) : value;
 }
 
+// Matches SGR/cursor escape codes and OSC sequences a CLI may emit for
+// colour or a terminal title; stripped before redaction/parsing so neither
+// ever has to deal with them.
+const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g;
+
+// A progress bar redraws a line with \r instead of \n; only the text after
+// the last \r is what was actually left on screen.
+function stripAnsi(line) {
+  const withoutEscapes = String(line ?? "").replace(ANSI_PATTERN, "");
+  const parts = withoutEscapes.split("\r");
+  return parts[parts.length - 1];
+}
+
 // Exported so routes that only preview a plan (never spawning it) can show
 // the same redacted string the run itself would record.
 export function buildCommandPreview(plan) {
@@ -179,8 +192,10 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
   }
 
   async function processLine(state, plan, rawLine, stream) {
-    const redacted = redactSecrets(rawLine, plan.redact || []);
+    const cleaned = stripAnsi(rawLine);
+    const redacted = redactSecrets(cleaned, plan.redact || []);
     const parsed = typeof plan.parseLine === "function" ? plan.parseLine(redacted, stream) : null;
+    if (parsed === false) return; // parseLine asked to drop this line entirely
     const events = Array.isArray(parsed) && parsed.length ? parsed : [{ type: "line", text: redacted }];
     for (const evt of events) {
       accumulateUsage(state, evt);

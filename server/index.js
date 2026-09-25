@@ -45,7 +45,13 @@ import {
   getElizaStatus
 } from "./runtime/eliza.js";
 import { loadLocalEnv } from "./runtime/env.js";
-import { getExecutionGateStatus, isExecutionEnabled, setExecutionGateStatus } from "./runtime/execution-gate.js";
+import {
+  getExecutionGateStatus,
+  getMachineControlStatus,
+  isMachineControlActive,
+  setExecutionGateStatus,
+  setMachineControlStatus
+} from "./runtime/execution-gate.js";
 import { getLocalAgentDashboardStatus } from "./runtime/local-agents.js";
 import { DEMO_BADGE, isDemoPublic } from "./runtime/demo-public.js";
 import { isLiveChatEnabled } from "./runtime/live-flags.js";
@@ -273,6 +279,27 @@ app.post("/api/admin/execution-gate", async (req, res, next) => {
   }
 });
 
+app.get("/api/admin/machine-control", async (_req, res, next) => {
+  try {
+    res.json(getMachineControlStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/machine-control", async (req, res, next) => {
+  try {
+    assertAdminRequest(req);
+    res.json(await setMachineControlStatus(req.body || {}));
+  } catch (error) {
+    if (error?.status) {
+      res.status(error.status).json({ ok: false, error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
 app.get("/api/health", async (_req, res, next) => {
   try {
     const status = await getOsStatus();
@@ -348,8 +375,8 @@ app.get("/api/voice/status", requireAdminWhenPublic, async (_req, res, next) => 
 
 app.get("/api/voice/context", requireAdminWhenPublic, async (req, res, next) => {
   try {
-    if (!(await isExecutionEnabled())) {
-      res.status(403).json({ error: "execution_gate_off" });
+    if (!(await isMachineControlActive())) {
+      res.status(403).json({ error: "machine_control_off" });
       return;
     }
     res.json(await getDesktopContext({

@@ -498,6 +498,42 @@ test("claude.parseLine(): system/init, assistant text+tool_use, user tool_result
   assert.equal(claude.parseLine("not json at all"), null);
 });
 
+test("claude.parseLine(): hook/commands-changed/rate-limit events become one compact 'setup' event", () => {
+  const hookStarted = claude.parseLine(JSON.stringify({
+    type: "system",
+    subtype: "hook_started",
+    hook_id: "hook_1",
+    hook_name: "SessionStart:startup",
+    session_id: "s1"
+  }));
+  assert.equal(hookStarted.length, 1);
+  assert.equal(hookStarted[0].type, "setup");
+  assert.match(hookStarted[0].text, /^hook_started:/);
+  assert.match(hookStarted[0].text, /SessionStart:startup/);
+
+  const hookResponse = claude.parseLine(JSON.stringify({
+    type: "system",
+    subtype: "hook_response",
+    hook_id: "hook_1",
+    hook_name: "SessionStart:startup"
+  }));
+  assert.equal(hookResponse[0].type, "setup");
+  assert.match(hookResponse[0].text, /^hook_response:/);
+
+  const commandsChanged = claude.parseLine(JSON.stringify({ type: "system", subtype: "commands_changed", count: 3 }));
+  assert.equal(commandsChanged[0].type, "setup");
+  assert.match(commandsChanged[0].text, /^commands_changed:/);
+
+  const rateLimit = claude.parseLine(JSON.stringify({ type: "rate_limit_event", status: "warning" }));
+  assert.equal(rateLimit[0].type, "setup");
+  assert.match(rateLimit[0].text, /^rate_limit_event:/);
+
+  // system/init still reports the model; it is not folded into "setup".
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "system", subtype: "init", model: "claude-x" })), [
+    { type: "system", text: "session started (model claude-x)" }
+  ]);
+});
+
 test("codex.parseLine(): thread.started, agent_message, command_execution, file_change, turn.completed, error, unknown, non-JSON", () => {
   assert.deepEqual(codex.parseLine(JSON.stringify({ type: "thread.started", thread_id: "th_1" })), [
     { type: "system", text: "session started (thread th_1)" }
@@ -542,6 +578,29 @@ test("cursor.parseLine(): system/init, assistant text, tool_call started/complet
   const line = JSON.stringify({ type: "some_future_event", foo: "bar" });
   assert.deepEqual(cursor.parseLine(line), [{ type: "line", text: line }]);
   assert.equal(cursor.parseLine("not json at all"), null);
+});
+
+test("cursor.parseLine(): thinking deltas surface as 'thinking'; thinking/completed and the prompt echo are dropped", () => {
+  const delta = cursor.parseLine(JSON.stringify({
+    type: "thinking",
+    subtype: "delta",
+    text: "Preparing to reply with",
+    id: "t1"
+  }));
+  assert.deepEqual(delta, [{ type: "thinking", text: "Preparing to reply with" }]);
+
+  assert.equal(
+    cursor.parseLine(JSON.stringify({ type: "thinking", subtype: "completed", id: "t1" })),
+    false
+  );
+
+  assert.equal(
+    cursor.parseLine(JSON.stringify({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "do the thing" }] }
+    })),
+    false
+  );
 });
 
 // =====================================================================

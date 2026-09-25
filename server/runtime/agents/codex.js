@@ -3,7 +3,7 @@
 // frequently. Confirmed live against codex-cli 0.154.0's --help; see the
 // deliverable report for any place the real CLI differed from the docs.
 import { runCommand } from "../safety.js";
-import { cachedFeatures, resolveBinary, runHelp, runVersion, withDetectCache } from "./detect.js";
+import { cachedFeatures, resolveBinary, runHelp, runVersion, splitVersion, withDetectCache } from "./detect.js";
 
 const LOGIN_STATUS_TIMEOUT_MS = 10 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -42,9 +42,10 @@ async function detect({ refresh = false } = {}) {
           error: "codex was not found on PATH."
         };
       }
-      const version = await runVersion(binPath);
+      const versionText = await runVersion(binPath);
+      const { version, versionFull } = splitVersion(versionText);
       const features = await cachedFeatures(`codex:${binPath}:${version}`, () => detectFeatures(binPath));
-      return { installed: true, path: binPath, version, features };
+      return { installed: true, path: binPath, version, versionFull, features };
     } catch (error) {
       return { installed: false, path: "", version: "", features: {}, error: error?.message || "Codex detection failed." };
     }

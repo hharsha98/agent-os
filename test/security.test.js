@@ -327,13 +327,13 @@ test("11. a blocked flag in CLAUDE_CLI_ARGS is rejected with 400", async () => {
   assert.equal(response.status, 400);
 });
 
-test("12. GET /api/voice/context requires the execution gate to be on", async () => {
+test("12. GET /api/voice/context requires machine control (level 2), not just the execution gate", async () => {
   const response = await fetch(`${base}/api/voice/context`, {
     headers: { "x-agent-os-token": TOKEN }
   });
   assert.equal(response.status, 403);
   const body = await response.json();
-  assert.equal(body.error, "execution_gate_off");
+  assert.equal(body.error, "machine_control_off");
 });
 
 test("13. workspace raw responses carry a sandboxed CSP for html files", async () => {

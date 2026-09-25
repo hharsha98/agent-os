@@ -3,7 +3,7 @@
 // frequently. Confirmed live against Claude Code 2.1.281's --help; see the
 // deliverable report for any place the real CLI differed from the docs.
 import { runCommand } from "../safety.js";
-import { cachedFeatures, resolveBinary, runHelp, runVersion, withDetectCache } from "./detect.js";
+import { cachedFeatures, resolveBinary, runHelp, runVersion, splitVersion, withDetectCache } from "./detect.js";
 
 const AUTH_STATUS_TIMEOUT_MS = 10 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -48,9 +48,10 @@ async function detect({ refresh = false } = {}) {
           error: "claude was not found on PATH."
         };
       }
-      const version = await runVersion(binPath);
+      const versionText = await runVersion(binPath);
+      const { version, versionFull } = splitVersion(versionText);
       const features = await cachedFeatures(`claude:${binPath}:${version}`, () => detectFeatures(binPath));
-      return { installed: true, path: binPath, version, features };
+      return { installed: true, path: binPath, version, versionFull, features };
     } catch (error) {
       return { installed: false, path: "", version: "", features: {}, error: error?.message || "Claude Code detection failed." };
     }
@@ -142,6 +143,23 @@ function toolPreview(part) {
   return argsPreview ? `${name} ${argsPreview}` : name;
 }
 
+// Compacts a hook/rate-limit event into one short line: the hook's own name
+// when it has one, else the first couple of small fields the event carries.
+function setupSummary(evt) {
+  if (evt.hook_name) return String(evt.hook_name);
+  const rest = Object.fromEntries(
+    Object.entries(evt).filter(([key, value]) => key !== "type" && key !== "subtype" && typeof value !== "object")
+  );
+  const keys = Object.keys(rest);
+  if (!keys.length) return "";
+  return keys.slice(0, 2).map((key) => `${key}=${rest[key]}`).join(" ").slice(0, 120);
+}
+
+function setupEvent(evt, subtype) {
+  const summary = setupSummary(evt);
+  return { type: "setup", text: summary ? `${subtype}: ${summary}` : subtype };
+}
+
 // Tool results (and some content blocks) can be a plain string or an array
 // of {type:"text", text} blocks; this normalizes either shape to plain text.
 function blockText(content) {
@@ -169,9 +187,16 @@ function parseLine(line) {
   if (!evt || typeof evt !== "object") return null;
   switch (evt.type) {
     case "system": {
-      if (evt.subtype !== "init") return null;
-      return [{ type: "system", text: `session started (model ${evt.model || "unknown"})` }];
+      if (evt.subtype === "init") {
+        return [{ type: "system", text: `session started (model ${evt.model || "unknown"})` }];
+      }
+      if (["hook_started", "hook_response", "commands_changed"].includes(evt.subtype)) {
+        return [setupEvent(evt, evt.subtype)];
+      }
+      return null;
     }
+    case "rate_limit_event":
+      return [setupEvent(evt, "rate_limit_event")];
     case "assistant": {
       const parts = evt.message?.content;
       if (!Array.isArray(parts)) return null;

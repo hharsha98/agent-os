@@ -13,6 +13,7 @@ import {
   resolveBinary,
   runHelp,
   runVersion,
+  splitVersion,
   withDetectCache
 } from "./detect.js";
 
@@ -47,9 +48,10 @@ async function detect({ refresh = false } = {}) {
           error: "hermes was not found on PATH or in common install locations."
         };
       }
-      const version = await runVersion(binPath);
+      const versionText = await runVersion(binPath);
+      const { version, versionFull } = splitVersion(versionText);
       const features = await cachedFeatures(`hermes:${binPath}:${version}`, () => detectFeatures(binPath));
-      return { installed: true, path: binPath, version, features };
+      return { installed: true, path: binPath, version, versionFull, features };
     } catch (error) {
       return { installed: false, path: "", version: "", features: {}, error: error?.message || "Hermes detection failed." };
     }
@@ -134,6 +136,17 @@ const service = {
       title: "Hermes gateway stop",
       command: detected.path,
       args: ["gateway", "stop"],
+      cwd: os.tmpdir(),
+      timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
+    };
+  },
+  restart(detected) {
+    return {
+      agentId: "hermes",
+      kind: "service",
+      title: "Hermes gateway restart",
+      command: detected.path,
+      args: ["gateway", "restart"],
       cwd: os.tmpdir(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };

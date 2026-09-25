@@ -10,6 +10,7 @@ import {
   resolveBinary,
   runHelp,
   runVersion,
+  splitVersion,
   withDetectCache
 } from "./detect.js";
 
@@ -42,9 +43,10 @@ async function detect({ refresh = false } = {}) {
           error: "openclaw was not found on PATH or in common install locations."
         };
       }
-      const version = await runVersion(binPath);
+      const versionText = await runVersion(binPath);
+      const { version, versionFull } = splitVersion(versionText);
       const features = await cachedFeatures(`openclaw:${binPath}:${version}`, () => detectFeatures(binPath));
-      return { installed: true, path: binPath, version, features };
+      return { installed: true, path: binPath, version, versionFull, features };
     } catch (error) {
       return { installed: false, path: "", version: "", features: {}, error: error?.message || "OpenClaw detection failed." };
     }
@@ -197,6 +199,17 @@ const service = {
       cwd: os.tmpdir(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
+  },
+  restart(detected) {
+    return {
+      agentId: "openclaw",
+      kind: "service",
+      title: "OpenClaw gateway restart",
+      command: detected.path,
+      args: ["gateway", "restart"],
+      cwd: os.tmpdir(),
+      timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
+    };
   }
 };
 
@@ -285,14 +298,18 @@ function parseLine(line) {
   return events;
 }
 
+// no-browser-cookies needs a gateway restart to take effect (the real CLI
+// prints "Restart the gateway to apply"); exec-ask applies without one (the
+// real CLI prints "will apply without restarting the gateway").
 const SAFETY_ACTIONS = {
-  "exec-ask": ["tools.exec.mode", "ask"],
-  "no-browser-cookies": ["browser.allowSystemProfileImport", "false"]
+  "exec-ask": { setting: ["tools.exec.mode", "ask"], restartsGateway: false },
+  "no-browser-cookies": { setting: ["browser.allowSystemProfileImport", "false"], restartsGateway: true }
 };
 
 function safetyAction(actionId, detected) {
-  const setting = SAFETY_ACTIONS[actionId];
-  if (!setting) return null;
+  const action = SAFETY_ACTIONS[actionId];
+  if (!action) return null;
+  const { setting, restartsGateway } = action;
   return {
     agentId: "openclaw",
     kind: "service",
@@ -300,7 +317,8 @@ function safetyAction(actionId, detected) {
     command: detected.path,
     args: ["config", "set", ...setting],
     cwd: os.tmpdir(),
-    timeoutMs: SAFETY_ACTION_TIMEOUT_MS
+    timeoutMs: SAFETY_ACTION_TIMEOUT_MS,
+    restartsGateway
   };
 }
 

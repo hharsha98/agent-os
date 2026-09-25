@@ -240,7 +240,10 @@ after(async () => {
 // Full isolation for every test: temp HOME/USERPROFILE (so os.homedir()-based
 // fallback paths never reach the real machine), a temp AGENT_OS_HOME, a temp
 // AGENT_OS_MANAGED_ROOT, a curated PATH, and the mirror wired in.
-async function withTempSetupEnv(fn, { extraPath = [] } = {}) {
+// Defaults to the fake old node shim first on PATH: otherwise which("node")
+// falls through to real install dirs (e.g. /opt/homebrew/bin) and the result
+// depends on the machine -- Node 22 on one Mac, Node 24 on a CI runner.
+async function withTempSetupEnv(fn, { extraPath = [shimDir] } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-os-setup-home-"));
   const agentOsHome = await mkdtemp(path.join(os.tmpdir(), "agent-os-setup-runtime-"));
   const managedRoot = await mkdtemp(path.join(os.tmpdir(), "agent-os-setup-managed-"));

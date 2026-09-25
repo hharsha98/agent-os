@@ -310,13 +310,15 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     meta.pid = child.pid;
     meta.status = "running";
     meta.startedAt = new Date().toISOString();
-    await persistMeta(state);
-    await appendEvent(state, { stream: "system", type: "system", text: `Started ${commandPreview}` });
-
-    if (stdinMode === "pipe") {
-      child.stdin.write(plan.stdin);
-      child.stdin.end();
-    }
+    // Everything up to the listeners below must stay synchronous: a fast
+    // process can exit while we await disk writes, and "close" fires only
+    // once, so a listener attached after an await can miss it and leave the
+    // run "running" forever. Queue the writes now (keeping "Started" first
+    // in the log) and await them only after the listeners are attached.
+    const startWrites = Promise.all([
+      enqueue(state, () => persistMeta(state)),
+      appendEvent(state, { stream: "system", type: "system", text: `Started ${commandPreview}` })
+    ]);
 
     const output = attachOutputHandlers(state, plan, child);
 
@@ -369,6 +371,16 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
         state.markDone();
       }
     });
+
+    if (stdinMode === "pipe") {
+      child.stdin.on("error", () => {
+        // the child may exit before reading its input; that is not our error
+      });
+      child.stdin.write(plan.stdin);
+      child.stdin.end();
+    }
+
+    await startWrites.catch(() => {});
 
     return { ...meta };
   }

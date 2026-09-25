@@ -208,12 +208,14 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       clearTimeout(state.timeoutHandle);
       state.timeoutHandle = null;
     }
+    // Write the exit event before flipping the status: anyone who sees a
+    // terminal status can then rely on the log being complete.
+    await appendEvent(state, { stream: "system", type: "system", text: `Exited with code ${exitCode}` });
     state.meta.status = status;
     state.meta.exitCode = exitCode;
     state.meta.signal = signal;
     state.meta.endedAt = new Date().toISOString();
     if (error) state.meta.error = error;
-    await appendEvent(state, { stream: "system", type: "system", text: `Exited with code ${exitCode}` });
     await enqueue(state, () => persistMeta(state));
     await enqueue(state, () => {
       broadcast(state, { type: "end", status: state.meta.status });

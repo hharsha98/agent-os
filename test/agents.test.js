@@ -716,7 +716,7 @@ test(
       const listRes = await fetch(`${base}/api/agents`, { headers: authed });
       assert.equal(listRes.status, 200);
       const listBody = await listRes.json();
-      assert.deepEqual(listBody.agents.map((a) => a.id).sort(), ["hermes", "openclaw"]);
+      assert.deepEqual(listBody.agents.map((a) => a.id).sort(), ["claude", "codex", "cursor", "hermes", "openclaw"]);
       const hermesEntry = listBody.agents.find((a) => a.id === "hermes");
       assert.equal(hermesEntry.detected.installed, true);
       assert.match(hermesEntry.detected.version, /0\.20\.6/);

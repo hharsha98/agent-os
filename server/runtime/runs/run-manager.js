@@ -87,6 +87,18 @@ function blockedFlagError() {
   return error;
 }
 
+// A bare "-f" is too generic for the shared substring list in agent-flags.js
+// (it would match unrelated flags on other CLIs), but for Cursor Agent's
+// binaries it specifically means "force allow commands unless explicitly
+// denied" - the same bypass "--force" already blocks. Checked as an exact
+// argument, and only for these two binaries, so nothing else is affected.
+const FORCE_BYPASS_BINARIES = new Set(["agent", "cursor-agent"]);
+
+function hasCursorForceFlag(plan) {
+  if (!FORCE_BYPASS_BINARIES.has(path.basename(String(plan.command || "")))) return false;
+  return plan.args.some((arg) => arg === "-f" || arg === "--force");
+}
+
 function tooManyRunsError() {
   const error = new Error("Too many runs are already active.");
   error.code = "too_many_runs";
@@ -235,6 +247,7 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     await validatePlan(plan);
     if (countActive() >= maxConcurrent) throw tooManyRunsError();
     if (plan.args.some((arg) => containsBlockedFlag(arg))) throw blockedFlagError();
+    if (hasCursorForceFlag(plan)) throw blockedFlagError();
 
     const dir = await runsDir();
     const id = generateRunId();

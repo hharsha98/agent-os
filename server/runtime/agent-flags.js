@@ -8,7 +8,10 @@ export const BLOCKED_AGENT_FLAGS = [
   "--force",
   "danger-full-access",
   "--permission-mode=bypassPermissions",
-  "bypassPermissions"
+  "bypassPermissions",
+  // Claude Code 2.1.281: "Enable bypassing all permission checks as an
+  // option, without it being enabled by default." Same bypass, opt-in form.
+  "--allow-dangerously-skip-permissions"
 ];
 
 export function containsBlockedFlag(value) {

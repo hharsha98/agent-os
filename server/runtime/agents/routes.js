@@ -69,6 +69,17 @@ function validatePrompt(body) {
   return prompt;
 }
 
+// Only a boolean allowEdits is ever read; any other key in body.options
+// (or a non-boolean allowEdits) is silently ignored rather than forwarded.
+function validateOptions(body) {
+  const raw = body?.options;
+  const options = {};
+  if (raw && typeof raw === "object" && typeof raw.allowEdits === "boolean") {
+    options.allowEdits = raw.allowEdits;
+  }
+  return options;
+}
+
 function requireAdapter(req, res, next) {
   const adapter = getAdapter(req.params.id);
   if (!adapter) {
@@ -148,9 +159,16 @@ export function createAgentsRouter() {
       }
       const detected = await adapter.detect();
       const runDir = await makeRunDir(adapter.id);
+      const options = validateOptions(req.body);
       let plan;
       try {
-        plan = await adapter.buildRun({ prompt, cwd, detected, runDir });
+        plan = await adapter.buildRun({ prompt, cwd, detected, runDir, options });
+      } catch (error) {
+        if (error?.code === "allow_edits_not_supported") {
+          res.status(400).json({ error: error.code, message: error.message });
+          return;
+        }
+        throw error;
       } finally {
         // Preview spawns nothing; drop whatever buildRun wrote (e.g. Hermes's
         // query file) instead of leaving it behind for no run.
@@ -195,7 +213,18 @@ export function createAgentsRouter() {
       }
       const detected = await adapter.detect();
       const runDir = await makeRunDir(adapter.id);
-      const plan = await adapter.buildRun({ prompt, cwd, detected, runDir });
+      const options = validateOptions(req.body);
+      let plan;
+      try {
+        plan = await adapter.buildRun({ prompt, cwd, detected, runDir, options });
+      } catch (error) {
+        if (error?.code === "allow_edits_not_supported") {
+          await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+          res.status(400).json({ error: error.code, message: error.message });
+          return;
+        }
+        throw error;
+      }
       try {
         const run = await getRunManager().startRun(plan);
         res.json(run);

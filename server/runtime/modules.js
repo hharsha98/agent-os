@@ -568,6 +568,11 @@ export function buildCliArgs(definition, stored, input = {}) {
       // leading "-", so no terminator is needed here.
       return ["agent", "--message", message, "--thinking", "high"];
     }
+    if (definition.id === "claude" && message) {
+      // Without -p, `claude <message>` starts an interactive session that
+      // waits on a terminal and hangs forever in a spawned child process.
+      return withMessageTerminator(["-p", "--output-format", "text", message], message);
+    }
     return message ? withMessageTerminator([message], message) : [];
   }
   // Defence in depth: configure-time checks already reject blocked flags,

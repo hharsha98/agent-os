@@ -224,6 +224,8 @@ const VIDEO_STT_ENV_RESET = {
   HERMES_VIDEO_STT_LANGUAGE: null
 };
 
+const isWindows = process.platform === "win32";
+
 test("module registry exposes every dashboard module with sanitized fields", async () => {
   await withTempRuntime(async () => {
     const modules = await getModules();
@@ -1481,7 +1483,10 @@ test("guided provider setup lists Ollama local model inventory", async () => {
   });
 });
 
-test("Ollama bootstrap doctor reports install, host, server, and model readiness", async () => {
+test(
+  "Ollama bootstrap doctor reports install, host, server, and model readiness",
+  { skip: isWindows ? "spawns a shebang fake ollama CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     await withEnv(PROVIDER_ENV_RESET, async () => {
       const missing = await getOllamaDoctor();
@@ -1800,7 +1805,10 @@ test("MiniMax M3 follows provider-minimax configuration", async () => {
   });
 });
 
-test("CLI modules discover local executables outside the server PATH", async () => {
+test(
+  "CLI modules discover local executables outside the server PATH",
+  { skip: isWindows ? "uses a chmod-based shebang fake CLI and a POSIX PATH string (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const bin = path.join(dir, "bin");
     const cli = path.join(bin, "codex");
@@ -1902,7 +1910,10 @@ test("local self modules are backed by the Agent OS store", async () => {
   });
 });
 
-test("video worker inspects local media and prepares redacted handoff plans", async () => {
+test(
+  "video worker inspects local media and prepares redacted handoff plans",
+  { skip: isWindows ? "spawns shebang fake ffprobe/ffmpeg/whisper CLIs (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const toolsDir = path.join(dir, "tools");
     await mkdir(toolsDir, { recursive: true });
@@ -1951,7 +1962,10 @@ JSON
   });
 });
 
-test("video worker execution gate writes a handoff manifest without exposing local paths", async () => {
+test(
+  "video worker execution gate writes a handoff manifest without exposing local paths",
+  { skip: isWindows ? "spawns shebang fake ffprobe/ffmpeg/whisper CLIs (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const toolsDir = path.join(dir, "tools");
     await mkdir(toolsDir, { recursive: true });
@@ -1991,7 +2005,10 @@ JSON
   });
 });
 
-test("video worker executes whisper transcription and ffmpeg caption render behind the run gate", async () => {
+test(
+  "video worker executes whisper transcription and ffmpeg caption render behind the run gate",
+  { skip: isWindows ? "spawns shebang fake ffprobe/ffmpeg/whisper CLIs (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const toolsDir = path.join(dir, "tools");
     await mkdir(toolsDir, { recursive: true });
@@ -2082,7 +2099,10 @@ echo "rendered $last"
   });
 });
 
-test("video worker transcribes through configured Groq cloud STT before local Whisper", async () => {
+test(
+  "video worker transcribes through configured Groq cloud STT before local Whisper",
+  { skip: isWindows ? "spawns a shebang fake ffprobe CLI (POSIX-only)" : false },
+  async () => {
   await withHttpServer((req, res) => {
     assert.equal(req.method, "POST");
     assert.equal(req.headers.authorization, "Bearer groq-test-secret");
@@ -2149,7 +2169,10 @@ JSON
   });
 });
 
-test("video worker falls back from failed cloud STT to local Whisper", async () => {
+test(
+  "video worker falls back from failed cloud STT to local Whisper",
+  { skip: isWindows ? "spawns shebang fake ffprobe/whisper CLIs (POSIX-only)" : false },
+  async () => {
   await withHttpServer((req, res) => {
     assert.equal(req.headers.authorization, "Bearer groq-fallback-secret");
     req.resume();
@@ -2218,7 +2241,10 @@ echo "fallback subtitles"
   });
 });
 
-test("video queue runs caption render and resolves safe downloadable outputs", async () => {
+test(
+  "video queue runs caption render and resolves safe downloadable outputs",
+  { skip: isWindows ? "spawns shebang fake ffprobe/ffmpeg/whisper CLIs (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const toolsDir = path.join(dir, "tools");
     await mkdir(toolsDir, { recursive: true });
@@ -2298,7 +2324,10 @@ echo "queued render"
   });
 });
 
-test("video queue exposes command-derived progress while ffmpeg is running", async () => {
+test(
+  "video queue exposes command-derived progress while ffmpeg is running",
+  { skip: isWindows ? "spawns shebang fake ffprobe/ffmpeg CLIs (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const toolsDir = path.join(dir, "tools");
     await mkdir(toolsDir, { recursive: true });
@@ -2365,7 +2394,10 @@ printf "slow mp4" > "$last"
   });
 });
 
-test("video queue can cancel a pending run before command execution", async () => {
+test(
+  "video queue can cancel a pending run before command execution",
+  { skip: isWindows ? "spawns shebang fake ffprobe/whisper/ffmpeg CLIs (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const toolsDir = path.join(dir, "tools");
     await mkdir(toolsDir, { recursive: true });
@@ -4352,7 +4384,10 @@ test("Gateway Telegram smoke test is execution-gated and returns sanitized proof
   });
 });
 
-test("Hermes task dispatch prepares a real Kanban create command without leaking paths", async () => {
+test(
+  "Hermes task dispatch prepares a real Kanban create command without leaking paths",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const hermesHome = path.join(dir, "hermes-home");
     const profileRoot = path.join(hermesHome, "profiles", "agentalpha");
@@ -4385,7 +4420,10 @@ test("Hermes task dispatch prepares a real Kanban create command without leaking
   });
 });
 
-test("Hermes profile sessions dispatch messages through Hermes control without leaking prompts", async () => {
+test(
+  "Hermes profile sessions dispatch messages through Hermes control without leaking prompts",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const hermesHome = path.join(dir, "hermes-home");
     const profileRoot = path.join(hermesHome, "profiles", "agentalpha");
@@ -4437,7 +4475,10 @@ test("Hermes profile sessions dispatch messages through Hermes control without l
   });
 });
 
-test("Hermes task dispatch can execute through configured CLI when server gate is enabled", async () => {
+test(
+  "Hermes task dispatch can execute through configured CLI when server gate is enabled",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const hermesHome = path.join(dir, "hermes-home");
     const profileRoot = path.join(hermesHome, "profiles", "agentalpha");
@@ -4483,7 +4524,10 @@ test("Hermes task dispatch can execute through configured CLI when server gate i
   });
 });
 
-test("Hermes task status refresh reads Kanban task state without recording handoff spam", async () => {
+test(
+  "Hermes task status refresh reads Kanban task state without recording handoff spam",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const hermesHome = path.join(dir, "hermes-home");
     const profileRoot = path.join(hermesHome, "profiles", "agentalpha");
@@ -4565,7 +4609,10 @@ test("Hermes task status refresh reads Kanban task state without recording hando
   });
 });
 
-test("Hermes task controls are dry-run-first and execute real Kanban commands when enabled", async () => {
+test(
+  "Hermes task controls are dry-run-first and execute real Kanban commands when enabled",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const hermesHome = path.join(dir, "hermes-home");
     const profileRoot = path.join(hermesHome, "profiles", "agentalpha");
@@ -4625,7 +4672,10 @@ test("Hermes task controls are dry-run-first and execute real Kanban commands wh
   });
 });
 
-test("module run uses structured configured CLI adapter when explicitly enabled", async () => {
+test(
+  "module run uses structured configured CLI adapter when explicitly enabled",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
@@ -4675,7 +4725,10 @@ test("module run uses structured configured CLI adapter when explicitly enabled"
   });
 });
 
-test("module CLI dry-runs expose sanitized execution plans", async () => {
+test(
+  "module CLI dry-runs expose sanitized execution plans",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
@@ -4712,7 +4765,10 @@ test("module CLI dry-runs expose sanitized execution plans", async () => {
   });
 });
 
-test("module CLI sessions are dry-run-first and persisted without local paths", async () => {
+test(
+  "module CLI sessions are dry-run-first and persisted without local paths",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const script = path.join(dir, "codex");
     await writeFile(script, "#!/bin/sh\necho should-not-start\n");
@@ -4745,7 +4801,10 @@ test("module CLI sessions are dry-run-first and persisted without local paths", 
   });
 });
 
-test("module CLI sessions start stop and expose sanitized output tails", async () => {
+test(
+  "module CLI sessions start stop and expose sanitized output tails",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
@@ -4808,7 +4867,10 @@ test("module CLI sessions start stop and expose sanitized output tails", async (
   });
 });
 
-test("module CLI adapter blocks workspace overrides outside configured policy", async () => {
+test(
+  "module CLI adapter blocks workspace overrides outside configured policy",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const script = path.join(dir, "codex");
     const workspace = path.join(dir, "workspace");
@@ -5089,7 +5151,10 @@ test("workflow agent nodes route through the provider router and record usage", 
   });
 });
 
-test("workflow agent nodes retry failed CLI executions", async () => {
+test(
+  "workflow agent nodes retry failed CLI executions",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const script = path.join(dir, "codex");
     await writeFile(script, "#!/bin/sh\nexit 2\n");
@@ -5125,7 +5190,10 @@ test("workflow agent nodes retry failed CLI executions", async () => {
   });
 });
 
-test("native OpenClaw workflows execute the official one-shot CLI shape behind the trusted gate", async () => {
+test(
+  "native OpenClaw workflows execute the official one-shot CLI shape behind the trusted gate",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const cli = path.join(dir, "openclaw");
     await writeExecutable(cli, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
@@ -5603,7 +5671,10 @@ test("connections return templates without secret values", async () => {
   });
 });
 
-test("connection saves are reflected by the module registry for dashboard control rooms", async () => {
+test(
+  "connection saves are reflected by the module registry for dashboard control rooms",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
   await withTempRuntime(async (dir) => {
     const cli = path.join(dir, "codex");
     await writeExecutable(cli, "#!/bin/sh\necho codex-dashboard-config\n");

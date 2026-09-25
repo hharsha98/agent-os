@@ -181,6 +181,7 @@ import { installShutdownHandlers } from "./runtime/shutdown.js";
 import { getRunManager } from "./runtime/runs/run-manager.js";
 import { createRunsRouter } from "./runtime/runs/routes.js";
 import { createAgentsRouter } from "./runtime/agents/routes.js";
+import { createSetupRouter } from "./runtime/setup/routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -972,6 +973,11 @@ app.use("/api/runs", requireAdminWhenPublic, createRunsRouter());
 // Fixed adapters only (Hermes, OpenClaw, …): no route here accepts a
 // command, args, or binary path from the request body.
 app.use("/api/agents", requireAdminWhenPublic, createAgentsRouter());
+
+// Setup Assistant: check the computer, plan, and run the official installers
+// unattended. Distinct from the legacy /api/setup* routes registered above
+// (provider onboarding) -- no sub-path here collides with those.
+app.use("/api/setup", requireAdminWhenPublic, createSetupRouter());
 
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {

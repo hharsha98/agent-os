@@ -553,6 +553,15 @@ export interface ExecutionGateStatus {
   publicSummary: string;
   demoLocked?: boolean;
   refused?: boolean;
+  // Optional fields another worker is adding for the "machine control" armed
+  // state; read defensively since neither is guaranteed present yet.
+  level?: string;
+  machineControl?: {
+    armed?: boolean;
+    enabled?: boolean;
+    expiresAt?: string | null;
+    remainingMs?: number | null;
+  } | null;
 }
 
 export interface SetupStep {
@@ -2268,4 +2277,87 @@ export interface WorkspaceFileDetail {
   file: WorkspaceFile & { mime?: string };
   previewText: string;
   rawUrl: string;
+}
+
+// Agent adapter surface (Fleet page): detection facts for one of the five
+// agent CLIs, and the always-on gateway status for the two that have one.
+export interface AgentDetected {
+  installed: boolean;
+  path: string;
+  version: string;
+  features: Record<string, unknown>;
+  error?: string;
+}
+
+export interface AgentSummary {
+  id: string;
+  label: string;
+  homepage: string;
+  docsUrl: string;
+  license: string;
+  detected: AgentDetected;
+}
+
+export interface AgentListResponse {
+  agents: AgentSummary[];
+}
+
+export interface AgentServiceStatus {
+  running: boolean;
+  text: string;
+  warnings?: string[];
+}
+
+// Run surface (Fleet page + future Runs page): mirrors run-manager.js's
+// meta object exactly, including which fields report cost (some agents
+// don't, and that must render as "—", never "$0.00").
+export interface RunUsage {
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "stopped"
+  | "timed_out"
+  | "interrupted"
+  | string;
+
+export interface RunMeta {
+  id: string;
+  agentId: string | null;
+  kind: string;
+  title: string;
+  status: RunStatus;
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  exitCode: number | string | null;
+  signal: string | null;
+  pid: number | null;
+  cwd: string;
+  commandPreview: string;
+  truncated: boolean;
+  usage: RunUsage;
+  error: string | null;
+}
+
+export interface RunListResponse {
+  runs: RunMeta[];
+}
+
+export interface RunStreamEvent {
+  seq: number;
+  t: string;
+  stream?: string;
+  type: string;
+  text?: string;
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  [key: string]: unknown;
 }

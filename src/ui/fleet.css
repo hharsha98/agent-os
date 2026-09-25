@@ -1,0 +1,211 @@
+/* Fleet (Home) page — the hero screen: the fleet readouts, five agent
+   channels, and recent runs. Only .os- selectors, so legacy pages are
+   never affected. */
+
+.os-fleet {
+  max-width: 1280px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-7);
+}
+
+.os-fleet__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-fleet__header h1 {
+  margin: 0;
+  font-size: var(--os-fs-32);
+  line-height: var(--os-lh-display);
+  color: var(--os-text-1);
+}
+.os-fleet__header p {
+  margin: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-14);
+  max-width: 60ch;
+}
+
+.os-fleet__banner {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-4) var(--os-sp-5);
+  border-radius: var(--os-r-lg);
+  background: rgba(245, 184, 75, 0.08);
+  border: 1px solid rgba(245, 184, 75, 0.3);
+  color: var(--os-text-1);
+}
+.os-fleet__banner svg {
+  color: var(--os-warn);
+  flex: 0 0 auto;
+}
+.os-fleet__banner button {
+  margin-left: auto;
+}
+
+.os-fleet__readouts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--os-sp-5);
+}
+
+.os-fleet__grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--os-sp-4);
+}
+@media (max-width: 1280px) and (min-width: 900px) {
+  .os-fleet__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 899px) {
+  .os-fleet__grid {
+    grid-template-columns: 1fr;
+  }
+  .os-fleet__readouts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.os-fleet-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+
+.os-fleet-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--os-sp-3);
+}
+.os-fleet-card__head strong {
+  display: block;
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-fleet-card__role {
+  display: block;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+  margin-top: 2px;
+}
+.os-fleet-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  white-space: nowrap;
+}
+
+.os-fleet-card__version {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.os-fleet-card__gateway {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+
+.os-fleet-card__last {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+
+/* Activity trace: 60 one-second bars, flat + dim when idle */
+.os-trace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+}
+.os-trace__svg {
+  width: 100%;
+  height: 40px;
+  display: block;
+}
+.os-trace__bar {
+  fill: var(--os-surface-3);
+}
+.os-trace__bar--active {
+  fill: var(--os-accent);
+}
+.os-trace__baseline {
+  stroke: var(--os-line-2);
+  stroke-width: 1;
+}
+.os-trace__label {
+  align-self: flex-end;
+}
+
+.os-fleet__recent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-fleet__recent-title {
+  margin: 0;
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-fleet__recent-skeleton {
+  height: 140px;
+}
+.os-fleet__empty {
+  margin: 0;
+  color: var(--os-text-3);
+  font-size: var(--os-fs-13);
+}
+.os-fleet__runlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.os-fleet__runlist li {
+  display: grid;
+  grid-template-columns: auto minmax(80px, 120px) 1fr auto auto;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-2) 0;
+  border-bottom: 1px solid var(--os-line-1);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-fleet__runlist li:last-child {
+  border-bottom: 0;
+}
+.os-fleet__run-agent {
+  text-transform: capitalize;
+  color: var(--os-text-1);
+}
+.os-fleet__run-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--os-text-2);
+}
+
+@media (max-width: 899px) {
+  .os-fleet__runlist li {
+    grid-template-columns: auto 1fr auto;
+  }
+  .os-fleet__runlist .os-mono:last-child {
+    display: none;
+  }
+}

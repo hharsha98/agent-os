@@ -1,0 +1,284 @@
+/* Small .os- primitives shared by the new shell and Fleet page. Legacy
+   pages never see these — they keep using their own aos- classes. */
+
+.os-shell,
+.os-shell button,
+.os-shell input,
+.os-shell select,
+.os-shell textarea {
+  font-family: var(--os-font-ui);
+  color: var(--os-text-1);
+}
+
+.os-mono {
+  font-family: var(--os-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.os-micro {
+  font-size: var(--os-fs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--os-text-3);
+  font-weight: 600;
+}
+
+/* Buttons */
+.os-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  min-height: 32px;
+  padding: 0 var(--os-sp-4);
+  border-radius: var(--os-r-md);
+  font-size: var(--os-fs-13);
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--os-dur-quick) var(--os-ease-out), border-color var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out), transform var(--os-dur-quick) var(--os-ease-out);
+}
+.os-btn:active {
+  transform: translateY(1px);
+}
+.os-btn--primary {
+  background: var(--os-accent);
+  color: var(--os-accent-ink);
+}
+.os-btn--primary:hover {
+  background: var(--os-accent-strong);
+}
+.os-btn--secondary {
+  background: var(--os-surface-2);
+  border-color: var(--os-line-2);
+  color: var(--os-text-1);
+}
+.os-btn--secondary:hover {
+  border-color: var(--os-line-3);
+}
+.os-btn--ghost {
+  background: transparent;
+  color: var(--os-text-2);
+}
+.os-btn--ghost:hover {
+  background: var(--os-surface-2);
+  color: var(--os-text-1);
+}
+.os-btn--danger {
+  background: rgba(255, 92, 122, 0.14);
+  border-color: rgba(255, 92, 122, 0.4);
+  color: var(--os-danger);
+}
+.os-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Chip */
+.os-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  height: 26px;
+  padding: 0 var(--os-sp-3);
+  border-radius: var(--os-r-pill);
+  background: var(--os-surface-2);
+  border: 1px solid var(--os-line-2);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  white-space: nowrap;
+}
+.os-chip--experimental {
+  color: var(--os-warn);
+  border-color: rgba(245, 184, 75, 0.35);
+  background: rgba(245, 184, 75, 0.08);
+}
+
+/* Panel */
+.os-panel {
+  background: var(--os-surface-1);
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e1);
+  padding: var(--os-sp-5);
+}
+.os-panel--raised {
+  background: var(--os-surface-2);
+  box-shadow: var(--os-e2);
+}
+
+/* Readout */
+.os-readout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+}
+.os-readout__label {
+  font-size: var(--os-fs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--os-text-3);
+  font-weight: 600;
+}
+.os-readout__value {
+  font-family: var(--os-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--os-fs-32);
+  line-height: var(--os-lh-display);
+  color: var(--os-text-1);
+}
+.os-readout__value--muted {
+  color: var(--os-text-3);
+}
+.os-readout__hint {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+
+/* Status marks: shape + colour together (never colour alone) */
+.os-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+}
+.os-mark svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.os-mark--ok svg circle {
+  fill: var(--os-ok);
+}
+.os-mark--warn svg polygon {
+  fill: var(--os-warn);
+}
+.os-mark--error svg rect {
+  fill: var(--os-danger);
+}
+.os-mark--unknown svg circle {
+  fill: none;
+  stroke: var(--os-unknown);
+  stroke-width: 1.6;
+}
+.os-mark--live svg circle {
+  fill: var(--os-accent);
+}
+.os-mark--live.os-mark--pulse svg circle {
+  animation: os-pulse var(--os-dur-slow) var(--os-ease-pulse);
+}
+@keyframes os-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.9);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .os-mark--live.os-mark--pulse svg circle {
+    animation: none;
+  }
+}
+
+/* Field */
+.os-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+}
+.os-field__label {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-field input,
+.os-field select,
+.os-field textarea {
+  background: var(--os-surface-3);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  padding: var(--os-sp-2) var(--os-sp-3);
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+}
+
+/* Keyboard hint */
+.os-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: var(--os-r-sm);
+  background: var(--os-surface-3);
+  border: 1px solid var(--os-line-2);
+  color: var(--os-text-2);
+  font-family: var(--os-font-mono);
+  font-size: 11px;
+}
+
+/* Skeleton: static, never shimmering */
+.os-skeleton {
+  background: var(--os-surface-2);
+  border-radius: var(--os-r-md);
+  position: relative;
+  overflow: hidden;
+}
+.os-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--os-line-1);
+  border-radius: inherit;
+}
+
+/* Focus ring, everywhere, never removed without a replacement */
+.os-shell :focus-visible {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
+  border-radius: var(--os-r-sm);
+}
+
+/* Lock screen: centred both ways, same behaviour as before, new look */
+.os-locked {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: var(--os-sp-5);
+}
+.os-locked__card {
+  width: min(400px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-4);
+}
+.os-locked__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+}
+.os-locked__title {
+  margin: 0;
+  font-size: var(--os-fs-24);
+  color: var(--os-text-1);
+}
+.os-locked__copy {
+  margin: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-14);
+}
+.os-locked__error {
+  margin: 0;
+  color: var(--os-danger);
+  font-size: var(--os-fs-13);
+}
+.os-locked__submit {
+  align-self: flex-start;
+}

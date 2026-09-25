@@ -1,4 +1,10 @@
+import { useEffect, useRef, useState } from "react";
 import type {
+  AgentListResponse,
+  AgentServiceStatus,
+  RunListResponse,
+  RunMeta,
+  RunStreamEvent,
   BuilderBootstrap,
   BuilderBootstrapPrepareResult,
   BuilderReplayOverlay,
@@ -932,4 +938,102 @@ export function cancelVideoRun(runId: string) {
 
 export function videoRunDownloadUrl(runId: string, fileName: string) {
   return `/api/self/video/runs/${encodeURIComponent(runId)}/download/${encodeURIComponent(fileName)}`;
+}
+
+// --- Fleet page: agents + runs -------------------------------------------
+
+export function listAgents(refresh = false) {
+  return request<AgentListResponse>(`/api/agents${refresh ? "?refresh=1" : ""}`);
+}
+
+// A 404 means "this agent has no always-on gateway" (only hermes and
+// openclaw do); callers should treat that as "no service", not an error.
+export function getAgentService(id: string) {
+  return request<AgentServiceStatus>(`/api/agents/${encodeURIComponent(id)}/service`);
+}
+
+export function listRuns(params: { limit?: number; agentId?: string; kind?: string } = {}) {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.agentId) query.set("agentId", params.agentId);
+  if (params.kind) query.set("kind", params.kind);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<RunListResponse>(`/api/runs${suffix}`);
+}
+
+export function getRun(id: string) {
+  return request<RunMeta>(`/api/runs/${encodeURIComponent(id)}`);
+}
+
+export function stopRun(id: string) {
+  return request<RunMeta>(`/api/runs/${encodeURIComponent(id)}/stop`, {
+    method: "POST",
+    body: "{}"
+  });
+}
+
+// Subscribes to a run's live SSE stream. Same-origin, so the session cookie
+// rides along automatically; no token is ever put in the URL. Closes on
+// unmount, and on a stream error that isn't a clean "end" it re-checks the
+// session so an expired cookie surfaces as the lock screen instead of a
+// silently frozen trace.
+// Every event type the run manager and agent adapters emit (see
+// server/runtime/runs/run-manager.js and server/runtime/agents/*.js).
+const RUN_STREAM_EVENT_TYPES = [
+  "system", "line", "text", "thinking", "tool", "tool_result",
+  "usage", "result", "setup", "error"
+];
+
+export function useRunStream(runId: string | null) {
+  const [events, setEvents] = useState<RunStreamEvent[]>([]);
+  const [status, setStatus] = useState<"connecting" | "open" | "ended">("connecting");
+  const endedCleanlyRef = useRef(false);
+
+  useEffect(() => {
+    setEvents([]);
+    setStatus("connecting");
+    endedCleanlyRef.current = false;
+    if (!runId) return;
+
+    const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
+
+    source.onopen = () => setStatus("open");
+    const onEvent = (message: MessageEvent) => {
+      try {
+        const event = JSON.parse(message.data) as RunStreamEvent;
+        setEvents((prev) => [...prev, event]);
+      } catch {
+        // malformed frame; skip rather than crash the trace
+      }
+    };
+    // The server names each frame after the event's type ("event: text"), and
+    // EventSource only routes unnamed frames to onmessage, so listen by name.
+    source.onmessage = onEvent;
+    for (const type of RUN_STREAM_EVENT_TYPES) source.addEventListener(type, onEvent);
+    source.addEventListener("end", () => {
+      endedCleanlyRef.current = true;
+      setStatus("ended");
+      source.close();
+    });
+    source.onerror = () => {
+      source.close();
+      setStatus("ended");
+      if (endedCleanlyRef.current) return;
+      void request<{ authenticated?: boolean }>("/api/session")
+        .then((session) => {
+          if (session && session.authenticated === false) {
+            window.dispatchEvent(new CustomEvent("agentos:locked"));
+          }
+        })
+        .catch(() => {
+          // a network hiccup here shouldn't itself trigger the lock flow
+        });
+    };
+
+    return () => {
+      source.close();
+    };
+  }, [runId]);
+
+  return { events, status };
 }

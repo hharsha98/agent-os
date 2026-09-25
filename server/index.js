@@ -177,15 +177,30 @@ import {
   saveWorkflow
 } from "./runtime/workflows.js";
 import { getDesktopContext, getVoiceControlStatus, runVoiceCommand } from "./runtime/voice-control.js";
+import { installShutdownHandlers } from "./runtime/shutdown.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, "..");
-const dist = path.join(root, "dist");
+// A packaged desktop build ships dist/ next to the bundled server instead of
+// alongside a repo checkout, so it can point this at that resources folder.
+const dist = process.env.AGENT_OS_STATIC_DIR
+  ? path.resolve(process.env.AGENT_OS_STATIC_DIR)
+  : path.join(root, "dist");
 const envFile = loadLocalEnv({ root });
 const app = express();
-const parsedPort = Number(process.env.PORT || 8090);
-const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8090;
+const isPackaged = process.env.AGENT_OS_PACKAGED === "1";
+function parsePort(raw) {
+  if (raw === undefined || raw === "") return 8090;
+  const parsed = Number(raw);
+  // 0 asks the OS for a free port, which the desktop app needs since it
+  // never knows in advance which port is open on the user's machine.
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) return 8090;
+  return parsed;
+}
+// Reassigned once listen() resolves the real port (relevant when PORT=0);
+// every closure below reads this variable live instead of a snapshot.
+let port = parsePort(process.env.PORT);
 function bindAddress() {
   // Loopback unless HOST is set. Containers set HOST=0.0.0.0 so a published
   // host port can reach the process; publish that port on 127.0.0.1.
@@ -206,10 +221,12 @@ app.use(express.json({ limit: "2mb" }));
 // Local-mode only: every /api, /agent-builder-source, /_next request needs
 // the session cookie or the x-agent-os-token header. Demo and public mode
 // use their own gates (demo stays anonymous; public keeps the admin token).
-app.use(localSessionGate(port));
+// Getters, not the current value of `port` — with PORT=0 that's still 0 here
+// and only becomes the real bound port once listen()'s callback runs below.
+app.use(localSessionGate(() => port));
 
-app.get("/api/session", localSessionStatusHandler(port));
-app.post("/api/session/claim", claimSessionHandler(port));
+app.get("/api/session", localSessionStatusHandler(() => port));
+app.post("/api/session/claim", claimSessionHandler(() => port));
 
 app.get("/api/admin/session", (req, res) => {
   res.json(sessionStatus(req));
@@ -264,6 +281,7 @@ app.get("/api/health", async (_req, res, next) => {
       timestamp: status.generatedAt,
       bind: bindHost,
       port,
+      packaged: isPackaged,
       demoPublic,
       liveChat: isLiveChatEnabled(),
       badge: demoPublic ? DEMO_BADGE : isLiveChatEnabled() ? "Live operator · single machine" : null
@@ -1467,6 +1485,10 @@ app.post("/api/workflows/:id/runs/:runId/resume", requireAdminWhenPublic, async 
 
 app.post("/api/admin/export/prepare", async (req, res, next) => {
   try {
+    if (isPackaged) {
+      res.status(409).json({ error: "not_available_in_desktop_app" });
+      return;
+    }
     assertAdminToken(req);
     res.json(await prepareExport({ sourceRoot: root, requestedBy: "api" }));
   } catch (error) {
@@ -1722,7 +1744,11 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(port, bindHost, () => {
+const server = app.listen(port, bindHost, () => {
+  // With PORT=0 the OS just picked a free port; every later reader of
+  // `port` (closures above, and this callback) sees this updated value.
+  port = server.address().port;
+  console.log(`AGENT_OS_READY:${port}`);
   const demoPublic = isDemoPublic();
   console.log(
     demoPublic
@@ -1734,3 +1760,5 @@ app.listen(port, bindHost, () => {
   }
   startSchedulerLoop();
 });
+
+installShutdownHandlers(server);

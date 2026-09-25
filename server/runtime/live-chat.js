@@ -12,6 +12,11 @@ import { writeWorkspaceText } from "./workspace.js";
 
 export const LIVE_SEATS = ["cursor", "claude", "codex", "hermes", "openclaw"];
 
+// Live-chat children are short-lived (a single CLI call), so they don't need
+// process-tree.js's spawnTracked. Shutdown still needs to find and kill any
+// still running when the process quits.
+export const activeLiveChatChildren = new Set();
+
 const SEAT_SYSTEM = {
   cursor: "You are the Cursor seat in Agent OS. Answer as a coding agent. This turn is text from OmniRoute. You are not driving the Cursor CLI or editing files.",
   claude: "You are the Claude Code seat in Agent OS. Answer as a coding agent. This turn is text from OmniRoute. You are not driving the Claude CLI or editing files.",
@@ -208,7 +213,8 @@ async function runArgv(commandPath, args, timeoutMs, env, deps, extraEnv = {}) {
   const runner = deps.runCommand || runCommand;
   const result = await runner(commandPath, args, timeoutMs, {
     env: childEnv(env, extraEnv),
-    cwd: os.tmpdir()
+    cwd: os.tmpdir(),
+    track: activeLiveChatChildren
   });
   const reply = scrubSecrets(
     redactText(result.stdout || result.stderr || "Command completed with no output.", [commandPath]),

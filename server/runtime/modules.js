@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
-import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { containsBlockedFlag } from "./agent-flags.js";
+import { killProcessTree, spawnTracked } from "./process-tree.js";
 import { getBuilderStatus } from "./builder-service.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
 import { withMessageTerminator } from "./live-chat.js";
@@ -100,6 +100,20 @@ const CLI_MODULES = [
     docsUrl: "https://opencode.ai"
   }
 ];
+
+// launchctl only exists on macOS. Elsewhere, report the same shape a failed
+// command would produce instead of spawning a binary that isn't there.
+function launchctl(args, timeout = 10000) {
+  if (process.platform !== "darwin") {
+    return Promise.resolve({
+      ok: false,
+      stdout: "",
+      stderr: `launchctl is not supported on ${process.platform}`,
+      code: 127
+    });
+  }
+  return runCommand("/bin/launchctl", args, timeout);
+}
 
 const INTERNAL_MODULES = [
   {
@@ -1298,7 +1312,7 @@ async function runHermesControl(module, input = {}) {
       reply = `Prepared Hermes gateway restart for ${profile.id}. Execution requires the trusted execution gate and dryRun:false.`;
       if (execEnabled && explicitExecution) {
         const target = `gui/${process.getuid?.() || os.userInfo().uid}/${profile.launchLabel}`;
-        const result = await runCommand("/bin/launchctl", ["kickstart", "-k", target], 10000);
+        const result = await launchctl(["kickstart", "-k", target], 10000);
         ok = result.ok;
         mode = "executed";
         control.executed = true;
@@ -1996,7 +2010,7 @@ async function runGatewayControl(module, input = {}) {
       reply = `Prepared Hermes gateway restart for ${profile.id}. Execution requires the trusted execution gate and dryRun:false.`;
       if (execEnabled && explicitExecution) {
         const target = `gui/${process.getuid?.() || os.userInfo().uid}/${profile.launchLabel}`;
-        const result = await runCommand("/bin/launchctl", ["kickstart", "-k", target], 10000);
+        const result = await launchctl(["kickstart", "-k", target], 10000);
         ok = result.ok;
         mode = "executed";
         control.executed = true;
@@ -2129,7 +2143,7 @@ async function runGatewayControl(module, input = {}) {
 }
 
 async function launchctlMap() {
-  const result = await runCommand("/bin/launchctl", ["list"], 5000);
+  const result = await launchctl(["list"], 5000);
   if (!result.ok && !result.stdout) return {};
   const map = {};
   for (const line of String(result.stdout || "").split(/\r?\n/)) {
@@ -3254,7 +3268,7 @@ export async function startModuleSession(id, input = {}) {
     };
   }
 
-  const child = spawn(commandPath, invocation.args, {
+  const child = spawnTracked(commandPath, invocation.args, {
     cwd: invocation.workspace.cwd || undefined,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"]
@@ -3280,10 +3294,7 @@ export async function startModuleSession(id, input = {}) {
   ACTIVE_MODULE_SESSIONS.set(`${id}:${sessionId}`, { child, commandPath, cwd: invocation.workspace.cwd || "", timeout: null });
 
   const timeout = setTimeout(() => {
-    if (!child.killed) child.kill("SIGTERM");
-    setTimeout(() => {
-      if (!child.killed) child.kill("SIGKILL");
-    }, 1000).unref?.();
+    if (!child.killed && child.pid) killProcessTree(child.pid, { graceMs: 1000 }).catch(() => {});
   }, invocation.timeoutMs);
   timeout.unref?.();
   ACTIVE_MODULE_SESSIONS.get(`${id}:${sessionId}`).timeout = timeout;
@@ -3355,7 +3366,8 @@ export async function stopModuleSession(id, sessionId) {
       stopRequested: true,
       nextStep: "Stop requested. Waiting for the local CLI process to exit."
     }));
-    active.child.kill("SIGTERM");
+    if (active.child.pid) killProcessTree(active.child.pid).catch(() => {});
+    else active.child.kill("SIGTERM");
     await appendModuleLog(id, {
       message: "Module session stop requested",
       details: { sessionId }

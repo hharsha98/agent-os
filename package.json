@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "concurrently \"node --watch server/index.js\" \"vite --host 127.0.0.1\"",
     "build": "tsc -b && vite build",
+    "build:server-bundle": "node scripts/build-server-bundle.mjs",
     "start": "node server/index.js",
     "preview": "vite preview --host 127.0.0.1",
     "check": "tsc -b && vite build",
@@ -23,7 +24,6 @@
     "smoke:docker": "node scripts/docker-smoke.js"
   },
   "dependencies": {
-    "@elizaos/core": "^1.7.2",
     "@vitejs/plugin-react": "^4.3.4",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",
@@ -31,10 +31,14 @@
     "react-dom": "^18.3.1",
     "yaml": "^2.6.1"
   },
+  "optionalDependencies": {
+    "@elizaos/core": "^1.7.2"
+  },
   "devDependencies": {
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "concurrently": "^9.1.2",
+    "esbuild": "^0.24.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
   }

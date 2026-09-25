@@ -120,9 +120,16 @@ function isLocalMode() {
   return !isDemoPublic() && !authRequired();
 }
 
+// `port` may be a number or a () => number getter. With PORT=0 the real port
+// is only known after listen(), so index.js passes a getter and this reads
+// it fresh on every request instead of baking in the port at startup.
+function resolvePort(port) {
+  return typeof port === "function" ? port() : port;
+}
+
 export function localSessionGate(port) {
-  const cookieName = cookieNameFor(port);
   return (req, res, next) => {
+    const cookieName = cookieNameFor(resolvePort(port));
     if (!isLocalMode()) {
       next();
       return;
@@ -172,8 +179,8 @@ function recordClaimFailure(key) {
 }
 
 export function claimSessionHandler(port) {
-  const cookieName = cookieNameFor(port);
   return (req, res) => {
+    const cookieName = cookieNameFor(resolvePort(port));
     const key = req.ip || req.socket?.remoteAddress || "local";
     if (claimRateLimited(key)) {
       res.status(429).json({ error: "too_many_attempts" });
@@ -195,8 +202,8 @@ export function claimSessionHandler(port) {
 }
 
 export function localSessionStatusHandler(port) {
-  const cookieName = cookieNameFor(port);
   return (req, res) => {
+    const cookieName = cookieNameFor(resolvePort(port));
     if (isDemoPublic()) {
       res.json({ mode: "demo", authenticated: true });
       return;

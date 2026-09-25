@@ -3875,7 +3875,7 @@ test("voice control dashboard config enables planner model and shell gate", asyn
   });
 });
 
-test("voice control maps common computer tasks beyond app launching", async () => {
+test("voice control maps common computer tasks beyond app launching", { skip: isWindows ? "machine control is macOS-only; planned paths use POSIX separators" : false }, async () => {
   await withTempRuntime(async () => {
     await withEnv({ ...PROVIDER_ENV_RESET, HERMES_AGENT_OS_ENABLE_EXEC: null, HERMES_VOICE_ALLOW_SHELL: null }, async () => {
       const folder = await runVoiceCommand({ transcript: "Hermes, open downloads folder" });

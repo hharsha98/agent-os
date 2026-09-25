@@ -267,6 +267,11 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       timeoutHandle: null,
       queue: Promise.resolve()
     };
+    // Resolves once the exit has been fully recorded, so stop() can mean
+    // "stopped and logged" rather than "signal sent".
+    state.done = new Promise((resolve) => {
+      state.markDone = resolve;
+    });
     runs.set(id, state);
     await persistMeta(state);
 
@@ -316,7 +321,9 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       if (settled) return;
       settled = true;
       output.flush().catch(() => {});
-      finishRun(state, { status: "failed", error: error?.message || "Process error." }).catch(() => {});
+      finishRun(state, { status: "failed", error: error?.message || "Process error." })
+        .catch(() => {})
+        .finally(() => state.markDone());
     });
 
     // An event-listener's returned promise is never awaited by Node, so any
@@ -343,6 +350,8 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       } catch {
         state.meta.status = status;
         broadcast(state, { type: "end", status });
+      } finally {
+        state.markDone();
       }
     });
 
@@ -362,7 +371,19 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     await appendEvent(state, { stream: "system", type: "system", text: "Stop requested." });
     await enqueue(state, () => persistMeta(state));
     if (state.child?.pid) await killProcessTree(state.child.pid);
+    await waitUntilDone(state);
     return { ...state.meta };
+  }
+
+  // Bounded: a process that somehow never reports "close" must not hang stop().
+  function waitUntilDone(state, timeoutMs = 3000) {
+    let timer;
+    return Promise.race([
+      state.done,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      })
+    ]).finally(() => clearTimeout(timer));
   }
 
   async function getRun(id) {
@@ -432,6 +453,7 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
         await appendEvent(state, { stream: "system", type: "system", text: "Agent OS is shutting down." });
         await enqueue(state, () => persistMeta(state));
         if (state.child?.pid) await killProcessTree(state.child.pid);
+        await waitUntilDone(state);
       })
     );
   }

@@ -13,7 +13,7 @@
     "start": "node server/index.js",
     "preview": "vite preview --host 127.0.0.1",
     "check": "tsc -b && vite build",
-    "test": "node --test",
+    "test": "node --test --test-timeout=180000",
     "smoke:local": "node scripts/local-smoke.js",
     "smoke:public": "node scripts/public-smoke.js",
     "smoke:live": "node scripts/live-smoke.js",

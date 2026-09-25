@@ -90,37 +90,64 @@ export function createRunsRouter(manager = getRunManager()) {
         res.write(`data: ${JSON.stringify({ status })}\n\n`);
       };
 
-      const replay = await manager.readEvents(req.params.id, from);
-      for (const event of replay) send(event);
-
-      const current = await manager.getRun(req.params.id);
-      if (!current || (current.status !== "queued" && current.status !== "running")) {
-        sendEnd(current?.status || "unknown");
-        res.end();
-        return;
-      }
-
-      const ping = setInterval(() => {
-        res.write(": ping\n\n");
-      }, PING_INTERVAL_MS);
-      ping.unref?.();
+      // Subscribe before replaying, and hold live events until the replay is
+      // written. Otherwise a run that ends while we read the log from disk
+      // broadcasts "end" before anyone is listening, and the stream hangs.
+      let finished = false;
+      let replayed = false;
+      let lastSeq = from - 1;
+      const held = [];
+      let ping = null;
 
       function cleanup() {
-        clearInterval(ping);
+        if (ping) clearInterval(ping);
         unsubscribe();
       }
 
-      const unsubscribe = manager.subscribe(req.params.id, (event) => {
+      function finish(status) {
+        if (finished) return;
+        finished = true;
+        sendEnd(status);
+        cleanup();
+        res.end();
+      }
+
+      function handle(event) {
+        if (finished) return;
         if (event.type === "end") {
-          sendEnd(event.status);
-          cleanup();
-          res.end();
+          finish(event.status);
           return;
         }
+        if (typeof event.seq === "number" && event.seq <= lastSeq) return;
+        if (typeof event.seq === "number") lastSeq = event.seq;
         send(event);
-      });
+      }
 
+      const unsubscribe = manager.subscribe(req.params.id, (event) => {
+        if (!replayed) {
+          held.push(event);
+          return;
+        }
+        handle(event);
+      });
       req.on("close", cleanup);
+
+      const replay = await manager.readEvents(req.params.id, from);
+      for (const event of replay) handle(event);
+      replayed = true;
+      for (const event of held.splice(0)) handle(event);
+      if (finished) return;
+
+      const current = await manager.getRun(req.params.id);
+      if (!current || (current.status !== "queued" && current.status !== "running")) {
+        finish(current?.status || "unknown");
+        return;
+      }
+
+      ping = setInterval(() => {
+        res.write(": ping\n\n");
+      }, PING_INTERVAL_MS);
+      ping.unref?.();
     } catch (error) {
       next(error);
     }

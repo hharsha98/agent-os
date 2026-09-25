@@ -278,7 +278,10 @@ test("9. CLAUDE_CODE_PATH=/bin/sh is rejected by the basename allow-list even wi
     headers: { "Content-Type": "application/json", "x-agent-os-token": TOKEN },
     body: JSON.stringify({ fields: { CLAUDE_CODE_PATH: "/bin/sh" }, confirm: true })
   });
-  assert.equal(configure.status, 403);
+  // On POSIX /bin/sh exists and the basename check refuses it (403); on
+  // Windows it does not exist, so the path check refuses it first (400).
+  // Either way it must never be accepted.
+  assert.equal(configure.status, process.platform === "win32" ? 400 : 403);
 
   await setGate(base, false); // leave the gate off for later tests
 });

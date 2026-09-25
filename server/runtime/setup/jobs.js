@@ -16,7 +16,7 @@ import { readJson, runtimePaths, writeJson } from "../store.js";
 import { getInstallRecipe } from "./recipes.js";
 import { ensureManagedNode } from "./managed-node.js";
 import { buildSetupPlan } from "./plan.js";
-import { systemCheck } from "./system-check.js";
+import { clearSystemCheckCache, systemCheck } from "./system-check.js";
 import { appendReceiptEntry } from "./receipt.js";
 import { currentBrain } from "./brain.js";
 
@@ -306,6 +306,7 @@ async function executeStep(job, step, check) {
   }
 
   clearDetectCaches();
+  clearSystemCheckCache();
   const redetected = await adapter.detect({ refresh: true });
   if (!redetected.installed) {
     throw jobError(
@@ -552,15 +553,11 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
     }
   }
 
-  const args = [
-    "onboard",
-    "--non-interactive",
-    "--accept-risk",
-    "--auth-choice",
-    "openrouter-api-key",
-    "--openrouter-api-key",
-    ctx.apiKey
-  ];
+  // Ollama is reached at its native API (no /v1); OpenClaw's docs note that
+  // the OpenAI-compatible /v1 path makes tool calling unreliable.
+  const args = ctx.mode === "ollama"
+    ? ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "ollama", "--custom-base-url", "http://127.0.0.1:11434"]
+    : ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "openrouter-api-key", "--openrouter-api-key", ctx.apiKey];
   for (const flag of ["--skip-health", "--skip-channels", "--skip-skills", "--skip-ui", "--install-daemon"]) {
     if (helpText.includes(flag)) {
       args.push(flag);
@@ -578,7 +575,7 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
       command: detected.path,
       args,
       cwd: os.tmpdir(),
-      redact: [ctx.apiKey],
+      redact: ctx.apiKey ? [ctx.apiKey] : [],
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
     step
@@ -591,7 +588,7 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
       kind: "configure",
       title: "openclaw models set",
       command: detected.path,
-      args: ["models", "set", `openrouter/${ctx.model}`],
+      args: ["models", "set", `${ctx.mode === "ollama" ? "ollama" : "openrouter"}/${ctx.model}`],
       cwd: os.tmpdir(),
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
@@ -627,24 +624,15 @@ async function configureOpenclawSafeDefaults(job, step, check, manager) {
     timestampedLog(step, `tools.exec.mode is already "${value}"; left unchanged.`);
   }
 
-  if (check.tools?.docker?.running) {
-    await runConfigureCommand(
-      manager,
-      {
-        agentId: "openclaw",
-        kind: "configure",
-        title: "openclaw config set sandbox.mode all",
-        command: detected.path,
-        args: ["config", "set", "agents.defaults.sandbox.mode", "all"],
-        cwd: os.tmpdir(),
-        timeoutMs: CONFIG_GET_TIMEOUT_MS
-      },
-      step
-    );
-    job.sandboxEnabled = true;
-  } else {
-    timestampedLog(step, "Sandbox needs Docker; skipped");
-  }
+  // Not enabled automatically: OpenClaw's Docker sandbox needs its own image
+  // built first (scripts/sandbox-setup.sh), and with sandbox mode on but no
+  // image every agent run fails. Seen on a real install; left as a user step.
+  timestampedLog(
+    step,
+    check.tools?.docker?.running
+      ? "Docker is available. OpenClaw's sandbox needs its image built first (see OpenClaw's sandboxing docs); left off."
+      : "OpenClaw's sandbox needs Docker; left off."
+  );
 }
 
 async function checkHermesSafeDefaults(step, check) {

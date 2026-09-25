@@ -112,9 +112,9 @@ export function createSetupRouter() {
 
   // ---- brain: model provider, safe defaults, always-on services --------
 
-  router.get("/brain", async (_req, res, next) => {
+  router.get("/brain", async (req, res, next) => {
     try {
-      const check = await systemCheck({});
+      const check = await systemCheck({ refresh: req.query.refresh === "1" });
       const [options, current] = await Promise.all([brainOptions(check), currentBrain(check)]);
       res.json({
         options: options.options,

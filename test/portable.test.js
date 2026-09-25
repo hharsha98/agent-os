@@ -9,7 +9,7 @@ import path from "node:path";
 import { before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { killProcessTree, spawnTracked } from "../server/runtime/process-tree.js";
-import { which } from "../server/runtime/safety.js";
+import { runCommand, which, withSiblingNodePath } from "../server/runtime/safety.js";
 import { shutdown } from "../server/runtime/shutdown.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -294,3 +294,32 @@ describe("graceful shutdown", () => {
     }
   );
 });
+
+test(
+  "a node-shebang tool runs on the node beside it, not an older one earlier on PATH",
+  { skip: isWindows ? "shebang scripts are POSIX-only; npm .cmd shims pick node.exe themselves" : false },
+  async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-sibling-node-"));
+    try {
+      // A stand-in "node" that proves which interpreter ran the tool.
+      await writeFile(path.join(dir, "node"), "#!/bin/sh\necho SIBLING-NODE-RAN\n");
+      await chmod(path.join(dir, "node"), 0o755);
+      const tool = path.join(dir, "fake-tool");
+      await writeFile(tool, "#!/usr/bin/env node\nconsole.log('system node ran');\n");
+      await chmod(tool, 0o755);
+
+      const env = withSiblingNodePath(tool, { PATH: "/usr/bin:/bin" });
+      assert.equal(env.PATH.split(path.delimiter)[0], dir);
+
+      const result = await runCommand(tool, [], 5000, { env: { PATH: "/usr/bin:/bin" } });
+      assert.match(result.stdout, /SIBLING-NODE-RAN/);
+
+      // Non-node tools (e.g. a Python CLI) are left alone.
+      const pyTool = path.join(dir, "py-tool");
+      await writeFile(pyTool, "#!/usr/bin/env python3\nprint('hi')\n");
+      assert.equal(withSiblingNodePath(pyTool, { PATH: "/usr/bin" }).PATH, "/usr/bin");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+);

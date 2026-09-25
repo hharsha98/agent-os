@@ -162,6 +162,12 @@ if (args[0] === "config" && args[1] === "get" && args[2] === "tools.exec.mode") 
   process.exit(0);
 }
 
+if (args[0] === "config" && args[1] === "get" && args[2] === "browser.allowSystemProfileImport") {
+  // The real CLI prints a sentence, not a value, when a path is unset.
+  print(process.env.FAKE_OPENCLAW_COOKIE_IMPORT ?? "Config path is valid but unset: browser.allowSystemProfileImport.");
+  process.exit(0);
+}
+
 if (args[0] === "config" && args[1] === "set" && args[2] === "tools.exec.mode") {
   recordArgv();
   print(\`set tools.exec.mode=\${args[3]}\`);
@@ -319,17 +325,21 @@ test("resolveBinary(): returns '' (never throws) when nothing on PATH or in the 
 });
 
 test("detect(): a missing binary never throws, and reports installed:false", async () => {
-  // OpenClaw is not installed on the dev machine (unlike Hermes, whose real
-  // binary at ~/.local/bin/hermes would otherwise be found via the fallback
-  // paths regardless of PATH), so this is the adapter that can reliably
-  // exercise the "not found anywhere" branch on this box.
-  await withEnv({ PATH: "/definitely/not/a/real/path" }, async () => {
-    clearDetectCaches();
-    const detected = await openclaw.detect({ refresh: true });
-    assert.equal(detected.installed, false);
-    assert.equal(detected.path, "");
-    assert.match(detected.error, /not found/);
-  });
+  // A temp HOME as well as an empty PATH: the fallback paths live under the
+  // home directory, so a real install on the machine running the tests
+  // would otherwise be found.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-os-empty-home-"));
+  try {
+    await withEnv({ PATH: "/definitely/not/a/real/path", HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home }, async () => {
+      clearDetectCaches();
+      const detected = await openclaw.detect({ refresh: true });
+      assert.equal(detected.installed, false);
+      assert.equal(detected.path, "");
+      assert.match(detected.error, /not found/);
+    });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 // =====================================================================
@@ -513,15 +523,21 @@ test(
   { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
   async () => {
     const detected = { installed: true, path: openclawShim, version: "1.0.0", features: {} };
-    await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "full" }, async () => {
+    await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "full", FAKE_OPENCLAW_COOKIE_IMPORT: undefined }, async () => {
       const status = await openclaw.safetyStatus(detected);
       assert.equal(status.permissive, true);
       assert.ok(status.actions.some((action) => action.id === "exec-ask"));
+      // Unset cookie import means the permissive upstream default.
+      assert.ok(status.actions.some((action) => action.id === "no-browser-cookies"));
     });
-    await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "ask" }, async () => {
+    await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "ask", FAKE_OPENCLAW_COOKIE_IMPORT: "false" }, async () => {
       const status = await openclaw.safetyStatus(detected);
       assert.equal(status.permissive, false);
+      assert.deepEqual(status.actions, []);
     });
+    const cookiePlan = openclaw.safetyAction("no-browser-cookies", detected);
+    assert.deepEqual(cookiePlan.args, ["config", "set", "browser.allowSystemProfileImport", "false"]);
+    assert.equal(openclaw.safetyAction("not-a-real-action", detected), null);
   }
 );
 

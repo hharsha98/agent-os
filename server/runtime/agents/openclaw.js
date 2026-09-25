@@ -59,6 +59,23 @@ function parseJsonLoose(text) {
   }
 }
 
+// Doctor findings that are not real problems on a single-user desktop.
+// Seen on a real OpenClaw 2026.9.6 install.
+const ADVISORY_FINDINGS = [
+  {
+    pattern: /bound to loopback/i,
+    explain: "(This is the safer setting: only this computer can reach the gateway. Agent OS leaves it as is.)"
+  },
+  {
+    pattern: /plaintext secret-bearing config/i,
+    explain: "(OpenClaw keeps some settings, such as its gateway token, in plain text in ~/.openclaw/openclaw.json.)"
+  },
+  {
+    pattern: /allowSystemProfileImport/i,
+    explain: "(See Safety: Agent OS can turn this off.)"
+  }
+];
+
 async function configStatus(detected) {
   if (!detected?.installed) {
     return { ok: false, summary: "OpenClaw is not installed.", problems: [], fixHint: "Install the OpenClaw CLI, then refresh." };
@@ -67,13 +84,24 @@ async function configStatus(detected) {
   // openclaw doctor --json always exits 0; the ok field is the real signal.
   const doctorJson = parseJsonLoose(doctor.stdout);
   if (doctorJson && typeof doctorJson.ok === "boolean") {
-    const problems = Array.isArray(doctorJson.findings)
-      ? doctorJson.findings.map((finding) => String(finding?.message || "")).filter(Boolean).slice(0, 5)
+    const findings = Array.isArray(doctorJson.findings)
+      ? doctorJson.findings.map((finding) => String(finding?.message || "")).filter(Boolean)
       : [];
+    const problems = [];
+    const notes = [];
+    for (const message of findings) {
+      const advisory = ADVISORY_FINDINGS.find((rule) => rule.pattern.test(message));
+      if (advisory) notes.push(`${message} ${advisory.explain}`);
+      else problems.push(message);
+    }
+    // Doctor also flags things that are fine (or deliberately safer) for a
+    // single-user desktop, so "ok" only means no real problems remain.
+    const ok = doctorJson.ok || problems.length === 0;
     return {
-      ok: doctorJson.ok,
-      summary: doctorJson.ok ? "OpenClaw doctor reports no problems." : "OpenClaw doctor found problems.",
-      problems
+      ok,
+      summary: ok ? "OpenClaw is set up." : "OpenClaw doctor found problems.",
+      problems: problems.slice(0, 5),
+      notes: notes.slice(0, 5)
     };
   }
   const status = await runCommand(detected.path, ["status", "--json"], DOCTOR_TIMEOUT_MS);
@@ -93,23 +121,42 @@ async function safetyStatus(detected) {
   if (!detected?.installed) {
     return { permissive: false, summary: "OpenClaw is not installed.", actions: [] };
   }
-  const result = await runCommand(detected.path, ["config", "get", "tools.exec.mode"], EXEC_MODE_TIMEOUT_MS);
-  const value = String(result.stdout || "").trim().toLowerCase();
+  const [execResult, cookieResult] = await Promise.all([
+    runCommand(detected.path, ["config", "get", "tools.exec.mode"], EXEC_MODE_TIMEOUT_MS),
+    runCommand(detected.path, ["config", "get", "browser.allowSystemProfileImport"], EXEC_MODE_TIMEOUT_MS)
+  ]);
+  const actions = [];
+  const summaries = [];
+  const execValue = configValue(execResult.stdout);
   // A missing value defaults to "full" upstream, which is the permissive one.
-  if (!value || value === "full") {
-    return {
-      permissive: true,
-      summary: "OpenClaw can run commands without asking (tools.exec.mode = full).",
-      actions: [
-        {
-          id: "exec-ask",
-          label: "Make OpenClaw ask before running commands",
-          description: "Sets tools.exec.mode to ask, so OpenClaw prompts before running shell commands."
-        }
-      ]
-    };
+  if (!execValue || execValue === "full") {
+    summaries.push("OpenClaw can run commands without asking (tools.exec.mode = full).");
+    actions.push({
+      id: "exec-ask",
+      label: "Make OpenClaw ask before running commands",
+      description: "Sets tools.exec.mode to ask, so OpenClaw prompts before running shell commands."
+    });
+  } else {
+    summaries.push(`OpenClaw tools.exec.mode is "${execValue}".`);
   }
-  return { permissive: false, summary: `OpenClaw tools.exec.mode is "${value}".`, actions: [] };
+  // Unset means the upstream default, which allows importing cookies from
+  // the user's system browser profile.
+  const cookieValue = configValue(cookieResult.stdout);
+  if (cookieValue !== "false") {
+    summaries.push("OpenClaw may import cookies (logged-in sessions) from your system browser profile.");
+    actions.push({
+      id: "no-browser-cookies",
+      label: "Stop OpenClaw importing browser cookies",
+      description: "Sets browser.allowSystemProfileImport to false, so OpenClaw cannot copy logins from your browser."
+    });
+  }
+  return { permissive: actions.length > 0, summary: summaries.join(" "), actions };
+}
+
+// `config get` prints a sentence instead of a value when the path is unset.
+function configValue(stdout) {
+  const value = String(stdout || "").trim().split("\n").pop().trim().toLowerCase();
+  return /unset|not set|no value/.test(value) ? "" : value;
 }
 
 function runningFromText(text) {
@@ -238,14 +285,20 @@ function parseLine(line) {
   return events;
 }
 
+const SAFETY_ACTIONS = {
+  "exec-ask": ["tools.exec.mode", "ask"],
+  "no-browser-cookies": ["browser.allowSystemProfileImport", "false"]
+};
+
 function safetyAction(actionId, detected) {
-  if (actionId !== "exec-ask") return null;
+  const setting = SAFETY_ACTIONS[actionId];
+  if (!setting) return null;
   return {
     agentId: "openclaw",
     kind: "service",
-    title: "OpenClaw config set tools.exec.mode ask",
+    title: `OpenClaw config set ${setting[0]} ${setting[1]}`,
     command: detected.path,
-    args: ["config", "set", "tools.exec.mode", "ask"],
+    args: ["config", "set", ...setting],
     cwd: os.tmpdir(),
     timeoutMs: SAFETY_ACTION_TIMEOUT_MS
   };
@@ -254,9 +307,9 @@ function safetyAction(actionId, detected) {
 export default {
   id: "openclaw",
   label: "OpenClaw",
-  homepage: "https://openclaw.dev",
-  docsUrl: "https://openclaw.dev/docs",
-  license: "unknown",
+  homepage: "https://openclaw.ai",
+  docsUrl: "https://docs.openclaw.ai",
+  license: "MIT",
   detect,
   configStatus,
   safetyStatus,

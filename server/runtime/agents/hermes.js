@@ -238,9 +238,9 @@ function safetyAction() {
 export default {
   id: "hermes",
   label: "Hermes Agent",
-  homepage: "https://hermes.dev",
-  docsUrl: "https://hermes.dev/docs",
-  license: "unknown",
+  homepage: "https://hermes-agent.nousresearch.com",
+  docsUrl: "https://hermes-agent.nousresearch.com/docs",
+  license: "MIT",
   detect,
   configStatus,
   safetyStatus,

@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import { containsBlockedFlag } from "../agent-flags.js";
 import { childEnv } from "../live-chat.js";
 import { killProcessTree, spawnTracked } from "../process-tree.js";
-import { redactText } from "../safety.js";
+import { redactText, withSiblingNodePath } from "../safety.js";
 import {
   appendRunEventLine,
   countRunEvents,
@@ -277,7 +277,7 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     runs.set(id, state);
     await persistMeta(state);
 
-    const env = childEnv(process.env, plan.env || {});
+    const env = withSiblingNodePath(plan.command, childEnv(process.env, plan.env || {}));
     const stdinMode = typeof plan.stdin === "string" ? "pipe" : "ignore";
 
     let child;

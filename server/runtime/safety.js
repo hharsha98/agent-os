@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, openSync, readSync } from "node:fs";
 import { access, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,9 +12,39 @@ const SECRET_VALUE_PATTERNS = [
   /AIza[0-9A-Za-z_-]{20,}/
 ];
 
+function startsWithNodeShebang(file) {
+  let fd;
+  try {
+    fd = openSync(file, "r");
+    const buffer = Buffer.alloc(128);
+    const bytes = readSync(fd, buffer, 0, 128, 0);
+    const firstLine = buffer.subarray(0, bytes).toString("utf8").split("\n")[0];
+    return firstLine.startsWith("#!") && /\bnode\b/.test(firstLine);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// A Node CLI installed into its own Node (e.g. OpenClaw under
+// ~/.agent-os/node/bin) starts with "#!/usr/bin/env node" and must run on
+// the Node next to it, not an older system Node earlier on PATH. Only
+// applies to POSIX node-shebang scripts; npm's Windows .cmd shims already
+// prefer the node.exe beside them.
+export function withSiblingNodePath(command, env = process.env) {
+  if (process.platform === "win32" || !command || !path.isAbsolute(command)) return env;
+  const dir = path.dirname(command);
+  if (path.basename(command) === "node" || !existsSync(path.join(dir, "node"))) return env;
+  if (!startsWithNodeShebang(command)) return env;
+  const parts = String(env.PATH || "").split(path.delimiter).filter((part) => part && part !== dir);
+  return { ...env, PATH: [dir, ...parts].join(path.delimiter) };
+}
+
 export function runCommand(command, args = [], timeout = 5000, options = {}) {
   return new Promise((resolve) => {
-    const child = execFile(command, args, { timeout, cwd: options.cwd || undefined, env: options.env || undefined, signal: options.signal || undefined }, (error, stdout, stderr) => {
+    const env = withSiblingNodePath(command, options.env || process.env);
+    const child = execFile(command, args, { timeout, cwd: options.cwd || undefined, env, signal: options.signal || undefined }, (error, stdout, stderr) => {
       options.track?.delete(child);
       resolve({
         ok: !error,

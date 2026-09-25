@@ -39,6 +39,10 @@ export async function appendReceiptEntry(entry) {
     version: entry.version || "",
     sourceUrl: entry.sourceUrl || "",
     installerSha256: entry.installerSha256 || "",
+    // Only ever a provider id ("openrouter"|"ollama") and a model id/tag --
+    // never the API key itself.
+    provider: entry.provider || "",
+    model: entry.model || "",
     changes: entry.changes || [],
     uninstall: officialUninstallSteps(entry.agentId)
   };

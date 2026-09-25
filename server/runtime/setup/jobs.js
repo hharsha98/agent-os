@@ -11,12 +11,14 @@ import { Readable } from "node:stream";
 import { ADAPTERS } from "../agents/index.js";
 import { clearDetectCaches } from "../agents/detect.js";
 import { getRunManager } from "../runs/run-manager.js";
+import { runCommand } from "../safety.js";
 import { readJson, runtimePaths, writeJson } from "../store.js";
 import { getInstallRecipe } from "./recipes.js";
 import { ensureManagedNode } from "./managed-node.js";
 import { buildSetupPlan } from "./plan.js";
 import { systemCheck } from "./system-check.js";
 import { appendReceiptEntry } from "./receipt.js";
+import { currentBrain } from "./brain.js";
 
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15000;
@@ -382,6 +384,7 @@ export async function startSetupJob({ steps = [], acceptOpenClawRisk = false } =
   const id = generateJobId();
   const job = {
     id,
+    kind: "install",
     status: "running",
     steps: selected.map((s) => ({
       id: s.id,
@@ -439,6 +442,14 @@ export async function retrySetupJob(id) {
   const startIndex = stored.steps.findIndex((s) => s.status !== "succeeded");
   if (startIndex === -1) return stored; // nothing left to retry
 
+  // A configure job's API key only ever lived in this module's call stack
+  // (see startConfigureJob/runConfigureJobSteps below) and is gone the
+  // moment that job reaches a terminal state -- there is nothing left in
+  // memory to retry with, so the client must re-POST /configure with the key.
+  if (stored.kind === "configure") {
+    throw jobError("key_required_for_retry", "Retrying a configure job requires the API key again; POST /configure.");
+  }
+
   stored.status = "running";
   stored.cancelRequested = false;
   stored.endedAt = null;
@@ -448,6 +459,419 @@ export async function retrySetupJob(id) {
   runningJobId = id;
   runJobSteps(stored, startIndex).catch(() => {});
   return stored;
+}
+
+// =========================================================================
+// The brain/configure job: sets a model provider, safe defaults, always-on
+// services, and a health check. Distinct step list from the install job
+// above, but shares the same persistence, cancel, and single-job-at-a-time
+// machinery (jobsDir()/persistJob()/activeJobs/runningJobId).
+// =========================================================================
+
+const CONFIGURE_RUN_TIMEOUT_MS = 60 * 1000;
+const HELP_TIMEOUT_MS = 5000;
+const CONFIG_GET_TIMEOUT_MS = 10 * 1000;
+const HEALTH_PROMPT = "Reply with exactly: ready";
+
+function agentInstalled(check, agentId) {
+  return Boolean(check?.agents?.[agentId]?.detected?.installed);
+}
+
+function makeConfigureStep(id, agentId, action) {
+  return { id, agentId, action, status: "pending", runIds: [], error: null, log: [], warnings: [] };
+}
+
+// Runs one plan to completion as part of a configure step, recording its run
+// id on the step and throwing if it didn't succeed. Mirrors runInstallerOnce
+// above but for the smaller, single-command configure/service plans.
+async function runConfigureCommand(manager, plan, step, { optional = false } = {}) {
+  const run = await manager.startRun(plan);
+  step.runIds.push(run.id);
+  const finished = await waitForRunEnd(manager, run.id);
+  const stdout = await runStdout(manager, run.id);
+  if (finished.status !== "succeeded" && !optional) {
+    throw jobError("configure_failed", `${plan.title} failed; see the run log.`);
+  }
+  return { run: finished, stdout };
+}
+
+async function configureHermesBrain(step, check, ctx, manager) {
+  const detected = check.agents.hermes.detected;
+  const authHelp = await runCommand(detected.path, ["auth", "add", "--help"], HELP_TIMEOUT_MS);
+  const authHelpText = `${authHelp.stdout}\n${authHelp.stderr}`;
+
+  const run = (title, args, extra = {}) =>
+    runConfigureCommand(
+      manager,
+      {
+        agentId: "hermes",
+        kind: "configure",
+        title,
+        command: detected.path,
+        args,
+        cwd: os.tmpdir(),
+        redact: extra.redact || [],
+        timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+      },
+      step
+    );
+
+  if (ctx.mode === "openrouter") {
+    // Preference order per the spec: env/stdin > `auth add --api-key` >
+    // `config set OPENROUTER_API_KEY`. This Hermes version's `auth add
+    // --help` documents only an --api-key flag (no stdin/env alternative),
+    // so that is the most private mechanism actually available.
+    if (/--api-key\b/.test(authHelpText)) {
+      await run("hermes auth add openrouter", ["auth", "add", "openrouter", "--type", "api-key", "--api-key", ctx.apiKey], {
+        redact: [ctx.apiKey]
+      });
+    } else {
+      timestampedLog(step, "hermes auth add --api-key is unavailable on this version; used config set OPENROUTER_API_KEY.");
+      await run("hermes config set OPENROUTER_API_KEY", ["config", "set", "OPENROUTER_API_KEY", ctx.apiKey], {
+        redact: [ctx.apiKey]
+      });
+    }
+    await run("hermes config set model.provider", ["config", "set", "model.provider", "openrouter"]);
+    await run("hermes config set model.default", ["config", "set", "model.default", ctx.model]);
+  } else {
+    await run("hermes config set model.provider", ["config", "set", "model.provider", "custom"]);
+    await run("hermes config set model.base_url", ["config", "set", "model.base_url", "http://localhost:11434/v1"]);
+    await run("hermes config set model.default", ["config", "set", "model.default", ctx.model]);
+    await run("hermes config set model.context_length", ["config", "set", "model.context_length", "64000"]);
+  }
+}
+
+async function configureOpenclawBrain(step, check, ctx, manager) {
+  const detected = check.agents.openclaw.detected;
+  const help = await runCommand(detected.path, ["onboard", "--help"], HELP_TIMEOUT_MS);
+  const helpText = `${help.stdout}\n${help.stderr}`;
+
+  for (const flag of ["--non-interactive", "--accept-risk", "--auth-choice"]) {
+    if (!helpText.includes(flag)) {
+      throw jobError("configure_failed", `This OpenClaw version's "onboard" command has no ${flag} flag.`);
+    }
+  }
+
+  const args = [
+    "onboard",
+    "--non-interactive",
+    "--accept-risk",
+    "--auth-choice",
+    "openrouter-api-key",
+    "--openrouter-api-key",
+    ctx.apiKey
+  ];
+  for (const flag of ["--skip-health", "--skip-channels", "--skip-skills", "--skip-ui", "--install-daemon"]) {
+    if (helpText.includes(flag)) {
+      args.push(flag);
+    } else {
+      timestampedLog(step, `openclaw onboard --help does not list ${flag}; skipped.`);
+    }
+  }
+
+  await runConfigureCommand(
+    manager,
+    {
+      agentId: "openclaw",
+      kind: "configure",
+      title: "openclaw onboard",
+      command: detected.path,
+      args,
+      cwd: os.tmpdir(),
+      redact: [ctx.apiKey],
+      timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+    },
+    step
+  );
+
+  await runConfigureCommand(
+    manager,
+    {
+      agentId: "openclaw",
+      kind: "configure",
+      title: "openclaw models set",
+      command: detected.path,
+      args: ["models", "set", `openrouter/${ctx.model}`],
+      cwd: os.tmpdir(),
+      timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+    },
+    step
+  );
+}
+
+async function configureOpenclawSafeDefaults(job, step, check, manager) {
+  const detected = check.agents.openclaw.detected;
+  if (!detected?.installed) {
+    return;
+  }
+  const current = await runCommand(detected.path, ["config", "get", "tools.exec.mode"], CONFIG_GET_TIMEOUT_MS);
+  const value = String(current.stdout || "").trim().toLowerCase();
+  // Never loosen a stricter setting: only "full" (the permissive default) or
+  // an unset value gets tightened.
+  if (!value || value === "full") {
+    await runConfigureCommand(
+      manager,
+      {
+        agentId: "openclaw",
+        kind: "configure",
+        title: "openclaw config set tools.exec.mode ask",
+        command: detected.path,
+        args: ["config", "set", "tools.exec.mode", "ask"],
+        cwd: os.tmpdir(),
+        timeoutMs: CONFIG_GET_TIMEOUT_MS
+      },
+      step
+    );
+    job.execModeChanged = { from: value || "full", to: "ask" };
+  } else {
+    timestampedLog(step, `tools.exec.mode is already "${value}"; left unchanged.`);
+  }
+
+  if (check.tools?.docker?.running) {
+    await runConfigureCommand(
+      manager,
+      {
+        agentId: "openclaw",
+        kind: "configure",
+        title: "openclaw config set sandbox.mode all",
+        command: detected.path,
+        args: ["config", "set", "agents.defaults.sandbox.mode", "all"],
+        cwd: os.tmpdir(),
+        timeoutMs: CONFIG_GET_TIMEOUT_MS
+      },
+      step
+    );
+    job.sandboxEnabled = true;
+  } else {
+    timestampedLog(step, "Sandbox needs Docker; skipped");
+  }
+}
+
+async function checkHermesSafeDefaults(step, check) {
+  const detected = check.agents.hermes.detected;
+  if (!detected?.installed) return;
+  const result = await runCommand(detected.path, ["config", "get", "approvals.mode"], CONFIG_GET_TIMEOUT_MS);
+  const value = String(result.stdout || "").trim().toLowerCase();
+  if (value === "off") {
+    step.warnings.push("Hermes approvals are off");
+  }
+}
+
+async function ensureServices(job, step, check, manager) {
+  for (const agentId of ["hermes", "openclaw"]) {
+    const detected = check.agents[agentId].detected;
+    if (!detected?.installed) continue;
+    const adapter = ADAPTERS[agentId];
+    const status = await adapter.service.status(detected);
+    if (status.running) {
+      timestampedLog(step, `${agentId}: gateway already running; left it alone.`);
+      continue;
+    }
+    if (agentId === "hermes") {
+      await runConfigureCommand(
+        manager,
+        {
+          agentId,
+          kind: "configure",
+          title: "hermes gateway install",
+          command: detected.path,
+          args: ["gateway", "install"],
+          cwd: os.tmpdir(),
+          timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+        },
+        step
+      );
+    }
+    await runConfigureCommand(manager, { ...adapter.service.start(detected), kind: "configure" }, step);
+    job.servicesStarted = job.servicesStarted || [];
+    job.servicesStarted.push(agentId);
+    timestampedLog(step, `${agentId}: gateway started.`);
+  }
+}
+
+async function runHealthChecks(job, step, check, manager) {
+  const health = {};
+  const workDir = path.join(runtimePaths().root, "setup", "runs-work", "setup-check");
+  await fs.mkdir(workDir, { recursive: true });
+  for (const agentId of ["hermes", "openclaw"]) {
+    const detected = check.agents[agentId].detected;
+    if (!detected?.installed) continue;
+    const adapter = ADAPTERS[agentId];
+    const doctorStatus = await adapter.configStatus(detected);
+    const entry = { doctorOk: Boolean(doctorStatus.ok), promptOk: false, replyPreview: "" };
+    try {
+      const plan = await adapter.buildRun({ prompt: HEALTH_PROMPT, cwd: workDir, detected, runDir: workDir });
+      const run = await manager.startRun(plan);
+      step.runIds.push(run.id);
+      const finished = await waitForRunEnd(manager, run.id);
+      const stdout = await runStdout(manager, run.id);
+      entry.replyPreview = stdout.slice(0, 80);
+      entry.promptOk = finished.status === "succeeded" && /ready/i.test(stdout);
+      if (!entry.promptOk) entry.error = finished.error || "The test prompt did not reply with \"ready\".";
+    } catch (error) {
+      // A health check failing is a result, not a job failure: it must
+      // never throw, so the job still finishes and the UI can show it red.
+      entry.error = error?.message || "Health check failed.";
+    }
+    health[agentId] = entry;
+  }
+  job.health = health;
+}
+
+async function executeConfigureStep(job, step, check, ctx, manager) {
+  step.status = "running";
+  await persistJob(job);
+
+  if (step.action === "keep" || step.action === "skip-not-installed") {
+    step.status = "succeeded";
+    return;
+  }
+
+  switch (step.id) {
+    case "hermes-brain":
+      await configureHermesBrain(step, check, ctx, manager);
+      break;
+    case "openclaw-brain":
+      await configureOpenclawBrain(step, check, ctx, manager);
+      break;
+    case "openclaw-safe-defaults":
+      await configureOpenclawSafeDefaults(job, step, check, manager);
+      break;
+    case "hermes-safe-defaults":
+      await checkHermesSafeDefaults(step, check);
+      break;
+    case "services":
+      await ensureServices(job, step, check, manager);
+      break;
+    case "health":
+      await runHealthChecks(job, step, check, manager);
+      break;
+    default:
+      break;
+  }
+  step.status = "succeeded";
+}
+
+async function appendConfigureReceipt(job, check) {
+  for (const agentId of ["hermes", "openclaw"]) {
+    const step = job.steps.find((s) => s.id === `${agentId}-brain`);
+    if (!step || step.action !== "configure") continue;
+    const changes = [`Set the model provider to ${job.mode}`, `Set the model to ${job.model}`];
+    if (agentId === "openclaw" && job.execModeChanged) {
+      changes.push(`tools.exec.mode: ${job.execModeChanged.from} -> ${job.execModeChanged.to}`);
+    }
+    if (agentId === "openclaw" && job.sandboxEnabled) changes.push("agents.defaults.sandbox.mode: all (Docker detected)");
+    if (job.servicesStarted?.includes(agentId)) changes.push("Started the background gateway service");
+    await appendReceiptEntry({
+      agentId,
+      action: "configure",
+      version: check.agents[agentId].detected.version,
+      provider: job.mode,
+      model: job.model,
+      changes
+    });
+  }
+}
+
+async function runConfigureJobSteps(job, apiKey) {
+  // apiKey lives only in this function's call stack (and whatever it calls
+  // synchronously below) for the lifetime of this job -- never assigned onto
+  // `job`, never passed to persistJob(), never logged.
+  activeJobs.set(job.id, { job, controller: null });
+  try {
+    const check = await systemCheck({ refresh: true });
+    const ctx = { apiKey, mode: job.mode, model: job.model };
+    for (let i = 0; i < job.steps.length; i += 1) {
+      const step = job.steps[i];
+      if (step.status === "succeeded") continue;
+      job.currentStepIndex = i;
+      try {
+        await executeConfigureStep(job, step, check, ctx, getRunManager());
+      } catch (error) {
+        step.status = "failed";
+        step.error = error?.message || "Configure step failed.";
+        job.status = job.cancelRequested ? "cancelled" : "failed";
+        job.endedAt = new Date().toISOString();
+        await persistJob(job);
+        return;
+      }
+      await persistJob(job);
+      if (job.cancelRequested) {
+        job.status = "cancelled";
+        job.endedAt = new Date().toISOString();
+        await persistJob(job);
+        return;
+      }
+    }
+    await appendConfigureReceipt(job, check);
+    job.status = "succeeded";
+    job.endedAt = new Date().toISOString();
+    await persistJob(job);
+  } finally {
+    activeJobs.delete(job.id);
+    if (runningJobId === job.id) runningJobId = null;
+  }
+}
+
+export async function startConfigureJob({
+  mode,
+  apiKey,
+  model,
+  reconfigure = {},
+  acceptOpenClawRisk = false
+} = {}) {
+  if (runningJobId) throw jobError("job_already_running", "A setup job is already running.");
+  if (mode !== "openrouter" && mode !== "ollama") {
+    throw jobError("invalid_mode", 'mode must be "openrouter" or "ollama".');
+  }
+
+  const check = await systemCheck({ refresh: true });
+  const brain = await currentBrain(check);
+  const reconfigureFlags = reconfigure && typeof reconfigure === "object" ? reconfigure : {};
+
+  const hermesInstalled = agentInstalled(check, "hermes");
+  const openclawInstalled = agentInstalled(check, "openclaw");
+  const hermesAction = !hermesInstalled
+    ? "skip-not-installed"
+    : brain.hermes.configured && reconfigureFlags.hermes !== true
+      ? "keep"
+      : "configure";
+  const openclawAction = !openclawInstalled
+    ? "skip-not-installed"
+    : brain.openclaw.configured && reconfigureFlags.openclaw !== true
+      ? "keep"
+      : "configure";
+
+  if (openclawAction === "configure" && acceptOpenClawRisk !== true) {
+    throw jobError("openclaw_risk_not_accepted", "OpenClaw brain configuration requires acceptOpenClawRisk:true.");
+  }
+
+  const steps = [
+    makeConfigureStep("hermes-brain", "hermes", hermesAction),
+    makeConfigureStep("openclaw-brain", "openclaw", openclawAction),
+    makeConfigureStep("openclaw-safe-defaults", "openclaw", openclawInstalled ? "run" : "skip-not-installed"),
+    makeConfigureStep("hermes-safe-defaults", "hermes", hermesInstalled ? "run" : "skip-not-installed"),
+    makeConfigureStep("services", null, "run"),
+    makeConfigureStep("health", null, "run")
+  ];
+
+  const id = generateJobId();
+  const job = {
+    id,
+    kind: "configure",
+    status: "running",
+    mode,
+    model: model || null,
+    steps,
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    acceptOpenClawRisk: openclawAction === "configure",
+    acceptOpenClawRiskAt: openclawAction === "configure" ? new Date().toISOString() : null
+  };
+  await persistJob(job);
+  runningJobId = id;
+  runConfigureJobSteps(job, apiKey).catch(() => {});
+  return job;
 }
 
 // Test-only: lets a suite reset the concurrency lock between cases without

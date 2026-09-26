@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
+  Activity,
   Blocks,
   Bot,
+  Boxes,
+  ShieldCheck,
+  Wand2,
   BookOpen,
   Clapperboard,
   ChevronDown,
@@ -88,8 +92,12 @@ export default function Shell({
   const coreItems: NavItem[] = useMemo(
     () => [
       { id: "fleet", label: "Home", icon: LayoutDashboard },
+      { id: "agents", label: "Agents", icon: Boxes },
+      { id: "runs", label: "Runs", icon: Activity },
       { id: "chat", label: "Chat", icon: MessageSquare },
-      { id: "workspace", label: "Workspace", icon: FolderOpen }
+      { id: "workspace", label: "Workspace", icon: FolderOpen },
+      { id: "setup", label: "Setup", icon: Wand2 },
+      { id: "safety", label: "Safety", icon: ShieldCheck }
     ],
     []
   );
@@ -259,7 +267,7 @@ export default function Shell({
             </div>
           ) : null}
         </nav>
-        <button className="os-sidebar__safety" onClick={() => go("machine")} title={status.safetyHint || "Open Machine Control"}>
+        <button className="os-sidebar__safety" onClick={() => go("safety")} title={status.safetyHint || "Open Safety"}>
           {/* Falls back to the top strip's own label/mark when the level is
               unknown, so "still loading" and "checked, but unreachable" read
               distinctly here too — same as the strip above. */}

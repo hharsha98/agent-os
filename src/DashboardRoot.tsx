@@ -6,7 +6,11 @@ import LockedScreen from "./LockedScreen";
 import BlueprintPage from "./pages/BlueprintPage";
 import BrainPage from "./pages/BrainPage";
 import ChatPage from "./pages/ChatPage";
+import AgentsPage from "./pages/AgentsPage";
 import FleetPage from "./pages/FleetPage";
+import RunsPage from "./pages/RunsPage";
+import SafetyPage from "./pages/SafetyPage";
+import SetupPage from "./pages/SetupPage";
 import GoalsPage from "./pages/GoalsPage";
 import HermesPage from "./pages/HermesPage";
 import JournalPage from "./pages/JournalPage";
@@ -32,6 +36,10 @@ import "./ui/shell.css";
 
 type ShellPage =
   | "fleet"
+  | "agents"
+  | "runs"
+  | "setup"
+  | "safety"
   | "mission"
   | "home"
   | "layers"
@@ -56,6 +64,10 @@ type ShellPage =
 const LEGACY_PAGES = new Set<ShellPage>(["home", "builder", "apis"]);
 const ALL_PAGES = new Set<ShellPage>([
   "fleet",
+  "agents",
+  "runs",
+  "setup",
+  "safety",
   "mission",
   "home",
   "layers",
@@ -236,6 +248,14 @@ export default function DashboardRoot() {
     <Shell page={page} onNavigate={(next) => go(next as ShellPage)} demoPublic={demoPublic}>
       {page === "fleet" ? (
         <FleetPage />
+      ) : page === "agents" ? (
+        <AgentsPage />
+      ) : page === "runs" ? (
+        <RunsPage />
+      ) : page === "setup" ? (
+        <SetupPage />
+      ) : page === "safety" ? (
+        <SafetyPage />
       ) : page === "mission" ? (
         <MissionControlPage />
       ) : demoPublic && (page === "builder" || page === "home") ? (

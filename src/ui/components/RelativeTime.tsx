@@ -26,6 +26,21 @@ export default function RelativeTime({ since, live = false }: { since: string | 
   return <span className="os-mono">{label}</span>;
 }
 
+// "12s ago" that stays true on screen: re-renders itself (every second for
+// the first minute, then every 30s) instead of freezing at its last paint.
+export function TimeAgo({ since }: { since: string | number | Date }) {
+  const [, forceTick] = useState(0);
+  const startMs = new Date(since).getTime();
+  const fresh = Number.isFinite(startMs) && Date.now() - startMs < 60_000;
+
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), fresh ? 1000 : 30_000);
+    return () => clearInterval(id);
+  }, [fresh]);
+
+  return <span className="os-mono">{agoLabel(since)}</span>;
+}
+
 export function agoLabel(since: string | number | Date) {
   const startMs = new Date(since).getTime();
   if (!Number.isFinite(startMs)) return "—";

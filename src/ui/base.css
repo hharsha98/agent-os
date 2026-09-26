@@ -89,8 +89,10 @@
 }
 .os-chip--experimental {
   color: var(--os-warn);
-  border-color: rgba(245, 184, 75, 0.35);
-  background: rgba(245, 184, 75, 0.08);
+  border-color: rgba(245, 184, 75, 0.25);
+  background: transparent;
+  font-size: var(--os-fs-11);
+  height: 22px;
 }
 
 /* Panel */
@@ -127,6 +129,22 @@
 }
 .os-readout__value--muted {
   color: var(--os-text-3);
+}
+/* Instrument-bar readouts: large display numerals, light weight, real size
+   only above 1100px so they never overflow a narrower instrument cell. */
+.os-readout__value--big {
+  font-size: var(--os-fs-44);
+  font-weight: 300;
+}
+@media (min-width: 1100px) {
+  .os-readout__value--big {
+    font-size: var(--os-fs-64);
+  }
+}
+.os-readout__denom {
+  color: var(--os-text-3);
+  font-size: 0.5em;
+  margin-left: 1px;
 }
 .os-readout__hint {
   font-size: var(--os-fs-12);

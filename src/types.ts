@@ -553,9 +553,9 @@ export interface ExecutionGateStatus {
   publicSummary: string;
   demoLocked?: boolean;
   refused?: boolean;
-  // Optional fields another worker is adding for the "machine control" armed
-  // state; read defensively since neither is guaranteed present yet.
-  level?: string;
+  // 0 = look only, 1 = run agents, 2 = machine control armed (see
+  // server/runtime/execution-gate.js). Read defensively regardless.
+  level?: number;
   machineControl?: {
     armed?: boolean;
     enabled?: boolean;

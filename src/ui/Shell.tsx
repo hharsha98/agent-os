@@ -31,7 +31,9 @@ import StatusMark from "./components/StatusMark";
 import { useInterval } from "./components/useInterval";
 
 const LABS_STORAGE_KEY = "agentos.labsOpen";
-const STATUS_POLL_MS = 10000;
+// Same cadence as Home's run polling, so the strip and the page never
+// disagree about how many runs are live for more than a moment.
+const STATUS_POLL_MS = 5000;
 const MOBILE_BREAKPOINT = 900;
 
 interface NavItem {
@@ -184,21 +186,29 @@ export default function Shell({
           <Menu size={18} />
         </button>
         <div className="os-statusbar__chips">
-          <span className="os-chip" title={status.safetyHint}>
-            <StatusMark kind={status.safetyMark} />
-            {status.safetyLabel}
-          </span>
-          <span className="os-chip" title="Always-on gateways currently running">
-            <StatusMark kind={status.gatewaysRunning === null ? "unknown" : status.gatewaysRunning > 0 ? "ok" : "unknown"} />
-            Gateways {status.gatewaysRunning === null ? "—" : `${status.gatewaysRunning}/2`}
-          </span>
-          <span className="os-chip" title="Runs currently in progress">
-            <StatusMark
-              kind={status.liveRuns === null ? "unknown" : status.liveRuns > 0 ? "live" : "unknown"}
-              pulse={false}
-            />
-            {status.liveRuns === null ? "Live runs —" : `Live runs ${status.liveRuns}`}
-          </span>
+          <div className="os-statusbar__group">
+            <span className="os-statusbar__seg" title={status.safetyHint}>
+              <StatusMark kind={status.safetyMark} />
+              <span className="os-statusbar__seg-value">{status.safetyLabel}</span>
+            </span>
+            <span className="os-statusbar__seg" title="Always-on gateways currently running">
+              <StatusMark
+                kind={!status.gatewaysLoaded || status.gatewaysRunning === null ? "unknown" : status.gatewaysRunning > 0 ? "ok" : "unknown"}
+              />
+              <span className="os-statusbar__seg-value">
+                Gateways {!status.gatewaysLoaded ? "…" : status.gatewaysRunning === null ? "—" : `${status.gatewaysRunning}/2`}
+              </span>
+            </span>
+            <span className="os-statusbar__seg" title="Runs currently in progress">
+              <StatusMark
+                kind={!status.liveRunsLoaded || status.liveRuns === null ? "unknown" : status.liveRuns > 0 ? "live" : "unknown"}
+                pulse={false}
+              />
+              <span className="os-statusbar__seg-value">
+                Live runs {!status.liveRunsLoaded ? "…" : status.liveRuns === null ? "—" : status.liveRuns}
+              </span>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -207,7 +217,7 @@ export default function Shell({
           <div className="os-logo-mark">A</div>
           <div>
             <strong>Agent OS</strong>
-            <span className="os-micro">{demoPublic ? "Public demo" : "Local v1"}</span>
+            <span className="os-micro os-mono">{demoPublic ? "Public demo" : "v0.3 · local"}</span>
           </div>
         </div>
         <nav className="os-nav" aria-label="Main">
@@ -249,6 +259,13 @@ export default function Shell({
             </div>
           ) : null}
         </nav>
+        <button className="os-sidebar__safety" onClick={() => go("machine")} title={status.safetyHint || "Open Machine Control"}>
+          {/* Falls back to the top strip's own label/mark when the level is
+              unknown, so "still loading" and "checked, but unreachable" read
+              distinctly here too — same as the strip above. */}
+          <StatusMark kind={status.level === null ? status.safetyMark : safetyLevelMark(status.level)} />
+          <span>{status.level === null ? status.safetyLabel : safetyLevelLabel(status.level)}</span>
+        </button>
       </aside>
       {menuOpen ? <button className="os-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
 
@@ -261,8 +278,11 @@ function useStatusStrip() {
   const [safetyLabel, setSafetyLabel] = useState("Checking…");
   const [safetyMark, setSafetyMark] = useState<"unknown" | "ok" | "warn">("unknown");
   const [safetyHint, setSafetyHint] = useState("");
+  const [level, setLevel] = useState<number | null>(null);
   const [gatewaysRunning, setGatewaysRunning] = useState<number | null>(null);
+  const [gatewaysLoaded, setGatewaysLoaded] = useState(false);
   const [liveRuns, setLiveRuns] = useState<number | null>(null);
+  const [liveRunsLoaded, setLiveRunsLoaded] = useState(false);
 
   async function refresh() {
     try {
@@ -277,16 +297,19 @@ function useStatusStrip() {
         setSafetyMark(gate.enabled ? "ok" : "unknown");
       }
       setSafetyHint(gate.publicSummary || gate.reason || "");
+      setLevel(typeof gate.level === "number" ? gate.level : armed ? 2 : gate.enabled ? 1 : 0);
     } catch {
       setSafetyLabel("Safety —");
       setSafetyMark("unknown");
       setSafetyHint("Could not reach Agent OS.");
+      setLevel(null);
     }
 
     const results = await Promise.allSettled([getAgentService("hermes"), getAgentService("openclaw")]);
     const running = results.filter((r) => r.status === "fulfilled" && r.value.running).length;
     const anyChecked = results.some((r) => r.status === "fulfilled");
     setGatewaysRunning(anyChecked ? running : null);
+    setGatewaysLoaded(true);
 
     try {
       const { runs } = await listRuns({ limit: 100 });
@@ -294,6 +317,7 @@ function useStatusStrip() {
     } catch {
       setLiveRuns(null);
     }
+    setLiveRunsLoaded(true);
   }
 
   useEffect(() => {
@@ -302,7 +326,22 @@ function useStatusStrip() {
   }, []);
   useInterval(() => void refresh(), STATUS_POLL_MS);
 
-  return { safetyLabel, safetyMark, safetyHint, gatewaysRunning, liveRuns };
+  return { safetyLabel, safetyMark, safetyHint, level, gatewaysRunning, gatewaysLoaded, liveRuns, liveRunsLoaded };
+}
+
+// 0 = look only, 1 = run agents, 2 = machine control armed. Shape+colour,
+// never colour alone, and "—"-equivalent (a hollow ring) only while the
+// level genuinely hasn't been checked yet.
+function safetyLevelMark(level: number | null): "unknown" | "ok" | "warn" {
+  if (level === 1) return "ok";
+  if (level === 2) return "warn";
+  return "unknown";
+}
+function safetyLevelLabel(level: number | null) {
+  if (level === 0) return "Look only";
+  if (level === 1) return "Run agents";
+  if (level === 2) return "Machine control";
+  return "Checking…";
 }
 
 export { MOBILE_BREAKPOINT };

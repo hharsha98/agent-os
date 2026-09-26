@@ -79,6 +79,16 @@ export async function auditExportDirectory(root) {
 }
 
 function zipDirectory(sourceDir, zipPath) {
+  if (process.platform !== "darwin") {
+    // /usr/bin/zip isn't guaranteed to exist off macOS (and never on
+    // Windows); the export still succeeds, just without a zip archive.
+    return Promise.resolve({
+      ok: false,
+      stdout: "",
+      stderr: `zip is not supported on ${process.platform}`,
+      zipPath: null
+    });
+  }
   return new Promise((resolve) => {
     execFile("/usr/bin/zip", ["-r", "-X", zipPath, "."], { cwd: sourceDir, timeout: 60000 }, (error, stdout, stderr) => {
       resolve({

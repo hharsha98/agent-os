@@ -5,7 +5,7 @@ import { appendModuleLog } from "./module-logs.js";
 import { addMemory } from "./memory.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
 import { isDemoPublic } from "./demo-public.js";
-import { getExecutionGateStatus, isExecutionEnabled } from "./execution-gate.js";
+import { getExecutionGateStatus, isExecutionEnabled, isMachineControlActive } from "./execution-gate.js";
 import { expandHome, runtimePaths } from "./store.js";
 import { redactText, runCommand, sanitizeObject, which } from "./safety.js";
 
@@ -741,6 +741,7 @@ async function toolStatus() {
     error: redactText(error?.message || "desktop context unavailable")
   }));
   return {
+    supported: process.platform === "darwin",
     osascript: Boolean(osascript),
     open: Boolean(openTool),
     screencapture: Boolean(screencapture),
@@ -771,6 +772,9 @@ function assertInsideHome(target) {
 }
 
 async function runAppleScript(script, timeoutMs = 8000) {
+  if (process.platform !== "darwin") {
+    return { ok: false, stdout: "", stderr: `osascript is not supported on ${process.platform}`, code: 127 };
+  }
   const osascript = await which("osascript");
   if (!osascript) return { ok: false, stdout: "", stderr: "osascript is not available", code: 127 };
   return runCommand(osascript, ["-e", script], timeoutMs);
@@ -925,6 +929,22 @@ export async function getDesktopContext({ includeUiElements = true, timeoutMs = 
   });
 }
 
+// Reading the screen, typing, clicking, running shell commands, and deleting
+// files need level 2 (machine control armed), not just the execution gate.
+// Dry-run previews of these are still allowed at any level.
+const MACHINE_CONTROL_ACTION_TYPES = new Set([
+  "inspect_context",
+  "screenshot",
+  "type_text",
+  "paste_text",
+  "hotkey",
+  "press_key",
+  "click",
+  "click_text",
+  "trash_selection",
+  "shell_command"
+]);
+
 async function executeAction(action, context) {
   const type = cleanText(action?.type, 80);
   const dryRun = context.dryRun;
@@ -938,9 +958,17 @@ async function executeAction(action, context) {
     error: null
   };
 
+  if (!dryRun && MACHINE_CONTROL_ACTION_TYPES.has(type) && !context.machineControlActive) {
+    result.ok = false;
+    result.error = "machine_control_off";
+    result.output = result.error;
+    return result;
+  }
+
   if (type === "inspect_context") {
     result.summary = "Inspect active desktop context.";
     result.command = "osascript System Events front app/window/UI labels";
+    if (dryRun) return result;
     const desktop = await getDesktopContext({ includeUiElements: true, timeoutMs: 10000 });
     result.ok = Boolean(desktop.ok);
     result.output = desktop;
@@ -1095,10 +1123,12 @@ async function executeAction(action, context) {
     result.command = `cliclick w:${horizontal},${wheel}`;
     if (!["up", "down", "left", "right"].includes(direction)) throw new Error("scroll requires direction");
     if (!dryRun) {
-      const cliclick = await which("cliclick");
+      const cliclick = process.platform === "darwin" ? await which("cliclick") : "";
       if (!cliclick) {
         result.ok = false;
-        result.error = "cliclick is required for scroll actions.";
+        result.error = process.platform === "darwin"
+          ? "cliclick is required for scroll actions."
+          : `scroll is not supported on ${process.platform}.`;
         result.output = result.error;
       } else {
         const executed = await runCommand(cliclick, [`w:${horizontal},${wheel}`], 8000);
@@ -1117,10 +1147,12 @@ async function executeAction(action, context) {
     result.command = `cliclick c:${x},${y}`;
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("click requires numeric x and y");
     if (!dryRun) {
-      const cliclick = await which("cliclick");
+      const cliclick = process.platform === "darwin" ? await which("cliclick") : "";
       if (!cliclick) {
         result.ok = false;
-        result.error = "cliclick is required for coordinate clicks.";
+        result.error = process.platform === "darwin"
+          ? "cliclick is required for coordinate clicks."
+          : `click is not supported on ${process.platform}.`;
         result.output = result.error;
       } else {
         const executed = await runCommand(cliclick, [`c:${Math.round(x)},${Math.round(y)}`], 8000);
@@ -1139,8 +1171,10 @@ async function executeAction(action, context) {
     result.command = `screencapture ${file}`;
     if (!dryRun) {
       await fs.mkdir(dir, { recursive: true });
-      const screencapture = await which("screencapture");
-      const executed = screencapture ? await runCommand(screencapture, ["-x", file], 12000) : { ok: false, stderr: "screencapture is not available" };
+      const screencapture = process.platform === "darwin" ? await which("screencapture") : "";
+      const executed = screencapture
+        ? await runCommand(screencapture, ["-x", file], 12000)
+        : { ok: false, stderr: process.platform === "darwin" ? "screencapture is not available" : `screencapture is not supported on ${process.platform}` };
       result.ok = executed.ok;
       result.output = executed.ok ? { file: redactText(file) } : redactText(executed.stderr || "screenshot failed");
       result.error = executed.ok ? null : redactText(executed.stderr || "screenshot failed");
@@ -1154,9 +1188,13 @@ async function executeAction(action, context) {
     result.command = `mdfind -onlyin ~ ${query}`;
     if (!query) throw new Error("find_files requires query");
     if (!dryRun) {
-      const mdfind = await which("mdfind");
+      const mdfind = process.platform === "darwin" ? await which("mdfind") : "";
       const args = ["-onlyin", os.homedir(), `kMDItemFSName == '*${query.replaceAll("'", "")}*'c`];
-      const executed = mdfind ? await runCommand(mdfind, args, 10000) : await runCommand("/usr/bin/find", [os.homedir(), "-iname", `*${query}*`, "-maxdepth", "6"], 12000);
+      const executed = mdfind
+        ? await runCommand(mdfind, args, 10000)
+        : process.platform === "win32"
+          ? { ok: false, stderr: `find_files is not supported on ${process.platform}` }
+          : await runCommand("/usr/bin/find", [os.homedir(), "-iname", `*${query}*`, "-maxdepth", "6"], 12000);
       const files = String(executed.stdout || "").split("\n").map((item) => item.trim()).filter(Boolean).slice(0, 20);
       result.ok = executed.ok;
       result.output = files.map((item) => redactText(item));
@@ -1310,6 +1348,12 @@ async function executeAction(action, context) {
       return result;
     }
     if (!dryRun) {
+      if (!context.confirmShell) {
+        result.ok = false;
+        result.error = "confirmShell must be true for shell_command actions.";
+        result.output = result.error;
+        return result;
+      }
       const executed = await runCommand("/bin/zsh", ["-lc", command], Number(action.timeoutMs || 15000));
       result.ok = executed.ok;
       result.output = redactText(executed.stdout || executed.stderr);
@@ -1384,6 +1428,8 @@ export async function runVoiceCommand(input = {}, handlers = {}) {
   const context = {
     dryRun,
     shellAllowed: voiceShellAllowed(stored),
+    machineControlActive: await isMachineControlActive(),
+    confirmShell: input.confirmShell === true,
     codexTimeoutMs: voiceCodexTimeoutMs(stored),
     transcript,
     runWorkflow: handlers.runWorkflow,

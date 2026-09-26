@@ -1,7 +1,10 @@
+import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { appendModuleLog } from "./module-logs.js";
 import { ensureRuntimeStore, readJson, runtimePaths, writeJson } from "./store.js";
 import { sanitizeObject } from "./safety.js";
+import { isExecutionEnabled } from "./execution-gate.js";
+import { BLOCKED_AGENT_FLAGS } from "./agent-flags.js";
 
 function secretsPath() {
   return path.join(runtimePaths().config, "connections.local.json");
@@ -23,7 +26,7 @@ export const CONNECTION_TEMPLATES = [
   {
     id: "voice-control",
     label: "Hermes Voice Control",
-    fields: ["OPENAI_API_KEY", "HERMES_VOICE_MODEL", "HERMES_VOICE_USE_CODEX_GPT", "HERMES_VOICE_OPENAI_URL", "HERMES_VOICE_ALLOW_SHELL", "HERMES_VOICE_CODEX_TIMEOUT_MS"],
+    fields: ["OPENAI_API_KEY", "HERMES_VOICE_MODEL", "HERMES_VOICE_USE_CODEX_GPT", "HERMES_VOICE_OPENAI_URL", "HERMES_VOICE_CODEX_TIMEOUT_MS"],
     notes: "Configure the optional Codex GPT planner and local safety gates for spoken desktop commands. Shell commands still require trusted execution."
   },
   {
@@ -148,6 +151,67 @@ export const CONNECTION_TEMPLATES = [
   }
 ];
 
+// Real binary names a configured CLI path is allowed to resolve to (the
+// basename, minus a trailing .exe/.cmd/.bat). Stops
+// CLAUDE_CODE_PATH=/bin/sh style hijacks even when the execution gate is on.
+export const CLI_BASENAME_ALLOWLIST = {
+  claude: ["claude"],
+  codex: ["codex"],
+  openclaw: ["openclaw"],
+  gemini: ["gemini"],
+  hermes: ["hermes", "hermes-agent"],
+  gateway: ["hermes", "hermes-agent"],
+  cursor: ["agent", "cursor-agent"]
+};
+
+function allowlistFor(id) {
+  return CLI_BASENAME_ALLOWLIST[id] || [id];
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function stripExeSuffix(name) {
+  return name.replace(/\.(exe|cmd|bat)$/i, "");
+}
+
+async function assertSafeCliPath(id, key, value) {
+  if (!path.isAbsolute(value)) {
+    throw httpError(400, `${key} must be an absolute path.`);
+  }
+  let real;
+  try {
+    real = await fs.realpath(value);
+  } catch {
+    throw httpError(400, `${key} does not exist.`);
+  }
+  const stat = await fs.stat(real);
+  if (!stat.isFile()) {
+    throw httpError(400, `${key} must point to a regular file.`);
+  }
+  try {
+    await fs.access(real, fsConstants.X_OK);
+  } catch {
+    throw httpError(400, `${key} is not executable.`);
+  }
+  const basename = stripExeSuffix(path.basename(real)).toLowerCase();
+  const allowed = allowlistFor(id).map((name) => name.toLowerCase());
+  if (!allowed.includes(basename)) {
+    throw httpError(403, `${key} does not resolve to a recognized ${id} binary.`);
+  }
+}
+
+function assertNoBlockedFlags(key, value) {
+  const text = String(value || "");
+  const hit = BLOCKED_AGENT_FLAGS.find((flag) => text.includes(flag));
+  if (hit) {
+    throw httpError(400, `${key} contains a blocked flag: ${hit}`);
+  }
+}
+
 export async function getStoredConnectionConfig() {
   await ensureRuntimeStore();
   return readJson(secretsPath(), {});
@@ -163,8 +227,25 @@ export async function getConnections() {
   };
 }
 
-export async function configureConnection(id, fields = {}) {
+export async function configureConnection(id, rawFields = {}, options = {}) {
   await ensureRuntimeStore();
+  // HERMES_VOICE_ALLOW_SHELL is env-only: it must not be settable through
+  // the API, even if a caller passes it directly.
+  const fields = id === "voice-control"
+    ? Object.fromEntries(Object.entries(rawFields).filter(([key]) => key !== "HERMES_VOICE_ALLOW_SHELL"))
+    : rawFields;
+  for (const [key, value] of Object.entries(fields)) {
+    if (value == null || String(value).trim() === "") continue; // clearing a field is always allowed
+    const text = String(value).trim();
+    if (key.endsWith("_PATH")) {
+      if (!(await isExecutionEnabled()) || options.confirm !== true) {
+        throw httpError(403, "Turn on the execution gate and confirm:true to set a CLI path.");
+      }
+      await assertSafeCliPath(id, key, text);
+    } else if (key.endsWith("_CLI_ARGS")) {
+      assertNoBlockedFlags(key, text);
+    }
+  }
   const current = await getStoredConnectionConfig();
   current[id] = {
     ...(current[id] || {}),

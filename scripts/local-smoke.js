@@ -8,8 +8,16 @@ import assert from "node:assert/strict";
 
 const base = String(process.env.BASE_URL || "http://127.0.0.1:8090").replace(/\/$/, "");
 
+// local mode gates /api behind a session token. Send it when
+// the caller (or CI) set one; harmless in demo/public mode, which ignore it.
+function authHeaders(extra = {}) {
+  return process.env.AGENT_OS_TOKEN
+    ? { ...extra, "x-agent-os-token": process.env.AGENT_OS_TOKEN }
+    : extra;
+}
+
 async function get(path) {
-  const response = await fetch(`${base}${path}`);
+  const response = await fetch(`${base}${path}`, { headers: authHeaders() });
   const text = await response.text();
   let json = null;
   try {
@@ -23,7 +31,7 @@ async function get(path) {
 async function post(path, body) {
   const response = await fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body)
   });
   const json = await response.json();

@@ -135,7 +135,8 @@ export default function GoalsPage({ localAgents }: { localAgents: LocalAgent[] }
     try {
       const next = await updateExecutionGate({
         enabled,
-        reason: "Overnight Goal Mode from dashboard"
+        reason: "Overnight Goal Mode from dashboard",
+        ...(enabled ? { confirm: true } : {})
       });
       setGate(next);
       setNotice(next.demoLocked

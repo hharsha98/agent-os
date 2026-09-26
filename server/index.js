@@ -1,10 +1,18 @@
 import express from "express";
-import cors from "cors";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertAdminRequest, clearAdminCookie, requireAdminWhenPublic, sessionStatus, setAdminCookie } from "./runtime/auth.js";
+import { assertAdminRequest, authRequired, clearAdminCookie, requireAdminWhenPublic, sessionStatus, setAdminCookie } from "./runtime/auth.js";
+import {
+  claimSessionHandler,
+  hostAllowlistMiddleware,
+  localSessionGate,
+  localSessionStatusHandler,
+  loginLine,
+  originCheckMiddleware,
+  securityHeadersMiddleware
+} from "./runtime/local-session.js";
 import {
   getBuilderReplayOverlay,
   injectBuilderReplayOverlay
@@ -37,7 +45,13 @@ import {
   getElizaStatus
 } from "./runtime/eliza.js";
 import { loadLocalEnv } from "./runtime/env.js";
-import { getExecutionGateStatus, setExecutionGateStatus } from "./runtime/execution-gate.js";
+import {
+  getExecutionGateStatus,
+  getMachineControlStatus,
+  isMachineControlActive,
+  setExecutionGateStatus,
+  setMachineControlStatus
+} from "./runtime/execution-gate.js";
 import { getLocalAgentDashboardStatus } from "./runtime/local-agents.js";
 import { DEMO_BADGE, isDemoPublic } from "./runtime/demo-public.js";
 import { isLiveChatEnabled } from "./runtime/live-flags.js";
@@ -169,15 +183,34 @@ import {
   saveWorkflow
 } from "./runtime/workflows.js";
 import { getDesktopContext, getVoiceControlStatus, runVoiceCommand } from "./runtime/voice-control.js";
+import { installShutdownHandlers } from "./runtime/shutdown.js";
+import { getRunManager } from "./runtime/runs/run-manager.js";
+import { createRunsRouter } from "./runtime/runs/routes.js";
+import { createAgentsRouter } from "./runtime/agents/routes.js";
+import { createSetupRouter } from "./runtime/setup/routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, "..");
-const dist = path.join(root, "dist");
+// A packaged desktop build ships dist/ next to the bundled server instead of
+// alongside a repo checkout, so it can point this at that resources folder.
+const dist = process.env.AGENT_OS_STATIC_DIR
+  ? path.resolve(process.env.AGENT_OS_STATIC_DIR)
+  : path.join(root, "dist");
 const envFile = loadLocalEnv({ root });
 const app = express();
-const parsedPort = Number(process.env.PORT || 8090);
-const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8090;
+const isPackaged = process.env.AGENT_OS_PACKAGED === "1";
+function parsePort(raw) {
+  if (raw === undefined || raw === "") return 8090;
+  const parsed = Number(raw);
+  // 0 asks the OS for a free port, which the desktop app needs since it
+  // never knows in advance which port is open on the user's machine.
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) return 8090;
+  return parsed;
+}
+// Reassigned once listen() resolves the real port (relevant when PORT=0);
+// every closure below reads this variable live instead of a snapshot.
+let port = parsePort(process.env.PORT);
 function bindAddress() {
   // Loopback unless HOST is set. Containers set HOST=0.0.0.0 so a published
   // host port can reach the process; publish that port on 127.0.0.1.
@@ -187,8 +220,23 @@ function bindAddress() {
 const bindHost = bindAddress();
 const originalBuilderUrl = getBuilderUrl();
 
-app.use(cors());
+// Host allow-list and Origin check run first, in every mode, before body
+// parsing — a request from a browser tab on an untrusted origin never
+// reaches a route handler. No wildcard CORS: same-origin is everything the
+// UI needs, so no Access-Control-Allow-Origin is ever sent.
+app.use(hostAllowlistMiddleware());
+app.use(originCheckMiddleware());
+app.use(securityHeadersMiddleware());
 app.use(express.json({ limit: "2mb" }));
+// Local-mode only: every /api, /agent-builder-source, /_next request needs
+// the session cookie or the x-agent-os-token header. Demo and public mode
+// use their own gates (demo stays anonymous; public keeps the admin token).
+// Getters, not the current value of `port` — with PORT=0 that's still 0 here
+// and only becomes the real bound port once listen()'s callback runs below.
+app.use(localSessionGate(() => port));
+
+app.get("/api/session", localSessionStatusHandler(() => port));
+app.post("/api/session/claim", claimSessionHandler(() => port));
 
 app.get("/api/admin/session", (req, res) => {
   res.json(sessionStatus(req));
@@ -220,8 +268,34 @@ app.get("/api/execution-gate", requireAdminWhenPublic, async (_req, res, next) =
 app.post("/api/admin/execution-gate", async (req, res, next) => {
   try {
     assertAdminRequest(req);
+    const enabling = req.body?.enabled === true || req.body?.enabled === "true" || req.body?.enabled === 1 || req.body?.enabled === "1";
+    if (enabling && req.body?.confirm !== true) {
+      res.status(400).json({ ok: false, error: "confirm required" });
+      return;
+    }
     res.json(await setExecutionGateStatus(req.body || {}, { updatedBy: "dashboard-admin" }));
   } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/machine-control", async (_req, res, next) => {
+  try {
+    res.json(getMachineControlStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/machine-control", async (req, res, next) => {
+  try {
+    assertAdminRequest(req);
+    res.json(await setMachineControlStatus(req.body || {}));
+  } catch (error) {
+    if (error?.status) {
+      res.status(error.status).json({ ok: false, error: error.message });
+      return;
+    }
     next(error);
   }
 });
@@ -238,6 +312,7 @@ app.get("/api/health", async (_req, res, next) => {
       timestamp: status.generatedAt,
       bind: bindHost,
       port,
+      packaged: isPackaged,
       demoPublic,
       liveChat: isLiveChatEnabled(),
       badge: demoPublic ? DEMO_BADGE : isLiveChatEnabled() ? "Live operator · single machine" : null
@@ -300,6 +375,10 @@ app.get("/api/voice/status", requireAdminWhenPublic, async (_req, res, next) => 
 
 app.get("/api/voice/context", requireAdminWhenPublic, async (req, res, next) => {
   try {
+    if (!(await isMachineControlActive())) {
+      res.status(403).json({ error: "machine_control_off" });
+      return;
+    }
     res.json(await getDesktopContext({
       includeUiElements: req.query?.ui !== "0" && req.query?.ui !== "false"
     }));
@@ -915,6 +994,18 @@ app.get("/api/agent-runs", requireAdminWhenPublic, async (req, res, next) => {
   }
 });
 
+// List/read/stream/stop only — starting a run is never reachable over HTTP.
+app.use("/api/runs", requireAdminWhenPublic, createRunsRouter());
+
+// Fixed adapters only (Hermes, OpenClaw, …): no route here accepts a
+// command, args, or binary path from the request body.
+app.use("/api/agents", requireAdminWhenPublic, createAgentsRouter());
+
+// Setup Assistant: check the computer, plan, and run the official installers
+// unattended. Distinct from the legacy /api/setup* routes registered above
+// (provider onboarding) -- no sub-path here collides with those.
+app.use("/api/setup", requireAdminWhenPublic, createSetupRouter());
+
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.json(await getModuleSessions(req.params.id));
@@ -1120,7 +1211,7 @@ app.get("/api/connections", async (_req, res, next) => {
 
 app.post("/api/connections/:id/configure", requireAdminWhenPublic, async (req, res, next) => {
   try {
-    res.json(await configureConnection(req.params.id, req.body?.fields || {}));
+    res.json(await configureConnection(req.params.id, req.body?.fields || {}, { confirm: req.body?.confirm === true }));
   } catch (error) {
     next(error);
   }
@@ -1437,6 +1528,10 @@ app.post("/api/workflows/:id/runs/:runId/resume", requireAdminWhenPublic, async 
 
 app.post("/api/admin/export/prepare", async (req, res, next) => {
   try {
+    if (isPackaged) {
+      res.status(409).json({ error: "not_available_in_desktop_app" });
+      return;
+    }
     assertAdminToken(req);
     res.json(await prepareExport({ sourceRoot: root, requestedBy: "api" }));
   } catch (error) {
@@ -1692,12 +1787,24 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(port, bindHost, () => {
+const server = app.listen(port, bindHost, () => {
+  // With PORT=0 the OS just picked a free port; every later reader of
+  // `port` (closures above, and this callback) sees this updated value.
+  port = server.address().port;
+  console.log(`AGENT_OS_READY:${port}`);
   const demoPublic = isDemoPublic();
   console.log(
     demoPublic
       ? `Agent OS public demo · sandboxed http://${bindHost}:${port}`
       : `Agent OS (local v1, dry-run default) http://${bindHost}:${port}`
   );
+  if (!demoPublic && !authRequired()) {
+    console.log(loginLine(port, bindHost));
+  }
   startSchedulerLoop();
+  // Any run left "running"/"queued" on disk belonged to a process that is
+  // gone now; mark it interrupted instead of leaving stale state around.
+  getRunManager().recoverStaleRuns().catch((error) => console.error(error));
 });
+
+installShutdownHandlers(server);

@@ -84,7 +84,7 @@ import type {
   DemoTimelineResult
 } from "./demo";
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",

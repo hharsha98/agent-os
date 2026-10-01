@@ -6,6 +6,13 @@
 //
 //   npm run desktop:fetch-node                          # this machine
 //   npm run desktop:fetch-node -- --platform linux --arch x64
+//   npm run desktop:fetch-node -- --platform darwin --arch x64 --out /some/dir
+//
+// --platform / --arch pick the TARGET (the machine the app will run on), which
+// can differ from the machine running this script: the release workflow builds
+// the Intel Mac app on an Apple-silicon runner. --out redirects the unpacked
+// files (the release workflow does not need it; it is for trying a fetch
+// without touching resources/).
 //
 // This is the app's OWN private Node. It is separate from the managed Node
 // that Setup installs into ~/.agent-os/node for OpenClaw; do not merge them.
@@ -24,13 +31,14 @@ export const NODE_VERSION = "24.21.0";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = path.join(root, "desktop", ".cache", "node");
-const outDir = path.join(root, "desktop", "src-tauri", "resources", "node");
+const defaultOutDir = path.join(root, "desktop", "src-tauri", "resources", "node");
 
 function parseArgs(argv) {
-  const args = { platform: process.platform, arch: process.arch };
+  const args = { platform: process.platform, arch: process.arch, out: defaultOutDir };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--platform") args.platform = argv[++i];
     else if (argv[i] === "--arch") args.arch = argv[++i];
+    else if (argv[i] === "--out") args.out = path.resolve(argv[++i]);
   }
   return args;
 }
@@ -81,7 +89,7 @@ function sha256(file) {
 }
 
 async function main() {
-  const { platform, arch } = parseArgs(process.argv.slice(2));
+  const { platform, arch, out: outDir } = parseArgs(process.argv.slice(2));
   const { base, file } = archiveInfo(platform, arch);
   const distUrl = `https://nodejs.org/dist/v${NODE_VERSION}`;
   await mkdir(cacheDir, { recursive: true });
@@ -116,13 +124,20 @@ async function main() {
 
   const scratch = await mkdtemp(path.join(os.tmpdir(), "agent-os-node-"));
   try {
-    if (platform === "win32") {
-      // PowerShell ships with every supported Windows; no extra tools needed.
-      execFileSync(
-        "powershell",
-        ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${scratch}' -Force`],
-        { stdio: "inherit" }
-      );
+    // How to unpack depends on the archive (.zip for a Windows target), and
+    // on the machine running this script, not on the target: a Mac can
+    // fetch the Windows zip.
+    if (file.endsWith(".zip")) {
+      if (process.platform === "win32") {
+        // PowerShell ships with every supported Windows; no extra tools needed.
+        execFileSync(
+          "powershell",
+          ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${scratch}' -Force`],
+          { stdio: "inherit" }
+        );
+      } else {
+        execFileSync("unzip", ["-q", archivePath, "-d", scratch], { stdio: "inherit" });
+      }
     } else {
       execFileSync("tar", ["-xzf", archivePath, "-C", scratch], { stdio: "inherit" });
     }
@@ -142,7 +157,9 @@ async function main() {
     await rm(scratch, { recursive: true, force: true });
   }
 
-  console.log(`Node v${NODE_VERSION} (${platform}/${arch}) is ready in ${path.relative(root, outDir)}/`);
+  const rel = path.relative(root, outDir);
+  const shown = rel.startsWith("..") ? outDir : rel;
+  console.log(`Node v${NODE_VERSION} (${platform}/${arch}) is ready in ${shown}/`);
 }
 
 main().catch((error) => {

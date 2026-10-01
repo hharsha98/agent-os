@@ -4,6 +4,12 @@
 //   resources/node    <- the app's own Node 24 runtime (scripts/fetch-node.mjs)
 // Both folders are git-ignored; they are build output, not source.
 // Called by the `desktop:prepare` / `desktop:build` scripts in package.json.
+//
+//   node scripts/prepare-desktop.mjs --skip-node
+//
+// --skip-node never fetches Node. The release workflow fetches the TARGET's
+// Node first (the Intel Mac app is built on an Apple-silicon runner), and
+// this script must not swap the host's Node in over it.
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, rm } from "node:fs/promises";
@@ -33,6 +39,10 @@ async function main() {
   await cp(path.join(root, "build", "server"), target, { recursive: true });
   console.log("Copied build/server -> desktop/src-tauri/resources/server");
 
+  if (process.argv.includes("--skip-node")) {
+    console.log("--skip-node: leaving resources/node exactly as it is.");
+    return;
+  }
   const nodeBinary = path.join(resources, "node", process.platform === "win32" ? "node.exe" : path.join("bin", "node"));
   if (!existsSync(nodeBinary)) {
     run("node", ["scripts/fetch-node.mjs"]);

@@ -64,7 +64,8 @@ Output (macOS): `desktop/src-tauri/target/release/bundle/macos/Agent OS.app`
 and `.../bundle/dmg/Agent OS_<version>_<arch>.dmg`.
 
 To build for another machine's CPU, fetch its Node first, for example
-`npm run desktop:fetch-node -- --platform linux --arch x64`.
+`npm run desktop:fetch-node -- --platform linux --arch x64`, then
+`node scripts/prepare-desktop.mjs --skip-node` so prepare keeps it.
 
 Day-to-day development: `npm run desktop:dev`. With no bundled resources it
 falls back to your system `node` and the repo's own `server/index.js` and
@@ -74,8 +75,8 @@ falls back to your system `node` and the repo's own `server/index.js` and
 
 - macOS 15, Apple silicon (arm64): built, launched with `open`, quit checks
   by hand.
-- Windows and Linux: **not tested yet.** The project is set up to build there
-  (CI is planned for the release phase), but nobody has run it.
+- Intel Mac, Windows and Linux: built by the release workflow, but **not
+  hand-tested** (see Releasing).
 
 ## Unsigned builds
 
@@ -87,6 +88,7 @@ system warns on first launch:
   "Open Anyway".)
 - **Windows:** SmartScreen says "Windows protected your PC". Click **More
   info**, then **Run anyway**.
+- **Linux:** make the AppImage runnable first: `chmod +x Agent-OS_*.AppImage`.
 
 ## Updater
 
@@ -111,15 +113,89 @@ How the build copes without one:
   `remote` block that lets the local-server window use them. Do not remove it:
   without it updater calls are silently rejected.
 
-To turn it on (release phase):
+To turn it on, follow "One-time key setup" under **Releasing** below. The
+release workflow then adds the `plugins.updater` block and
+`createUpdaterArtifacts` for you at build time (via a temporary `--config`
+file), so `tauri.conf.json` stays as it is.
 
-1. `npx tauri signer generate -w ~/.tauri/agent-os.key` and keep the private key
-   and its password secret (a CI secret, never the repo).
-2. Add to `tauri.conf.json`:
-   `"plugins": { "updater": { "pubkey": "<contents of the .pub file>", "endpoints": ["<url of latest.json>"] } }`
-   and `"createUpdaterArtifacts": true` under `bundle`.
-3. Build with `TAURI_SIGNING_PRIVATE_KEY` (and `..._PASSWORD`) set, and publish
-   `latest.json` plus the signed artifacts.
+## Releasing
+
+Pushing a tag like `v0.4.0` makes GitHub Actions
+(`.github/workflows/release.yml`) build the app on four runners and attach the
+installers to a **draft** GitHub Release:
+
+| Leg | Runner | Output |
+| --- | --- | --- |
+| macOS Apple Silicon | `macos-latest` | `.dmg` |
+| macOS Intel | `macos-latest`, cross-compiled | `.dmg` |
+| Linux | `ubuntu-22.04` | `.deb`, `.AppImage` |
+| Windows | `windows-latest` | NSIS `setup.exe` (no MSI: WiX fails on this app) |
+
+Each leg downloads the Node for its own target with
+`node scripts/fetch-node.mjs --platform <p> --arch <a>` (SHA-256 checked), then
+runs `node scripts/prepare-desktop.mjs --skip-node` so the runner's own Node is
+never bundled by mistake. The release notes shown on the Release come from
+`.github/release-notes.md`; edit that file to change them.
+
+### One-time key setup (the owner does this, once)
+
+The in-app updater only installs updates signed with your private key, so you
+need a key pair. Nobody else, including CI scripts and AI helpers, should ever
+see the private key.
+
+```bash
+npx tauri signer generate -w ~/.tauri/agent-os.key
+```
+
+It asks for a password (remember it) and writes two files:
+`~/.tauri/agent-os.key` (private) and `~/.tauri/agent-os.key.pub` (public).
+
+1. Paste the **entire contents of `agent-os.key.pub`** into
+   `desktop/updater-pubkey.txt`, replacing the placeholder, and commit it. The
+   public key is safe to publish.
+2. In the GitHub repo: Settings > Secrets and variables > Actions > New
+   repository secret. Add `TAURI_SIGNING_PRIVATE_KEY` (the contents of
+   `agent-os.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the password).
+3. Back up `agent-os.key` and the password somewhere safe (a password manager).
+   **If you lose the private key, apps that are already installed can never
+   auto-update again**, because they only trust updates signed by it. Those
+   users would have to download a new installer by hand.
+
+Until both the secret and a real public key are in place, releases still work.
+The workflow just prints "Updater: OFF" and builds without auto-update.
+
+### Cutting a release
+
+```bash
+node scripts/bump-version.mjs 0.4.0   # package.json, tauri.conf.json, Cargo.toml (+ lock files)
+git add -A
+git commit -m "Release v0.4.0"
+git tag v0.4.0
+git push origin main v0.4.0           # pushing the tag starts the build
+```
+
+1. Watch the run in the repo's Actions tab (about 15 to 25 minutes; the four
+   legs run side by side and one failing does not cancel the others).
+2. When it finishes, open Releases. You will see a **Draft** release named
+   "Agent OS v0.4.0". Review it, then click **Publish release**.
+
+`node --test test/release-config.test.js` (part of `npm test`) fails if the
+three versions disagree, so a forgotten bump is caught before you tag.
+
+### What to test on the draft before publishing
+
+- All installers are attached: two `.dmg` (aarch64 and x64), the `.deb`,
+  the `.AppImage` and the Windows `setup.exe`. If the updater is on there should
+  also be `.sig` files and a `latest.json`.
+- Download the Apple Silicon DMG on a Mac, open it, and go through the
+  right-click > Open steps from the release notes. The window should open and the
+  Setup Assistant should load.
+- If you have access, try one of: the Windows `setup.exe` (SmartScreen steps,
+  then launch), or the Linux AppImage (`chmod +x`, then launch).
+- Read the release notes on the draft once; they are the first thing a user
+  sees.
+- Updater: with a published release that is newer than an installed copy, the
+  in-app banner should appear and "Install & restart" should work.
 
 ## Icons
 

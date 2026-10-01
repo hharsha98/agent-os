@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { getAgentService, getExecutionGateStatus, listRuns } from "../api";
 import StatusMark from "./components/StatusMark";
+import UpdateBanner from "./components/UpdateBanner";
 import { useInterval } from "./components/useInterval";
 
 const LABS_STORAGE_KEY = "agentos.labsOpen";
@@ -278,6 +279,7 @@ export default function Shell({
       {menuOpen ? <button className="os-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
 
       <div className="aos-phase2-content os-content">{children}</div>
+      <UpdateBanner />
     </div>
   );
 }

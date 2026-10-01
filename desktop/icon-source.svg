@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The Agent OS mark: the cyan rounded tile with an "A", same as the
+       sidebar logo (.os-logo-mark). The "A" is drawn as strokes, not text,
+       so it renders identically with no font installed. Regenerate every
+       size with: npx tauri icon desktop/icon-source.svg -o desktop/src-tauri/icons -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5CE1FF"/>
+      <stop offset="1" stop-color="#8AEBFF"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0.15" y1="0" x2="0.6" y2="0.6">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#sheen)"/>
+  <g fill="none" stroke="#031018" stroke-width="92" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M338 746 L512 286 L686 746"/>
+    <path d="M406 596 L618 596"/>
+  </g>
+</svg>

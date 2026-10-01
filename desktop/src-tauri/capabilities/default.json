@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for Agent OS's main window. The app UI talks to its own Node server over plain HTTP, never through Tauri IPC, so the only permissions granted beyond Tauri's core set are the updater (check/download/install) and process (relaunch after an install the user approved); see src/ui/components/UpdateBanner.tsx. The `remote` block is REQUIRED, not decoration: main.rs navigates the window to the local server at http://127.0.0.1:{port}/, so Tauri treats the window's origin as REMOTE, and a capability without a `remote` block only applies to content served from inside the app bundle. Without it every updater call is silently rejected by the permission check and the update banner never appears (Vibespace shipped three releases that way). The port is chosen at runtime, hence the wildcard; 127.0.0.1 is this machine only.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": ["core:default", "updater:default", "process:allow-restart"]
+}

@@ -1,0 +1,100 @@
+/* Desktop-only update notice. A slim floating bar at the bottom of the
+   content area (beside the 248px sidebar), so it never covers page headings.
+   The wrapper ignores the pointer; only the bar itself is clickable. */
+.os-update {
+  position: fixed;
+  left: 248px;
+  right: 0;
+  bottom: var(--os-sp-5);
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--os-sp-2);
+  padding: 0 var(--os-sp-4);
+  pointer-events: none;
+}
+
+.os-update__bar,
+.os-update__notes {
+  pointer-events: auto;
+}
+
+.os-update__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  max-width: 100%;
+  min-height: 44px;
+  padding: var(--os-sp-2) var(--os-sp-2) var(--os-sp-2) var(--os-sp-4);
+  background: var(--os-glass-bg);
+  backdrop-filter: var(--os-glass-blur);
+  -webkit-backdrop-filter: var(--os-glass-blur);
+  border-radius: var(--os-r-pill);
+  box-shadow: var(--os-e2), var(--os-glow);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+  animation: os-update-in var(--os-dur-slow) var(--os-ease-out);
+}
+
+.os-update__icon {
+  color: var(--os-accent);
+  flex: 0 0 auto;
+}
+
+.os-update__text {
+  min-width: 0;
+}
+
+.os-update__link {
+  background: none;
+  border: 0;
+  padding: 0 var(--os-sp-1);
+  color: var(--os-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.os-update__link:hover {
+  color: var(--os-accent-strong);
+  text-decoration: underline;
+}
+
+.os-update__action {
+  border-radius: var(--os-r-pill);
+  white-space: nowrap;
+}
+
+.os-update__notes {
+  margin: 0;
+  max-width: 560px;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--os-sp-3) var(--os-sp-4);
+  background: var(--os-surface-2);
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e2);
+  color: var(--os-text-2);
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-12);
+  white-space: pre-wrap;
+}
+
+@keyframes os-update-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .os-update {
+    left: 0;
+  }
+}

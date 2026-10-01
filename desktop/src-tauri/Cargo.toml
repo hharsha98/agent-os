@@ -1,0 +1,35 @@
+[package]
+name = "agent-os-desktop"
+version = "0.3.0"
+description = "Agent OS desktop app: a Tauri shell around a bundled Node server"
+edition = "2021"
+# Not published; this crate only ever builds into the app bundle.
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+# Builds the http://127.0.0.1:<port>/ address the window is pointed at.
+url = "2"
+# The per-launch session token: 32 random bytes from the operating system.
+getrandom = "0.2"
+# `check()` / `downloadAndInstall()` for the in-app update banner. Registered
+# in main.rs ONLY when tauri.conf.json carries an updater pubkey (see
+# desktop/README.md, "Updater").
+tauri-plugin-updater = "2"
+# `relaunch()` after the user approves an update.
+tauri-plugin-process = "2"
+
+# SIGTERM has no Windows equivalent, so these are unix-only. signal-hook lets
+# a plain `kill <pid>` (which skips the normal window-quit path) still shut
+# the Node server down instead of orphaning it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = "0.3"
+
+[[bin]]
+name = "agent-os-desktop"
+path = "src/main.rs"

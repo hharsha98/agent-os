@@ -10,6 +10,10 @@
     "dev": "concurrently \"node --watch server/index.js\" \"vite --host 127.0.0.1\"",
     "build": "tsc -b && vite build",
     "build:server-bundle": "node scripts/build-server-bundle.mjs",
+    "desktop:fetch-node": "node scripts/fetch-node.mjs",
+    "desktop:prepare": "node scripts/prepare-desktop.mjs",
+    "desktop:dev": "cd desktop && tauri dev",
+    "desktop:build": "npm run desktop:prepare && cd desktop && tauri build",
     "start": "node server/index.js",
     "preview": "vite preview --host 127.0.0.1",
     "check": "tsc -b && vite build",
@@ -26,6 +30,8 @@
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.13.1",
     "@vitejs/plugin-react": "^4.3.4",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",
@@ -37,6 +43,7 @@
     "@elizaos/core": "^1.7.2"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "concurrently": "^9.1.2",

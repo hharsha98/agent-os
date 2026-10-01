@@ -66,12 +66,16 @@ describe("app version", () => {
 
 describe("release workflow", async () => {
   const workflow = await read(".github/workflows/release.yml");
+  // The text of one top-level job (from "  name:" to the next "  other-name:" or the end).
+  const jobText = (name) => {
+    const match = workflow.match(new RegExp(`\\n  ${name}:\\r?\\n([\\s\\S]*?)(?=\\r?\\n  [a-z][a-z-]*:\\r?\\n|$)`));
+    assert.ok(match, `job ${name} not found`);
+    return match[1];
+  };
 
-  test("can write the Release, runs every platform, and leaves the release as a draft", () => {
+  test("can write the Release, runs every platform, and creates the release as a draft", () => {
     assert.match(workflow, /contents:\s*write/);
     assert.match(workflow, /fail-fast:\s*false/);
-    assert.match(workflow, /releaseDraft:\s*true/);
-    assert.match(workflow, /prerelease:\s*false/);
     assert.match(workflow, /tauri-apps\/tauri-action@v1/);
     assert.match(workflow, /tags:\s*\n\s*-\s*"v\*"/);
     assert.match(workflow, /workflow_dispatch:[\s\S]*?tag:[\s\S]*?required:\s*true/);
@@ -92,16 +96,51 @@ describe("release workflow", async () => {
     assert.match(workflow, /run:\s*npm ci\s*\n/);
   });
 
+  test("create-release makes exactly one draft (not a prerelease) and reuses one that exists", () => {
+    const create = jobText("create-release");
+    assert.match(create, /contents:\s*write/);
+    assert.match(create, /-F draft=true/);
+    assert.match(create, /-F prerelease=false/);
+    assert.match(create, /already published/);
+    assert.match(create, /release_id=/);
+    assert.match(create, /GH_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/);
+    assert.ok(!/run:[^\n]*\$\{\{/.test(create), "no ${{ }} on a run: line (injection safety)");
+    assert.ok(!/tauri-action/.test(create), "only create-release makes the release");
+  });
+
+  test("release builds wait for create-release and upload into its release without making latest.json", () => {
+    const release = jobText("release");
+    assert.match(release, /needs:\s*create-release\r?\n/);
+    assert.match(release, /releaseId:\s*\$\{\{\s*needs\.create-release\.outputs\.release_id\s*\}\}/);
+    assert.match(release, /uploadUpdaterJson:\s*false/);
+    for (const input of ["tagName", "releaseName", "releaseBody", "releaseDraft"]) {
+      assert.ok(!new RegExp(`${input}:`).test(release), `${input} would make tauri-action create its own release`);
+    }
+  });
+
+  test("updater-json runs last, after the builds, and writes latest.json with the script", () => {
+    const updater = jobText("updater-json");
+    assert.match(updater, /needs:\s*\[\s*create-release\s*,\s*release\s*\]/);
+    assert.match(updater, /contents:\s*write/);
+    assert.match(updater, /node scripts\/assemble-latest-json\.mjs/);
+    assert.match(updater, /RELEASE_ID:\s*\$\{\{\s*needs\.create-release\.outputs\.release_id\s*\}\}/);
+    assert.match(updater, /RELEASE_TAG:/);
+    assert.match(updater, /GITHUB_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/);
+  });
+
   test("sets CI: true only inside the tauri-action step", () => {
-    const lines = workflow.split("\n");
+    const lines = workflow.split(/\r?\n/);
     const ciLines = lines.map((line, index) => ({ line, index })).filter(({ line }) => /^\s*CI:\s*true\b/.test(line));
     assert.equal(ciLines.length, 1, "CI: true should appear exactly once");
     const actionStart = lines.findIndex((line) => /uses:\s*tauri-apps\/tauri-action/.test(line));
     assert.ok(actionStart >= 0);
     assert.ok(ciLines[0].index > actionStart, "CI: true must come after the tauri-action step starts");
-    // ...and that step must be the last one in the file (nothing after it can inherit CI).
-    const stepsAfter = lines.slice(actionStart + 1).filter((line) => /^\s{6}-\s+name:/.test(line));
-    assert.equal(stepsAfter.length, 0, "tauri-action must be the final step");
+    // ...and that step must be the last one of the release job (nothing after it can inherit CI).
+    const release = jobText("release").split(/\r?\n/);
+    const releaseAction = release.findIndex((line) => /uses:\s*tauri-apps\/tauri-action/.test(line));
+    assert.ok(releaseAction >= 0, "the release job runs tauri-action");
+    const stepsAfter = release.slice(releaseAction + 1).filter((line) => /^\s{6}-\s+name:/.test(line));
+    assert.equal(stepsAfter.length, 0, "tauri-action must be the final step of the release job");
     assert.ok(!/CI=true/.test(workflow));
   });
 

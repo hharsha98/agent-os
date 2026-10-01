@@ -1,3 +1,5 @@
+*Historical document (written for v0.2). For the current state see the README.*
+
 # Hermes Agent OS Audit
 
 Last verified: 2026-07-07. Evidence comes from current source files, `/api/*` runtime shape, and `npm run build`. In the current restricted sandbox, `npm test` passes non-listener tests but 19 mock-server tests fail with `listen EPERM` when binding `127.0.0.1`.

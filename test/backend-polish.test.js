@@ -86,7 +86,8 @@ function waitForTerminal(manager, id, timeoutMs = 15000) {
 // =====================================================================
 
 test("run-manager: strips ANSI escapes and keeps only the text after the last \\r; parseLine returning false drops a line", async () => {
-  await withTempDir("backend-polish-src-", async (dir) => {
+  // A temp AGENT_OS_HOME keeps this run out of the developer's real data dir.
+  await withTempHome(() => withTempDir("backend-polish-src-", async (dir) => {
     const scriptPath = path.join(dir, "fake-output.mjs");
     await writeFile(
       scriptPath,
@@ -121,7 +122,7 @@ test("run-manager: strips ANSI escapes and keeps only the text after the last \\
     assert.ok(lineTexts.includes("progress: 100%"), `expected only the text after the last \\r, got ${JSON.stringify(lineTexts)}`);
     assert.ok(!events.some((e) => e.text === "DROP_ME"), "DROP_ME must never be stored, in any form");
     assert.ok(events.some((e) => e.type === "text" && e.text === "kept"), "KEEP_ME's mapped event must still be stored");
-  });
+  }));
 });
 
 // =====================================================================

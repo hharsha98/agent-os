@@ -21,6 +21,11 @@ import {
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
+// A run in any of these states will never change again.
+export const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "stopped", "timed_out", "interrupted"]);
+// How often waitForRun() re-checks as a safety net, in case the "end" event
+// was missed (a run owned by another process never sends one to us at all).
+const WAIT_POLL_MS = 500;
 
 function invalidPlanError(message) {
   const error = new Error(message);
@@ -465,6 +470,67 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     return () => state.subscribers.delete(onEvent);
   }
 
+  // Resolves with the run's final meta once it is terminal. Subscribes first
+  // and checks the status second, so a run that ends in between can never be
+  // missed. Options: `signal` (an AbortSignal; rejects with an AbortError) and
+  // `timeoutMs` (resolves with whatever the meta is by then, still running or
+  // not, so a caller never hangs forever).
+  function waitForRun(id, { signal, timeoutMs } = {}) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      let poll = null;
+      let unsubscribe = () => {};
+
+      function cleanup() {
+        unsubscribe();
+        if (timer) clearTimeout(timer);
+        if (poll) clearInterval(poll);
+        signal?.removeEventListener("abort", onAbort);
+      }
+      function settle(fn, value) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn(value);
+      }
+      function onAbort() {
+        const error = new Error("Waiting for the run was aborted.");
+        error.name = "AbortError";
+        settle(reject, error);
+      }
+      async function check() {
+        try {
+          const run = await getRun(id);
+          if (run && TERMINAL_RUN_STATUSES.has(run.status)) settle(resolve, run);
+        } catch (error) {
+          settle(reject, error);
+        }
+      }
+
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      unsubscribe = subscribe(id, (event) => {
+        if (event?.type === "end") check();
+      });
+      poll = setInterval(check, WAIT_POLL_MS);
+      poll.unref?.();
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timer = setTimeout(() => {
+          getRun(id).then(
+            (run) => settle(resolve, run),
+            (error) => settle(reject, error)
+          );
+        }, timeoutMs);
+        timer.unref?.();
+      }
+      check();
+    });
+  }
+
   async function recoverStaleRuns() {
     const dir = await runsDir();
     const ids = await listRunIds(dir);
@@ -507,6 +573,7 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     listRuns,
     readEvents,
     subscribe,
+    waitForRun,
     recoverStaleRuns,
     stopAll
   };

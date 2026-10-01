@@ -244,6 +244,8 @@ async function buildRun({ prompt, cwd, detected, runDir, checkService = service.
       args,
       cwd: runDir,
       stdin: prompt,
+      // --json prints one envelope; parseLine turns it into a result + usage.
+      parseLine,
       timeoutMs: 30 * 60 * 1000
     };
   }
@@ -256,6 +258,7 @@ async function buildRun({ prompt, cwd, detected, runDir, checkService = service.
       command: detected.path,
       args: ["agent", "exec", "--json", "--", prompt],
       cwd: runDir,
+      parseLine,
       timeoutMs: 30 * 60 * 1000
     };
   }

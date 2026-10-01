@@ -15,6 +15,13 @@ import { containsBlockedFlag } from "../server/runtime/agent-flags.js";
 import { ADAPTERS } from "../server/runtime/agents/index.js";
 import { runningFromText, warningsFromText } from "../server/runtime/agents/hermes.js";
 import { clearDetectCaches, resolveBinary } from "../server/runtime/agents/detect.js";
+import { createRunManager } from "../server/runtime/runs/run-manager.js";
+
+// Fakes first, then only the operating system's own folders. The developer's
+// normal PATH (e.g. ~/.local/bin, Homebrew) holds the REAL agent CLIs, which
+// tests must never run, not even for --version. The shims call node by its
+// absolute path, so node does not need to be on PATH.
+const SYSTEM_PATH_DIRS = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -280,7 +287,7 @@ test(
   { skip: isWindows ? "spawns a shebang fake CLI via a PATH shim (POSIX-only)" : false },
   async () => {
     await withEnv(
-      { PATH: `${shimDir}${path.delimiter}${process.env.PATH || ""}`, FAKE_HERMES_VERSION: undefined, FAKE_HERMES_STREAM_JSON: undefined },
+      { PATH: [shimDir, ...SYSTEM_PATH_DIRS].join(path.delimiter), FAKE_HERMES_VERSION: undefined, FAKE_HERMES_STREAM_JSON: undefined },
       async () => {
         clearDetectCaches();
         const v20 = await hermes.detect({ refresh: true });
@@ -305,7 +312,7 @@ test(
   "openclaw.detect(): agentExec reflects the help command's exit code",
   { skip: isWindows ? "spawns a shebang fake CLI via a PATH shim (POSIX-only)" : false },
   async () => {
-    await withEnv({ PATH: `${shimDir}${path.delimiter}${process.env.PATH || ""}` }, async () => {
+    await withEnv({ PATH: [shimDir, ...SYSTEM_PATH_DIRS].join(path.delimiter) }, async () => {
       clearDetectCaches();
       const detected = await openclaw.detect({ refresh: true });
       assert.equal(detected.installed, true);
@@ -514,6 +521,67 @@ test("openclaw.parseLine(): non-envelope JSON and non-JSON lines both fall back 
   assert.equal(openclaw.parseLine(JSON.stringify({ hello: "world" })), null);
 });
 
+test("openclaw.buildRun(): parseLine is attached to the --json exec plans only, not the gateway or legacy ones", async () => {
+  await withTempDir("agents-rundir-", async (runDir) => {
+    const base = { prompt: "do the thing", cwd: "/proj", runDir };
+    const stdinPlan = await openclaw.buildRun({
+      ...base,
+      detected: { installed: true, path: "/fake/openclaw", features: { agentExec: true, messageFile: true, json: true } },
+      checkService: stubService(false)
+    });
+    const argvPlan = await openclaw.buildRun({
+      ...base,
+      detected: { installed: true, path: "/fake/openclaw", features: { agentExec: true } },
+      checkService: stubService(false)
+    });
+    const gatewayPlan = await openclaw.buildRun({
+      ...base,
+      detected: { installed: true, path: "/fake/openclaw", features: { agentExec: true } },
+      checkService: stubService(true)
+    });
+    const legacyPlan = await openclaw.buildRun({
+      ...base,
+      detected: { installed: true, path: "/fake/openclaw", features: { agentExec: false } },
+      checkService: stubService(false)
+    });
+    assert.equal(typeof stdinPlan.parseLine, "function");
+    assert.equal(typeof argvPlan.parseLine, "function");
+    // These two print plain text, so their lines stay ordinary `line` events.
+    assert.equal(gatewayPlan.parseLine, undefined);
+    assert.equal(legacyPlan.parseLine, undefined);
+  });
+});
+
+test(
+  "openclaw exec run: records a result event and usage.costUsd in the run log (the Runs page needs both)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    await withTempHome(async () => {
+      await withTempDir("agents-rundir-", async (runDir) => {
+        const detected = {
+          installed: true,
+          path: openclawShim,
+          version: "1.0.0",
+          features: { agentExec: true, messageFile: true, cwd: true, json: true }
+        };
+        const plan = await openclaw.buildRun({ prompt: "hello from a run", cwd: runDir, detected, runDir, checkService: stubService(false) });
+        const manager = createRunManager();
+        const started = await manager.startRun(plan);
+        const finished = await manager.waitForRun(started.id, { timeoutMs: 15000 });
+        assert.equal(finished.status, "succeeded");
+        assert.equal(finished.usage.costUsd, 0.02);
+        assert.equal(finished.usage.inputTokens, 8);
+        assert.equal(finished.usage.outputTokens, 4);
+        const events = await manager.readEvents(started.id);
+        const result = events.find((event) => event.type === "result");
+        assert.ok(result, "the JSON envelope should have become a result event");
+        assert.equal(result.text, "echo: hello from a run");
+        assert.ok(events.some((event) => event.type === "usage" && event.costUsd === 0.02));
+      });
+    });
+  }
+);
+
 // =====================================================================
 // 6 + 7. safetyStatus / configStatus against the fake CLIs directly
 // =====================================================================
@@ -658,7 +726,11 @@ function baseEnv(home, port, extra = {}) {
     AGENT_OS_HOME: home,
     AGENT_OS_TOKEN: TOKEN,
     HERMES_AGENT_OS_SCHEDULER: "0",
-    PATH: `${shimDir}${path.delimiter}${process.env.PATH || ""}`
+    PATH: [shimDir, ...SYSTEM_PATH_DIRS].join(path.delimiter),
+    // Detection also looks in folders under HOME (~/.local/bin, ...), where
+    // the developer's real agents live. Point HOME at the temp folder.
+    HOME: home,
+    USERPROFILE: home
   };
   for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {
     if (!(key in extra)) delete env[key];

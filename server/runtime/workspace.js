@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { constants as fsConstants, createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { demoWorkspaceFiles, isDemoPublic } from "./demo-public.js";
@@ -251,13 +251,16 @@ export async function getWorkspaceFile(id) {
   };
 }
 
-function sanitizeWriteRelativePath(input = {}) {
+// maxParts is 2 (one folder plus the file name) for everyone. Only trusted
+// server code may pass a bigger number (the Team Room writes
+// team/<room>/<file>); it is never read from a request body.
+function sanitizeWriteRelativePath(input = {}, maxParts = 2) {
   const requested = String(input.relativePath || "").trim().replace(/\\/g, "/");
   const folder = String(input.folder || "loop").trim();
   const name = String(input.name || "").trim();
   const raw = requested || [folder, name].filter(Boolean).join("/");
   const parts = raw.split("/").filter(Boolean);
-  if (!parts.length || parts.length > 2) {
+  if (!parts.length || parts.length > maxParts) {
     throw httpError(400, "workspace writes allow a file name and at most one folder");
   }
   const cleaned = parts.map((part) => {
@@ -274,21 +277,113 @@ function sanitizeWriteRelativePath(input = {}) {
   return cleaned.join("/");
 }
 
-export async function writeWorkspaceText(input = {}) {
+// ---- link (symlink) safety -------------------------------------------------
+// A path check by name alone ("is it under workspace/?") is fooled by a
+// symlink: workspace/team/x/notes.md could be a link to ~/.zshrc, and writing
+// "to" it would overwrite the real target. So we also look at what is really
+// on disk, and refuse links.
+
+function linkRefused(message) {
+  const error = httpError(403, message);
+  error.code = "link_refused";
+  return error;
+}
+
+// Walks the folders between `root` and the file (not the file itself) and
+// refuses if any EXISTING one is a link. Stops at the first folder that does
+// not exist yet, since nothing below it can be a link.
+export async function assertNoLinksOnPath(root, relativeParts) {
+  let current = root;
+  for (const part of relativeParts) {
+    current = path.join(current, part);
+    let info;
+    try {
+      info = await fs.lstat(current);
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    if (info.isSymbolicLink()) throw linkRefused("refused: a folder on the path is a link");
+    if (!info.isDirectory()) throw linkRefused("refused: a folder on the path is not a folder");
+  }
+}
+
+// Refuses when the file itself is a link (or not a plain file). A missing
+// file is fine: it is about to be created.
+export async function assertNotALink(file) {
+  let info;
+  try {
+    info = await fs.lstat(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (info.isSymbolicLink()) throw linkRefused("refused: the target is a link");
+  if (!info.isFile()) throw linkRefused("refused: the target is not a regular file");
+}
+
+// O_NOFOLLOW makes the operating system itself refuse a link, closing the
+// small gap between "we looked" and "we wrote". Windows has no such flag, so
+// there the lstat checks above are all we have.
+const NO_FOLLOW = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+
+function translateLinkError(error) {
+  // ELOOP is what O_NOFOLLOW reports for a link.
+  if (error?.code === "ELOOP") return linkRefused("refused: the target is a link");
+  return error;
+}
+
+export async function writeFileNoFollow(file, content) {
+  let handle;
+  try {
+    handle = await fs.open(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NO_FOLLOW, 0o666);
+    await handle.writeFile(content, "utf8");
+  } catch (error) {
+    throw translateLinkError(error);
+  } finally {
+    await handle?.close();
+  }
+}
+
+// Returns the file's text, or null if it does not exist. Never follows a link.
+export async function readFileNoFollow(file) {
+  let handle;
+  try {
+    handle = await fs.open(file, fsConstants.O_RDONLY | NO_FOLLOW);
+    return await handle.readFile("utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw translateLinkError(error);
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function writeWorkspaceText(input = {}, { maxParts = 2 } = {}) {
   const content = String(input.content ?? "");
   if (!content.trim()) throw httpError(400, "file content is required");
   if (Buffer.byteLength(content, "utf8") > MAX_TEXT_PREVIEW_BYTES) {
     throw httpError(413, "workspace file is too large");
   }
-  const relativePath = sanitizeWriteRelativePath(input);
+  const relativePath = sanitizeWriteRelativePath(input, maxParts);
   const root = await rootDir("workspace");
   const candidate = path.resolve(root, ...relativePath.split("/"));
   const relative = path.relative(root, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw httpError(403, "file is outside the Agent OS sandbox");
   }
+  const parts = relativePath.split("/");
+  await assertNoLinksOnPath(root, parts.slice(0, -1));
   await fs.mkdir(path.dirname(candidate), { recursive: true });
-  await fs.writeFile(candidate, content, "utf8");
+  // The real folder must still be inside the real workspace.
+  const realRoot = await fs.realpath(root);
+  const realParent = await fs.realpath(path.dirname(candidate));
+  const inside = path.relative(realRoot, realParent);
+  if (inside.startsWith("..") || path.isAbsolute(inside)) {
+    throw httpError(403, "file is outside the Agent OS sandbox");
+  }
+  await assertNotALink(candidate);
+  await writeFileNoFollow(candidate, content);
   return getWorkspaceFile(`workspace/${relativePath}`);
 }
 

@@ -8,6 +8,14 @@ import type {
   RunListResponse,
   RunMeta,
   RunStreamEvent,
+  StartTeamRoomInput,
+  TeamAction,
+  TeamProposalDecisionResult,
+  TeamRoom,
+  TeamRoomDetail,
+  TeamRoomEvent,
+  TeamRoomEventType,
+  TeamRoomListResponse,
   BuilderBootstrap,
   BuilderBootstrapPrepareResult,
   BuilderReplayOverlay,
@@ -1085,6 +1093,159 @@ export function useRunStream(runId: string | null) {
       source.close();
     };
   }, [runId]);
+
+  return { events, status };
+}
+
+// ---------------------------------------------------------------------------
+// Team Room (Hermes + OpenClaw moderated discussion)
+// ---------------------------------------------------------------------------
+
+// Like request(), but keeps the server's plain-English `message` (for example
+// "Turn it on from the Agents page") and its error `code`, so the UI can show
+// the explanation and branch on safeguards_off / agent_missing / ...
+export class TeamRoomError extends Error {
+  code: string;
+  status: number;
+  agent?: string;
+  agents?: string[];
+  roomId?: string | null;
+
+  constructor(message: string, code: string, status: number, extra: { agent?: string; agents?: string[]; roomId?: string | null } = {}) {
+    super(message);
+    this.name = "TeamRoomError";
+    this.code = code;
+    this.status = status;
+    this.agent = extra.agent;
+    this.agents = extra.agents;
+    this.roomId = extra.roomId;
+  }
+}
+
+async function teamRoomRequest<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    ...options
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    if (response.status === 401 && body?.error === "session_required") {
+      window.dispatchEvent(new CustomEvent("agentos:locked"));
+    }
+    const code = typeof body?.error === "string" ? body.error : String(response.status);
+    throw new TeamRoomError(body?.message || code || response.statusText, code, response.status, {
+      agent: body?.agent,
+      agents: body?.agents,
+      roomId: typeof body?.roomId === "string" ? body.roomId : null
+    });
+  }
+  return response.json() as Promise<T>;
+}
+
+export function listTeamRooms() {
+  return teamRoomRequest<TeamRoomListResponse>("/api/team-rooms");
+}
+
+export function getTeamRoom(id: string) {
+  return teamRoomRequest<TeamRoomDetail>(`/api/team-rooms/${encodeURIComponent(id)}`);
+}
+
+export function startTeamRoom(input: StartTeamRoomInput) {
+  return teamRoomRequest<TeamRoom>("/api/team-rooms", {
+    method: "POST",
+    body: JSON.stringify({ ...input, confirm: true })
+  });
+}
+
+export function stopTeamRoom(id: string) {
+  return teamRoomRequest<TeamRoom>(`/api/team-rooms/${encodeURIComponent(id)}/stop`, {
+    method: "POST",
+    body: "{}"
+  });
+}
+
+export function continueTeamRoom(id: string, extraTurns: number) {
+  return teamRoomRequest<TeamRoom>(`/api/team-rooms/${encodeURIComponent(id)}/continue`, {
+    method: "POST",
+    body: JSON.stringify({ extraTurns })
+  });
+}
+
+export function decideProposal(roomId: string, proposalId: string, decision: "approve" | "reject") {
+  return teamRoomRequest<TeamProposalDecisionResult>(
+    `/api/team-rooms/${encodeURIComponent(roomId)}/proposals/${encodeURIComponent(proposalId)}`,
+    { method: "POST", body: JSON.stringify({ decision }) }
+  );
+}
+
+export function undoTeamAction(roomId: string, actionId: string) {
+  return teamRoomRequest<{ action: TeamAction }>(
+    `/api/team-rooms/${encodeURIComponent(roomId)}/actions/${encodeURIComponent(actionId)}/undo`,
+    { method: "POST", body: "{}" }
+  );
+}
+
+// Every event type the moderator emits (see server/runtime/team-room/).
+const TEAM_ROOM_EVENT_TYPES: TeamRoomEventType[] = [
+  "room_started", "turn_started", "turn_ended", "note", "proposal", "agreement",
+  "disagreement", "proposal_status", "proposal_decided", "protocol_note",
+  "action", "action_undone", "limits_extended", "status"
+];
+
+// Live events for one room, mirroring useRunStream: the server names each
+// frame after the event type, so there is one listener per type. The stream
+// replays the room's history first, then goes live, and ends (status
+// "ended") when the room is no longer running. After you Continue a room,
+// pass the same roomId again (or change `reconnectKey`) to open a new stream.
+export function useTeamRoomStream(roomId: string | null, reconnectKey: number | string = 0) {
+  const [events, setEvents] = useState<TeamRoomEvent[]>([]);
+  const [status, setStatus] = useState<"connecting" | "open" | "ended">("connecting");
+  const endedCleanlyRef = useRef(false);
+
+  useEffect(() => {
+    setEvents([]);
+    setStatus("connecting");
+    endedCleanlyRef.current = false;
+    if (!roomId) return;
+
+    const source = new EventSource(`/api/team-rooms/${encodeURIComponent(roomId)}/stream`);
+
+    source.onopen = () => setStatus("open");
+    const onEvent = (message: MessageEvent) => {
+      try {
+        const event = JSON.parse(message.data) as TeamRoomEvent;
+        setEvents((prev) => [...prev, event]);
+      } catch {
+        // malformed frame; skip rather than crash the transcript
+      }
+    };
+    source.onmessage = onEvent;
+    for (const type of TEAM_ROOM_EVENT_TYPES) source.addEventListener(type, onEvent);
+    source.addEventListener("end", () => {
+      endedCleanlyRef.current = true;
+      setStatus("ended");
+      source.close();
+    });
+    source.onerror = () => {
+      source.close();
+      setStatus("ended");
+      if (endedCleanlyRef.current) return;
+      void request<{ authenticated?: boolean }>("/api/session")
+        .then((session) => {
+          if (session && session.authenticated === false) {
+            window.dispatchEvent(new CustomEvent("agentos:locked"));
+          }
+        })
+        .catch(() => {
+          // a network hiccup here shouldn't itself trigger the lock flow
+        });
+    };
+
+    return () => {
+      source.close();
+    };
+  }, [roomId, reconnectKey]);
 
   return { events, status };
 }

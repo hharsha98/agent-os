@@ -187,6 +187,8 @@ import { installShutdownHandlers } from "./runtime/shutdown.js";
 import { getRunManager } from "./runtime/runs/run-manager.js";
 import { createRunsRouter } from "./runtime/runs/routes.js";
 import { createAgentsRouter } from "./runtime/agents/routes.js";
+import { createTeamRoomsRouter } from "./runtime/team-room/routes.js";
+import { recoverStaleRooms } from "./runtime/team-room/moderator.js";
 import { createSetupRouter } from "./runtime/setup/routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1001,6 +1003,10 @@ app.use("/api/runs", requireAdminWhenPublic, createRunsRouter());
 // command, args, or binary path from the request body.
 app.use("/api/agents", requireAdminWhenPublic, createAgentsRouter());
 
+// Team Room: a moderated discussion between Hermes and OpenClaw. Like the
+// agents router, it takes no command or path from the request body.
+app.use("/api/team-rooms", requireAdminWhenPublic, createTeamRoomsRouter());
+
 // Setup Assistant: check the computer, plan, and run the official installers
 // unattended. Distinct from the legacy /api/setup* routes registered above
 // (provider onboarding) -- no sub-path here collides with those.
@@ -1805,6 +1811,8 @@ const server = app.listen(port, bindHost, () => {
   // Any run left "running"/"queued" on disk belonged to a process that is
   // gone now; mark it interrupted instead of leaving stale state around.
   getRunManager().recoverStaleRuns().catch((error) => console.error(error));
+  // Same for Team Rooms that were mid-discussion when the last process died.
+  recoverStaleRooms().catch((error) => console.error(error));
 });
 
 installShutdownHandlers(server);

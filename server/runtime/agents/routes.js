@@ -23,7 +23,7 @@ function sandboxError() {
 // v1 folder policy: the run's cwd is always inside the workspace sandbox.
 // Defaults to <sandbox>/runs-work/<agentId>; an explicit folder must resolve
 // (via realpath, so a symlink can't escape either) inside the same sandbox.
-async function resolveRunCwd(agentId, folder) {
+export async function resolveRunCwd(agentId, folder) {
   const paths = runtimePaths();
   await fs.mkdir(paths.workspace, { recursive: true });
   const sandboxRoot = await fs.realpath(paths.workspace);
@@ -52,7 +52,7 @@ async function resolveRunCwd(agentId, folder) {
 // A private scratch folder per run attempt, outside the workspace sandbox
 // (mirrors how live-chat.js keeps its query files under runs/live-queries),
 // for adapter-owned temp files such as Hermes's query.txt.
-async function makeRunDir(agentId) {
+export async function makeRunDir(agentId) {
   const dir = path.join(
     runtimePaths().runs,
     "agent-adapters",
@@ -90,22 +90,14 @@ function requireAdapter(req, res, next) {
   next();
 }
 
-const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "stopped", "timed_out", "interrupted"]);
-
 // Safety actions are quick config-set commands (a handful of seconds at
 // most; see each adapter's SAFETY_ACTION_TIMEOUT_MS), so it's fine for the
 // request to wait for one to finish before deciding whether a gateway
-// restart follow-up is needed.
+// restart follow-up is needed. If it somehow takes longer, we give up
+// waiting and use whatever state the run is in.
 function waitForRunTerminal(id, timeoutMs) {
-  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 0) + 2000;
-  return (async function poll() {
-    while (Date.now() < deadline) {
-      const run = await getRunManager().getRun(id);
-      if (run && TERMINAL_RUN_STATUSES.has(run.status)) return run;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    return getRunManager().getRun(id);
-  })();
+  const limit = Math.max(1000, Number(timeoutMs) || 0) + 2000;
+  return getRunManager().waitForRun(id, { timeoutMs: limit });
 }
 
 function mapStartRunError(error, res, next) {

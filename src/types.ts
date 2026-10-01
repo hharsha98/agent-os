@@ -2410,3 +2410,178 @@ export interface RunStreamEvent {
   outputTokens?: number;
   [key: string]: unknown;
 }
+
+// ---------------------------------------------------------------------------
+// Team Room: a moderated discussion between Hermes Agent and OpenClaw.
+// Mirrors server/runtime/team-room/*.
+// ---------------------------------------------------------------------------
+
+export type TeamRoomStatus =
+  | "running"
+  | "needs_you" // hit the turn or time limit; you can continue
+  | "agreed"
+  | "cost_cap"
+  | "stopped"
+  | "failed"
+  | "interrupted"
+  | string;
+
+export interface TeamRoomLimits {
+  maxTurns: number;
+  maxMinutes: number;
+  maxCostUsd: number | null;
+}
+
+export interface TeamRoom {
+  id: string;
+  task: string;
+  status: TeamRoomStatus;
+  createdAt: string;
+  updatedAt: string;
+  endedAt: string | null;
+  limits: TeamRoomLimits;
+  turnsAllowed: number;
+  turnsDone: number;
+  clockStartedAt: string;
+  currentTurn: { turn: number; agentId: "hermes" | "openclaw"; runId: string } | null;
+  // null until a turn reports a cost; turns that report none are counted in
+  // costUnknownTurns and are never added up as 0.
+  costUsd: number | null;
+  costKnownTurns: number;
+  costUnknownTurns: number;
+  endReason: string | null;
+  folder: string;
+}
+
+export interface TeamRoomSummary {
+  id: string;
+  task: string;
+  status: TeamRoomStatus;
+  createdAt: string;
+  endedAt: string | null;
+  endReason: string | null;
+  turnsDone: number;
+  turnsAllowed: number;
+  costUsd: number | null;
+  costUnknownTurns: number;
+  openProposals: number;
+  needsApproval: number;
+  actions: number;
+}
+
+export interface TeamRoomListResponse {
+  rooms: TeamRoomSummary[];
+}
+
+export type TeamProposalStatus =
+  | "open"
+  | "agreed"
+  | "disputed"
+  | "needs_approval" // waiting for you (a card)
+  | "approved"
+  | "rejected"
+  | "applied" // a file proposal that was saved
+  | "refused" // a file write the server refused (see the action's failReason)
+  | string;
+
+export interface TeamProposal {
+  id: string; // "P1", "P2", ...
+  by: "hermes" | "openclaw";
+  byLabel: string;
+  kind: "decision" | "file";
+  summary: string;
+  file?: { name: string; content: string };
+  status: TeamProposalStatus;
+  statusReason?: string;
+  turn: number;
+  createdAt: string;
+  agreedBy?: string;
+  agreedAt?: string;
+  disputedBy?: string;
+  disputeReason?: string;
+  actionId?: string;
+  userDecision?: "approve" | "reject";
+  decidedAt?: string;
+}
+
+export interface TeamAction {
+  id: string; // "A1", ...
+  proposalId: string;
+  kind: "file_write";
+  path: string; // relative to the workspace, e.g. team/<room>/plan.md
+  created: boolean;
+  updated: boolean;
+  backup: string | null;
+  at: string;
+  undone: boolean;
+  undoneAt: string | null;
+  // A write the server refused (for example the target is a symlink):
+  // nothing was saved, so there is nothing to undo.
+  failed?: boolean;
+  failReason?: string;
+}
+
+export type TeamRoomEventType =
+  | "room_started"
+  | "turn_started"
+  | "turn_ended"
+  | "note"
+  | "proposal"
+  | "agreement"
+  | "disagreement"
+  | "proposal_status"
+  | "proposal_decided"
+  | "protocol_note"
+  | "action"
+  | "action_undone"
+  | "limits_extended"
+  | "status";
+
+export interface TeamParsedReply {
+  kind: "note" | "propose" | "propose_file" | "agree" | "disagree" | "none";
+  text?: string;
+  summary?: string;
+  proposalId?: string;
+  reason?: string;
+  problem?: string;
+  file?: { name: string; content: string };
+}
+
+export interface TeamRoomEvent {
+  seq: number;
+  t: string;
+  type: TeamRoomEventType;
+  turn?: number;
+  agentId?: "hermes" | "openclaw";
+  runId?: string;
+  status?: string;
+  reason?: string | null;
+  text?: string;
+  costUsd?: number | null;
+  parsed?: TeamParsedReply;
+  proposal?: TeamProposal;
+  proposalId?: string;
+  actionId?: string;
+  decision?: string;
+  message?: string;
+  path?: string;
+  [key: string]: unknown;
+}
+
+export interface TeamRoomDetail {
+  room: TeamRoom;
+  proposals: TeamProposal[];
+  actions: TeamAction[];
+  notebook: string;
+  events: TeamRoomEvent[];
+}
+
+export interface StartTeamRoomInput {
+  task: string;
+  limits?: Partial<TeamRoomLimits>;
+}
+
+export interface TeamProposalDecisionResult {
+  proposal: TeamProposal;
+  action: TeamAction | null;
+}

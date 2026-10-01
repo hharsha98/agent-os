@@ -437,7 +437,7 @@ test("brainOptions(): 8GB -> openrouter; 32GB+Ollama available -> ollama; Ollama
   assert.equal(low.recommendation, "openrouter");
   const lowOllama = low.options.find((o) => o.id === "ollama");
   assert.equal(lowOllama.available, false);
-  assert.match(lowOllama.reason, /next update/);
+  assert.match(lowOllama.reason, /isn't installed/);
 
   await withEnv({ AGENT_OS_OLLAMA_URL: `http://127.0.0.1:${mirrorPort}` }, async () => {
     const high = await brainOptions({ ramGb: 32, freeDiskGb: 50, ollama: { found: true } });

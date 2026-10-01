@@ -131,11 +131,20 @@ export async function listOllamaTags() {
 async function ollamaOption(check) {
   const installed = Boolean(check?.ollama?.found);
   const reachable = installed ? await ollamaReachable() : false;
-  if (!installed || !reachable) {
+  // Setup doesn't install Ollama itself yet, so say exactly what the user can
+  // do, rather than implying local models aren't supported at all.
+  if (!installed) {
     return {
       id: "ollama",
       available: false,
-      reason: "Local models are coming in the next update of the Setup Assistant."
+      reason: "Ollama isn't installed on this computer. Install it from ollama.com, download a model, then press Re-check."
+    };
+  }
+  if (!reachable) {
+    return {
+      id: "ollama",
+      available: false,
+      reason: "Ollama is installed but not running. Open the Ollama app, then press Re-check."
     };
   }
   return { id: "ollama", available: true };

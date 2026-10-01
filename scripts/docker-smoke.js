@@ -5,6 +5,7 @@
  * unless HERMES_DOCKER_SMOKE_REQUIRED=1.
  */
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,9 @@ const image = process.env.HERMES_DOCKER_SMOKE_IMAGE || `hermes-agent-os-smoke:${
 const suffix = `${process.pid}-${Date.now()}`;
 const container = process.env.HERMES_DOCKER_SMOKE_CONTAINER || `hermes-agent-os-smoke-${suffix}`;
 const volume = process.env.HERMES_DOCKER_SMOKE_VOLUME || `hermes-agent-os-smoke-data-${suffix}`;
+// local mode gates /api behind a session token. The container
+// runs in local mode (no DEMO_PUBLIC/PUBLIC_MODE), so mint one for it.
+const smokeToken = crypto.randomBytes(16).toString("hex");
 
 function run(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -72,7 +76,7 @@ async function waitForJson(url, label) {
   let lastError = null;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { headers: { "x-agent-os-token": smokeToken } });
       const body = await response.json();
       if (response.ok) return body;
       lastError = new Error(`${label} returned ${response.status}`);
@@ -162,6 +166,8 @@ async function main() {
       "HERMES_AGENT_OS_PUBLIC_MODE=0",
       "-e",
       "HERMES_AGENT_OS_REQUIRE_AUTH=0",
+      "-e",
+      `AGENT_OS_TOKEN=${smokeToken}`,
       "--health-interval=2s",
       "--health-timeout=2s",
       "--health-retries=30",

@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { closeSync, constants as fsConstants, existsSync, openSync, readSync } from "node:fs";
+import { access, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,9 +12,40 @@ const SECRET_VALUE_PATTERNS = [
   /AIza[0-9A-Za-z_-]{20,}/
 ];
 
+function startsWithNodeShebang(file) {
+  let fd;
+  try {
+    fd = openSync(file, "r");
+    const buffer = Buffer.alloc(128);
+    const bytes = readSync(fd, buffer, 0, 128, 0);
+    const firstLine = buffer.subarray(0, bytes).toString("utf8").split("\n")[0];
+    return firstLine.startsWith("#!") && /\bnode\b/.test(firstLine);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// A Node CLI installed into its own Node (e.g. OpenClaw under
+// ~/.agent-os/node/bin) starts with "#!/usr/bin/env node" and must run on
+// the Node next to it, not an older system Node earlier on PATH. Only
+// applies to POSIX node-shebang scripts; npm's Windows .cmd shims already
+// prefer the node.exe beside them.
+export function withSiblingNodePath(command, env = process.env) {
+  if (process.platform === "win32" || !command || !path.isAbsolute(command)) return env;
+  const dir = path.dirname(command);
+  if (path.basename(command) === "node" || !existsSync(path.join(dir, "node"))) return env;
+  if (!startsWithNodeShebang(command)) return env;
+  const parts = String(env.PATH || "").split(path.delimiter).filter((part) => part && part !== dir);
+  return { ...env, PATH: [dir, ...parts].join(path.delimiter) };
+}
+
 export function runCommand(command, args = [], timeout = 5000, options = {}) {
   return new Promise((resolve) => {
-    const child = execFile(command, args, { timeout, cwd: options.cwd || undefined, env: options.env || undefined, signal: options.signal || undefined }, (error, stdout, stderr) => {
+    const env = withSiblingNodePath(command, options.env || process.env);
+    const child = execFile(command, args, { timeout, cwd: options.cwd || undefined, env, signal: options.signal || undefined }, (error, stdout, stderr) => {
+      options.track?.delete(child);
       resolve({
         ok: !error,
         stdout: stdout?.trim() || "",
@@ -23,6 +55,9 @@ export function runCommand(command, args = [], timeout = 5000, options = {}) {
         aborted: error?.name === "AbortError" || error?.code === "ABORT_ERR"
       });
     });
+    // Callers (e.g. live-chat.js) can pass a Set here so shutdown can find
+    // and kill any child still running when the process quits.
+    options.track?.add(child);
     // Non-interactive CLIs such as `codex exec` wait forever when the inherited
     // stdin pipe stays open, even when the prompt is already an argument.
     child.stdin?.end();
@@ -91,44 +126,100 @@ export function runStreamingCommand(command, args = [], timeout = 5000, options 
   });
 }
 
-function executableSearchDirs() {
+// Highest installed nvm Node version's bin dir, if nvm is used. Sorted as
+// semver (major.minor.patch), not as text, so v9 doesn't outrank v10.
+async function highestNvmBinDir() {
+  const nvmRoot = path.join(os.homedir(), ".nvm", "versions", "node");
+  let entries;
+  try {
+    entries = await readdir(nvmRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const versions = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  if (!versions.length) return null;
+  versions.sort((a, b) => {
+    const partsA = a.replace(/^v/, "").split(".").map(Number);
+    const partsB = b.replace(/^v/, "").split(".").map(Number);
+    for (let i = 0; i < Math.max(partsA.length, partsB.length); i += 1) {
+      const diff = (partsA[i] || 0) - (partsB[i] || 0);
+      if (diff) return diff;
+    }
+    return 0;
+  });
+  return path.join(nvmRoot, versions[versions.length - 1], "bin");
+}
+
+async function executableSearchDirs() {
   const extra = String(process.env.HERMES_AGENT_OS_EXECUTABLE_PATHS || "")
     .split(path.delimiter)
     .map((item) => item.trim())
     .filter(Boolean);
-  return [
+  const home = os.homedir();
+  const dirs = [
     ...extra,
     ...String(process.env.PATH || "").split(path.delimiter),
-    path.join(os.homedir(), ".local", "bin"),
-    path.join(os.homedir(), "bin"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin"
-  ].filter(Boolean);
+    path.join(home, ".local", "bin"),
+    path.join(home, "bin"),
+    path.join(home, ".npm-global", "bin"),
+    path.join(home, ".volta", "bin"),
+    path.join(home, ".bun", "bin"),
+    path.join(home, ".cargo", "bin"),
+    path.join(home, ".local", "share", "pnpm"),
+    path.join(home, ".agent-os", "node", "bin")
+  ];
+  const nvmBin = await highestNvmBinDir();
+  if (nvmBin) dirs.push(nvmBin);
+  if (process.platform === "win32") {
+    if (process.env.APPDATA) dirs.push(path.join(process.env.APPDATA, "npm"));
+    if (process.env.LOCALAPPDATA) {
+      dirs.push(path.join(process.env.LOCALAPPDATA, "hermes", "bin"));
+      dirs.push(path.join(process.env.LOCALAPPDATA, "hermes"));
+    }
+  } else {
+    dirs.push("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin");
+  }
+  return dirs.filter(Boolean);
+}
+
+// On Windows a bare command name (no extension) can resolve to any of
+// PATHEXT's suffixes; POSIX has no such notion, so this is a no-op there.
+function candidateNames(command) {
+  if (process.platform !== "win32" || /\.[A-Za-z0-9]+$/.test(command)) return [command];
+  const pathext = String(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((ext) => ext.trim())
+    .filter(Boolean);
+  return [command, ...pathext.map((ext) => `${command}${ext}`)];
+}
+
+async function isExecutableCandidate(candidate) {
+  try {
+    // Windows has no notion of an execute bit; existence is enough there.
+    await access(candidate, process.platform === "win32" ? undefined : fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function findExecutable(command) {
   const clean = String(command || "").trim();
-  if (!clean || clean.includes("/") || clean.includes("\0")) return "";
+  if (!clean || clean.includes("\0")) return "";
+  if (clean.includes("/") || (process.platform === "win32" && clean.includes("\\"))) return "";
   const seen = new Set();
-  for (const dir of executableSearchDirs()) {
-    const candidate = path.join(dir, clean);
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // keep scanning common local binary directories
+  for (const dir of await executableSearchDirs()) {
+    for (const name of candidateNames(clean)) {
+      const candidate = path.join(dir, name);
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (await isExecutableCandidate(candidate)) return candidate;
     }
   }
   return "";
 }
 
 export async function which(command) {
-  const result = await runCommand("/usr/bin/which", [command], 3000);
-  if (result.ok && result.stdout) return result.stdout.split("\n")[0];
   return findExecutable(command);
 }
 

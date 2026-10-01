@@ -1,0 +1,123 @@
+/* Design tokens for the new shell + Fleet UI. Every token is prefixed
+   --os- so it never collides with the legacy --line/--text/--panel
+   variables in styles.css / agent-os.css, which keep their own values
+   for the pages that still use them. */
+:root {
+  /* Colour (dark only — the app is dark-only today) */
+  --os-bg-0: #05070b;
+  --os-bg-1: #090d13;
+  --os-surface-1: #0d1219;
+  --os-surface-2: #121925;
+  --os-surface-3: #1a2332;
+  --os-line-1: rgba(148, 163, 184, 0.1);
+  --os-line-2: rgba(148, 163, 184, 0.18);
+  --os-line-3: rgba(148, 163, 184, 0.28);
+  --os-text-1: #e9eef5;
+  --os-text-2: #a7b2c2;
+  --os-text-3: #76839a;
+  --os-accent: #5ce1ff;
+  --os-accent-strong: #8aebff;
+  --os-accent-soft: rgba(92, 225, 255, 0.12);
+  --os-accent-ink: #031018;
+  --os-ok: #3ddc97;
+  --os-warn: #f5b84b;
+  --os-danger: #ff5c7a;
+  --os-unknown: #76839a;
+
+  /* Type */
+  --os-font-ui: "Inter Variable", system-ui, sans-serif;
+  --os-font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --os-fs-11: 11px;
+  --os-fs-12: 12px;
+  --os-fs-13: 13px;
+  --os-fs-14: 14px;
+  --os-fs-16: 16px;
+  --os-fs-20: 20px;
+  --os-fs-24: 24px;
+  --os-fs-32: 32px;
+  --os-fs-44: 44px;
+  --os-fs-64: 64px;
+  --os-lh-display: 1.2;
+  --os-lh-body: 1.5;
+
+  /* Space (4px base) */
+  --os-sp-1: 4px;
+  --os-sp-2: 8px;
+  --os-sp-3: 12px;
+  --os-sp-4: 16px;
+  --os-sp-5: 20px;
+  --os-sp-6: 24px;
+  --os-sp-7: 32px;
+  --os-sp-8: 40px;
+  --os-sp-9: 56px;
+  --os-sp-10: 72px;
+
+  /* Radius */
+  --os-r-sm: 6px;
+  --os-r-md: 10px;
+  --os-r-lg: 14px;
+  --os-r-xl: 20px;
+  --os-r-pill: 999px;
+
+  /* Elevation */
+  --os-e1: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 0 0 1px var(--os-line-1);
+  --os-e2: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--os-line-2);
+  --os-e3: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--os-line-2);
+  --os-glow: 0 0 0 1px rgba(92, 225, 255, 0.35), 0 0 24px rgba(92, 225, 255, 0.18);
+
+  /* Glass (modals + command bar only) */
+  --os-glass-bg: rgba(13, 18, 25, 0.72);
+  --os-glass-blur: blur(16px) saturate(140%);
+
+  /* Motion */
+  --os-dur-instant: 80ms;
+  --os-dur-quick: 140ms;
+  --os-dur-base: 220ms;
+  --os-dur-slow: 360ms;
+  --os-dur-deliberate: 600ms;
+  --os-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --os-ease-inout: cubic-bezier(0.6, 0, 0.2, 1);
+  --os-ease-pulse: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Background recipe: base colour, two very soft glows, and a fine noise
+   grain so the glows never band. Painted on .os-shell so legacy pages
+   (which don't carry that class) are unaffected. */
+.os-shell {
+  position: relative;
+  background: var(--os-bg-0);
+  isolation: isolate;
+}
+
+.os-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  /* Perceptible-but-subtle per the W7b review: 7% top-left / 6% bottom-right. */
+  background:
+    radial-gradient(ellipse 900px 600px at 8% 0%, rgba(92, 225, 255, 0.07), transparent 60%),
+    radial-gradient(ellipse 900px 700px at 100% 100%, rgba(140, 120, 255, 0.06), transparent 60%);
+}
+
+.os-shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

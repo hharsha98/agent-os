@@ -47,7 +47,7 @@ Safety preferences:
 Open this folder in Cursor:
 
 ```text
-/Users/harsha/.hermes/agent-os-runtime/app
+~/.hermes/agent-os-runtime/app
 ```
 
 Main local dashboard URL:
@@ -167,7 +167,7 @@ Do not trust this blindly — inspect and test.
 Hermes previously reported this backup path:
 
 ```text
-/Users/harsha/.hermes/agent-os-runtime/backups/20260807-112713-dashboard-upgrade
+~/.hermes/agent-os-runtime/backups/20260807-112713-dashboard-upgrade
 ```
 
 Check whether it exists before using it.
@@ -179,7 +179,7 @@ Check whether it exists before using it.
 Run from:
 
 ```bash
-cd /Users/harsha/.hermes/agent-os-runtime/app
+cd ~/.hermes/agent-os-runtime/app
 ```
 
 ### Check Agent OS health
@@ -430,7 +430,7 @@ Before editing:
 Suggested backup directory pattern:
 
 ```text
-/Users/harsha/.hermes/agent-os-runtime/backups/YYYYMMDD-HHMMSS-cursor-phase2
+~/.hermes/agent-os-runtime/backups/YYYYMMDD-HHMMSS-cursor-phase2
 ```
 
 ---

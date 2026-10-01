@@ -1,10 +1,13 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
 import { appendModuleLog } from "./module-logs.js";
+import { killProcessTree, spawnTracked } from "./process-tree.js";
 import { redactValue, sanitizeObject } from "./safety.js";
+
+const PACKAGED = () => process.env.AGENT_OS_PACKAGED === "1";
+const PACKAGED_REASON = "Open Agent Builder needs a source checkout; not included in the desktop app.";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -262,12 +265,15 @@ function supervisorSnapshot() {
 
 export async function getBuilderStatus() {
   const stored = await getStoredConnectionConfig();
-  const [sourcePresent, dependenciesInstalled, upstreamFilePresent, live] = await Promise.all([
-    exists(path.join(builderRoot, "package.json")),
-    exists(path.join(builderRoot, "node_modules", "next", "package.json")),
-    exists(path.join(builderRoot, "UPSTREAM.md")),
-    isLive()
-  ]);
+  const packaged = PACKAGED();
+  const [sourcePresent, dependenciesInstalled, upstreamFilePresent, live] = packaged
+    ? [false, false, false, false]
+    : await Promise.all([
+        exists(path.join(builderRoot, "package.json")),
+        exists(path.join(builderRoot, "node_modules", "next", "package.json")),
+        exists(path.join(builderRoot, "UPSTREAM.md")),
+        isLive()
+      ]);
 
   let packageName = "open-agent-builder";
   let packageVersion = null;
@@ -305,6 +311,7 @@ export async function getBuilderStatus() {
     url: builderUrl,
     proxiedUrl: "/agent-builder-source/?view=builder",
     sourcePresent,
+    reason: packaged ? PACKAGED_REASON : null,
     dependenciesInstalled,
     upstreamFilePresent,
     live,
@@ -565,6 +572,12 @@ function supervisorCommand() {
 }
 
 export async function startBuilderSupervisor() {
+  if (PACKAGED()) {
+    addSupervisorLog("warn", "Builder supervisor start blocked: not available in the desktop app.");
+    const error = new Error(PACKAGED_REASON);
+    error.status = 409;
+    throw error;
+  }
   const status = await getBuilderStatus();
   if (builderProcess && builderProcess.exitCode == null && !builderProcess.killed) {
     addSupervisorLog("info", "Builder supervisor already running.", { pid: builderProcess.pid });
@@ -601,7 +614,7 @@ export async function startBuilderSupervisor() {
     args: args.map((item) => path.basename(item)),
     port: builderPort
   });
-  builderProcess = spawn(command, args, {
+  builderProcess = spawnTracked(command, args, {
     cwd: root,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"]
@@ -665,7 +678,8 @@ export async function stopBuilderSupervisor() {
     state: "stopping"
   };
   addSupervisorLog("info", "Builder supervisor stopping.", { pid: builderProcess.pid });
-  builderProcess.kill("SIGTERM");
+  if (builderProcess.pid) killProcessTree(builderProcess.pid).catch(() => {});
+  else builderProcess.kill("SIGTERM");
   await appendModuleLog("firecrawl-builder", {
     message: "Builder supervisor stop requested",
     details: { pid: builderProcess.pid }

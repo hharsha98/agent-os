@@ -1,5 +1,6 @@
 node_modules
 dist
+build
 .DS_Store
 .env
 .data
@@ -9,3 +10,8 @@ vendor/open-agent-builder/node_modules
 vendor/open-agent-builder/.next
 vendor/open-agent-builder/.env
 vendor/open-agent-builder/.env.local
+desktop/src-tauri/resources/server
+desktop/src-tauri/resources/node
+desktop/src-tauri/target
+desktop/src-tauri/gen
+desktop/.cache

@@ -1,0 +1,293 @@
+/* Layout for the new app shell: a 48px status strip across the top, a
+   248px sidebar below it, and content offset to clear both. One
+   breakpoint (900px) governs both the menu button and the off-canvas
+   sidebar — the old shell used two (840 and 900) and they disagreed. */
+
+.os-shell {
+  min-height: 100svh;
+}
+
+.os-statusbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: 0 var(--os-sp-4);
+  background: var(--os-bg-1);
+  border-bottom: 1px solid var(--os-line-1);
+}
+
+.os-statusbar__chips {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* One instrument-style segmented group instead of loose pills: hairline
+   dividers, mono values. */
+.os-statusbar__group {
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-1);
+  border: 1px solid var(--os-line-1);
+  overflow: hidden;
+}
+.os-statusbar__seg {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  padding: 0 var(--os-sp-3);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  white-space: nowrap;
+  border-left: 1px solid var(--os-line-1);
+}
+.os-statusbar__seg:first-child {
+  border-left: 0;
+}
+.os-statusbar__seg-value {
+  font-family: var(--os-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--os-text-1);
+}
+
+.os-menu-button {
+  display: none;
+}
+
+.os-sidebar {
+  position: fixed;
+  top: 48px;
+  left: 0;
+  bottom: 0;
+  width: 248px;
+  background: var(--os-bg-1);
+  border-right: 1px solid var(--os-line-1);
+  padding: var(--os-sp-5) var(--os-sp-3) var(--os-sp-4);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  z-index: 30;
+}
+
+.os-logo {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: 0 var(--os-sp-2) var(--os-sp-5);
+}
+
+.os-logo-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--os-r-md);
+  background: linear-gradient(135deg, var(--os-accent), var(--os-accent-strong));
+  color: var(--os-accent-ink);
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: var(--os-fs-16);
+  flex: 0 0 auto;
+}
+
+.os-logo strong {
+  display: block;
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+}
+
+.os-logo span {
+  display: block;
+}
+
+.os-logo-mark {
+  position: relative;
+  overflow: hidden;
+}
+.os-logo-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.28), transparent 55%);
+}
+
+.os-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Sidebar bottom: the real execution-gate level (0/1/2), not just a label. */
+.os-sidebar__safety {
+  flex: 0 0 auto;
+  margin-top: var(--os-sp-3);
+  padding-top: var(--os-sp-3);
+  border-top: 1px solid var(--os-line-1);
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  font-family: var(--os-font-ui);
+  padding-left: var(--os-sp-2);
+  padding-right: var(--os-sp-2);
+  padding-bottom: 0;
+  cursor: pointer;
+  text-align: left;
+  min-height: 32px;
+  border-radius: var(--os-r-md);
+}
+.os-sidebar__safety:hover {
+  color: var(--os-text-1);
+  background: var(--os-surface-2);
+}
+
+.os-nav__section {
+  margin: var(--os-sp-2) var(--os-sp-2) var(--os-sp-1);
+}
+
+.os-nav__item {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  min-height: 36px;
+  padding: 0 var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  color: var(--os-text-2);
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--os-fs-14);
+  font-family: var(--os-font-ui);
+  transition: background var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-nav__item:hover {
+  background: var(--os-surface-2);
+  color: var(--os-text-1);
+}
+.os-nav__item.is-active {
+  position: relative;
+  background: var(--os-accent-soft);
+  color: var(--os-text-1);
+}
+.os-nav__item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: var(--os-r-pill);
+  background: var(--os-accent);
+  box-shadow: 0 0 8px rgba(92, 225, 255, 0.6);
+}
+
+.os-nav__labs-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin-top: var(--os-sp-5);
+  min-height: 32px;
+  padding: 0 var(--os-sp-3);
+  background: transparent;
+  border: 1px solid var(--os-line-1);
+  border-radius: var(--os-r-md);
+  color: var(--os-text-2);
+  cursor: pointer;
+  font-family: var(--os-font-ui);
+}
+.os-nav__labs-toggle:hover {
+  border-color: var(--os-line-2);
+}
+.os-nav__chevron {
+  margin-left: auto;
+  transition: transform var(--os-dur-quick) var(--os-ease-out);
+}
+.os-nav__chevron.is-open {
+  transform: rotate(180deg);
+}
+.os-nav__labs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+  margin-top: var(--os-sp-2);
+  padding-left: var(--os-sp-2);
+  border-left: 1px solid var(--os-line-1);
+}
+
+.os-menu-backdrop {
+  display: none;
+}
+
+/* Content: clears the fixed status strip + sidebar. Higher specificity
+   than phase2.css's plain .aos-phase2-content so this wins regardless of
+   import order, without touching that file. */
+.os-shell .aos-phase2-content {
+  margin-top: 48px;
+  margin-left: 248px;
+  width: calc(100% - 248px);
+  min-height: calc(100svh - 48px);
+  padding: var(--os-sp-7) var(--os-sp-7) var(--os-sp-9);
+  box-sizing: border-box;
+}
+
+@media (max-width: 900px) {
+  .os-menu-button {
+    display: inline-flex;
+  }
+  .os-sidebar {
+    transform: translateX(-100%);
+    transition: transform var(--os-dur-base) var(--os-ease-out);
+    box-shadow: var(--os-e3);
+  }
+  .os-sidebar.is-open {
+    transform: translateX(0);
+  }
+  .os-shell .aos-phase2-content {
+    margin-left: 0;
+    width: 100%;
+    padding: var(--os-sp-5) var(--os-sp-4) var(--os-sp-8);
+  }
+  .os-menu-backdrop {
+    display: block;
+    position: fixed;
+    top: 48px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(5, 7, 11, 0.6);
+    border: 0;
+    z-index: 25;
+    padding: 0;
+  }
+  .os-statusbar__seg {
+    display: none;
+  }
+  .os-statusbar__seg:first-child {
+    display: flex;
+    border-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .os-sidebar {
+    transition: none;
+  }
+}

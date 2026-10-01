@@ -1,9 +1,11 @@
 import { promises as fs } from "node:fs";
-import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { containsBlockedFlag } from "./agent-flags.js";
+import { killProcessTree, spawnTracked } from "./process-tree.js";
 import { getBuilderStatus } from "./builder-service.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
+import { withMessageTerminator } from "./live-chat.js";
 import { getElizaStatus } from "./eliza.js";
 import { getInstallRecipe } from "./installers.js";
 import { addMemory } from "./memory.js";
@@ -98,6 +100,20 @@ const CLI_MODULES = [
     docsUrl: "https://opencode.ai"
   }
 ];
+
+// launchctl only exists on macOS. Elsewhere, report the same shape a failed
+// command would produce instead of spawning a binary that isn't there.
+function launchctl(args, timeout = 10000) {
+  if (process.platform !== "darwin") {
+    return Promise.resolve({
+      ok: false,
+      stdout: "",
+      stderr: `launchctl is not supported on ${process.platform}`,
+      code: 127
+    });
+  }
+  return runCommand("/bin/launchctl", args, timeout);
+}
 
 const INTERNAL_MODULES = [
   {
@@ -525,16 +541,18 @@ async function resolveWorkspace(definition, stored, input = {}) {
   return { ok: true, cwd: resolved, configured: true };
 }
 
-function buildCliArgs(definition, stored, input = {}) {
+export function buildCliArgs(definition, stored, input = {}) {
   const prefix = cliPrefix(definition);
   const message = String(input.message || input.prompt || "").slice(0, 4000);
-  const template = String(input.argsTemplate || getConfiguredValue(stored, definition.id, `${prefix}_CLI_ARGS`) || "").trim();
+  // Only the stored/env <PREFIX>_CLI_ARGS setting may provide a template —
+  // a request body can never supply argsTemplate directly.
+  const template = String(getConfiguredValue(stored, definition.id, `${prefix}_CLI_ARGS`) || "").trim();
   if (!template) {
     const configuredCodexPath = definition.id === "codex"
       ? getConfiguredValue(stored, definition.id, "CODEX_CLI_PATH")
       : null;
     if (definition.id === "codex" && !configuredCodexPath && message) {
-      return [
+      return withMessageTerminator([
         "exec",
         "--ephemeral",
         "--skip-git-repo-check",
@@ -543,18 +561,29 @@ function buildCliArgs(definition, stored, input = {}) {
         "--color",
         "never",
         message
-      ];
+      ], message);
     }
     if (definition.id === "openclaw" && message) {
+      // "--message" binds its very next token as the value regardless of a
+      // leading "-", so no terminator is needed here.
       return ["agent", "--message", message, "--thinking", "high"];
     }
-    return message ? [message] : [];
+    if (definition.id === "claude" && message) {
+      // Without -p, `claude <message>` starts an interactive session that
+      // waits on a terminal and hangs forever in a spawned child process.
+      return withMessageTerminator(["-p", "--output-format", "text", message], message);
+    }
+    return message ? withMessageTerminator([message], message) : [];
   }
-  const args = splitArgsTemplate(template).map((arg) => arg
-    .replaceAll("{{message}}", message)
-    .replaceAll("{{prompt}}", message));
+  // Defence in depth: configure-time checks already reject blocked flags,
+  // but filter again here in case a stored value predates that check.
+  const args = splitArgsTemplate(template)
+    .filter((arg) => !containsBlockedFlag(arg))
+    .map((arg) => arg
+      .replaceAll("{{message}}", message)
+      .replaceAll("{{prompt}}", message));
   if (!args.some((arg) => arg.includes(message)) && message) args.push(message);
-  return args;
+  return withMessageTerminator(args, message);
 }
 
 async function buildCliInvocation(definition, stored, input, commandPath, resolved) {
@@ -1288,7 +1317,7 @@ async function runHermesControl(module, input = {}) {
       reply = `Prepared Hermes gateway restart for ${profile.id}. Execution requires the trusted execution gate and dryRun:false.`;
       if (execEnabled && explicitExecution) {
         const target = `gui/${process.getuid?.() || os.userInfo().uid}/${profile.launchLabel}`;
-        const result = await runCommand("/bin/launchctl", ["kickstart", "-k", target], 10000);
+        const result = await launchctl(["kickstart", "-k", target], 10000);
         ok = result.ok;
         mode = "executed";
         control.executed = true;
@@ -1623,9 +1652,10 @@ async function readJsonIfExists(file, fallback = null) {
   }
 }
 
-function hermesHomeFrom(stored = {}, input = {}) {
+function hermesHomeFrom(stored = {}) {
+  // Request input can never override where we look for the Hermes profile
+  // store — only stored/env config may set it.
   return expandHome(
-    input.hermesHome ||
     getConfiguredValue(stored, "gateway", "HERMES_HOME") ||
     getConfiguredValue(stored, "hermes", "HERMES_HOME") ||
     process.env.HERMES_HOME
@@ -1985,7 +2015,7 @@ async function runGatewayControl(module, input = {}) {
       reply = `Prepared Hermes gateway restart for ${profile.id}. Execution requires the trusted execution gate and dryRun:false.`;
       if (execEnabled && explicitExecution) {
         const target = `gui/${process.getuid?.() || os.userInfo().uid}/${profile.launchLabel}`;
-        const result = await runCommand("/bin/launchctl", ["kickstart", "-k", target], 10000);
+        const result = await launchctl(["kickstart", "-k", target], 10000);
         ok = result.ok;
         mode = "executed";
         control.executed = true;
@@ -2118,7 +2148,7 @@ async function runGatewayControl(module, input = {}) {
 }
 
 async function launchctlMap() {
-  const result = await runCommand("/bin/launchctl", ["list"], 5000);
+  const result = await launchctl(["list"], 5000);
   if (!result.ok && !result.stdout) return {};
   const map = {};
   for (const line of String(result.stdout || "").split(/\r?\n/)) {
@@ -3243,7 +3273,7 @@ export async function startModuleSession(id, input = {}) {
     };
   }
 
-  const child = spawn(commandPath, invocation.args, {
+  const child = spawnTracked(commandPath, invocation.args, {
     cwd: invocation.workspace.cwd || undefined,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"]
@@ -3269,10 +3299,7 @@ export async function startModuleSession(id, input = {}) {
   ACTIVE_MODULE_SESSIONS.set(`${id}:${sessionId}`, { child, commandPath, cwd: invocation.workspace.cwd || "", timeout: null });
 
   const timeout = setTimeout(() => {
-    if (!child.killed) child.kill("SIGTERM");
-    setTimeout(() => {
-      if (!child.killed) child.kill("SIGKILL");
-    }, 1000).unref?.();
+    if (!child.killed && child.pid) killProcessTree(child.pid, { graceMs: 1000 }).catch(() => {});
   }, invocation.timeoutMs);
   timeout.unref?.();
   ACTIVE_MODULE_SESSIONS.get(`${id}:${sessionId}`).timeout = timeout;
@@ -3344,7 +3371,8 @@ export async function stopModuleSession(id, sessionId) {
       stopRequested: true,
       nextStep: "Stop requested. Waiting for the local CLI process to exit."
     }));
-    active.child.kill("SIGTERM");
+    if (active.child.pid) killProcessTree(active.child.pid).catch(() => {});
+    else active.child.kill("SIGTERM");
     await appendModuleLog(id, {
       message: "Module session stop requested",
       details: { sessionId }

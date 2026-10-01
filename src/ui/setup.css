@@ -1,0 +1,788 @@
+/* Setup Assistant ("pre-flight" stepper). Only .os- selectors; legacy pages
+   never see these. */
+
+.os-setup {
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-6);
+}
+.os-setup__header h1 {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-32);
+  font-weight: 600;
+  color: var(--os-text-1);
+}
+.os-setup__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-5);
+}
+.os-setup__continue {
+  align-self: flex-start;
+}
+.os-setup__loading,
+.os-setup__error {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-14);
+}
+
+/* --- Stepper -------------------------------------------------------------- */
+.os-setup-stepper {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  margin: 0;
+  padding: var(--os-sp-4) 0;
+  flex-wrap: wrap;
+  gap: var(--os-sp-2) 0;
+}
+.os-setup-step {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.os-setup-step__btn {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  background: none;
+  border: none;
+  padding: var(--os-sp-2) 0;
+  cursor: pointer;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  white-space: nowrap;
+}
+.os-setup-step__btn:disabled {
+  cursor: default;
+}
+.os-setup-step--current .os-setup-step__label {
+  color: var(--os-text-1);
+  font-weight: 600;
+}
+.os-setup-step__mark {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+.os-setup-step__mark svg {
+  width: 100%;
+  height: 100%;
+}
+.os-setup-step__mark--not-reached svg circle {
+  fill: none;
+  stroke: var(--os-line-3);
+  stroke-width: 1.4;
+}
+.os-setup-step__mark--current svg circle {
+  fill: var(--os-accent-soft);
+  stroke: var(--os-accent);
+  stroke-width: 1.6;
+}
+.os-setup-step__mark--done svg circle {
+  fill: var(--os-ok);
+}
+.os-setup-step__mark--failed svg rect {
+  fill: var(--os-danger);
+}
+.os-setup-step__rail {
+  flex: 1 1 32px;
+  height: 1px;
+  background: var(--os-line-2);
+  margin: 0 var(--os-sp-2);
+  min-width: 16px;
+}
+
+/* --- Check ---------------------------------------------------------------- */
+.os-setup-check {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-setup-check__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--os-sp-3);
+  font-size: var(--os-fs-14);
+  flex-wrap: wrap;
+}
+.os-setup-check__label {
+  color: var(--os-text-1);
+  min-width: 160px;
+}
+.os-setup-check__detail {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+
+/* --- Plan cards ------------------------------------------------------------ */
+.os-setup-plan__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: var(--os-sp-4);
+}
+.os-setup-plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-setup-plan-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-3);
+}
+.os-setup-plan-card__head strong {
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-setup-plan-card__source {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  gap: 4px;
+  font-size: var(--os-fs-12);
+  color: var(--os-accent);
+}
+.os-setup-plan-card__meta {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-setup-plan-card__choices {
+  display: flex;
+  gap: var(--os-sp-5);
+  flex-wrap: wrap;
+}
+.os-setup-plan-card__choice {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-plan-card__warning {
+  margin: 0;
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  background: rgba(245, 184, 75, 0.08);
+  border: 1px solid rgba(245, 184, 75, 0.3);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+}
+.os-setup-plan-card__desc {
+  margin: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-setup-plan-card__changes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+}
+.os-setup-plan-card__changes ul {
+  margin: 0;
+  padding-left: 1.2em;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.os-setup-plan-card__disclosure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-setup-plan-card__commands {
+  margin: 0;
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  background: var(--os-bg-0);
+  border: 1px solid var(--os-line-2);
+  color: var(--os-text-2);
+  font-size: var(--os-fs-12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.os-setup-plan-card__password-callout {
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  background: rgba(245, 184, 75, 0.08);
+  border: 1px solid rgba(245, 184, 75, 0.3);
+}
+.os-setup-plan-card__password-callout p {
+  margin: 0;
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+}
+.os-setup-plan-card__risk {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+
+/* --- Install / configure progress ------------------------------------------ */
+.os-setup-install {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-4);
+}
+.os-setup-install__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.os-setup-install__head h2 {
+  margin: 0;
+  font-size: var(--os-fs-20);
+  color: var(--os-text-1);
+}
+.os-setup-install__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-install__steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-setup-install__step {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+  flex-wrap: wrap;
+}
+.os-setup-install__step-label {
+  color: var(--os-text-1);
+}
+.os-setup-install__step-elapsed {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-12);
+}
+.os-setup-install__step-error {
+  color: var(--os-danger);
+  font-size: var(--os-fs-12);
+}
+.os-setup-install__failure {
+  padding: var(--os-sp-4);
+  border-radius: var(--os-r-md);
+  background: rgba(255, 92, 122, 0.08);
+  border: 1px solid rgba(255, 92, 122, 0.3);
+}
+.os-setup-install__failure p {
+  margin: 0 0 var(--os-sp-3);
+  color: var(--os-text-1);
+}
+.os-setup-install__failure-actions {
+  display: flex;
+  gap: var(--os-sp-3);
+  flex-wrap: wrap;
+}
+.os-setup-install__log-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-setup-install__log-lines {
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--os-bg-0);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  padding: var(--os-sp-3);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-setup-install__jump {
+  align-self: flex-end;
+}
+.os-setup-install__cancel {
+  align-self: flex-start;
+}
+
+/* --- AI brain --------------------------------------------------------------- */
+.os-setup-brain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-5);
+}
+.os-setup-brain__intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-4);
+  flex-wrap: wrap;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-setup-brain__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: var(--os-sp-4);
+}
+.os-setup-brain__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  border: 1px solid transparent;
+}
+.os-setup-brain__card--selected {
+  border-color: var(--os-accent);
+  box-shadow: var(--os-glow);
+}
+.os-setup-brain__card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-3);
+}
+.os-setup-brain__card-select {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  color: var(--os-text-1);
+}
+.os-setup-brain__tradeoff {
+  margin: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-setup-brain__card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-setup-brain__guide {
+  margin: 0;
+  padding-left: 1.2em;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.os-setup-brain__key-row {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  flex-wrap: wrap;
+}
+.os-setup-brain__key-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-setup-brain__error {
+  margin: 0;
+  color: var(--os-danger);
+  font-size: var(--os-fs-13);
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-setup-brain__warning {
+  margin: 0;
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  background: rgba(245, 184, 75, 0.08);
+  border: 1px solid rgba(245, 184, 75, 0.3);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+}
+.os-setup-brain__privacy {
+  margin: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-12);
+}
+.os-setup-brain__apply {
+  align-self: flex-start;
+}
+
+/* --- Ready ------------------------------------------------------------------ */
+.os-setup-ready {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-5);
+}
+.os-setup-ready__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--os-sp-3);
+}
+.os-setup-ready__head h2 {
+  margin: 0;
+  font-size: var(--os-fs-24);
+  color: var(--os-text-1);
+}
+.os-setup-ready__card ul {
+  list-style: none;
+  margin: var(--os-sp-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-setup-ready__row {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-ready__row button {
+  margin-left: auto;
+}
+.os-setup-ready__receipt-list {
+  list-style: none;
+  margin: var(--os-sp-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  font-size: var(--os-fs-13);
+}
+.os-setup-ready__receipt-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: var(--os-sp-3);
+  border-bottom: 1px solid var(--os-line-1);
+}
+.os-setup-ready__receipt-list > li:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.os-setup-ready__receipt-changes {
+  margin: 4px 0 0;
+  padding-left: 1.2em;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-12);
+}
+.os-setup-ready__empty {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-setup-ready__uninstall {
+  margin: 0;
+  padding-left: 1.2em;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-12);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.os-setup-ready__actions {
+  display: flex;
+  gap: var(--os-sp-3);
+}
+
+/* --- Modal ------------------------------------------------------------------ */
+.os-setup-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 7, 11, 0.6);
+  padding: var(--os-sp-5);
+}
+.os-setup-modal {
+  width: min(480px, 100%);
+  background: var(--os-glass-bg);
+  backdrop-filter: var(--os-glass-blur);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e3);
+  padding: var(--os-sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-4);
+}
+.os-setup-modal__title {
+  margin: 0;
+  font-size: var(--os-fs-20);
+  color: var(--os-text-1);
+}
+.os-setup-modal__body {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-14);
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-setup-modal__body ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+.os-setup-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--os-sp-3);
+}
+
+@media (max-width: 480px) {
+  .os-setup-modal__actions {
+    flex-direction: column-reverse;
+  }
+  .os-setup-modal__actions .os-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+
+/* --- Additions: step heads, actions, alerts, honest meter -------------------- */
+.os-setup__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-5);
+}
+/* Focused only by code after a person moves to another step (so keyboard
+   focus is not dropped on <body>). The region itself is not interactive, so
+   it gets no ring; every control inside keeps its own. The selector is as
+   specific as the shell's global :focus-visible rule so it wins. */
+.os-shell .os-setup__content:focus-visible,
+.os-setup__content:focus {
+  outline: none;
+}
+.os-setup__content > * {
+  min-width: 0;
+}
+.os-setup__step-head h2 {
+  margin: 0;
+  font-size: var(--os-fs-20);
+  color: var(--os-text-1);
+}
+.os-setup__step-head p {
+  margin: var(--os-sp-1) 0 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-14);
+}
+.os-setup__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  flex-wrap: wrap;
+}
+.os-setup__hint {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-setup__alert {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-3) var(--os-sp-4);
+  border-radius: var(--os-r-md);
+  background: rgba(245, 184, 75, 0.08);
+  border: 1px solid rgba(245, 184, 75, 0.3);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+}
+.os-setup__alert svg {
+  flex: 0 0 auto;
+  color: var(--os-warn);
+}
+.os-setup__alert .os-btn {
+  margin-left: auto;
+}
+.os-setup-plan-card__state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-setup-modal__error {
+  margin: 0;
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  background: rgba(255, 92, 122, 0.08);
+  border: 1px solid rgba(255, 92, 122, 0.3);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+}
+
+/* Install meter: one segment per real server step. Filled = that step has
+   succeeded; outlined accent = it is running; hollow = not reached. A
+   segment only ever changes when the server reports it, and the fill
+   transition is the one allowed motion (it rests when motion is reduced). */
+.os-setup-install__meter {
+  display: flex;
+  gap: 6px;
+}
+.os-setup-install__seg {
+  flex: 1 1 0;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--os-unknown);
+  background: transparent;
+  transition: background-color var(--os-dur-slow) var(--os-ease-out), border-color var(--os-dur-slow) var(--os-ease-out);
+}
+.os-setup-install__seg--running {
+  border-color: var(--os-accent);
+}
+.os-setup-install__seg--succeeded {
+  background: var(--os-ok);
+  border-color: var(--os-ok);
+}
+.os-setup-install__seg--failed {
+  background: var(--os-danger);
+  border-color: var(--os-danger);
+}
+.os-setup-install__count {
+  margin: calc(var(--os-sp-2) * -1) 0 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+
+/* AI brain extras */
+.os-setup-brain__picked {
+  margin: calc(var(--os-sp-3) * -1) 0 0;
+  min-height: 1.2em;
+  font-size: var(--os-fs-13);
+  color: var(--os-accent);
+}
+.os-setup-brain__agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-brain__agents li {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-setup-brain__agents strong {
+  color: var(--os-text-1);
+  font-weight: 600;
+}
+.os-setup-brain__note {
+  margin: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-setup-brain__card-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-setup-brain__card-select input[type="radio"],
+.os-setup-plan-card__choice input,
+.os-setup-plan-card__risk input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--os-accent);
+}
+.os-setup-ready__uninstall-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-setup-ready__uninstall li {
+  overflow-wrap: anywhere;
+}
+.os-setup-ready__row {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 599px) {
+  /* Phone: every check row reads the same way: mark + name, detail under it. */
+  .os-setup-check__row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: var(--os-sp-3);
+    row-gap: 2px;
+    align-items: center;
+  }
+  .os-setup-check__label {
+    min-width: 0;
+  }
+  .os-setup-check__detail {
+    grid-column: 2;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 599px) {
+  /* Phone: the step rail becomes a compact numbered row; labels stay on the
+     current step only so five steps fit without scrolling sideways. */
+  .os-setup-step:not(.os-setup-step--current) .os-setup-step__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .os-setup-step__btn {
+    min-height: 40px;
+    min-width: 40px;
+    justify-content: center;
+  }
+  .os-setup-step {
+    flex: 0 1 auto;
+  }
+  .os-setup-step__rail {
+    flex: 1 1 8px;
+    min-width: 8px;
+  }
+  .os-setup-stepper {
+    flex-wrap: nowrap;
+  }
+  .os-setup .os-btn,
+  .os-setup-modal .os-btn {
+    min-height: 40px;
+  }
+  .os-setup-plan-card__source {
+    min-height: 40px;
+  }
+  .os-setup-plan-card__choice,
+  .os-setup-plan-card__risk,
+  .os-setup-brain__card-select {
+    min-height: 40px;
+  }
+}
+
+.os-setup-brain__avail {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-setup-ready__receipt > header + .os-setup-ready__empty {
+  margin: var(--os-sp-2) 0 0;
+}

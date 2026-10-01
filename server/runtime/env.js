@@ -46,7 +46,11 @@ export function loadLocalEnv({
   override = false,
   env = process.env
 } = {}) {
-  const filePath = path.resolve(root, filename);
+  // A packaged desktop build has no repo checkout to hold a root-level .env,
+  // so it can point this at wherever it keeps local config instead.
+  const filePath = env.AGENT_OS_ENV_FILE
+    ? path.resolve(env.AGENT_OS_ENV_FILE)
+    : path.resolve(root, filename);
   try {
     const parsed = parseEnvFile(readFileSync(filePath, "utf8"));
     const result = applyEnvValues(parsed, { override, env });

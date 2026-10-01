@@ -1,0 +1,189 @@
+/* Safety "arming panel". Only .os- selectors; legacy pages never see these. */
+
+.os-safety {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-6);
+}
+.os-safety__header h1 {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-32);
+  font-weight: 600;
+  color: var(--os-text-1);
+}
+
+.os-safety__plates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-4);
+}
+
+.os-safety-plate {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  transition: opacity var(--os-dur-slow) var(--os-ease-out), box-shadow var(--os-dur-slow) var(--os-ease-out);
+}
+.os-safety-plate--dim {
+  opacity: 0.82;
+}
+/* Lit plate: accent hairline + soft glow (the brief's --os-glow, tinted per
+   plate). Only the plate that matches the server's level ever gets this. */
+.os-safety-plate--lit {
+  opacity: 1;
+  box-shadow: var(--os-e2), 0 0 0 1px var(--os-plate-c, var(--os-line-2)), 0 0 28px color-mix(in srgb, var(--os-plate-c, transparent) 18%, transparent);
+}
+.os-safety-plate--disabled {
+  opacity: 0.72;
+}
+.os-safety-plate--disabled .os-safety-plate__note {
+  color: var(--os-text-1);
+}
+.os-safety-plate__toplight {
+  position: absolute;
+  top: 0;
+  left: var(--os-r-lg);
+  right: var(--os-r-lg);
+  height: 2px;
+  border-radius: var(--os-r-pill);
+  background: var(--os-plate-c, var(--os-line-2));
+  opacity: 0.7;
+  transition: background var(--os-dur-slow) var(--os-ease-out);
+}
+.os-safety-plate__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.os-safety-plate__head {
+  position: relative;
+}
+.os-safety-plate__head h2 {
+  margin: 0;
+  font-size: var(--os-fs-20);
+  color: var(--os-text-1);
+}
+.os-safety-plate__tag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-11);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--os-plate-c, var(--os-text-2));
+}
+.os-safety-plate__lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-safety-plate__action {
+  align-self: flex-start;
+}
+.os-safety-plate__note {
+  margin: 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-12);
+}
+.os-safety-plate__arm-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  align-items: flex-start;
+}
+.os-safety-plate__armed {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--os-sp-4);
+  flex-wrap: wrap;
+}
+.os-safety-plate__armed-clock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.os-safety-plate__countdown {
+  font-size: var(--os-fs-44);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--os-warn);
+}
+.os-safety-plate__expires {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-safety-plate__disarm {
+  min-height: 44px;
+  padding: 0 var(--os-sp-6);
+  font-size: var(--os-fs-14);
+}
+.os-safety-plate__arm-form .os-field {
+  align-self: stretch;
+  max-width: 420px;
+  gap: var(--os-sp-2);
+}
+
+.os-safety-guards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-safety-guards ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-safety-guards__row {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+  flex-wrap: wrap;
+}
+.os-safety-guards__row button {
+  margin-left: auto;
+}
+
+@media (max-width: 599px) {
+  .os-safety .os-btn {
+    min-height: 40px;
+  }
+  .os-safety-plate__tag {
+    position: static;
+    margin-top: var(--os-sp-1);
+  }
+  .os-safety-plate__disarm {
+    width: 100%;
+    justify-content: center;
+  }
+  .os-safety-guards__row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: var(--os-sp-2);
+    row-gap: var(--os-sp-1);
+    align-items: center;
+  }
+  .os-safety-guards__row button {
+    grid-column: 2;
+    justify-self: start;
+    margin-left: 0;
+    padding-left: 0;
+  }
+}

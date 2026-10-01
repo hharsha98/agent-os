@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BLOCKED_AGENT_FLAGS } from "./agent-flags.js";
 import { isDemoPublic } from "./demo-public.js";
 import { isExecutionEnabled } from "./execution-gate.js";
 import { isLiveChatEnabled } from "./live-flags.js";
@@ -10,6 +11,11 @@ import { ensureRuntimeStore, expandHome, runtimePaths } from "./store.js";
 import { writeWorkspaceText } from "./workspace.js";
 
 export const LIVE_SEATS = ["cursor", "claude", "codex", "hermes", "openclaw"];
+
+// Live-chat children are short-lived (a single CLI call), so they don't need
+// process-tree.js's spawnTracked. Shutdown still needs to find and kill any
+// still running when the process quits.
+export const activeLiveChatChildren = new Set();
 
 const SEAT_SYSTEM = {
   cursor: "You are the Cursor seat in Agent OS. Answer as a coding agent. This turn is text from OmniRoute. You are not driving the Cursor CLI or editing files.",
@@ -66,7 +72,15 @@ function splitArgs(value) {
   return args;
 }
 
-const CHILD_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"];
+// The Windows entries are not secrets; without SystemRoot, USERPROFILE and
+// friends, node, python and most CLIs fail to start at all on Windows.
+const CHILD_ENV_KEYS = [
+  "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP",
+  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+  "SystemRoot", "SYSTEMROOT", "windir", "ComSpec", "PATHEXT", "USERPROFILE", "USERNAME",
+  "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "ProgramFiles", "ProgramFiles(x86)",
+  "ProgramData", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"
+];
 const SECRET_ENV_KEYS = [
   "OMNIROUTE_API_KEY",
   "OPENCLAW_GATEWAY_TOKEN",
@@ -81,7 +95,9 @@ const SECRET_ENV_KEYS = [
   "FIRECRAWL_API_KEY"
 ];
 
-function childEnv(env, extra = {}) {
+// Exported so the run manager can build the same minimal, allow-listed
+// environment for spawned agent CLIs without duplicating the list.
+export function childEnv(env, extra = {}) {
   const next = {};
   for (const key of CHILD_ENV_KEYS) {
     if (env[key]) next[key] = env[key];
@@ -101,7 +117,7 @@ function scrubSecrets(text, env = {}) {
   return out;
 }
 
-function withMessageTerminator(args, message) {
+export function withMessageTerminator(args, message) {
   const next = args.map((arg) => arg.replaceAll("{{message}}", message));
   let index = -1;
   for (let i = next.length - 1; i >= 0; i -= 1) {
@@ -207,7 +223,8 @@ async function runArgv(commandPath, args, timeoutMs, env, deps, extraEnv = {}) {
   const runner = deps.runCommand || runCommand;
   const result = await runner(commandPath, args, timeoutMs, {
     env: childEnv(env, extraEnv),
-    cwd: os.tmpdir()
+    cwd: os.tmpdir(),
+    track: activeLiveChatChildren
   });
   const reply = scrubSecrets(
     redactText(result.stdout || result.stderr || "Command completed with no output.", [commandPath]),
@@ -261,7 +278,11 @@ async function runTemplateCli(agentId, message, env, deps) {
     cursor: {
       names: [env.CURSOR_AGENT_PATH, "agent"],
       args: withMessageTerminator(
-        env.CURSOR_CLI_ARGS ? splitArgs(env.CURSOR_CLI_ARGS) : ["-p", "{{message}}"],
+        env.CURSOR_CLI_ARGS
+          // Defence in depth: configure-time checks already reject blocked
+          // flags, but filter again here in case a value predates that check.
+          ? splitArgs(env.CURSOR_CLI_ARGS).filter((arg) => !BLOCKED_AGENT_FLAGS.some((flag) => arg.includes(flag)))
+          : ["-p", "{{message}}"],
         message
       ),
       timeout: clampTimeout(env.CURSOR_TIMEOUT_MS, 120000, 5000, 600000),

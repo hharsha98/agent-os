@@ -2231,7 +2231,8 @@ function SetupPage({ onOpenTarget }: { onOpenTarget: (id: string) => void }) {
     try {
       const output = await updateExecutionGate({
         enabled,
-        reason: executionGateReason || (enabled ? "Enabled from setup dashboard." : "Disabled from setup dashboard.")
+        reason: executionGateReason || (enabled ? "Enabled from setup dashboard." : "Disabled from setup dashboard."),
+        ...(enabled ? { confirm: true } : {})
       });
       setExecutionGate(output);
       setExecutionGateReason("");

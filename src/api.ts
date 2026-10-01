@@ -1,4 +1,13 @@
+import { useEffect, useRef, useState } from "react";
 import type {
+  AgentDetail,
+  AgentListResponse,
+  AgentRunPreview,
+  AgentSafetyActionResult,
+  AgentServiceStatus,
+  RunListResponse,
+  RunMeta,
+  RunStreamEvent,
   BuilderBootstrap,
   BuilderBootstrapPrepareResult,
   BuilderReplayOverlay,
@@ -78,14 +87,18 @@ import type {
   DemoTimelineResult
 } from "./demo";
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
     ...options
   });
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    const body = await response.json().catch(() => null);
+    if (response.status === 401 && body?.error === "session_required") {
+      window.dispatchEvent(new CustomEvent("agentos:locked"));
+    }
+    throw new Error(body?.error || `${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<T>;
 }
@@ -169,7 +182,7 @@ export function getExecutionGateStatus() {
   return request<ExecutionGateStatus>("/api/execution-gate");
 }
 
-export function updateExecutionGate(payload: { enabled: boolean; reason?: string }) {
+export function updateExecutionGate(payload: { enabled: boolean; reason?: string; confirm?: boolean }) {
   return request<ExecutionGateStatus>("/api/admin/execution-gate", {
     method: "POST",
     body: JSON.stringify(payload)
@@ -928,4 +941,150 @@ export function cancelVideoRun(runId: string) {
 
 export function videoRunDownloadUrl(runId: string, fileName: string) {
   return `/api/self/video/runs/${encodeURIComponent(runId)}/download/${encodeURIComponent(fileName)}`;
+}
+
+// --- Fleet page: agents + runs -------------------------------------------
+
+export function listAgents(refresh = false) {
+  return request<AgentListResponse>(`/api/agents${refresh ? "?refresh=1" : ""}`);
+}
+
+// A 404 means "this agent has no always-on gateway" (only hermes and
+// openclaw do); callers should treat that as "no service", not an error.
+export function getAgentService(id: string) {
+  return request<AgentServiceStatus>(`/api/agents/${encodeURIComponent(id)}/service`);
+}
+
+// The Agents screen's detail bay: detection facts, config/safety status and
+// (for hermes/openclaw) the gateway status, all in one call.
+export function getAgentDetail(id: string) {
+  return request<AgentDetail>(`/api/agents/${encodeURIComponent(id)}`);
+}
+
+export interface AgentRunOptions {
+  allowEdits?: boolean;
+}
+
+// Dry preview only: spawns nothing, just returns the exact command/folder
+// the real launch would use.
+export function previewAgentRun(
+  id: string,
+  payload: { prompt: string; folder?: string; options?: AgentRunOptions }
+) {
+  return request<AgentRunPreview>(`/api/agents/${encodeURIComponent(id)}/runs/preview`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+// The only call that actually starts an agent; confirm:true is required by
+// the server as well, so this is never a silent side effect of a re-render.
+export function startAgentRun(
+  id: string,
+  payload: { prompt: string; folder?: string; options?: AgentRunOptions }
+) {
+  return request<RunMeta>(`/api/agents/${encodeURIComponent(id)}/runs`, {
+    method: "POST",
+    body: JSON.stringify({ ...payload, confirm: true })
+  });
+}
+
+export function postAgentService(id: string, action: "start" | "stop" | "restart") {
+  return request<RunMeta>(`/api/agents/${encodeURIComponent(id)}/service/${action}`, {
+    method: "POST",
+    body: JSON.stringify({ confirm: true })
+  });
+}
+
+export function postAgentSafetyAction(id: string, actionId: string) {
+  return request<AgentSafetyActionResult>(
+    `/api/agents/${encodeURIComponent(id)}/safety/${encodeURIComponent(actionId)}`,
+    { method: "POST", body: JSON.stringify({ confirm: true }) }
+  );
+}
+
+export function listRuns(params: { limit?: number; agentId?: string; kind?: string } = {}) {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.agentId) query.set("agentId", params.agentId);
+  if (params.kind) query.set("kind", params.kind);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<RunListResponse>(`/api/runs${suffix}`);
+}
+
+export function getRun(id: string) {
+  return request<RunMeta>(`/api/runs/${encodeURIComponent(id)}`);
+}
+
+export function stopRun(id: string) {
+  return request<RunMeta>(`/api/runs/${encodeURIComponent(id)}/stop`, {
+    method: "POST",
+    body: "{}"
+  });
+}
+
+// Subscribes to a run's live SSE stream. Same-origin, so the session cookie
+// rides along automatically; no token is ever put in the URL. Closes on
+// unmount, and on a stream error that isn't a clean "end" it re-checks the
+// session so an expired cookie surfaces as the lock screen instead of a
+// silently frozen trace.
+// Every event type the run manager and agent adapters emit (see
+// server/runtime/runs/run-manager.js and server/runtime/agents/*.js).
+const RUN_STREAM_EVENT_TYPES = [
+  "system", "line", "text", "thinking", "tool", "tool_result",
+  "usage", "result", "setup", "error"
+];
+
+export function useRunStream(runId: string | null) {
+  const [events, setEvents] = useState<RunStreamEvent[]>([]);
+  const [status, setStatus] = useState<"connecting" | "open" | "ended">("connecting");
+  const endedCleanlyRef = useRef(false);
+
+  useEffect(() => {
+    setEvents([]);
+    setStatus("connecting");
+    endedCleanlyRef.current = false;
+    if (!runId) return;
+
+    const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
+
+    source.onopen = () => setStatus("open");
+    const onEvent = (message: MessageEvent) => {
+      try {
+        const event = JSON.parse(message.data) as RunStreamEvent;
+        setEvents((prev) => [...prev, event]);
+      } catch {
+        // malformed frame; skip rather than crash the trace
+      }
+    };
+    // The server names each frame after the event's type ("event: text"), and
+    // EventSource only routes unnamed frames to onmessage, so listen by name.
+    source.onmessage = onEvent;
+    for (const type of RUN_STREAM_EVENT_TYPES) source.addEventListener(type, onEvent);
+    source.addEventListener("end", () => {
+      endedCleanlyRef.current = true;
+      setStatus("ended");
+      source.close();
+    });
+    source.onerror = () => {
+      source.close();
+      setStatus("ended");
+      if (endedCleanlyRef.current) return;
+      void request<{ authenticated?: boolean }>("/api/session")
+        .then((session) => {
+          if (session && session.authenticated === false) {
+            window.dispatchEvent(new CustomEvent("agentos:locked"));
+          }
+        })
+        .catch(() => {
+          // a network hiccup here shouldn't itself trigger the lock flow
+        });
+    };
+
+    return () => {
+      source.close();
+    };
+  }, [runId]);
+
+  return { events, status };
 }

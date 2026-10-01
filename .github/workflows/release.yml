@@ -1,0 +1,204 @@
+name: Release
+
+# Builds the Agent OS desktop app for macOS (Apple Silicon + Intel), Windows
+# and Linux, and attaches the installers to a DRAFT GitHub Release. A human
+# reviews the draft and clicks Publish (see desktop/README.md, "Releasing").
+# Pattern copied from a workflow that has shipped three real releases.
+#
+# The builds are unsigned (no Apple/Microsoft certificates). Updater signing
+# is separate and optional: until the owner adds the signing secrets and
+# desktop/updater-pubkey.txt, the "Updater" step below does nothing and the
+# app builds without auto-update.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (e.g. v0.3.0). A pushed v* tag fills this in by itself."
+        required: true
+
+jobs:
+  release:
+    # Needed to create the Release and upload to it. The repo's default token
+    # is read-only; without this every build succeeds and the LAST step dies
+    # with "Resource not accessible by integration".
+    permissions:
+      contents: write
+    strategy:
+      # One failing platform must not cancel the others.
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon (DMG)
+            platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            node_platform: darwin
+            node_arch: arm64
+            args: --target aarch64-apple-darwin
+          # Intel Mac built by cross-compiling on the Apple Silicon runner,
+          # so we don't depend on Intel runner labels GitHub keeps retiring.
+          - name: macOS Intel (DMG)
+            platform: macos-latest
+            rust_target: x86_64-apple-darwin
+            node_platform: darwin
+            node_arch: x64
+            args: --target x86_64-apple-darwin
+          # Pinned to 22.04, not the moving "latest" label: Tauri's webkit2gtk-4.1 packages match
+          # 22.04, and AppImages should be built on an old base so they run
+          # on users' older distros. No rpm: nobody asked for it.
+          - name: Linux (DEB + AppImage)
+            platform: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            node_platform: linux
+            node_arch: x64
+            args: --bundles deb,appimage
+          # NSIS only, no MSI: WiX failed with no diagnostic on a similar app
+          # (likely Windows' 260-character path limit on a deep node_modules).
+          - name: Windows (NSIS setup.exe)
+            platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            node_platform: win32
+            node_arch: x64
+            args: --bundles nsis
+    runs-on: ${{ matrix.platform }}
+    name: ${{ matrix.name }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # A manual run starts from a branch, not the tag. Check out the tag
+          # itself so the release is exactly the tagged commit.
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          # Two macOS legs share a runner type; keep their caches apart.
+          key: ${{ matrix.rust_target }}
+
+      # Tauri v2's Linux prerequisites on ubuntu-22.04 (webkit2gtk 4.1, not 4.0).
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libxdo-dev
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The app's own Node for the TARGET machine (SHA-256 checked against
+      # nodejs.org). Fetched before prepare so the Intel Mac app gets an x64
+      # Node even though this runner is arm64.
+      - name: Fetch the bundled Node for this target
+        run: node scripts/fetch-node.mjs --platform ${{ matrix.node_platform }} --arch ${{ matrix.node_arch }}
+
+      # Builds the UI + server bundle into resources/. --skip-node so it
+      # cannot replace the target's Node (fetched above) with this runner's.
+      - name: Prepare desktop resources
+        run: node scripts/prepare-desktop.mjs --skip-node
+
+      # Auto-update is opt-in. Only when BOTH the signing key secret is set
+      # AND desktop/updater-pubkey.txt holds a real public key do we turn on
+      # signed update artifacts (latest.json + .sig files). Otherwise the
+      # build has no auto-update and the app's update banner stays hidden.
+      # Neither the key nor its password is ever printed.
+      - name: Updater (only if a signing key is configured)
+        id: updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          pubkey="$(tr -d '\r\n ' < desktop/updater-pubkey.txt)"
+          # A real Tauri public key is base64 that starts "untrusted comment:".
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [[ "$pubkey" == dW50cnVzdGVkIGNvbW1lbnQ6* ]]; then
+            PUBKEY="$pubkey" node -e '
+              const fs = require("fs");
+              const config = {
+                bundle: { createUpdaterArtifacts: true },
+                plugins: { updater: {
+                  pubkey: process.env.PUBKEY,
+                  endpoints: ["https://github.com/hharsha98/agent-os/releases/latest/download/latest.json"],
+                } },
+              };
+              fs.writeFileSync("desktop/src-tauri/tauri.updater.conf.json", JSON.stringify(config));
+            '
+            # Relative to desktop/, where tauri-action runs the build.
+            echo "extra_args=--config src-tauri/tauri.updater.conf.json" >> "$GITHUB_OUTPUT"
+            echo "Updater: ON (signing key and public key both present)."
+          else
+            echo "extra_args=" >> "$GITHUB_OUTPUT"
+            echo "::warning::Updater: OFF. Add the TAURI_SIGNING_PRIVATE_KEY secret and fill desktop/updater-pubkey.txt to enable auto-update."
+          fi
+
+      # Loads the release-notes template so it can be passed as the Release body.
+      - name: Read release notes template
+        id: notes
+        shell: bash
+        run: |
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            cat .github/release-notes.md
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Runs `tauri build` and creates/updates the draft Release. Every leg
+      # uses the same tagName, so tauri-action merges one latest.json across
+      # platforms.
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Only read when updater artifacts are on. Empty is fine otherwise.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Skips the macOS DMG "make Finder pretty" AppleScript step, which
+          # hangs on a headless runner. Kept to THIS step only, never on installs.
+          CI: true
+        with:
+          projectPath: desktop
+          tagName: ${{ steps.tag.outputs.tag }}
+          releaseName: "Agent OS ${{ steps.tag.outputs.tag }}"
+          releaseBody: ${{ steps.notes.outputs.body }}
+          # A draft: a human checks every platform attached, then Publishes.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }} ${{ steps.updater.outputs.extra_args }}

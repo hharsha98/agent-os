@@ -8,6 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,9 +17,17 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const port = String(process.env.SMOKE_PORT || "18191");
 const external = process.env.BASE_URL ? String(process.env.BASE_URL).replace(/\/$/, "") : "";
+// local mode gates /api behind a session token. When we spawn
+// the server ourselves, mint a random one and send it on every request.
+const spawnedToken = external ? "" : crypto.randomBytes(16).toString("hex");
+
+function authHeaders(extra = {}) {
+  const token = spawnedToken || process.env.AGENT_OS_TOKEN;
+  return token ? { ...extra, "x-agent-os-token": token } : extra;
+}
 
 async function get(base, pathname) {
-  const response = await fetch(`${base}${pathname}`);
+  const response = await fetch(`${base}${pathname}`, { headers: authHeaders() });
   const text = await response.text();
   let json = null;
   try {
@@ -32,7 +41,7 @@ async function get(base, pathname) {
 async function post(base, pathname, body) {
   const response = await fetch(`${base}${pathname}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body)
   });
   const text = await response.text();
@@ -125,6 +134,7 @@ async function main() {
       HERMES_AGENT_OS_REQUIRE_AUTH: "0",
       HERMES_AGENT_OS_HOME: home,
       AGENT_OS_HOME: home,
+      AGENT_OS_TOKEN: spawnedToken,
       OMNIROUTE_BASE_URL: "",
       OMNIROUTE_API_KEY: "",
       OPENCLAW_GATEWAY_URL: "",

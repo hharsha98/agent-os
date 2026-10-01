@@ -295,6 +295,9 @@ export async function writeWorkspaceText(input = {}) {
 export function streamWorkspaceFile(file, res) {
   res.setHeader("Content-Type", file.mime);
   res.setHeader("X-Content-Type-Options", "nosniff");
+  // No allow-* tokens: the served file gets a unique origin, so its scripts
+  // (e.g. a saved .html note) can't call back into our API.
+  res.setHeader("Content-Security-Policy", "sandbox");
   res.setHeader("Cache-Control", "private, max-age=30");
   res.setHeader("Content-Disposition", `inline; filename="${file.name.replace(/"/g, "")}"`);
   createReadStream(file.absolutePath).pipe(res);

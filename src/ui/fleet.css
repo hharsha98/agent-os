@@ -1,0 +1,442 @@
+/* Fleet (Home) page — the hero screen: the instrument bar, five agent
+   channels, and the Flight log. Only .os- selectors, so legacy pages are
+   never affected. */
+
+.os-fleet {
+  max-width: 1360px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-7);
+}
+
+/* Header: a static dot-matrix grid behind the title area only, radial-masked
+   so it fades out. Pure CSS, zero CPU. */
+.os-fleet__header {
+  position: relative;
+  padding-top: var(--os-sp-2);
+}
+.os-fleet__header::before {
+  content: "";
+  position: absolute;
+  inset: -16px -16px auto -16px;
+  height: 420px;
+  background-image: radial-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-mask-image: radial-gradient(ellipse 720px 380px at 20% 0%, black 0%, transparent 72%);
+  mask-image: radial-gradient(ellipse 720px 380px at 20% 0%, black 0%, transparent 72%);
+  pointer-events: none;
+  z-index: 0;
+}
+.os-fleet__header > * {
+  position: relative;
+  z-index: 1;
+}
+.os-fleet__header-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--os-sp-3) var(--os-sp-5);
+  justify-content: space-between;
+  margin-top: var(--os-sp-2);
+}
+.os-fleet__header h1 {
+  margin: 0;
+  font-size: var(--os-fs-44);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: var(--os-lh-display);
+  color: var(--os-text-1);
+}
+.os-fleet__status-sentence {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+
+.os-fleet__banner {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-4) var(--os-sp-5);
+  border-radius: var(--os-r-lg);
+  background: rgba(245, 184, 75, 0.08);
+  border: 1px solid rgba(245, 184, 75, 0.3);
+  color: var(--os-text-1);
+}
+.os-fleet__banner svg {
+  color: var(--os-warn);
+  flex: 0 0 auto;
+}
+.os-fleet__banner button {
+  margin-left: auto;
+}
+
+/* --- Instrument bar: the four readouts in one panel ---------------------- */
+.os-instrument {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  background: linear-gradient(180deg, var(--os-surface-1), var(--os-bg-1));
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e1);
+  overflow: hidden;
+}
+.os-instrument::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.35), transparent);
+}
+.os-instrument__cell {
+  padding: var(--os-sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  border-left: 1px solid var(--os-line-1);
+  min-width: 0;
+}
+.os-instrument__cell:first-child {
+  border-left: 0;
+}
+@media (max-width: 899px) {
+  .os-instrument {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .os-instrument__cell:nth-child(3) {
+    border-left: 0;
+  }
+  .os-instrument__cell:nth-child(n + 3) {
+    border-top: 1px solid var(--os-line-1);
+  }
+}
+
+/* Segment meter: one filled/hollow segment per real unit. */
+.os-meter {
+  display: flex;
+  gap: 4px;
+}
+.os-meter__seg {
+  width: 16px;
+  height: 6px;
+  border-radius: 2px;
+  border: 1px solid var(--os-unknown);
+  background: transparent;
+}
+.os-meter__seg--ok {
+  background: var(--os-ok);
+  border-color: var(--os-ok);
+}
+
+/* --- Page body: channel grid + Flight log -------------------------------- */
+.os-fleet__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-6);
+  align-items: start;
+}
+/* Five channel cards plus the Flight log as the sixth module: 3×2 on a wide
+   window, 2×3 on a laptop-sized one, one column on a phone. Each module
+   stays at least 300px so names and status never collide. */
+.os-fleet__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: var(--os-sp-4);
+  width: 100%;
+}
+.os-fleet__grid > * {
+  /* Grid items default to min-width:auto, which lets a nowrap-truncated
+     line (version/status text) force the whole track — and the page —
+     wider than the viewport. This is what caused horizontal scroll at 375. */
+  min-width: 0;
+}
+@media (min-width: 900px) {
+  /* The log sizes to its row (set by the cards) and scrolls inside, so a
+     long run history never stretches the neighbouring cards. */
+  .os-fleet__grid > .os-flightlog {
+    height: 0;
+    min-height: 100%;
+    overflow: auto;
+  }
+}
+@media (max-width: 899px) {
+  .os-fleet__grid {
+    grid-template-columns: 1fr;
+  }
+  .os-instrument {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* --- Channel card: an instrument module ---------------------------------- */
+.os-fleet-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  height: 100%;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--os-surface-1), var(--os-surface-1)) padding-box,
+    linear-gradient(135deg, rgba(148, 163, 184, 0.22), rgba(148, 163, 184, 0.06)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  transition: transform var(--os-dur-quick) var(--os-ease-out), background var(--os-dur-quick) var(--os-ease-out),
+    opacity var(--os-dur-slow) var(--os-ease-out);
+}
+.os-fleet-card:hover {
+  transform: translateY(-1px);
+  background:
+    linear-gradient(var(--os-surface-1), var(--os-surface-1)) padding-box,
+    linear-gradient(135deg, rgba(148, 163, 184, 0.34), rgba(148, 163, 184, 0.1)) border-box;
+}
+
+/* Checking -> resolved: the "fleet comes online" moment. Starts dim, fades
+   to full opacity the instant the real detection result is in hand. The
+   global prefers-reduced-motion reset (tokens.css) collapses this to an
+   effectively instant snap, per the brief. */
+.os-fleet-card--checking {
+  opacity: 0.55;
+}
+.os-fleet-card--resolved {
+  opacity: 1;
+}
+
+.os-fleet-card__topline {
+  position: absolute;
+  top: 0;
+  left: var(--os-r-lg);
+  right: var(--os-r-lg);
+  height: 2px;
+  border-radius: var(--os-r-pill);
+  background: var(--os-card-c, var(--os-line-2));
+  opacity: 0.6;
+}
+.os-fleet-card__topglow {
+  position: absolute;
+  top: -10px;
+  left: 10%;
+  right: 10%;
+  height: 24px;
+  background: var(--os-card-c, transparent);
+  opacity: 0.12;
+  filter: blur(12px);
+  pointer-events: none;
+}
+
+.os-fleet-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--os-sp-3);
+}
+.os-fleet-card__id {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  min-width: 0;
+}
+.os-fleet-card__mono-tile {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-3);
+  border: 1px solid var(--os-line-2);
+  display: grid;
+  place-items: center;
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-fleet-card__head strong {
+  display: block;
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-fleet-card__role {
+  display: block;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+  margin-top: 2px;
+}
+.os-fleet-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.os-fleet-card__version {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.os-fleet-card__gateway {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+
+.os-fleet-card__warning {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-warn);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer meta row pinned to the bottom so equal-height cards line up even
+   when one card's body content (e.g. a warning line) is taller. */
+.os-fleet-card__footer {
+  margin-top: auto;
+  padding-top: var(--os-sp-2);
+  border-top: 1px solid var(--os-line-1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* --- Activity trace: visible lane, ticks, dashed baseline at idle -------- */
+.os-trace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+}
+.os-trace__lane {
+  position: relative;
+  background: rgba(5, 7, 11, 0.6);
+  border: 1px solid var(--os-line-1);
+  border-radius: var(--os-r-sm);
+  transition: border-color var(--os-dur-slow) var(--os-ease-out);
+}
+.os-trace--live .os-trace__lane {
+  border-color: rgba(92, 225, 255, 0.35);
+}
+.os-trace__svg {
+  width: 100%;
+  height: 40px;
+  display: block;
+}
+.os-trace__tick {
+  stroke: var(--os-line-1);
+  stroke-width: 1;
+}
+.os-trace__baseline {
+  stroke: var(--os-line-2);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.os-trace__bar {
+  fill: var(--os-surface-3);
+}
+.os-trace__bar--active {
+  fill: var(--os-accent);
+}
+.os-trace__axis {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+.os-trace--live .os-trace__label {
+  color: var(--os-accent);
+}
+
+/* --- Flight log: vertical timeline rail of the most recent runs --------- */
+.os-flightlog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  width: 100%;
+}
+.os-flightlog::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: var(--os-r-lg);
+  right: var(--os-r-lg);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.35), transparent);
+}
+.os-flightlog__title {
+  margin: 0;
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-flightlog__rail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+.os-flightlog__rail::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--os-line-2);
+}
+.os-flightlog__node {
+  position: relative;
+  list-style: none;
+  padding: 0 0 var(--os-sp-4) var(--os-sp-6);
+}
+.os-flightlog__node:last-child {
+  padding-bottom: 0;
+}
+.os-flightlog__mark {
+  position: absolute;
+  left: -1px;
+  top: 2px;
+}
+.os-flightlog__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+}
+.os-flightlog__row {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+}
+.os-flightlog__row--meta {
+  color: var(--os-text-3);
+  font-size: var(--os-fs-12);
+  gap: var(--os-sp-3);
+}
+.os-flightlog__monogram {
+  flex: 0 0 auto;
+  color: var(--os-text-3);
+  font-size: var(--os-fs-11);
+}
+.os-flightlog__run-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--os-text-1);
+}
+.os-flightlog__empty {
+  margin: 0 0 var(--os-sp-3);
+  color: var(--os-text-3);
+  font-size: var(--os-fs-13);
+  max-width: 34ch;
+}

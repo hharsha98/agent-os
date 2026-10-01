@@ -165,7 +165,7 @@ async function assertDemo(base, { expectBind } = {}) {
   assert.equal(canvas.json?.executedOnHost, false);
   assert.ok(canvas.json?.nodeRuns?.some((step) => step.type === "user_approval"));
 
-  const gate = await post("/api/admin/execution-gate", { enabled: true, reason: "smoke must not unlock shell" });
+  const gate = await post("/api/admin/execution-gate", { enabled: true, reason: "smoke must not unlock shell", confirm: true });
   assert.equal(gate.status, 200, gate.text);
   assert.equal(gate.json?.enabled, false);
   assert.equal(gate.json?.demoLocked, true);

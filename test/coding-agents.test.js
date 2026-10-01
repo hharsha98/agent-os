@@ -46,6 +46,31 @@ async function withTempDir(prefix, fn) {
   }
 }
 
+// PATH holding only system folders and the given fake-CLI folders, so a test
+// can never find the developer's REAL agents (hermes, openclaw, claude...).
+// Node's own folder is left out on purpose: it can hold real agents too.
+// Windows keeps its normal PATH (those tests are skipped there).
+function isolatedPath(...extraDirs) {
+  if (isWindows) return [...extraDirs, process.env.PATH || ""].join(path.delimiter);
+  return [...extraDirs, "/usr/bin", "/bin"].join(path.delimiter);
+}
+
+// Runs fn with HOME/USERPROFILE pointing at an empty temp folder and a PATH
+// holding only the fake shims, then restores everything. Agent detection also
+// searches folders under the user's home (~/.local/bin/hermes and friends), so
+// pointing HOME at an empty folder is what keeps the real agents out of reach.
+async function withIsolatedEnv(fn) {
+  return withTempDir("agent-os-coding-agents-iso-", (home) =>
+    withEnv(
+      { HOME: home, USERPROFILE: home, HERMES_HOME: undefined, PATH: isolatedPath(shimDir) },
+      async () => {
+        assert.equal(os.homedir(), home, "tests must never see the real home folder");
+        return fn(home);
+      }
+    )
+  );
+}
+
 async function withTempHome(fn) {
   return withTempDir("agent-os-coding-agents-home-", (home) => withEnv({ AGENT_OS_HOME: home }, () => fn(home)));
 }
@@ -611,7 +636,7 @@ test(
   "claude.detect(): --help text drives feature flags including permission modes and auth status",
   { skip: isWindows ? "spawns a shebang fake CLI via a PATH shim (POSIX-only)" : false },
   async () => {
-    await withEnv({ PATH: `${shimDir}${path.delimiter}${process.env.PATH || ""}` }, async () => {
+    await withIsolatedEnv(async () => {
       clearDetectCaches();
       const detected = await claude.detect({ refresh: true });
       assert.equal(detected.installed, true);
@@ -629,7 +654,7 @@ test(
   "codex.detect(): --help text drives feature flags including stdinDash and loginStatus",
   { skip: isWindows ? "spawns a shebang fake CLI via a PATH shim (POSIX-only)" : false },
   async () => {
-    await withEnv({ PATH: `${shimDir}${path.delimiter}${process.env.PATH || ""}` }, async () => {
+    await withIsolatedEnv(async () => {
       clearDetectCaches();
       const detected = await codex.detect({ refresh: true });
       assert.equal(detected.installed, true);
@@ -649,7 +674,7 @@ test(
   "cursor.detect(): --help text drives feature flags; stdinPrompt stays false (undocumented)",
   { skip: isWindows ? "spawns a shebang fake CLI via a PATH shim (POSIX-only)" : false },
   async () => {
-    await withEnv({ PATH: `${shimDir}${path.delimiter}${process.env.PATH || ""}` }, async () => {
+    await withIsolatedEnv(async () => {
       clearDetectCaches();
       const detected = await cursor.detect({ refresh: true });
       assert.equal(detected.installed, true);
@@ -819,9 +844,13 @@ function baseEnv(home, port, extra = {}) {
     PORT: String(port),
     HOST: "127.0.0.1",
     AGENT_OS_HOME: home,
+    // Detection also looks under the user's home (~/.local/bin/hermes); an
+    // empty temp HOME plus a system-only PATH keeps real agents out of reach.
+    HOME: home,
+    USERPROFILE: home,
     AGENT_OS_TOKEN: TOKEN,
     HERMES_AGENT_OS_SCHEDULER: "0",
-    PATH: `${shimDir}${path.delimiter}${process.env.PATH || ""}`
+    PATH: isolatedPath(shimDir)
   };
   for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {
     if (!(key in extra)) delete env[key];

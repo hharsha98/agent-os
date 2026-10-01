@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { assertAdminRequest, isAdminRequest, sessionStatus } from "../server/runtime/auth.js";
 import { generateAgentWorkflow, normalizeWorkflow } from "../server/runtime/agent-os-builder.js";
 import { configureApiIntegration, listApiIntegrations, testApiIntegration } from "../server/runtime/api-integrations.js";
@@ -93,6 +94,35 @@ import {
 } from "../server/runtime/usage.js";
 import { getDesktopContext, getVoiceControlStatus, runVoiceCommand } from "../server/runtime/voice-control.js";
 import { deleteWorkflow, getWorkflow, getWorkflowRunEvents, getWorkflowRunReplay, listWorkflows, resumeWorkflowRun, runWorkflow, saveWorkflow } from "../server/runtime/workflows.js";
+
+// Never touch the developer's REAL agents. Agent detection looks on PATH and in
+// fallback folders under the user's home (~/.agent-os/node/bin/openclaw,
+// ~/.local/bin/hermes...), so for this whole file HOME/USERPROFILE point at an
+// empty temp folder and PATH holds only system folders (not node's own folder,
+// which can hold real agents). Tests that need an agent build their own fake
+// CLI and add its folder to PATH. Everything is restored when the file ends.
+const isolatedHome = mkdtempSync(path.join(os.tmpdir(), "agent-os-runtime-home-"));
+const savedEnv = {};
+for (const [key, value] of Object.entries({
+  HOME: isolatedHome,
+  USERPROFILE: isolatedHome,
+  HERMES_HOME: undefined,
+  ...(process.platform === "win32" ? {} : { PATH: "/usr/bin:/bin" })
+})) {
+  savedEnv[key] = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+if (process.platform !== "win32" && os.homedir() !== isolatedHome) {
+  throw new Error("test isolation failed: os.homedir() is not the temp home");
+}
+after(() => {
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(isolatedHome, { recursive: true, force: true });
+});
 
 async function withTempRuntime(fn) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "hermes-agent-os-test-"));

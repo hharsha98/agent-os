@@ -44,7 +44,7 @@ try {
   await edit("package-lock.json", /("packages":\s*\{\s*"":\s*\{[\s\S]*?"version":\s*")[^"]+(")/, 'packages[""] version');
   await edit("desktop/src-tauri/tauri.conf.json", /^(\{[\s\S]*?"version":\s*")[^"]+(")/, "version");
   await edit("desktop/src-tauri/Cargo.toml", /(\[package\][\s\S]*?\nversion\s*=\s*")[^"]+(")/, "[package] version");
-  await edit("desktop/src-tauri/Cargo.lock", /(\[\[package\]\]\nname = "agent-os-desktop"\nversion = ")[^"]+(")/, "agent-os-desktop version");
+  await edit("desktop/src-tauri/Cargo.lock", /(\[\[package\]\]\r?\nname = "agent-os-desktop"\r?\nversion = ")[^"]+(")/, "agent-os-desktop version");
 } catch (error) {
   console.error(error.message);
   process.exit(1);

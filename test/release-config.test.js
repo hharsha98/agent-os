@@ -23,7 +23,7 @@ async function versions(base = root) {
     'package-lock.json packages[""]': lock.packages[""].version,
     "tauri.conf.json": JSON.parse(await get("desktop/src-tauri/tauri.conf.json")).version,
     "Cargo.toml": cargoToml.match(/\[package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/)[1],
-    "Cargo.lock": cargoLock.match(/name = "agent-os-desktop"\nversion = "([^"]+)"/)[1],
+    "Cargo.lock": cargoLock.match(/name = "agent-os-desktop"\r?\nversion = "([^"]+)"/)[1],
   };
 }
 

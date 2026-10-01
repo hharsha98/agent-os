@@ -20,7 +20,7 @@
 
 ## Download
 
-All installers will be on the [Releases page](https://github.com/hharsha98/agent-os/releases/latest). **No release has been published yet.** The files appear there once the first version is published. Until then, [run it from source](#run-from-source).
+Get the installer for your computer from the [latest release](https://github.com/hharsha98/agent-os/releases/latest) (v0.3.0, published 1 October 2026).
 
 Which file is yours:
 
@@ -135,14 +135,14 @@ This is a safety design, not a guarantee. It has not had an outside security rev
 
 | Platform | State |
 | --- | --- |
-| macOS (Apple silicon, arm64) | Built, launched and hand-tested. |
-| macOS (Intel) | Set up to build in the release workflow. **Not hand-tested.** |
-| Windows | Set up to build in the release workflow. **Not hand-tested.** |
-| Linux | Set up to build in the release workflow. **Not hand-tested.** |
+| macOS (Apple silicon, arm64) | Hand-tested. The v0.3.0 release installer was installed and launched on the author's Mac. |
+| macOS (Intel) | Built by the release workflow. **Not hand-tested.** |
+| Windows | Built by the release workflow. **Not hand-tested.** |
+| Linux | Built by the release workflow. **Not hand-tested.** |
 
 - **Unit tests:** 313 tests (`npm test`). On the author's Mac: 312 pass, 1 skipped, 0 fail.
 - **CI** (`.github/workflows/ci.yml`) runs the tests on Ubuntu, macOS and Windows with Node 24, and a smoke test on Ubuntu.
-- **Release workflow** (`.github/workflows/release.yml`) builds the installers for the four rows above. It has **not run yet**, because no release tag has been pushed.
+- **Release workflow** (`.github/workflows/release.yml`) builds the installers for the four rows above. It built v0.3.0.
 
 ---
 
@@ -194,7 +194,6 @@ The stack: React 18, TypeScript and Vite on the front. Node and Express on the b
 - **Hermes Agent: Setup treats Intel Macs as unsupported** and says so instead of installing.
 - **Windows and Linux have not been hand-tested.** Intel Mac builds have not either.
 - **Level 2 (Machine control) works on macOS only.**
-- **No release is published yet.**
 - **Team Room**, where agents work together, is **planned** for v1.1. It is not in this version.
 - **Chat, Workspace and the Labs pages** are older pages. I did not re-audit them for this release, and they are not in the screenshots above.
 

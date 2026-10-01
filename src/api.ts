@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  AgentDetail,
   AgentListResponse,
+  AgentRunPreview,
+  AgentSafetyActionResult,
   AgentServiceStatus,
   RunListResponse,
   RunMeta,
@@ -950,6 +953,54 @@ export function listAgents(refresh = false) {
 // openclaw do); callers should treat that as "no service", not an error.
 export function getAgentService(id: string) {
   return request<AgentServiceStatus>(`/api/agents/${encodeURIComponent(id)}/service`);
+}
+
+// The Agents screen's detail bay: detection facts, config/safety status and
+// (for hermes/openclaw) the gateway status, all in one call.
+export function getAgentDetail(id: string) {
+  return request<AgentDetail>(`/api/agents/${encodeURIComponent(id)}`);
+}
+
+export interface AgentRunOptions {
+  allowEdits?: boolean;
+}
+
+// Dry preview only: spawns nothing, just returns the exact command/folder
+// the real launch would use.
+export function previewAgentRun(
+  id: string,
+  payload: { prompt: string; folder?: string; options?: AgentRunOptions }
+) {
+  return request<AgentRunPreview>(`/api/agents/${encodeURIComponent(id)}/runs/preview`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+// The only call that actually starts an agent; confirm:true is required by
+// the server as well, so this is never a silent side effect of a re-render.
+export function startAgentRun(
+  id: string,
+  payload: { prompt: string; folder?: string; options?: AgentRunOptions }
+) {
+  return request<RunMeta>(`/api/agents/${encodeURIComponent(id)}/runs`, {
+    method: "POST",
+    body: JSON.stringify({ ...payload, confirm: true })
+  });
+}
+
+export function postAgentService(id: string, action: "start" | "stop" | "restart") {
+  return request<RunMeta>(`/api/agents/${encodeURIComponent(id)}/service/${action}`, {
+    method: "POST",
+    body: JSON.stringify({ confirm: true })
+  });
+}
+
+export function postAgentSafetyAction(id: string, actionId: string) {
+  return request<AgentSafetyActionResult>(
+    `/api/agents/${encodeURIComponent(id)}/safety/${encodeURIComponent(actionId)}`,
+    { method: "POST", body: JSON.stringify({ confirm: true }) }
+  );
 }
 
 export function listRuns(params: { limit?: number; agentId?: string; kind?: string } = {}) {

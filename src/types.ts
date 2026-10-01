@@ -2285,8 +2285,57 @@ export interface AgentDetected {
   installed: boolean;
   path: string;
   version: string;
+  // The full --version text with the user's home directory already
+  // collapsed to "~" server-side (see detect.js splitVersion); optional
+  // because a not-installed agent's detect() result omits it.
+  versionFull?: string;
   features: Record<string, unknown>;
   error?: string;
+}
+
+// Agents screen ("the hangar"): the single-agent detail bay's data, mirroring
+// GET /api/agents/:id exactly (server/runtime/agents/routes.js).
+export interface AgentConfigStatus {
+  ok: boolean;
+  summary: string;
+  problems: string[];
+  fixHint?: string;
+  // Calm advisory lines (e.g. OpenClaw's loopback-gateway note): informational,
+  // never rendered as a warning.
+  notes?: string[];
+}
+
+export interface AgentSafetyAction {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface AgentSafetyStatus {
+  permissive: boolean;
+  summary: string;
+  actions: AgentSafetyAction[];
+}
+
+export interface AgentDetail {
+  detected: AgentDetected;
+  config: AgentConfigStatus;
+  safety: AgentSafetyStatus;
+  service: AgentServiceStatus | null;
+}
+
+export interface AgentRunPreview {
+  commandPreview: string;
+  cwd: string;
+  transport: string;
+  gate: { enabled: boolean };
+}
+
+// POST /api/agents/:id/safety/:actionId's response: the config-set run, plus
+// a best-effort gateway-restart run when the setting needed one to apply.
+export interface AgentSafetyActionResult {
+  run: RunMeta;
+  followUp: RunMeta | null;
 }
 
 export interface AgentSummary {

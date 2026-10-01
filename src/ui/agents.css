@@ -1,0 +1,470 @@
+/* Agents screen ("the hangar"): a master-detail rail + bay. Only .os-
+   selectors, tokens only, so legacy pages are never affected. Breakpoint is
+   1100px per the spec (Fleet's own breakpoints are 900px; deliberately
+   different because this layout's rail+bay needs more room than a channel
+   grid before it gets cramped). */
+
+.os-agents {
+  max-width: 1360px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-6);
+}
+
+.os-agents__header h1 {
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-44);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--os-text-1);
+}
+
+.os-agents__body {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: var(--os-sp-5);
+  align-items: start;
+}
+@media (max-width: 1099px) {
+  .os-agents__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- Rail: vertical list ≥1100px, horizontal scroll strip below it ------- */
+.os-agent-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  background: var(--os-surface-1);
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e1);
+  padding: var(--os-sp-3);
+  position: sticky;
+  top: calc(48px + var(--os-sp-5));
+}
+@media (max-width: 1099px) {
+  .os-agent-rail {
+    position: relative; /* so AgentRail can centre the selected item via offsetLeft */
+    top: auto; /* drop the desktop sticky offset, or relative would shift the strip down */
+    flex-direction: row;
+    overflow-x: auto;
+    gap: var(--os-sp-2);
+  }
+}
+
+.os-agent-rail__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  min-height: 56px;
+  padding: var(--os-sp-2) var(--os-sp-3) var(--os-sp-2) var(--os-sp-4);
+  border-radius: var(--os-r-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--os-text-1);
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--os-font-ui);
+  transition: background var(--os-dur-quick) var(--os-ease-out);
+}
+.os-agent-rail__item:hover {
+  background: var(--os-surface-2);
+}
+.os-agent-rail__item--selected {
+  background: var(--os-surface-2);
+  border-color: var(--os-line-2);
+}
+.os-agent-rail__accent {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: var(--os-r-pill);
+  background: transparent;
+}
+.os-agent-rail__item--selected .os-agent-rail__accent {
+  background: var(--os-accent);
+}
+@media (max-width: 1099px) {
+  .os-agent-rail__item {
+    flex: 0 0 auto;
+    min-width: 220px;
+  }
+}
+.os-agent-rail__mono {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-3);
+  border: 1px solid var(--os-line-2);
+  display: grid;
+  place-items: center;
+  font-size: var(--os-fs-12);
+}
+.os-agent-rail__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.os-agent-rail__text strong {
+  font-size: var(--os-fs-14);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.os-agent-rail__role {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.os-agent-rail__status {
+  flex: 0 0 auto;
+}
+.os-agent-rail__retry {
+  align-self: center;
+}
+
+/* --- Bay: identity header + stacked panels ------------------------------- */
+.os-agent-bay {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-5);
+  min-width: 0;
+}
+.os-agent-bay__loading {
+  color: var(--os-text-3);
+}
+.os-agent-bay__identity {
+  display: flex;
+  gap: var(--os-sp-4);
+  align-items: flex-start;
+}
+.os-agent-bay__mono {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--os-r-lg);
+  background: var(--os-surface-2);
+  border: 1px solid var(--os-line-2);
+  display: grid;
+  place-items: center;
+  font-size: var(--os-fs-20);
+  color: var(--os-text-1);
+}
+.os-agent-bay__identity-text {
+  min-width: 0;
+}
+.os-agent-bay__identity-text h2 {
+  margin: 0;
+  font-size: var(--os-fs-24);
+  color: var(--os-text-1);
+}
+.os-agent-bay__role {
+  margin: 2px 0 0;
+  color: var(--os-text-3);
+  font-size: var(--os-fs-13);
+}
+.os-agent-bay__status {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-agent-bay__version {
+  color: var(--os-text-3);
+}
+.os-agent-bay__details {
+  margin-top: var(--os-sp-2);
+}
+.os-agent-bay__details summary {
+  cursor: pointer;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-agent-bay__details pre {
+  margin: var(--os-sp-2) 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  max-width: 72ch;
+}
+.os-agent-bay__links {
+  display: flex;
+  gap: var(--os-sp-4);
+  margin-top: var(--os-sp-2);
+}
+.os-agent-bay__links a {
+  color: var(--os-accent);
+  font-size: var(--os-fs-13);
+  text-decoration: none;
+}
+.os-agent-bay__links a:hover {
+  text-decoration: underline;
+}
+.os-agent-bay__banner {
+  margin: 0;
+}
+
+/* --- Launch panel: the hero, instrument-bar treatment -------------------- */
+.os-launch {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--os-surface-2), var(--os-surface-1));
+}
+.os-launch__topline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.4), transparent);
+}
+.os-launch__title {
+  margin: 0 0 var(--os-sp-4);
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-launch__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-launch__prompt textarea {
+  resize: vertical;
+  font-family: var(--os-font-ui);
+}
+.os-launch__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-launch__actions {
+  display: flex;
+  gap: var(--os-sp-3);
+}
+.os-launch__error {
+  margin: 0;
+  color: var(--os-danger);
+  font-size: var(--os-fs-13);
+}
+.os-launch--empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  align-items: flex-start;
+}
+.os-launch__empty-copy {
+  margin: 0;
+  color: var(--os-text-2);
+  max-width: 60ch;
+}
+.os-launch__empty-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  flex-wrap: wrap;
+}
+.os-launch__empty-actions a.os-btn {
+  text-decoration: none;
+}
+.os-launch__empty-hint {
+  color: var(--os-text-3);
+  font-size: var(--os-fs-13);
+}
+
+.os-flightplan {
+  margin-top: var(--os-sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+  padding: var(--os-sp-3);
+  background: rgba(5, 7, 11, 0.6);
+  border: 1px solid var(--os-line-1);
+  border-radius: var(--os-r-md);
+}
+.os-flightplan--modal {
+  margin-top: var(--os-sp-3);
+}
+.os-flightplan__command {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-1);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.os-flightplan__folder {
+  margin: 0;
+  color: var(--os-text-3);
+  font-size: var(--os-fs-12);
+}
+
+/* --- Background service --------------------------------------------------- */
+.os-service__title,
+.os-agent-safety__title,
+.os-config__title {
+  margin: 0 0 var(--os-sp-3);
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-service__status {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0 0 var(--os-sp-2);
+  color: var(--os-text-2);
+}
+.os-service__warning {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0 0 var(--os-sp-2);
+  color: var(--os-warn);
+  font-size: var(--os-fs-13);
+}
+.os-service__actions {
+  display: flex;
+  gap: var(--os-sp-2);
+}
+.os-service__note {
+  margin: var(--os-sp-2) 0 0;
+  color: var(--os-text-3);
+  font-size: var(--os-fs-12);
+}
+.os-service__mini {
+  margin-top: var(--os-sp-3);
+  border: 1px solid var(--os-line-1);
+  border-radius: var(--os-r-md);
+  padding: var(--os-sp-2);
+}
+
+/* --- Safety ---------------------------------------------------------------- */
+.os-agent-safety__finding {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0 0 var(--os-sp-3);
+  color: var(--os-text-2);
+}
+.os-agent-safety__action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-3) 0;
+  border-top: 1px solid var(--os-line-1);
+}
+.os-agent-safety__action-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.os-agent-safety__action-text strong {
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-agent-safety__action-text span {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+.os-agent-safety__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  margin: 0 0 var(--os-sp-2);
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-agent-safety__note svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--os-accent);
+}
+.os-agent-safety__restart-note {
+  margin: var(--os-sp-3) 0 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+
+/* --- Configuration ---------------------------------------------------------- */
+.os-config__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0 0 var(--os-sp-2);
+  color: var(--os-text-2);
+}
+.os-config__problem {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0 0 var(--os-sp-1);
+  color: var(--os-warn);
+  font-size: var(--os-fs-13);
+}
+.os-config__note {
+  margin: 0 0 var(--os-sp-1);
+  color: var(--os-text-3);
+  font-size: var(--os-fs-13);
+}
+.os-config__hint {
+  margin: var(--os-sp-2) 0 0;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+
+/* --- Shared confirm modal (also used from the Runs screen's Stop button) - */
+.os-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 7, 11, 0.6);
+  padding: var(--os-sp-5);
+}
+.os-modal {
+  width: min(440px, 100%);
+  background: var(--os-glass-bg);
+  backdrop-filter: var(--os-glass-blur);
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e3);
+  padding: var(--os-sp-5);
+}
+.os-modal__title {
+  margin: 0 0 var(--os-sp-3);
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-modal__body {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--os-sp-3);
+  margin-top: var(--os-sp-4);
+}
+
+@media (max-width: 480px) {
+  .os-agent-bay__identity {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

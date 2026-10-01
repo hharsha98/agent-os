@@ -28,6 +28,7 @@ import {
   Search,
   Sparkles,
   Target,
+  Users,
   Workflow
 } from "lucide-react";
 import { getAgentService, getExecutionGateStatus, listRuns } from "../api";
@@ -95,6 +96,7 @@ export default function Shell({
       { id: "fleet", label: "Home", icon: LayoutDashboard },
       { id: "agents", label: "Agents", icon: Boxes },
       { id: "runs", label: "Runs", icon: Activity },
+      { id: "team", label: "Team Room", icon: Users },
       { id: "chat", label: "Chat", icon: MessageSquare },
       { id: "workspace", label: "Workspace", icon: FolderOpen },
       { id: "setup", label: "Setup", icon: Wand2 },

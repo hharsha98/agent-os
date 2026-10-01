@@ -96,12 +96,14 @@ The in-app update banner (`src/ui/components/UpdateBanner.tsx`) checks for an
 update at start and every 4 hours, and only installs when you click "Install &
 restart". It never restarts on its own.
 
-**Status: switched off, because there is no signing key yet.** Tauri's updater
-only installs updates signed with a private key, and its plugin refuses to
-start without the matching public key. No key has been generated, and none is
-committed here.
+**Status: set up, not yet proven.** Tauri's updater only installs updates
+signed with a private key, and its plugin refuses to start without the
+matching public key. The key pair now exists: the public half is in
+`desktop/updater-pubkey.txt`, and the private half is a GitHub Actions secret
+(never committed). Release builds from here on have auto-update. It is proven
+only once an installed version updates itself to the next one.
 
-How the build copes without one:
+How a build copes without a key (for example a local `npm run desktop:build`):
 
 - `tauri.conf.json` has no `plugins.updater` block and no
   `bundle.createUpdaterArtifacts`.

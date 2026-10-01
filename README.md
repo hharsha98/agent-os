@@ -190,7 +190,7 @@ The stack: React 18, TypeScript and Vite on the front. Node and Express on the b
 ## Limits
 
 - **Builds are unsigned.** Your OS will warn you on first launch (see Download).
-- **Auto-update is off.** It needs a signing key that the owner has not created yet. Updating means downloading the new installer.
+- **Auto-update is set up but not yet proven.** Release builds carry the signing key, so the app can offer updates from the next version on. Until an update has actually gone through, expect to download the new installer if it does not.
 - **Hermes Agent: Setup treats Intel Macs as unsupported** and says so instead of installing.
 - **Windows and Linux have not been hand-tested.** Intel Mac builds have not either.
 - **Level 2 (Machine control) works on macOS only.**

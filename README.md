@@ -20,7 +20,7 @@
 
 ## Download
 
-Get the installer for your computer from the [latest release](https://github.com/hharsha98/agent-os/releases/latest) (v0.3.0, published 1 October 2026).
+Get the installer for your computer from the [latest release](https://github.com/hharsha98/agent-os/releases/latest). The first public version, v0.3.0, came out on 1 October 2026.
 
 Which file is yours:
 

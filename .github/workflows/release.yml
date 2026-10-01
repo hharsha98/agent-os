@@ -5,10 +5,16 @@ name: Release
 # reviews the draft and clicks Publish (see desktop/README.md, "Releasing").
 # Pattern copied from a workflow that has shipped three real releases.
 #
+# Three stages, so there is exactly one draft and one latest.json:
+#   1. create-release  makes (or reuses) the one draft for the tag.
+#   2. release         four builds upload their installers into that draft.
+#   3. updater-json    writes latest.json last, and only if all four
+#                      computers are present.
+#
 # The builds are unsigned (no Apple/Microsoft certificates). Updater signing
-# is separate and optional: until the owner adds the signing secrets and
-# desktop/updater-pubkey.txt, the "Updater" step below does nothing and the
-# app builds without auto-update.
+# is separate: the public key is in desktop/updater-pubkey.txt and the private
+# key is the TAURI_SIGNING_PRIVATE_KEY secret. If either is missing, the
+# "Updater" step below turns auto-update off and no latest.json is written.
 
 on:
   push:
@@ -21,10 +27,80 @@ on:
         required: true
 
 jobs:
+  # Stage 1: make the ONE draft release that every build uploads into.
+  # (Draft releases cannot be found by tag, so if each build created its own,
+  # we would get one draft per platform. v0.3.0 hit exactly that.)
+  create-release:
+    runs-on: ubuntu-22.04
+    # The repo's default token is read-only; creating a release needs write.
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Needs .github/release-notes.md from the tagged commit.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Find or create the draft release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Lines of "<id> <draft true/false>". Drafts are included because
+          # this token can write to the repo.
+          found="$(gh api "repos/$REPO/releases" --paginate \
+            | jq -r --arg tag "$TAG" '.[] | select(.tag_name == $tag) | "\(.id) \(.draft)"')"
+          count="$(printf '%s' "$found" | grep -c . || true)"
+          if [ "$count" -gt 1 ]; then
+            echo "::error::More than one release already exists for $TAG (ids: $(printf '%s' "$found" | cut -d' ' -f1 | tr '\n' ' ')). Delete the extras by hand, then re-run."
+            exit 1
+          elif [ "$count" -eq 1 ]; then
+            id="${found%% *}"
+            draft="${found##* }"
+            if [ "$draft" != "true" ]; then
+              echo "::error::$TAG is already published. Bump the version (node scripts/bump-version.mjs) and tag a new one."
+              exit 1
+            fi
+            echo "Reusing the existing draft release $id for $TAG."
+          else
+            id="$(gh api "repos/$REPO/releases" \
+              -f tag_name="$TAG" \
+              -f name="Agent OS $TAG" \
+              -F body=@.github/release-notes.md \
+              -F draft=true \
+              -F prerelease=false \
+              --jq .id)"
+            echo "Created draft release $id for $TAG."
+          fi
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  # Stage 2: build every platform and upload into the draft from stage 1.
   release:
-    # Needed to create the Release and upload to it. The repo's default token
-    # is read-only; without this every build succeeds and the LAST step dies
-    # with "Resource not accessible by integration".
+    needs: create-release
+    # Needed to upload to the Release. The repo's default token is read-only;
+    # without this every build succeeds and the LAST step dies with
+    # "Resource not accessible by integration".
     permissions:
       contents: write
     strategy:
@@ -169,21 +245,11 @@ jobs:
             echo "::warning::Updater: OFF. Add the TAURI_SIGNING_PRIVATE_KEY secret and fill desktop/updater-pubkey.txt to enable auto-update."
           fi
 
-      # Loads the release-notes template so it can be passed as the Release body.
-      - name: Read release notes template
-        id: notes
-        shell: bash
-        run: |
-          {
-            echo "body<<RELEASE_NOTES_EOF"
-            cat .github/release-notes.md
-            echo "RELEASE_NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # Runs `tauri build` and creates/updates the draft Release. Every leg
-      # uses the same tagName, so tauri-action merges one latest.json across
-      # platforms.
-      - name: Build and publish
+      # Runs `tauri build` and uploads the installers (and .sig files, when
+      # the updater is on) into the draft made by create-release. It does not
+      # write latest.json (uploadUpdaterJson: false): four builds doing that at
+      # once could overwrite each other, so the updater-json job does it last.
+      - name: Build and upload
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -195,10 +261,46 @@ jobs:
           CI: true
         with:
           projectPath: desktop
-          tagName: ${{ steps.tag.outputs.tag }}
-          releaseName: "Agent OS ${{ steps.tag.outputs.tag }}"
-          releaseBody: ${{ steps.notes.outputs.body }}
-          # A draft: a human checks every platform attached, then Publishes.
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          uploadUpdaterJson: false
           args: ${{ matrix.args }} ${{ steps.updater.outputs.extra_args }}
+
+  # Stage 3: write latest.json once, after every build has uploaded. It checks
+  # that all four computers are present and fails (uploading nothing) if not.
+  updater-json:
+    needs: [create-release, release]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Write latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: node scripts/assemble-latest-json.mjs

@@ -139,6 +139,17 @@ runs `node scripts/prepare-desktop.mjs --skip-node` so the runner's own Node is
 never bundled by mistake. The release notes shown on the Release come from
 `.github/release-notes.md`; edit that file to change them.
 
+The workflow runs in three stages so there is exactly one draft and one
+`latest.json`:
+
+1. `create-release` makes the one draft for the tag first (or reuses it if you
+   re-run). It stops with a clear message if that version is already published.
+2. The four builds above each upload their installers (and `.sig` signature
+   files) into that same draft.
+3. `updater-json` runs last and writes `latest.json` from the files that are
+   there. It checks that all four computers (Apple Silicon Mac, Intel Mac,
+   Linux, Windows) are present and fails without uploading if one is missing.
+
 ### One-time key setup (the owner does this, once)
 
 The in-app updater only installs updates signed with your private key, so you

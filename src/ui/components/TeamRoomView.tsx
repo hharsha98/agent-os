@@ -12,10 +12,10 @@ import {
   deriveTurns,
   mergeEvents,
   minutesLabel,
+  roomCostText,
   roomEndSentence,
   roomStatusMark,
-  roomStatusWord,
-  usd
+  roomStatusWord
 } from "../teamRoomShared";
 import AgentConfirmModal from "./AgentConfirmModal";
 import SegmentMeter from "./SegmentMeter";
@@ -127,6 +127,9 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
   const waitingForYou = proposals.filter((p) => p.status === "needs_approval").length;
   const currentRunId = room.currentTurn?.runId || null;
   const costCap = room.limits.maxCostUsd;
+  // Plain-English notices from the server (a model that can't follow the reply
+  // format, a cost cap that can't see every turn). Server text, shown as text.
+  const notices = [...(room.hints || []), ...(room.costWarning ? [room.costWarning] : [])];
 
   async function doStop() {
     setBusy(true);
@@ -240,20 +243,25 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
             <dd>
               <span
                 className="os-mono"
-                title={room.costUsd === null ? "no turn has reported a cost yet" : undefined}
+                title="Known cost is what the agents reported. A turn that reported none is counted as unknown, never as $0."
               >
-                {usd(room.costUsd)}
+                {roomCostText(room)}
               </span>
               {typeof costCap === "number" ? <span className="os-team__muted">cap ${costCap}</span> : null}
-              {room.costUnknownTurns > 0 ? (
-                <span className="os-team__muted">
-                  {room.costUnknownTurns} turn{room.costUnknownTurns === 1 ? "" : "s"} didn&apos;t report cost
-                </span>
-              ) : null}
             </dd>
           </div>
         </dl>
       </header>
+
+      {notices.length > 0 ? (
+        <div className="os-team__notices" role="note" aria-label="Notices about this room">
+          {notices.map((notice) => (
+            <p key={notice} className="os-team__protocol">
+              {notice}
+            </p>
+          ))}
+        </div>
+      ) : null}
 
       <div className="os-team__grid">
         <section className="os-team__convo" aria-label="Conversation">

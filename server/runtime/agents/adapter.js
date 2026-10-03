@@ -48,6 +48,9 @@
  * @property {number} [timeoutMs]
  * @property {(line: string, stream: "stdout"|"stderr") => Array<Object>|null} [parseLine]
  * @property {(meta: Object) => Promise<void>} [onExit] - best-effort cleanup after the run ends
+ * @property {string[]} [notices] - plain-English heads-ups recorded as `system` events right after "Started"
+ * @property {() => Array<Object>|null|Promise<Array<Object>|null>} [onOutputEnd] - called once when the output has ended; returns events
+ *   built from everything parseLine collected (for output that only makes sense as a whole, like one JSON document)
  */
 
 /**
@@ -66,7 +69,8 @@
  * @property {(opts?: {refresh?: boolean}) => Promise<DetectedAgent>} detect
  * @property {(detected: DetectedAgent) => Promise<ConfigStatus>} configStatus
  * @property {(detected: DetectedAgent) => Promise<SafetyStatus>} safetyStatus
- * @property {(input: {prompt: string, cwd: string, detected: DetectedAgent, runDir: string}) => Promise<RunPlan>} buildRun
+ * @property {(input: {prompt: string, cwd: string, detected: DetectedAgent, runDir: string, options?: Object}) => Promise<RunPlan>} buildRun
+ *   options is adapter-specific and set by trusted server code only (Hermes: talkOnly; OpenClaw: sessionId, model)
  * @property {(line: string, stream: "stdout"|"stderr", ctx?: Object) => Array<Object>|null} parseLine
  * @property {{status: (detected: DetectedAgent) => Promise<ServiceStatus>, start: (detected: DetectedAgent) => RunPlan, stop: (detected: DetectedAgent) => RunPlan}} [service]
  * @property {(actionId: string, detected: DetectedAgent) => RunPlan|null} [safetyAction] - builds the plan for a safetyStatus() action id

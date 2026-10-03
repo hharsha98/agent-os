@@ -103,6 +103,31 @@ export function usd(value: number | null | undefined) {
   return typeof value === "number" ? `$${value.toFixed(value < 0.1 ? 3 : 2)}` : "—";
 }
 
+// A turn's cost: "—" when the agent reported none (unknown), "free (local)"
+// for a reported $0 on a local Ollama model, otherwise dollars (so a real $0
+// reads "$0.000", never "—").
+export function turnCostLabel(costUsd: number | null | undefined, model?: string | null) {
+  if (typeof costUsd !== "number") return "—";
+  if (costUsd === 0 && typeof model === "string" && model.toLowerCase().startsWith("ollama/")) return "free (local)";
+  return usd(costUsd);
+}
+
+// The limits bar's cost cell: what was reported, and how many turns reported
+// nothing. Rooms saved by an older version only have costUsd / costUnknownTurns.
+export function roomCostText(room: Pick<TeamRoom, "cost" | "costUsd" | "costUnknownTurns">) {
+  const known = room.cost?.knownUsd ?? room.costUsd ?? 0;
+  const unknown = room.cost?.unknownTurns ?? room.costUnknownTurns ?? 0;
+  return `${usd(known)} known · ${unknown} turn${unknown === 1 ? "" : "s"} unknown`;
+}
+
+// Same rule the server applies to the "OpenClaw model for this room" field:
+// plain letters, digits and . _ : / -, up to 100 characters, never starting
+// with "-" (so it can't be read as a flag).
+export const OPENCLAW_MODEL_PATTERN = /^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$/;
+
+export const COST_CAP_NOTE =
+  "Hermes doesn't report cost (its model is a subscription or the version doesn't say); the cost cap only counts OpenClaw.";
+
 export interface TurnView {
   turn: number;
   agentId: "hermes" | "openclaw";

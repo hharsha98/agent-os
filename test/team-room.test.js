@@ -19,7 +19,7 @@ import { writeWorkspaceText } from "../server/runtime/workspace.js";
 import { setExecutionGateStatus } from "../server/runtime/execution-gate.js";
 import { getRunManager } from "../server/runtime/runs/run-manager.js";
 import { undoAction } from "../server/runtime/team-room/actions.js";
-import { createModerator, finalTextFromEvents, recoverStaleRooms } from "../server/runtime/team-room/moderator.js";
+import { COST_CAP_WARNING, createModerator, finalTextFromEvents, recoverStaleRooms } from "../server/runtime/team-room/moderator.js";
 import {
   MAX_FILE_CHARS,
   MAX_NOTE_CHARS,
@@ -309,7 +309,8 @@ function nextStep(prompt) {
   return steps.length ? steps[Math.min(n, steps.length - 1)] : { text: "NOTE: nothing scripted" };
 }
 
-function respond(step, asJson) {
+function respond(step, mode) {
+  appendFileSync(SCRIPT + "." + AGENT + ".argv.jsonl", JSON.stringify(args) + "\\n");
   if (step.symlinkTo) {
     // Like a misbehaving agent: plant a link where the room's file will go.
     const inDir = args[args.indexOf("--in") + 1];
@@ -321,8 +322,25 @@ function respond(step, asJson) {
   if (step.stderr) process.stderr.write(step.stderr + "\\n");
   if (step.sleep) { setInterval(() => {}, 1000); return; }
   if (step.fail) process.exit(step.exitCode || 3);
-  if (asJson) {
+  if (mode === "exec-json") {
     out(JSON.stringify({ ok: true, status: "done", final: step.text, usage: { inputTokens: 5, outputTokens: 3 }, costUsd: step.costUsd }));
+  } else if (mode === "hermes-stream") {
+    // The shape of a real Hermes v0.21.5 --format stream-json run (subscription model: no cost).
+    const line = (o) => out(JSON.stringify(o));
+    line({ type: "system", subtype: "init", model: step.model || "cursor-subscription", session_id: "20261003_092047_de1073", timestamp: 1 });
+    line({ type: "text", text: step.text, timestamp: 2 });
+    const done = { type: "result", session_id: "20261003_092047_de1073", exit_code: 0, text: step.text, tokens: { input: 0, output: 0, total: 0, cache_read: 0, cache_write: 0 }, duration_ms: 10, timestamp: 3 };
+    if (step.costUsd !== undefined) done.cost_usd = step.costUsd;
+    line(done);
+  } else if (mode === "gateway-json") {
+    // The shape of a real OpenClaw 2026.9.6 agent --json document, over many lines.
+    process.stderr.write("(node:1) ExperimentalWarning: SQLite is an experimental feature\\n");
+    const agentMeta = { sessionId: args[args.indexOf("--session-id") + 1], provider: "ollama", model: step.model || "llama3.2:3b", usage: { input: 100, output: 20, cost: { total: step.costUsd ?? 0 } } };
+    if (step.costUsd !== undefined) agentMeta.costUsd = step.costUsd;
+    else delete agentMeta.usage.cost;
+    const meta = { durationMs: 10, agentMeta, finalAssistantVisibleText: step.text, stopReason: "stop" };
+    if (step.toolCalls) meta.toolSummary = { calls: step.toolCalls, tools: ["exec"], failures: step.toolFailures || 0 };
+    out(JSON.stringify({ runId: "r1", status: "ok", summary: "completed", result: { payloads: [{ text: step.text }], meta } }, null, 2));
   } else {
     out(step.text);
   }
@@ -341,7 +359,10 @@ function readStdin() {
 if (AGENT === "hermes") {
   if (args.includes("--version")) { out("hermes 9.9.9"); process.exit(0); }
   if (args[0] === "chat" && args.includes("--help")) {
-    out(["Usage: hermes chat", "  --query-file PATH", "  --oneshot", "  -Q, --quiet", "  --in DIR"].join("\\n"));
+    // hermesHelp: "old" is a Hermes without --format and -t (v0.20.x).
+    const old = ["Usage: hermes chat", "  --query-file PATH", "  --oneshot", "  -Q, --quiet", "  --in DIR"];
+    const current = ["usage: hermes chat [-h] [-q QUERY] [-t TOOLSETS] [--format {text,stream-json}] [--in DIR]", "  --query-file PATH", "  --oneshot", "  -Q, --quiet", "  -t TOOLSETS, --toolsets TOOLSETS", "  --in DIR"];
+    out((cfg().hermesHelp === "old" ? old : current).join("\\n"));
     process.exit(0);
   }
   if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.mode") {
@@ -350,7 +371,7 @@ if (AGENT === "hermes") {
   }
   if (args[0] === "chat") {
     const prompt = readFileSync(args[args.indexOf("--query-file") + 1], "utf8");
-    respond(nextStep(prompt), false);
+    respond(nextStep(prompt), args.includes("--format") ? "hermes-stream" : "plain");
   } else {
     process.exit(1);
   }
@@ -358,6 +379,10 @@ if (AGENT === "hermes") {
   if (args.includes("--version")) { out("openclaw 9.9.9"); process.exit(0); }
   if (args[0] === "agent" && args[1] === "exec" && args.includes("--help")) {
     out(["Usage: openclaw agent exec", "  --message-file PATH", "  --cwd DIR", "  --json"].join("\\n"));
+    process.exit(0);
+  }
+  if (args[0] === "agent" && args.includes("--help")) {
+    out(["Usage: openclaw agent [options]", "  --session-id <id>", "  --session-key <key>", "  --message-file <path>", "  --json", "  --model <id>", "  --thinking <level>", "  --timeout <seconds>", "  --local"].join("\\n"));
     process.exit(0);
   }
   if (args[0] === "config" && args[1] === "get" && args[2] === "tools.exec.mode") {
@@ -369,12 +394,16 @@ if (AGENT === "hermes") {
     process.exit(0);
   }
   if (args[0] === "gateway" && args[1] === "status") {
-    out(JSON.stringify({ running: false }));
+    // openclawGateway: true makes the fake report a running gateway service.
+    out(JSON.stringify({ running: Boolean(cfg().openclawGateway) }));
     process.exit(0);
   }
-  if (args[0] === "agent" && args[1] === "exec") {
+  if (args[0] === "agent" && args.includes("--session-id")) {
+    const prompt = readFileSync(args[args.indexOf("--message-file") + 1], "utf8");
+    respond(nextStep(prompt), "gateway-json");
+  } else if (args[0] === "agent" && args[1] === "exec") {
     const prompt = await readStdin();
-    respond(nextStep(prompt), true);
+    respond(nextStep(prompt), "exec-json");
   } else {
     process.exit(1);
   }
@@ -411,6 +440,7 @@ async function setScript(script) {
   for (const agent of ["hermes", "openclaw"]) {
     await rm(`${scriptPath}.${agent}.count`, { force: true });
     await rm(`${scriptPath}.${agent}.prompts.jsonl`, { force: true });
+    await rm(`${scriptPath}.${agent}.argv.jsonl`, { force: true });
   }
   await writeFile(scriptPath, JSON.stringify(script));
 }
@@ -419,6 +449,17 @@ async function promptsOf(agent) {
   try {
     const raw = await readFile(`${scriptPath}.${agent}.prompts.jsonl`, "utf8");
     return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line).prompt);
+  } catch {
+    return [];
+  }
+}
+
+// Every argv the fake agent was started with, one array per turn (the argv of
+// the --help and --version probes is not recorded).
+async function argvOf(agent) {
+  try {
+    const raw = await readFile(`${scriptPath}.${agent}.argv.jsonl`, "utf8");
+    return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch {
     return [];
   }
@@ -754,6 +795,142 @@ test(
       assert.equal(room.costUsd, null, "no known cost must stay null, not 0");
       assert.equal(room.costUnknownTurns, 2);
       assert.equal(room.status, "needs_you", "a cap cannot trigger on costs nobody reported");
+    });
+  }
+);
+
+test(
+  "real agents: Hermes is talk-only (-t todo, stream-json), OpenClaw gets its own session + model, and nothing but a file path reaches argv",
+  SKIP_POSIX,
+  async () => {
+    await setScript({
+      openclawGateway: true,
+      hermes: [{ text: "NOTE: h" }],
+      openclaw: [{ text: "NOTE: o", costUsd: 0, model: "phi4", toolCalls: 13, toolFailures: 13 }]
+    });
+    await withTeamEnv(async () => {
+      const moderator = createModerator();
+      const { room: started, done } = await moderator.startRoom({
+        task: "Plan a birthday party",
+        limits: { maxTurns: 2 },
+        openclawModel: "ollama/phi4"
+      });
+      await done;
+      const room = await readRoom(started.id);
+      assert.equal(room.limits.openclawModel, "ollama/phi4");
+
+      const [hermesArgv] = await argvOf("hermes");
+      assert.deepEqual(hermesArgv.slice(0, 2), ["chat", "--oneshot"]);
+      assert.ok(hermesArgv.includes("--format") && hermesArgv.includes("stream-json"));
+      assert.equal(hermesArgv[hermesArgv.indexOf("-t") + 1], "todo");
+      for (const bad of ["terminal", "file", "code_execution", "browser", "computer_use"]) assert.ok(!hermesArgv.includes(bad));
+
+      const [openclawArgv] = await argvOf("openclaw");
+      assert.equal(openclawArgv[0], "agent");
+      assert.equal(openclawArgv[openclawArgv.indexOf("--session-id") + 1], `agentos-room-${room.id}`);
+      assert.equal(openclawArgv[openclawArgv.indexOf("--model") + 1], "ollama/phi4");
+      assert.ok(openclawArgv.includes("--message-file") && openclawArgv.includes("--json"));
+      assert.ok(!openclawArgv.includes("-m"), "never the shared main-session transport");
+      for (const argv of [hermesArgv, openclawArgv]) {
+        assert.ok(!argv.some((arg) => /Plan a birthday party|You are /.test(arg)), "the prompt is never on argv");
+      }
+      assert.match((await promptsOf("openclaw"))[0], /Plan a birthday party/, "the file carried the whole prompt");
+
+      // Each turn records its model, its cost (null = unknown, 0 = known zero) and a tool summary.
+      const ends = (await readEvents(room.id)).filter((e) => e.type === "turn_ended");
+      assert.equal(ends[0].model, "cursor-subscription");
+      assert.equal(ends[0].costUsd, null);
+      assert.equal(ends[0].toolSummary, null);
+      assert.equal(ends[1].model, "ollama/phi4");
+      assert.equal(ends[1].costUsd, 0);
+      assert.deepEqual(ends[1].toolSummary, { calls: 13, failures: 13 });
+      assert.deepEqual(room.cost, { knownUsd: 0, unknownTurns: 1 });
+      assert.equal(room.costUsd, 0, "a known $0 is not 'unknown'");
+      assert.equal(room.costKnownTurns, 1);
+      assert.equal(room.costUnknownTurns, 1);
+    });
+  }
+);
+
+test(
+  "real agents: an old Hermes without -t still runs, with a plain-English warning on the turn's run",
+  SKIP_POSIX,
+  async () => {
+    await setScript({ hermesHelp: "old", hermes: [{ text: "NOTE: h" }], openclaw: [{ text: "NOTE: o" }] });
+    await withTeamEnv(async () => {
+      const room = await runRoom("old hermes", { maxTurns: 2 });
+      assert.equal(room.status, "needs_you");
+      const [argv] = await argvOf("hermes");
+      assert.ok(!argv.includes("-t") && !argv.includes("--format"));
+      const end = (await readEvents(room.id)).find((e) => e.type === "turn_ended" && e.agentId === "hermes");
+      const events = await getRunManager().readEvents(end.runId);
+      assert.ok(events.some((e) => e.type === "system" && e.text === "This Hermes version can't limit its tools for this turn."));
+      assert.equal(end.model, null);
+    });
+  }
+);
+
+test(
+  "cost honesty: unknown, known zero and known are kept apart; the cap counts known costs only and the room says so",
+  SKIP_POSIX,
+  async () => {
+    // OpenClaw reports a real $0 (a local model), Hermes reports nothing: a cap can never fire.
+    await setScript({ openclawGateway: true, hermes: [{ text: "NOTE: h" }], openclaw: [{ text: "NOTE: o", costUsd: 0 }] });
+    await withTeamEnv(async () => {
+      const room = await runRoom("free talk", { maxTurns: 4, maxCostUsd: 0.01 });
+      assert.equal(room.status, "needs_you", "unknown costs never trip the cap");
+      assert.equal(room.costUsd, 0);
+      assert.equal(room.costKnownTurns, 2);
+      assert.equal(room.costUnknownTurns, 2);
+      assert.deepEqual(room.cost, { knownUsd: 0, unknownTurns: 2 });
+      assert.equal(room.costWarning, COST_CAP_WARNING);
+      assert.match(room.costWarning, /the cost cap only counts OpenClaw/);
+    });
+
+    // Without a cap there is nothing to warn about.
+    await withTeamEnv(async () => {
+      const room = await runRoom("no cap", { maxTurns: 2 });
+      assert.equal(room.costWarning, null);
+      assert.deepEqual(room.cost, { knownUsd: 0, unknownTurns: 1 });
+    });
+
+    // A Hermes that does send a cost (a future version) is counted.
+    await setScript({ hermes: [{ text: "NOTE: h", costUsd: 0.3 }], openclaw: [{ text: "NOTE: o", costUsd: 0.2 }] });
+    await withTeamEnv(async () => {
+      const room = await runRoom("both report", { maxTurns: 8, maxCostUsd: 0.4 });
+      assert.equal(room.status, "cost_cap");
+      assert.equal(room.turnsDone, 2);
+      assert.deepEqual(room.cost, { knownUsd: 0.5, unknownTurns: 0 });
+      assert.equal(room.costWarning, null);
+    });
+  }
+);
+
+test(
+  "hint: two untagged replies from the same agent give one plain-English hint naming its model, also emitted as a room event",
+  SKIP_POSIX,
+  async () => {
+    await setScript({
+      openclawGateway: true,
+      hermes: [{ text: "NOTE: fine" }],
+      openclaw: [{ text: "just chatting, no tag at all" }]
+    });
+    await withTeamEnv(async () => {
+      const room = await runRoom("format test", { maxTurns: 6 });
+      assert.equal(room.hints.length, 1, "one hint, not one per turn");
+      assert.match(room.hints[0], /^OpenClaw's model \(ollama\/llama3\.2:3b\) didn't follow the room's reply format\./);
+      assert.match(room.hints[0], /Choose a larger model for OpenClaw when starting a room, or set up an OpenRouter key in Setup\./);
+      const hints = (await readEvents(room.id)).filter((e) => e.type === "room_hint");
+      assert.equal(hints.length, 1);
+      assert.equal(hints[0].agentId, "openclaw");
+      assert.equal(hints[0].message, room.hints[0]);
+    });
+
+    // One untagged reply is not enough; an agent that follows the format never triggers it.
+    await setScript({ hermes: [{ text: "NOTE: fine" }], openclaw: [{ text: "no tag" }, { text: "NOTE: ok now" }] });
+    await withTeamEnv(async () => {
+      const room = await runRoom("one slip", { maxTurns: 4 });
+      assert.deepEqual(room.hints, []);
     });
   }
 );
@@ -1143,6 +1320,41 @@ test(
       },
       { gate: false }
     );
+  }
+);
+
+test(
+  "routes: an invalid openclawModel gives 400 and no room; a valid one is stored; a cost cap adds the start warning",
+  SKIP_POSIX,
+  async () => {
+    await setScript({ openclawGateway: true, hermes: [{ text: "NOTE: h" }], openclaw: [{ text: "NOTE: o" }] });
+    await withTeamEnv(async (home) => {
+      await withRouter(async (api) => {
+        for (const bad of ["ollama phi4", "--yolo", "-x", "a;b", "$(id)", "x".repeat(101), 5, {}]) {
+          const res = await api("POST", "/", { task: "x", confirm: true, openclawModel: bad });
+          assert.equal(res.status, 400, JSON.stringify(bad));
+          assert.equal(res.body.error, "invalid_openclaw_model");
+        }
+        assert.equal(await teamsCount(home), 0, "no room is created for a bad model");
+
+        let res = await api("POST", "/", { task: "x", confirm: true, limits: { maxTurns: 2, maxCostUsd: 1 }, openclawModel: "ollama/phi4:latest" });
+        assert.equal(res.status, 200);
+        assert.equal(res.body.limits.openclawModel, "ollama/phi4:latest");
+        assert.deepEqual(res.body.warnings, [COST_CAP_WARNING]);
+        await waitFor(async () => (await readRoom(res.body.id)).status !== "running", { timeoutMs: 30000 });
+        const [openclawArgv] = await argvOf("openclaw");
+        assert.equal(openclawArgv[openclawArgv.indexOf("--model") + 1], "ollama/phi4:latest");
+
+        // Empty or missing means "use OpenClaw's own setting"; no cap means no warning.
+        res = await api("POST", "/", { task: "y", confirm: true, limits: { maxTurns: 2 }, openclawModel: "" });
+        assert.equal(res.status, 200);
+        assert.equal(res.body.limits.openclawModel, null);
+        assert.deepEqual(res.body.warnings, []);
+        await waitFor(async () => (await readRoom(res.body.id)).status !== "running", { timeoutMs: 30000 });
+        const argvs = await argvOf("openclaw");
+        assert.ok(!argvs[1].includes("--model"));
+      });
+    });
   }
 );
 

@@ -397,6 +397,16 @@
   font-size: var(--os-fs-12);
   color: var(--os-text-2);
 }
+.os-team__turn-model {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-team__notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
 .os-team__text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

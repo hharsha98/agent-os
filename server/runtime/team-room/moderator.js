@@ -14,6 +14,7 @@
 // card for you to approve or reject.
 import { promises as fs } from "node:fs";
 import { getAdapter } from "../agents/index.js";
+import { OPENCLAW_MODEL_PATTERN } from "../agents/openclaw.js";
 import { makeRunDir, resolveRunCwd } from "../agents/routes.js";
 import { TERMINAL_RUN_STATUSES, getRunManager } from "../runs/run-manager.js";
 import { applyFileProposal } from "./actions.js";
@@ -42,6 +43,30 @@ const STOP_WAIT_MS = 10000;
 
 export const DEFAULT_LIMITS = { maxTurns: 6, maxMinutes: 10, maxCostUsd: null };
 
+// Shown when a cost cap is set, because Hermes may report no cost at all (its
+// model can be a subscription), and the cap can only count what is reported.
+export const COST_CAP_WARNING =
+  "Hermes doesn't report cost (its model is a subscription or the version doesn't say); the cost cap only counts OpenClaw.";
+
+// Two replies from the same agent with no usable tag: its model probably
+// can't follow the room's reply format.
+const NO_TAG_HINT_AFTER = 2;
+
+// Returns the model name to pass to OpenClaw, "" for none, or throws a 400.
+// It is passed as ONE argument (never through a shell), and may not start
+// with "-" so it can never be read as a flag.
+export function validateOpenclawModel(value) {
+  if (value == null || value === "") return "";
+  if (typeof value !== "string" || !OPENCLAW_MODEL_PATTERN.test(value.trim())) {
+    throw roomError(
+      400,
+      "invalid_openclaw_model",
+      "The OpenClaw model can only use letters, numbers and . _ : / - (up to 100 characters), for example ollama/phi4."
+    );
+  }
+  return value.trim();
+}
+
 function clampNumber(value, min, max, fallback) {
   const parsed = Number(value);
   if (value == null || value === "" || !Number.isFinite(parsed)) return fallback;
@@ -50,10 +75,11 @@ function clampNumber(value, min, max, fallback) {
 
 // Out-of-range numbers are pulled back into range rather than rejected, so a
 // slider that overshoots still starts a sensible room.
-export function normalizeLimits(raw) {
+export function normalizeLimits(raw, openclawModel = "") {
   const input = raw && typeof raw === "object" ? raw : {};
   const cost = Number(input.maxCostUsd);
   return {
+    openclawModel: openclawModel || null,
     maxTurns: clampNumber(input.maxTurns, 2, 12, DEFAULT_LIMITS.maxTurns),
     maxMinutes: clampNumber(input.maxMinutes, 1, 30, DEFAULT_LIMITS.maxMinutes),
     maxCostUsd: input.maxCostUsd != null && Number.isFinite(cost) && cost > 0 ? cost : null
@@ -149,6 +175,35 @@ function failureDetail(meta, events) {
     .map((event) => event.text.trim())
     .join(" | ");
   return scrubPaths(tail.slice(-400));
+}
+
+// What a finished run says about itself: the model it used (a `system` event
+// or the run's meta) and a tool-call summary, if the agent reported one.
+// Both are short facts, not agent prose, so they are safe to show as is.
+export function runFactsFromEvents(meta, events) {
+  let model = typeof meta?.model === "string" && meta.model ? meta.model : null;
+  let toolSummary = null;
+  for (const event of events) {
+    if (event.type !== "system" || event.stream === "stderr") continue;
+    if (!model && typeof event.model === "string" && event.model) model = event.model;
+    const calls = event.data?.toolCalls;
+    if (typeof calls === "number") {
+      toolSummary = { calls, failures: Number(event.data.toolFailures) || 0 };
+    }
+  }
+  // A model name is plain letters, digits and . _ : / @ + - ; anything else is dropped.
+  const cleaned = model ? scrubPaths(model).replace(/[^\w.:/@+ -]/g, "").trim().slice(0, 120) : "";
+  return { model: cleaned || null, toolSummary };
+}
+
+function noTagHint(agentId, model) {
+  const label = labelOf(agentId);
+  const named = model ? `${label}'s model (${model})` : `${label}'s model`;
+  const fix =
+    agentId === "openclaw"
+      ? "Choose a larger model for OpenClaw when starting a room, or set up an OpenRouter key in Setup."
+      : "Choose a larger model in Hermes's own settings, or set up an OpenRouter key in Setup.";
+  return `${named} didn't follow the room's reply format. Small local models often can't. ${fix}`;
 }
 
 function excerpt(task) {
@@ -391,7 +446,13 @@ export function createModerator({
     let run;
     let turnTimeoutMs = minTurnTimeoutMs;
     try {
-      const built = await adapter.buildRun({ prompt, cwd, detected: detected[agentId], runDir, options: {} });
+      // Each agent is held to talking: Hermes gets only a harmless toolset, and
+      // OpenClaw gets this room's own conversation (never your main one).
+      const turnOptions =
+        agentId === "hermes"
+          ? { talkOnly: true }
+          : { sessionId: `agentos-room-${roomId}`, ...(room.limits.openclawModel ? { model: room.limits.openclawModel } : {}) };
+      const built = await adapter.buildRun({ prompt, cwd, detected: detected[agentId], runDir, options: turnOptions });
       // A turn never needs to outlive the room's wall clock by much.
       const remainingMs = room.limits.maxMinutes * 60 * 1000 - (now() - state.clockStart);
       const planned = built.timeoutMs || 30 * 60 * 1000;
@@ -433,7 +494,10 @@ export function createModerator({
     const runEvents = await manager().readEvents(run.id);
     const text = scrubPaths(finalTextFromEvents(runEvents));
     const parsed = parseReply(text);
+    // null = the agent reported no cost (unknown); 0 = it reported a real zero.
     const costUsd = typeof finalMeta.usage?.costUsd === "number" ? finalMeta.usage.costUsd : null;
+    const { model, toolSummary } = runFactsFromEvents(finalMeta, runEvents);
+    const succeeded = !hung && finalMeta.status === "succeeded";
 
     await appendEvent(roomId, {
       type: "turn_ended",
@@ -443,8 +507,11 @@ export function createModerator({
       status: hung ? "timed_out" : finalMeta.status,
       text: text.slice(0, MAX_TURN_TEXT_CHARS),
       costUsd,
+      model,
+      toolSummary,
       parsed
     });
+    let hint = null;
     await updateRoom(roomId, (meta) => {
       meta.turnsDone = turn;
       meta.currentTurn = null;
@@ -454,7 +521,18 @@ export function createModerator({
       } else {
         meta.costUnknownTurns += 1;
       }
+      meta.cost = { knownUsd: meta.costUsd || 0, unknownTurns: meta.costUnknownTurns };
+      // The cap can only count what agents report; say so when it matters.
+      meta.costWarning = meta.limits.maxCostUsd != null && meta.costUnknownTurns > 0 ? COST_CAP_WARNING : null;
+      if (succeeded && parsed.kind === "none") {
+        meta.noTagTurns = { ...(meta.noTagTurns || {}), [agentId]: ((meta.noTagTurns || {})[agentId] || 0) + 1 };
+        if (meta.noTagTurns[agentId] === NO_TAG_HINT_AFTER) {
+          hint = noTagHint(agentId, model);
+          meta.hints = [...(meta.hints || []), hint];
+        }
+      }
     });
+    if (hint) await appendEvent(roomId, { type: "room_hint", agentId, message: hint });
     return { meta: finalMeta, runEvents, parsed, hung, shownFileIds };
   }
 
@@ -527,7 +605,8 @@ export function createModerator({
 
   // Returns { room, done }: the new room right away, and a promise that
   // settles when the room finishes (the HTTP route ignores it; tests await it).
-  async function startRoom({ task, limits }) {
+  async function startRoom({ task, limits, openclawModel }) {
+    const model = validateOpenclawModel(openclawModel);
     if (active) throw alreadyRunning();
     // Claim the slot before any await, so two starts cannot both get through.
     const state = newState(null);
@@ -536,7 +615,7 @@ export function createModerator({
     let detected;
     try {
       detected = await checkAgentsReady();
-      room = await createRoom({ task, limits: normalizeLimits(limits) });
+      room = await createRoom({ task, limits: normalizeLimits(limits, model) });
     } catch (error) {
       active = null;
       throw error;
@@ -545,7 +624,10 @@ export function createModerator({
     await appendEvent(room.id, { type: "room_started", task: room.task, limits: room.limits });
     await appendEvent(room.id, { type: "status", status: "running", reason: "Room started." });
     runRoom(state, detected);
-    return { room, done: state.done };
+    // `warnings` is for the start response only (it is not stored): a cost
+    // cap needs a heads-up, because Hermes may not report any cost.
+    const warnings = room.limits.maxCostUsd != null ? [COST_CAP_WARNING] : [];
+    return { room, done: state.done, warnings };
   }
 
   async function continueRoom(roomId, extraTurns) {

@@ -2430,6 +2430,9 @@ export interface TeamRoomLimits {
   maxTurns: number;
   maxMinutes: number;
   maxCostUsd: number | null;
+  // Model OpenClaw uses for this room (for example "ollama/phi4"); null means
+  // OpenClaw's own setting.
+  openclawModel?: string | null;
 }
 
 export interface TeamRoom {
@@ -2449,8 +2452,20 @@ export interface TeamRoom {
   costUsd: number | null;
   costKnownTurns: number;
   costUnknownTurns: number;
+  // The same facts for display: the cost that was reported, and how many turns
+  // reported none (never counted as $0). Missing on rooms saved by older versions.
+  cost?: { knownUsd: number; unknownTurns: number };
+  // Set when a cost cap is on but some turns report no cost, so the cap can't see them.
+  costWarning?: string | null;
+  // Plain-English hints (for example "this model didn't follow the reply format").
+  hints?: string[];
   endReason: string | null;
   folder: string;
+}
+
+// What starting a room returns: the room, plus any heads-ups for the start screen.
+export interface StartTeamRoomResponse extends TeamRoom {
+  warnings?: string[];
 }
 
 export interface TeamRoomSummary {
@@ -2464,6 +2479,7 @@ export interface TeamRoomSummary {
   turnsAllowed: number;
   costUsd: number | null;
   costUnknownTurns: number;
+  cost?: { knownUsd: number; unknownTurns: number };
   openProposals: number;
   needsApproval: number;
   actions: number;
@@ -2532,6 +2548,7 @@ export type TeamRoomEventType =
   | "proposal_status"
   | "proposal_decided"
   | "protocol_note"
+  | "room_hint"
   | "action"
   | "action_undone"
   | "limits_extended"
@@ -2557,7 +2574,12 @@ export interface TeamRoomEvent {
   status?: string;
   reason?: string | null;
   text?: string;
+  // null = this turn reported no cost (unknown); 0 = it reported a real zero.
   costUsd?: number | null;
+  // The model the agent used for this turn, when it said so (for example "ollama/llama3.2:3b").
+  model?: string | null;
+  // Tool calls the agent reported trying, when it said so.
+  toolSummary?: { calls: number; failures: number } | null;
   parsed?: TeamParsedReply;
   proposal?: TeamProposal;
   proposalId?: string;
@@ -2578,7 +2600,9 @@ export interface TeamRoomDetail {
 
 export interface StartTeamRoomInput {
   task: string;
-  limits?: Partial<TeamRoomLimits>;
+  limits?: Partial<Pick<TeamRoomLimits, "maxTurns" | "maxMinutes" | "maxCostUsd">>;
+  // Optional model for OpenClaw in this room, for example "ollama/phi4".
+  openclawModel?: string;
 }
 
 export interface TeamProposalDecisionResult {

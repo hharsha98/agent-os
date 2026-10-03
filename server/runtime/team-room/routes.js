@@ -6,7 +6,7 @@
 import express from "express";
 import { isExecutionEnabled } from "../execution-gate.js";
 import { applyFileProposal, undoAction } from "./actions.js";
-import { getModerator } from "./moderator.js";
+import { getModerator, validateOpenclawModel } from "./moderator.js";
 import {
   ACTION_ID_PATTERN,
   PROPOSAL_ID_PATTERN,
@@ -86,8 +86,10 @@ export function createTeamRoomsRouter({ moderator = getModerator() } = {}) {
       }
       // Both agents installed and both safeguards on is checked inside
       // startRoom (409 agent_missing / safeguards_off) before any room exists.
-      const { room } = await moderator.startRoom({ task, limits: req.body?.limits });
-      res.json(room);
+      // Anything but a plain model name (letters, digits, . _ : / -) is a 400.
+      const openclawModel = validateOpenclawModel(req.body?.openclawModel);
+      const { room, warnings } = await moderator.startRoom({ task, limits: req.body?.limits, openclawModel });
+      res.json({ ...room, warnings: warnings || [] });
     } catch (error) {
       sendError(error, res, next);
     }

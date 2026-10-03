@@ -196,16 +196,29 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     if (typeof evt.outputTokens === "number") usage.outputTokens = (usage.outputTokens || 0) + evt.outputTokens;
   }
 
+  // A `system` event may name the model the agent used; keep it on the run's
+  // meta so the Runs page and the Team Room can show it.
+  function noteModel(state, evt) {
+    if (evt?.type === "system" && typeof evt.model === "string" && evt.model.trim()) {
+      state.meta.model = evt.model.trim().slice(0, 120);
+    }
+  }
+
+  async function appendParsedEvents(state, events, stream) {
+    for (const evt of events) {
+      accumulateUsage(state, evt);
+      noteModel(state, evt);
+      await appendEvent(state, { stream, ...evt });
+    }
+  }
+
   async function processLine(state, plan, rawLine, stream) {
     const cleaned = stripAnsi(rawLine);
     const redacted = redactSecrets(cleaned, plan.redact || []);
     const parsed = typeof plan.parseLine === "function" ? plan.parseLine(redacted, stream) : null;
     if (parsed === false) return; // parseLine asked to drop this line entirely
     const events = Array.isArray(parsed) && parsed.length ? parsed : [{ type: "line", text: redacted }];
-    for (const evt of events) {
-      accumulateUsage(state, evt);
-      await appendEvent(state, { stream, ...evt });
-    }
+    await appendParsedEvents(state, events, stream);
   }
 
   // Buffers partial lines per stream so a chunk boundary mid-line never
@@ -231,6 +244,23 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       async flush() {
         if (stdoutBuf) await processLine(state, plan, stdoutBuf, "stdout");
         if (stderrBuf) await processLine(state, plan, stderrBuf, "stderr");
+        // For output that only makes sense as a whole (OpenClaw prints one
+        // JSON document over many lines): the plan may turn everything it
+        // collected into events once the output has ended. Best-effort.
+        if (typeof plan.onOutputEnd === "function") {
+          let events = null;
+          try {
+            events = await plan.onOutputEnd();
+          } catch {
+            events = null;
+          }
+          if (Array.isArray(events) && events.length) {
+            for (const evt of events) {
+              const redacted = evt && typeof evt.text === "string" ? { ...evt, text: redactSecrets(evt.text, plan.redact || []) } : evt;
+              await appendParsedEvents(state, [redacted], "stdout");
+            }
+          }
+        }
       }
     };
   }
@@ -337,7 +367,12 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     // in the log) and await them only after the listeners are attached.
     const startWrites = Promise.all([
       enqueue(state, () => persistMeta(state)),
-      appendEvent(state, { stream: "system", type: "system", text: `Started ${commandPreview}` })
+      appendEvent(state, { stream: "system", type: "system", text: `Started ${commandPreview}` }),
+      // Plain-English heads-ups from the adapter (for example "this version
+      // can't limit its tools"), recorded right after "Started".
+      ...(Array.isArray(plan.notices) ? plan.notices : [])
+        .filter((notice) => typeof notice === "string" && notice.trim())
+        .map((notice) => appendEvent(state, { stream: "system", type: "system", text: notice.trim().slice(0, 400) }))
     ]);
 
     const output = attachOutputHandlers(state, plan, child);

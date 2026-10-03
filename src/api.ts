@@ -9,6 +9,7 @@ import type {
   RunMeta,
   RunStreamEvent,
   StartTeamRoomInput,
+  StartTeamRoomResponse,
   TeamAction,
   TeamProposalDecisionResult,
   TeamRoom,
@@ -1152,7 +1153,7 @@ export function getTeamRoom(id: string) {
 }
 
 export function startTeamRoom(input: StartTeamRoomInput) {
-  return teamRoomRequest<TeamRoom>("/api/team-rooms", {
+  return teamRoomRequest<StartTeamRoomResponse>("/api/team-rooms", {
     method: "POST",
     body: JSON.stringify({ ...input, confirm: true })
   });
@@ -1189,7 +1190,7 @@ export function undoTeamAction(roomId: string, actionId: string) {
 // Every event type the moderator emits (see server/runtime/team-room/).
 const TEAM_ROOM_EVENT_TYPES: TeamRoomEventType[] = [
   "room_started", "turn_started", "turn_ended", "note", "proposal", "agreement",
-  "disagreement", "proposal_status", "proposal_decided", "protocol_note",
+  "disagreement", "proposal_status", "proposal_decided", "protocol_note", "room_hint",
   "action", "action_undone", "limits_extended", "status"
 ];
 

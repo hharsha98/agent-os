@@ -126,6 +126,14 @@ export async function createRoom({ task, limits }) {
     costUsd: null,
     costKnownTurns: 0,
     costUnknownTurns: 0,
+    // The same facts in the shape the screen shows: what is known, and how
+    // many turns reported no cost at all (those are never counted as $0).
+    cost: { knownUsd: 0, unknownTurns: 0 },
+    // A plain-English note when the cost cap can't see every turn's cost.
+    costWarning: null,
+    // Plain-English hints for the user (for example "this model can't follow
+    // the room's reply format"). Never contains agent text.
+    hints: [],
     endReason: null,
     folder: roomShort(id)
   };
@@ -189,6 +197,7 @@ export function summarizeRoom(meta, decision) {
     turnsAllowed: meta.turnsAllowed,
     costUsd: meta.costUsd,
     costUnknownTurns: meta.costUnknownTurns,
+    cost: meta.cost || { knownUsd: meta.costUsd || 0, unknownTurns: meta.costUnknownTurns || 0 },
     openProposals: proposals.filter((p) => p.status === "open").length,
     needsApproval: proposals.filter((p) => p.status === "needs_approval").length,
     actions: (decision?.actions || []).length

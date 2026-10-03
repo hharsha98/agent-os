@@ -23,16 +23,31 @@ const GATEWAY_STATUS_TIMEOUT_MS = 10 * 1000;
 const GATEWAY_ACTION_TIMEOUT_MS = 30 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
-async function detectFeatures(binPath) {
-  const { text } = await runHelp(binPath, ["chat", "--help"], 5000);
-  return {
-    queryFile: /--query-file\b/.test(text),
-    oneshot: /--oneshot\b/.test(text),
-    quiet: /(^|[\s,])(-Q|--quiet)\b/.test(text),
-    inDir: /--in\b/.test(text),
-    // v0.20.6 has no --format flag at all; v0.21+ adds --format stream-json.
-    streamJson: /stream-json/i.test(text)
+// Help text is read two ways: as printed, and with every run of whitespace
+// removed. argparse (and rich) wrap long lines, and a wrap can land inside
+// "stream-json" or between "--format" and its choices; the squashed copy
+// still matches then.
+export function featuresFromHelp(text) {
+  const raw = String(text ?? "");
+  const squashed = raw.replace(/\s+/g, "");
+  const result = {
+    queryFile: /--query-file\b/.test(raw),
+    oneshot: /--oneshot\b/.test(raw),
+    quiet: /(^|[\s,])(-Q|--quiet)\b/.test(raw),
+    inDir: /--in\b/.test(raw),
+    // v0.20.6 has no --format flag at all; v0.21+ lists
+    // `[--format {text,stream-json}]`.
+    streamJson: /--format/.test(squashed) && /stream-json/i.test(squashed),
+    // `-t TOOLSETS, --toolsets TOOLSETS`: which tool groups a run may use.
+    toolsets: /--toolsets\b/.test(raw) || /(^|[\s,[])-t\s+TOOLSETS\b/i.test(raw)
   };
+  if (!raw.trim()) result.helpFailed = true;
+  return result;
+}
+
+async function detectFeatures(binPath) {
+  const { text } = await runHelp(binPath, ["chat", "--help"], 8000);
+  return featuresFromHelp(text);
 }
 
 async function detect({ refresh = false } = {}) {
@@ -163,7 +178,11 @@ async function resolveHermesHome() {
   return configured ? expandHome(configured) : null;
 }
 
-async function buildRun({ prompt, cwd, detected, runDir }) {
+// The only toolset a talk-only turn gets: a planning checklist. Never
+// terminal, file, code, browser or computer_use.
+const TALK_ONLY_TOOLSETS = "todo";
+
+async function buildRun({ prompt, cwd, detected, runDir, options = {} }) {
   const queryFile = path.join(runDir, "query.txt");
   // The prompt goes to a file, never argv, so it never shows up in `ps` and
   // there is no flag-injection surface from prompt text.
@@ -173,6 +192,15 @@ async function buildRun({ prompt, cwd, detected, runDir }) {
   const args = ["chat", "--oneshot", "-Q", "--query-file", queryFile];
   if (features.inDir) args.push("--in", cwd);
   if (features.streamJson) args.push("--format", "stream-json");
+
+  // talkOnly (set by trusted server code, such as the Team Room, never by an
+  // HTTP request): the run may only talk. Hermes's default toolsets include a
+  // terminal, files and code, so we name the one harmless toolset instead.
+  const notices = [];
+  if (options.talkOnly) {
+    if (features.toolsets) args.push("-t", TALK_ONLY_TOOLSETS);
+    else notices.push("This Hermes version can't limit its tools for this turn.");
+  }
 
   const home = await resolveHermesHome();
   const streamJson = Boolean(features.streamJson);
@@ -187,6 +215,7 @@ async function buildRun({ prompt, cwd, detected, runDir }) {
     env: home ? { HERMES_HOME: home } : {},
     redact: [home, queryFile].filter(Boolean),
     timeoutMs: RUN_TIMEOUT_MS,
+    ...(notices.length ? { notices } : {}),
     parseLine: (line, stream) => parseLine(line, stream, { streamJson }),
     async onExit() {
       await fs.rm(queryFile, { force: true }).catch(() => {});
@@ -221,6 +250,11 @@ function parseLine(line, _stream, ctx = {}) {
   }
   if (!evt || typeof evt !== "object") return null;
   switch (evt.type) {
+    case "system": {
+      // {"type":"system","subtype":"init","model":"...","session_id":"..."}
+      const model = typeof evt.model === "string" && evt.model.trim() ? evt.model.trim() : "";
+      return [{ type: "system", text: model ? `Model: ${model}` : "Hermes session started.", ...(model ? { model } : {}) }];
+    }
     case "text":
       return [{ type: "text", text: String(evt.text ?? "") }];
     case "tool_use":
@@ -229,13 +263,25 @@ function parseLine(line, _stream, ctx = {}) {
       return [{ type: "tool_result", text: String(evt.output ?? evt.text ?? "").slice(0, 500) }];
     case "result": {
       const exitCode = evt.exit_code ?? evt.exitCode ?? null;
-      const events = [{ type: "result", data: { exit_code: exitCode } }];
+      const data = { exit_code: exitCode };
+      if (typeof evt.session_id === "string" && evt.session_id) data.session_id = evt.session_id;
+      const result = { type: "result", data };
+      if (typeof evt.text === "string") result.text = evt.text;
+      const events = [result];
+      // No cost in the line means the cost is UNKNOWN (a subscription model
+      // reports none), so costUsd is left out rather than set to 0.
       const costUsd = evt.cost_usd ?? evt.total_cost_usd ?? evt.costUsd;
       const usage = evt.usage || {};
-      const inputTokens = usage.input_tokens ?? usage.inputTokens;
-      const outputTokens = usage.output_tokens ?? usage.outputTokens;
-      if (typeof costUsd === "number" || typeof inputTokens === "number" || typeof outputTokens === "number") {
-        events.push({ type: "usage", costUsd, inputTokens, outputTokens });
+      const tokens = evt.tokens || {};
+      const inputTokens = usage.input_tokens ?? usage.inputTokens ?? tokens.input;
+      const outputTokens = usage.output_tokens ?? usage.outputTokens ?? tokens.output;
+      const hasCost = typeof costUsd === "number";
+      if (hasCost || typeof inputTokens === "number" || typeof outputTokens === "number") {
+        const usageEvent = { type: "usage" };
+        if (hasCost) usageEvent.costUsd = costUsd;
+        if (typeof inputTokens === "number") usageEvent.inputTokens = inputTokens;
+        if (typeof outputTokens === "number") usageEvent.outputTokens = outputTokens;
+        events.push(usageEvent);
       }
       return events;
     }

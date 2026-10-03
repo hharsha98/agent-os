@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { getExecutionGateStatus, listTeamRooms, startTeamRoom } from "../../api";
 import type { ExecutionGateStatus, TeamRoomSummary } from "../../types";
-import { roomStatusMark, roomStatusWord, usd } from "../teamRoomShared";
+import { COST_CAP_NOTE, OPENCLAW_MODEL_PATTERN, roomStatusMark, roomStatusWord, usd } from "../teamRoomShared";
 import AgentConfirmModal from "./AgentConfirmModal";
 import { TimeAgo } from "./RelativeTime";
 import StatusMark from "./StatusMark";
@@ -34,6 +34,7 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
   const [turns, setTurns] = useState("6");
   const [minutes, setMinutes] = useState("10");
   const [cost, setCost] = useState("");
+  const [openclawModel, setOpenclawModel] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [starting, setStarting] = useState(false);
   const [problem, setProblem] = useState<TeamProblem | null>(null);
@@ -69,7 +70,10 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
   const costValue = costBlank ? null : Number(cost);
   const costValid = costBlank || (Number.isFinite(costValue) && (costValue as number) > 0 && (costValue as number) <= 1000);
   const taskValid = taskTrimmed.length >= 1 && task.length <= MAX_TASK;
-  const formValid = taskValid && turnsValue !== null && minutesValue !== null && costValid;
+  const modelTrimmed = openclawModel.trim();
+  const modelValid = modelTrimmed === "" || OPENCLAW_MODEL_PATTERN.test(modelTrimmed);
+  const capSet = !costBlank && costValid;
+  const formValid = taskValid && turnsValue !== null && minutesValue !== null && costValid && modelValid;
   const gateOff = gate !== null && (!gate.enabled || gate.level === 0);
 
   async function confirmStart() {
@@ -79,7 +83,8 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
     try {
       const room = await startTeamRoom({
         task: taskTrimmed,
-        limits: { maxTurns: turnsValue, maxMinutes: minutesValue, maxCostUsd: costBlank ? null : (costValue as number) }
+        limits: { maxTurns: turnsValue, maxMinutes: minutesValue, maxCostUsd: costBlank ? null : (costValue as number) },
+        ...(modelTrimmed ? { openclawModel: modelTrimmed } : {})
       });
       setConfirmOpen(false);
       onOpenRoom(room.id);
@@ -168,12 +173,35 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
             />
           </label>
         </div>
+        {capSet ? (
+          <p className="os-team__protocol" role="note">
+            {COST_CAP_NOTE}
+          </p>
+        ) : null}
+        <label className="os-field">
+          <span className="os-field__label">OpenClaw model for this room (optional)</span>
+          <input
+            value={openclawModel}
+            placeholder="OpenClaw's own setting"
+            maxLength={100}
+            spellCheck={false}
+            autoCapitalize="off"
+            onChange={(event) => setOpenclawModel(event.target.value)}
+            aria-invalid={!modelValid}
+            aria-describedby="os-team-model-help"
+          />
+          <span id="os-team-model-help" className="os-team__hint">
+            {modelValid
+              ? "Leave empty to use OpenClaw's own setting. Example: ollama/phi4"
+              : "Use only letters, numbers and . _ : / - (no spaces, and don't start with -). Example: ollama/phi4"}
+          </span>
+        </label>
         <div className="os-team__actions">
           <button type="submit" className="os-btn os-btn--primary" disabled={!formValid || gateOff}>
             Start room
           </button>
           {!formValid && taskTrimmed.length > 0 ? (
-            <span className="os-team__hint">Check the limits above: turns 2–12, minutes 1–30, cost above 0.</span>
+            <span className="os-team__hint">Check the fields above: turns 2–12, minutes 1–30, cost above 0, and a plain model name.</span>
           ) : null}
         </div>
       </form>
@@ -239,6 +267,12 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
             Each turn may cost money on those agents&apos; own model accounts.{" "}
             {costBlank ? "You have not set a cost cap." : `The room stops if known cost reaches $${costValue}.`}
           </p>
+          {capSet ? <p>{COST_CAP_NOTE}</p> : null}
+          {modelTrimmed ? (
+            <p>
+              OpenClaw will use <strong className="os-mono">{modelTrimmed}</strong> in this room.
+            </p>
+          ) : null}
           <p>You can stop the room at any time.</p>
         </AgentConfirmModal>
       ) : null}

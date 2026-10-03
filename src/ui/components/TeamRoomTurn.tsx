@@ -4,7 +4,7 @@ import { useState } from "react";
 import { navigateTo } from "../../nav";
 import { runStatusMark } from "../fleetShared";
 import { statusLabel } from "../runsShared";
-import { agentLabel, tagLabel, usd, type TurnView } from "../teamRoomShared";
+import { agentLabel, tagLabel, turnCostLabel, type TurnView } from "../teamRoomShared";
 import RunConsole from "./RunConsole";
 import StatusMark from "./StatusMark";
 
@@ -33,6 +33,8 @@ export default function TeamRoomTurn({ turn, live }: { turn: TurnView; live: boo
   const parsedTag = tagLabel(ended?.parsed);
   const noTag = parsedTag === "no tag";
   const costKnown = typeof ended?.costUsd === "number";
+  const model = typeof ended?.model === "string" && ended.model ? ended.model : null;
+  const tools = ended?.toolSummary || null;
 
   return (
     <article
@@ -50,11 +52,16 @@ export default function TeamRoomTurn({ turn, live }: { turn: TurnView; live: boo
           />
           {status ? statusLabel(status) : "No result"}
         </span>
+        {model ? (
+          <span className="os-mono os-team__turn-model" title="the model that answered this turn">
+            {model}
+          </span>
+        ) : null}
         <span
           className="os-mono os-team__turn-cost"
           title={costKnown ? undefined : ended ? "this turn didn't report a cost" : "cost is known when the turn ends"}
         >
-          {usd(ended?.costUsd)}
+          {turnCostLabel(ended?.costUsd, model)}
         </span>
       </header>
 
@@ -78,6 +85,13 @@ export default function TeamRoomTurn({ turn, live }: { turn: TurnView; live: boo
               Open this run
             </a>
           </div>
+          {tools && tools.calls > 0 ? (
+            <p className="os-team__muted">
+              {tools.failures > 0
+                ? `Tried ${tools.calls} tool call${tools.calls === 1 ? "" : "s"}; ${tools.failures} failed.`
+                : `Used ${tools.calls} tool call${tools.calls === 1 ? "" : "s"}.`}
+            </p>
+          ) : null}
           {ended.parsed?.problem ? <p className="os-team__protocol">{ended.parsed.problem}</p> : null}
           {turn.protocolNotes.map((note, index) => (
             <p key={index} className="os-team__protocol">

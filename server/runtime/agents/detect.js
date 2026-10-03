@@ -87,10 +87,13 @@ export async function runHelp(binPath, args, timeoutMs = 5000) {
   return { ok: result.ok, text: `${result.stdout || ""}\n${result.stderr || ""}` };
 }
 
+// A result with `helpFailed: true` (the --help call timed out or printed
+// nothing) is returned but not remembered, so one slow start can't leave every
+// feature switched off until the CLI is upgraded.
 export async function cachedFeatures(key, compute) {
   if (featureCache.has(key)) return featureCache.get(key);
   const value = await compute();
-  featureCache.set(key, value);
+  if (!value?.helpFailed) featureCache.set(key, value);
   return value;
 }
 

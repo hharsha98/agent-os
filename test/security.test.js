@@ -114,6 +114,13 @@ function baseEnv(home, port, extra = {}) {
     PORT: String(port),
     HOST: "127.0.0.1",
     AGENT_OS_HOME: home,
+    // Agent detection looks on PATH and under the user's home (~/.local/bin/hermes,
+    // ~/.agent-os/node/bin/openclaw...). An empty temp HOME and a system-only PATH
+    // (not node's own folder, which can hold real agents) keep the developer's
+    // REAL agents out of reach of the spawned server.
+    HOME: home,
+    USERPROFILE: home,
+    ...(process.platform === "win32" ? {} : { PATH: "/usr/bin:/bin" }),
     HERMES_AGENT_OS_SCHEDULER: "0"
   };
   // Clear these unless the caller explicitly set one via `extra` (e.g. the

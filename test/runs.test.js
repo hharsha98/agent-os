@@ -237,6 +237,56 @@ test("timeoutMs kills a run that never exits", async () => {
   });
 });
 
+test("waitForRun(): resolves with the final meta, immediately for a finished run, and honours abort and timeoutMs", async () => {
+  await withTempHome(async () => {
+    await withWorkDir(async (workDir) => {
+      const manager = createRunManager();
+      const quick = await writeFake(workDir, "three-lines.cjs", THREE_LINES);
+      const sleeper = await writeFake(workDir, "sleep.cjs", SLEEP_FOREVER);
+      const plan = (file, extra = {}) => ({
+        agentId: "fake",
+        kind: "agent",
+        title: "wait test",
+        command: process.execPath,
+        args: [file],
+        cwd: workDir,
+        ...extra
+      });
+
+      // A run that is still going: waits, then resolves with the terminal meta.
+      const first = await manager.startRun(plan(quick));
+      const done = await manager.waitForRun(first.id);
+      assert.equal(done.status, "succeeded");
+      assert.equal(done.exitCode, 0);
+      // The log is already complete by the time a terminal status is visible.
+      const events = await manager.readEvents(first.id);
+      assert.ok(events.some((e) => e.type === "system" && e.text === "Exited with code 0"));
+
+      // Already finished: resolves straight away.
+      assert.equal((await manager.waitForRun(first.id)).status, "succeeded");
+
+      // A stopped run counts as terminal too.
+      const hanging = await manager.startRun(plan(sleeper));
+      const waiting = manager.waitForRun(hanging.id);
+      await manager.stopRun(hanging.id);
+      assert.equal((await waiting).status, "stopped");
+
+      // An abort signal rejects with an AbortError and leaves the run alone.
+      const another = await manager.startRun(plan(sleeper));
+      const controller = new AbortController();
+      const aborted = manager.waitForRun(another.id, { signal: controller.signal });
+      controller.abort();
+      await assert.rejects(aborted, (error) => error.name === "AbortError");
+      assert.equal((await manager.getRun(another.id)).status, "running");
+
+      // timeoutMs gives up waiting and returns whatever state the run is in.
+      const stillRunning = await manager.waitForRun(another.id, { timeoutMs: 100 });
+      assert.equal(stillRunning.status, "running");
+      await manager.stopRun(another.id);
+    });
+  });
+});
+
 test("stdin is delivered to the child", async () => {
   await withTempHome(async () => {
     await withWorkDir(async (workDir) => {

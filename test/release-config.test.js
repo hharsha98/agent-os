@@ -16,6 +16,7 @@ async function versions(base = root) {
   const get = (relative) => readFile(path.join(base, relative), "utf8");
   const cargoToml = await get("desktop/src-tauri/Cargo.toml");
   const cargoLock = await get("desktop/src-tauri/Cargo.lock");
+  const store = await get("server/runtime/store.js");
   const lock = JSON.parse(await get("package-lock.json"));
   return {
     "package.json": JSON.parse(await get("package.json")).version,
@@ -24,6 +25,7 @@ async function versions(base = root) {
     "tauri.conf.json": JSON.parse(await get("desktop/src-tauri/tauri.conf.json")).version,
     "Cargo.toml": cargoToml.match(/\[package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/)[1],
     "Cargo.lock": cargoLock.match(/name = "agent-os-desktop"\r?\nversion = "([^"]+)"/)[1],
+    "store.js RUNTIME_VERSION": store.match(/export const RUNTIME_VERSION = "([^"]+)"/)[1],
   };
 }
 
@@ -44,6 +46,7 @@ describe("app version", () => {
         "desktop/src-tauri/tauri.conf.json",
         "desktop/src-tauri/Cargo.toml",
         "desktop/src-tauri/Cargo.lock",
+        "server/runtime/store.js",
       ]) {
         await mkdir(path.dirname(path.join(copy, file)), { recursive: true });
         await cp(path.join(root, file), path.join(copy, file));

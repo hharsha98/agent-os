@@ -3,6 +3,7 @@
 //   package.json, package-lock.json            (npm)
 //   desktop/src-tauri/tauri.conf.json          (the version shown on the installer)
 //   desktop/src-tauri/Cargo.toml + Cargo.lock  (the Rust shell)
+//   server/runtime/store.js                    (RUNTIME_VERSION, shown by the server)
 // test/release-config.test.js fails if these ever drift apart.
 //
 //   node scripts/bump-version.mjs 0.4.0
@@ -44,6 +45,7 @@ try {
   await edit("package-lock.json", /("packages":\s*\{\s*"":\s*\{[\s\S]*?"version":\s*")[^"]+(")/, 'packages[""] version');
   await edit("desktop/src-tauri/tauri.conf.json", /^(\{[\s\S]*?"version":\s*")[^"]+(")/, "version");
   await edit("desktop/src-tauri/Cargo.toml", /(\[package\][\s\S]*?\nversion\s*=\s*")[^"]+(")/, "[package] version");
+  await edit("server/runtime/store.js", /(export const RUNTIME_VERSION = ")[^"]+(")/, "RUNTIME_VERSION");
   await edit("desktop/src-tauri/Cargo.lock", /(\[\[package\]\]\r?\nname = "agent-os-desktop"\r?\nversion = ")[^"]+(")/, "agent-os-desktop version");
 } catch (error) {
   console.error(error.message);

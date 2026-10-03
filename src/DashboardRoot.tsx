@@ -10,6 +10,7 @@ import AgentsPage from "./pages/AgentsPage";
 import FleetPage from "./pages/FleetPage";
 import RunsPage from "./pages/RunsPage";
 import SafetyPage from "./pages/SafetyPage";
+import TeamRoomPage from "./pages/TeamRoomPage";
 import SetupPage from "./pages/SetupPage";
 import GoalsPage from "./pages/GoalsPage";
 import HermesPage from "./pages/HermesPage";
@@ -38,6 +39,7 @@ type ShellPage =
   | "fleet"
   | "agents"
   | "runs"
+  | "team"
   | "setup"
   | "safety"
   | "mission"
@@ -66,6 +68,7 @@ const ALL_PAGES = new Set<ShellPage>([
   "fleet",
   "agents",
   "runs",
+  "team",
   "setup",
   "safety",
   "mission",
@@ -252,6 +255,8 @@ export default function DashboardRoot() {
         <AgentsPage />
       ) : page === "runs" ? (
         <RunsPage />
+      ) : page === "team" ? (
+        <TeamRoomPage />
       ) : page === "setup" ? (
         <SetupPage />
       ) : page === "safety" ? (

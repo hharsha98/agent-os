@@ -1,7 +1,25 @@
 // Turns a system check into the concrete list of steps "Set up everything"
 // would run -- what's already there (kept, not reinstalled), what would be
 // installed, and anything that can't proceed (unsupported, unreachable).
-import { getInstallRecipe } from "./recipes.js";
+import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS, agentGroup, getInstallRecipe } from "./recipes.js";
+
+// Every agent a plan can cover, in screen order. The default plan stays the two
+// operators; the coding agents are asked for by name (see routes.js, ?group=).
+export const ALL_PLAN_AGENT_IDS = [...OPERATOR_AGENT_IDS, ...CODING_AGENT_IDS];
+
+// The facts every step carries so the screen can group it, name it and add up
+// the size and time of what is ticked. Only installs have a size; Hermes and
+// OpenClaw sizes were never measured, so theirs stay null instead of invented.
+function stepMeta(recipe, { sized = false } = {}) {
+  return {
+    group: agentGroup(recipe.agentId),
+    label: recipe.label,
+    license: recipe.license,
+    termsUrl: recipe.termsUrl || null,
+    approxMb: sized ? recipe.approxMb ?? null : null,
+    approxMinutes: sized ? recipe.approxMinutes ?? null : null
+  };
+}
 
 function hostnameOf(url) {
   try {
@@ -41,13 +59,29 @@ function hermesLinuxManualStep(check) {
   return { agentId: "hermes", reason: "Git (and basic build tools) are missing.", command };
 }
 
+// The Node build Setup downloads for OpenClaw or Codex (the same ≈30 MB the
+// managed-node job logs while it works).
+const NODE_DOWNLOAD_MB = 30;
+const NODE_DOWNLOAD_MINUTES = [1, 2];
+
+function installDescription(recipe) {
+  if (recipe.npmPackage) return `Runs the official ${recipe.label} install (npm install -g ${recipe.npmPackage}) in your own folder.`;
+  if (CODING_AGENT_IDS.includes(recipe.agentId)) {
+    return `Downloads the official ${recipe.label} installer to a temporary file and runs it, instead of piping it into a shell.`;
+  }
+  return `Runs the official ${recipe.label} installer, unattended.`;
+}
+
 function installerCommandPreview(recipe) {
+  // The coding agents carry the one-liner their vendor publishes, which is
+  // what a person can paste into their own terminal.
+  if (recipe.officialCommand) return recipe.officialCommand;
   const runner =
     recipe.shell === "powershell" ? "powershell.exe -NoProfile -ExecutionPolicy Bypass -File" : "/bin/bash";
   return `${runner} <installer downloaded to a temp file> ${recipe.args.join(" ")}`.trim();
 }
 
-export function buildSetupPlan(check, { agents = ["hermes", "openclaw"] } = {}) {
+export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS } = {}) {
   const steps = [];
   const warnings = [];
   const manualSteps = [];
@@ -68,7 +102,8 @@ export function buildSetupPlan(check, { agents = ["hermes", "openclaw"] } = {}) 
         passwordMoments: [],
         default: false,
         sourceUrl: recipe.sourceUrl,
-        commandPreview: null
+        commandPreview: null,
+        ...stepMeta(recipe)
       });
       continue;
     }
@@ -84,7 +119,9 @@ export function buildSetupPlan(check, { agents = ["hermes", "openclaw"] } = {}) 
         passwordMoments: [],
         default: true,
         sourceUrl: recipe.sourceUrl,
-        commandPreview: null
+        commandPreview: null,
+        ...stepMeta(recipe),
+        installedVersion: detected.version || ""
       });
       steps.push({
         id: `${agentId}-update`,
@@ -96,7 +133,8 @@ export function buildSetupPlan(check, { agents = ["hermes", "openclaw"] } = {}) 
         passwordMoments: [],
         default: false,
         sourceUrl: recipe.sourceUrl,
-        commandPreview: `${detected.path} ${recipe.updateArgs.join(" ")}`
+        commandPreview: `${detected.path} ${recipe.updateArgs.join(" ")}`,
+        ...stepMeta(recipe)
       });
       continue;
     }
@@ -122,7 +160,29 @@ export function buildSetupPlan(check, { agents = ["hermes", "openclaw"] } = {}) 
         passwordMoments: [],
         default: true,
         sourceUrl: "https://nodejs.org",
-        commandPreview: "Download and verify the official Node 24 build for this computer"
+        commandPreview: "Download and verify the official Node 24 build for this computer",
+        ...stepMeta(recipe),
+        approxMb: NODE_DOWNLOAD_MB,
+        approxMinutes: NODE_DOWNLOAD_MINUTES
+      });
+    }
+
+    if (agentId === "codex" && !check.tools?.node?.nodeOkForCodex) {
+      steps.push({
+        id: "codex-prereq-node",
+        agentId,
+        action: "prereq-node",
+        title: "Set up a Node 24 runtime for Codex",
+        description:
+          "Codex needs Node 22 or newer. A verified Node 24 build will be downloaded -- no Homebrew, winget, or admin password.",
+        changes: ["Downloads Node 24 into ~/.agent-os/node (or %LOCALAPPDATA%\\AgentOS\\node on Windows), verified by SHA-256"],
+        passwordMoments: [],
+        default: true,
+        sourceUrl: "https://nodejs.org",
+        commandPreview: "Download and verify the official Node 24 build for this computer",
+        ...stepMeta(recipe),
+        approxMb: NODE_DOWNLOAD_MB,
+        approxMinutes: NODE_DOWNLOAD_MINUTES
       });
     }
 
@@ -137,12 +197,14 @@ export function buildSetupPlan(check, { agents = ["hermes", "openclaw"] } = {}) 
       agentId,
       action: "install",
       title: `Install ${recipe.label}`,
-      description: `Runs the official ${recipe.label} installer, unattended.`,
+      description: installDescription(recipe),
       changes: recipe.changes,
       passwordMoments,
       default: true,
       sourceUrl: recipe.sourceUrl,
-      commandPreview: installerCommandPreview(recipe)
+      commandPreview: installerCommandPreview(recipe),
+      summary: recipe.changesSummary || null,
+      ...stepMeta(recipe, { sized: true })
     });
   }
 

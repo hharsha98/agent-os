@@ -7,7 +7,9 @@ import { authRequired } from "../auth.js";
 import { isDemoPublic } from "../demo-public.js";
 import { getServerPort } from "../server-info.js";
 import { systemCheck } from "./system-check.js";
-import { buildSetupPlan } from "./plan.js";
+import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
+import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS } from "./recipes.js";
+import { SIGNIN_AGENT_IDS, cancelSignIn, openSignInInTerminal, signInOverview, startSignIn } from "./signin.js";
 import {
   cancelSetupJob,
   getSetupJob,
@@ -68,7 +70,8 @@ const MESSAGE_CODES = new Set([
   "model_too_small_for_hermes",
   "agent_not_installed",
   "openrouter_unreachable",
-  "connection_not_ready"
+  "connection_not_ready",
+  "signin_in_progress"
 ]);
 
 function apiError(code, message) {
@@ -117,7 +120,8 @@ function mapJobError(error, res, next) {
     model_too_small_for_hermes: 400,
     agent_not_installed: 409,
     openrouter_unreachable: 502,
-    connection_not_ready: 409
+    connection_not_ready: 409,
+    signin_in_progress: 409
   }[error?.code];
   if (mapped) {
     // Never spread the source error here: it may carry no extra fields, but
@@ -142,10 +146,14 @@ export function createSetupRouter() {
     }
   });
 
-  router.get("/plan", async (_req, res, next) => {
+  // ?group=operators (the default: Hermes and OpenClaw), coding (Claude Code,
+  // Codex and Cursor) or all. Anything else falls back to the default.
+  const PLAN_GROUPS = { operators: OPERATOR_AGENT_IDS, coding: CODING_AGENT_IDS, all: ALL_PLAN_AGENT_IDS };
+
+  router.get("/plan", async (req, res, next) => {
     try {
       const check = await systemCheck({});
-      res.json(buildSetupPlan(check));
+      res.json(buildSetupPlan(check, { agents: PLAN_GROUPS[req.query.group] || OPERATOR_AGENT_IDS }));
     } catch (error) {
       next(error);
     }
@@ -600,6 +608,77 @@ export function createSetupRouter() {
         );
       }
       res.json(await startAgentChange(req.params.agentId, presetModelId(slug), { presetSlug: slug, body: req.body }));
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  // ---- sign in to Claude Code, Codex and Cursor -----------------------------------
+  // Only ever the agent's own login/status commands (see signin.js); nothing
+  // here accepts a command, argument, path or token, and none is ever returned.
+
+  const SIGNIN_NOT_LOCAL = {
+    ok: false,
+    error: "signin_not_available_here",
+    message: "Signing in only works in the desktop app on your own computer."
+  };
+
+  function validateSignInAgent(req, res, next) {
+    if (!SIGNIN_AGENT_IDS.includes(req.params.agentId)) {
+      res.status(404).json({ ok: false, error: "unknown agent" });
+      return;
+    }
+    next();
+  }
+
+  // The login opens a browser on the computer running Agent OS, which is only
+  // the person's own computer when this isn't a hosted or public copy.
+  function signInHere(res) {
+    if (isDemoPublic() || authRequired()) {
+      res.status(400).json(SIGNIN_NOT_LOCAL);
+      return false;
+    }
+    return true;
+  }
+
+  router.get("/signin/:agentId", validateSignInAgent, async (req, res, next) => {
+    try {
+      res.json(await signInOverview(req.params.agentId, { checkStatus: req.query.status !== "0" }));
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  router.post("/signin/:agentId", validateSignInAgent, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      if (!signInHere(res)) return;
+      res.json({ run: await startSignIn(req.params.agentId) });
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  router.delete("/signin/:agentId", validateSignInAgent, async (req, res, next) => {
+    try {
+      res.json({ run: await cancelSignIn(req.params.agentId) });
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  // The fallback for a login that needs a real terminal window.
+  router.post("/signin/:agentId/terminal", validateSignInAgent, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      if (!signInHere(res)) return;
+      res.json(await openSignInInTerminal(req.params.agentId));
     } catch (error) {
       mapJobError(error, res, next);
     }

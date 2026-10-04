@@ -4,7 +4,15 @@
 // against Cursor Agent 2026.09.23's --help; see the deliverable report for
 // any place the real CLI differed from the docs.
 import { runCommand } from "../safety.js";
-import { cachedFeatures, resolveBinary, runHelp, runVersion, splitVersion, withDetectCache } from "./detect.js";
+import {
+  cachedFeatures,
+  cursorFallbackPaths,
+  resolveBinary,
+  runHelp,
+  runVersion,
+  splitVersion,
+  withDetectCache
+} from "./detect.js";
 
 const STATUS_TIMEOUT_MS = 10 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -35,7 +43,9 @@ async function detectFeatures(binPath) {
 async function detect({ refresh = false } = {}) {
   return withDetectCache("cursor", refresh, async () => {
     try {
-      const binPath = (await resolveBinary("agent", [])) || (await resolveBinary("cursor-agent", []));
+      const binPath =
+        (await resolveBinary("agent", cursorFallbackPaths("agent"))) ||
+        (await resolveBinary("cursor-agent", cursorFallbackPaths("cursor-agent")));
       if (!binPath) {
         return {
           installed: false,

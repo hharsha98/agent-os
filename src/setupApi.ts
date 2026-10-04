@@ -32,7 +32,9 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   agent_not_installed: "That agent isn't installed on this computer.",
   openrouter_unreachable: "Couldn't reach OpenRouter. Check your internet connection and try again.",
   invalid_flow_id: "That OpenRouter connection isn't valid. Connect OpenRouter again.",
-  invalid_catalog_query: "Those search settings aren't valid. Change them and try again."
+  invalid_catalog_query: "Those search settings aren't valid. Change them and try again.",
+  signin_in_progress: "A sign-in is already open for that agent. Finish it in your browser, or cancel it first.",
+  signin_not_available_here: "Signing in only works in the desktop app on your own computer."
 };
 
 export function friendlyError(error: unknown, fallback = "Something went wrong. Please try again.") {
@@ -73,6 +75,7 @@ export interface ToolProbe {
 
 export interface NodeProbe extends ToolProbe {
   nodeOkForOpenClaw: boolean;
+  nodeOkForCodex?: boolean;
 }
 
 export interface DockerProbe extends ToolProbe {
@@ -108,7 +111,13 @@ export interface SystemCheck {
     xcodeCltInstalled?: boolean | null;
   };
   linuxDistro?: { id: string; idLike: string; versionId: string } | null;
-  agents?: { hermes: AgentCheckEntry; openclaw: AgentCheckEntry };
+  agents?: {
+    hermes: AgentCheckEntry;
+    openclaw: AgentCheckEntry;
+    claude?: AgentCheckEntry;
+    codex?: AgentCheckEntry;
+    cursor?: AgentCheckEntry;
+  };
   ollama?: ToolProbe;
   network?: NetworkProbe[];
   error?: string;
@@ -122,6 +131,9 @@ export function getSetupCheck(refresh = false) {
 
 export type PlanAction = "keep" | "update" | "install" | "prereq-node" | "skip-unsupported";
 
+// "operators" = Hermes and OpenClaw; "coding" = Claude Code, Codex and Cursor.
+export type PlanGroup = "operators" | "coding";
+
 export interface SetupPlanStep {
   id: string;
   agentId: string;
@@ -133,6 +145,18 @@ export interface SetupPlanStep {
   default: boolean;
   sourceUrl: string;
   commandPreview: string | null;
+  group?: PlanGroup;
+  label?: string;
+  license?: string;
+  termsUrl?: string | null;
+  // "About" figures for an install: disk space in MB and a low-high range in
+  // minutes. null when nobody measured them (Hermes, OpenClaw).
+  approxMb?: number | null;
+  approxMinutes?: [number, number] | null;
+  // One plain line about what an install changes (the full list is `changes`).
+  summary?: string | null;
+  // On a "keep" step: the version that is already there.
+  installedVersion?: string;
 }
 
 export interface SetupPlan {
@@ -142,8 +166,8 @@ export interface SetupPlan {
   blocked: { agentId: string; reason: string }[];
 }
 
-export function getSetupPlan() {
-  return request<SetupPlan>("/api/setup/plan");
+export function getSetupPlan(group: PlanGroup | "all" = "operators") {
+  return request<SetupPlan>(`/api/setup/plan${group === "operators" ? "" : `?group=${group}`}`);
 }
 
 // ---- jobs (install + configure share the same shape) ----------------------
@@ -223,6 +247,65 @@ export function cancelSetupJob(id: string) {
 
 export function retrySetupJob(id: string) {
   return request<SetupJob>(`/api/setup/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+// ---- sign in to Claude Code, Codex and Cursor (/api/setup/signin/:agentId) ----------
+// The server runs each agent's own login command (it opens the browser) and asks
+// the agent itself whether it is signed in. No token ever reaches this page.
+
+export type SignInAgentId = "claude" | "codex" | "cursor";
+export type SignInStatus = "signed_in" | "not_signed_in" | "unknown";
+
+export interface SignInRun {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "stopped" | "timed_out" | "interrupted";
+  startedAt: string | null;
+  endedAt: string | null;
+  exitCode: number | null;
+  // The last few lines the login command printed (long opaque strings hidden).
+  lines: string[];
+  // A link on the agent's own site, only while the login is open.
+  url: string | null;
+  needsTerminal: boolean;
+  // Plain English for a login that did not finish; null otherwise.
+  reason: string | null;
+}
+
+export interface SignInInfo {
+  agentId: SignInAgentId;
+  label: string;
+  cost: string;
+  installed?: boolean;
+  // Absent when the page asked for the run only (status=0).
+  status?: SignInStatus;
+  note?: string;
+  checkedAt?: string;
+  run: SignInRun | null;
+  // true on macOS, where the server can open Terminal for the person.
+  terminalOpener: boolean;
+}
+
+export function getSignIn(agentId: SignInAgentId, options: { runOnly?: boolean } = {}) {
+  return request<SignInInfo>(`/api/setup/signin/${encodeURIComponent(agentId)}${options.runOnly ? "?status=0" : ""}`);
+}
+
+export function startSignInRun(agentId: SignInAgentId) {
+  return request<{ run: SignInRun }>(`/api/setup/signin/${encodeURIComponent(agentId)}`, {
+    method: "POST",
+    body: JSON.stringify({ confirm: true })
+  });
+}
+
+export function cancelSignInRun(agentId: SignInAgentId) {
+  return request<{ run: SignInRun | null }>(`/api/setup/signin/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+}
+
+// `opened:false, reason:"copy"` comes with the command, to show and copy.
+export function openSignInTerminal(agentId: SignInAgentId) {
+  return request<{ opened: boolean; command: string; reason?: string }>(
+    `/api/setup/signin/${encodeURIComponent(agentId)}/terminal`,
+    { method: "POST", body: JSON.stringify({ confirm: true }) }
+  );
 }
 
 // ---- brain (GET /api/setup/brain, models, verify, configure) --------------

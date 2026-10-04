@@ -10,7 +10,8 @@ import { ChevronDown, ExternalLink } from "lucide-react";
 import StatusMark from "./StatusMark";
 import type { SetupPlanStep } from "../../setupApi";
 
-export type PlanSelection = "keep" | "update" | "install" | "unsupported";
+// "skip" is a coding agent the person un-ticked: nothing is done for it.
+export type PlanSelection = "keep" | "update" | "install" | "unsupported" | "skip";
 
 export default function SetupPlanCard({
   label,

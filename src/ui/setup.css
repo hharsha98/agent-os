@@ -790,3 +790,295 @@
 .os-setup-ready__receipt > header + .os-setup-ready__empty {
   margin: var(--os-sp-2) 0 0;
 }
+
+/* --- Plan: two groups (Operators, Coding agents) ----------------------------- */
+.os-setup-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--os-sp-4);
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .os-setup-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.os-setup-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-4);
+  min-width: 0;
+}
+.os-setup-group__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--os-sp-4);
+  flex-wrap: wrap;
+}
+.os-setup-group__titles {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.os-setup-group__titles h3 {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-setup-group__titles p {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-group__action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--os-sp-1);
+}
+.os-setup-group__button {
+  min-height: 40px;
+  padding: 0 var(--os-sp-5);
+  font-size: var(--os-fs-14);
+  white-space: nowrap;
+}
+.os-setup-group__total,
+.os-setup-group__keep {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-group__total strong {
+  color: var(--os-text-1);
+}
+.os-setup-group__keep strong {
+  color: var(--os-text-1);
+}
+
+.os-setup-agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-setup-agent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-2);
+  border: 1px solid var(--os-line-2);
+}
+.os-setup-agent--on {
+  border-color: rgba(92, 225, 255, 0.35);
+}
+.os-setup-agent__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-3);
+  flex-wrap: wrap;
+}
+.os-setup-agent__check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  min-height: 32px;
+  font-size: var(--os-fs-14);
+  color: var(--os-text-2);
+  cursor: pointer;
+}
+.os-setup-agent__check strong {
+  color: var(--os-text-1);
+}
+.os-setup-agent__size {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-setup-agent__state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-setup-agent__line {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-agent__details {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.os-setup-agent__details .os-btn {
+  padding: 0 var(--os-sp-2);
+  margin-left: calc(-1 * var(--os-sp-2));
+}
+.os-setup-agent__more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  align-self: stretch;
+}
+.os-setup-agent__more ul {
+  margin: 0;
+  padding-left: 1.2em;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-setup-agent__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--os-sp-3);
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-setup-agent__links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  color: var(--os-accent);
+}
+
+/* --- Sign in ------------------------------------------------------------------ */
+.os-setup-signin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-5);
+}
+.os-setup-signin__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-setup-signin__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--os-sp-1) var(--os-sp-4);
+  align-items: center;
+  padding: var(--os-sp-3) var(--os-sp-4);
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-2);
+  border: 1px solid var(--os-line-2);
+}
+.os-setup-signin__row--signed_in {
+  border-color: rgba(61, 220, 151, 0.35);
+}
+.os-setup-signin__row--failed {
+  border-color: rgba(255, 92, 122, 0.4);
+}
+.os-setup-signin__row--running {
+  border-color: rgba(92, 225, 255, 0.45);
+}
+.os-setup-signin__row > :not(.os-setup-signin__who):not(.os-setup-signin__actions) {
+  grid-column: 1 / -1;
+}
+.os-setup-signin__who {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.os-setup-signin__who strong {
+  font-size: var(--os-fs-16);
+  color: var(--os-text-1);
+}
+.os-setup-signin__state {
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-signin__row--signed_in .os-setup-signin__state {
+  color: var(--os-ok);
+  font-weight: 600;
+}
+.os-setup-signin__actions {
+  display: flex;
+  gap: var(--os-sp-2);
+  justify-self: end;
+}
+.os-setup-signin__note,
+.os-setup-signin__cost {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-setup-signin__note--bad {
+  color: var(--os-text-1);
+}
+.os-setup-signin__live p {
+  margin: 0 0 var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-setup-signin__live a,
+.os-setup-signin__terminal a {
+  color: var(--os-accent);
+}
+.os-setup-signin__lines {
+  max-height: 120px;
+  overflow-y: auto;
+  background: var(--os-bg-0);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  padding: var(--os-sp-2) var(--os-sp-3);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-setup-signin__terminal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+}
+.os-setup-signin__terminal .os-btn--ghost {
+  padding: 0 var(--os-sp-2);
+  margin-left: calc(-1 * var(--os-sp-2));
+}
+.os-setup-signin__command {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  align-self: stretch;
+}
+.os-setup-signin__command p {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-setup-signin__command pre {
+  align-self: stretch;
+}
+@media (max-width: 599px) {
+  .os-setup-signin__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .os-setup-signin__actions {
+    justify-self: stretch;
+  }
+  .os-setup-signin__actions .os-btn,
+  .os-setup-group__button {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+  .os-setup-group__action {
+    align-items: stretch;
+    width: 100%;
+  }
+  .os-setup-agent__check {
+    min-height: 40px;
+  }
+}

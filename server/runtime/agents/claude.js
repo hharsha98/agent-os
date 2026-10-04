@@ -3,7 +3,15 @@
 // frequently. Confirmed live against Claude Code 2.1.281's --help; see the
 // deliverable report for any place the real CLI differed from the docs.
 import { runCommand } from "../safety.js";
-import { cachedFeatures, resolveBinary, runHelp, runVersion, splitVersion, withDetectCache } from "./detect.js";
+import {
+  cachedFeatures,
+  claudeFallbackPaths,
+  resolveBinary,
+  runHelp,
+  runVersion,
+  splitVersion,
+  withDetectCache
+} from "./detect.js";
 
 const AUTH_STATUS_TIMEOUT_MS = 10 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -38,7 +46,7 @@ async function detectFeatures(binPath) {
 async function detect({ refresh = false } = {}) {
   return withDetectCache("claude", refresh, async () => {
     try {
-      const binPath = await resolveBinary("claude", []);
+      const binPath = await resolveBinary("claude", claudeFallbackPaths());
       if (!binPath) {
         return {
           installed: false,

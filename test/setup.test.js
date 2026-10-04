@@ -310,7 +310,7 @@ test("systemCheck(): returns every key with sane types and never throws, even wi
       assert.equal(typeof check.tools.git.found, "boolean");
       assert.equal(typeof check.tools.node.nodeOkForOpenClaw, "boolean");
       assert.ok(Array.isArray(check.network));
-      assert.equal(check.network.length, 6);
+      assert.equal(check.network.length, 8);
       for (const entry of check.network) {
         assert.equal(typeof entry.host, "string");
         assert.equal(typeof entry.ok, "boolean");

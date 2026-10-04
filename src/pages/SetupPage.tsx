@@ -1,8 +1,9 @@
-// The Setup Assistant: a 5-step "pre-flight" stepper (Check -> Plan ->
-// Install -> AI brain -> Ready) for a non-expert setting up Hermes/OpenClaw.
-// One decision per screen; nothing installs or configures without an
-// explicit confirm. All data comes from server/runtime/setup/* via
-// ../setupApi -- see that file for the exact response shapes.
+// The Setup Assistant: a 6-step "pre-flight" stepper (Check -> Plan -> Install
+// -> AI brain -> Sign in -> Ready) for a non-expert setting up Hermes/OpenClaw
+// (the "operators") and Claude Code/Codex/Cursor (the "coding agents"). One
+// decision per screen; nothing installs or configures without an explicit
+// confirm. All data comes from server/runtime/setup/* via ../setupApi -- see
+// that file for the exact response shapes.
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { listAgents } from "../api";
@@ -11,13 +12,16 @@ import type { AgentSummary } from "../types";
 import Panel from "../ui/components/Panel";
 import SetupBrainPanel, { type BrainAgentLine, type BrainPanelStatus } from "../ui/components/SetupBrainPanel";
 import SetupCheckList from "../ui/components/SetupCheckList";
+import SetupCodingRows from "../ui/components/SetupCodingRows";
+import SetupGroupPanel from "../ui/components/SetupGroupPanel";
 import SetupInstallPanel from "../ui/components/SetupInstallPanel";
 import SetupModal from "../ui/components/SetupModal";
 import SetupPlanCard, { type PlanSelection } from "../ui/components/SetupPlanCard";
 import SetupReadyPanel from "../ui/components/SetupReadyPanel";
+import SetupSignInPanel from "../ui/components/SetupSignInPanel";
 import SetupStepper, { type SetupStepDef, type SetupStepState } from "../ui/components/SetupStepper";
 import { useInterval } from "../ui/components/useInterval";
-import type { BrainOptionsResponse, SetupJob, SetupPlan, SystemCheck } from "../setupApi";
+import type { BrainOptionsResponse, SetupJob, SetupPlan, SetupPlanStep, SystemCheck } from "../setupApi";
 import {
   cancelSetupJob,
   friendlyError,
@@ -31,16 +35,20 @@ import {
   startInstallJob
 } from "../setupApi";
 import { BRAIN_AGENT_LABEL } from "../ui/brainShared";
+import { AGENT_NAMES, CODING_IDS, OPERATOR_IDS, formatMinutes, formatSize, totalsOf } from "../ui/setupGroupShared";
 import "../ui/setup.css";
 
-const STEP_LABELS = ["Check", "Plan", "Install", "AI brain", "Ready"];
-const AGENT_LABEL: Record<string, string> = { hermes: "Hermes Agent", openclaw: "OpenClaw" };
-const AGENT_IDS = ["hermes", "openclaw"] as const;
+const STEP_LABELS = ["Check", "Plan", "Install", "AI brain", "Sign in", "Ready"];
+const STEP = { check: 0, plan: 1, install: 2, brain: 3, signin: 4, ready: 5 } as const;
+const AGENT_IDS = OPERATOR_IDS;
+const ALL_AGENT_IDS = [...OPERATOR_IDS, ...CODING_IDS];
+
+type GroupId = "operators" | "coding";
 
 // What each agent should do by default: never an update, never a reinstall.
 function defaultSelections(plan: SetupPlan) {
   const defaults: Record<string, PlanSelection> = {};
-  for (const agentId of AGENT_IDS) {
+  for (const agentId of ALL_AGENT_IDS) {
     const steps = plan.steps.filter((s) => s.agentId === agentId);
     if (steps.some((s) => s.action === "skip-unsupported")) defaults[agentId] = "unsupported";
     else if (steps.some((s) => s.action === "keep")) defaults[agentId] = "keep";
@@ -50,7 +58,7 @@ function defaultSelections(plan: SetupPlan) {
 }
 
 function installStepLabel(agentId: string | null, action: string) {
-  const name = (agentId && AGENT_LABEL[agentId]) || "the agent";
+  const name = (agentId && AGENT_NAMES[agentId]) || "the agent";
   if (action === "install") return `Install ${name}`;
   if (action === "update") return `Update ${name}`;
   if (action === "prereq-node") return `Set up a Node 24 runtime for ${name}`;
@@ -81,7 +89,8 @@ export default function SetupPage() {
 
   const [selections, setSelections] = useState<Record<string, PlanSelection>>({});
   const [openClawRiskAccepted, setOpenClawRiskAccepted] = useState(false);
-  const [showInstallConfirm, setShowInstallConfirm] = useState(false);
+  // Which group's button was pressed; the confirm dialog is about that group only.
+  const [confirmGroup, setConfirmGroup] = useState<GroupId | null>(null);
   const [installConfirmError, setInstallConfirmError] = useState("");
   const [installJob, setInstallJob] = useState<SetupJob | null>(null);
   const [installBusy, setInstallBusy] = useState(false);
@@ -98,7 +107,7 @@ export default function SetupPage() {
     const configureId = recallJobId("configure");
     if (configureId) {
       const job = await getSetupJob(configureId).catch(() => null);
-      if (job && job.status === "running") return 3;
+      if (job && job.status === "running") return STEP.brain;
       rememberJobId("configure", null);
     }
     const installId = recallJobId("install");
@@ -106,7 +115,7 @@ export default function SetupPage() {
       const job = await getSetupJob(installId).catch(() => null);
       if (job && (job.status === "running" || job.status === "failed")) {
         setInstallJob(job);
-        return 2;
+        return STEP.install;
       }
       rememberJobId("install", null);
     }
@@ -126,7 +135,7 @@ export default function SetupPage() {
     }
     try {
       const [planRes, brainRes, agentsRes] = await Promise.all([
-        getSetupPlan(),
+        getSetupPlan("all"),
         getBrainOptions(refresh),
         listAgents().catch(() => null)
       ]);
@@ -142,13 +151,13 @@ export default function SetupPage() {
           setStepIndex(restored);
           return;
         }
-        const anyInstalled = AGENT_IDS.some((id) => checkRes.agents?.[id]?.detected.installed);
+        const anyInstalled = ALL_AGENT_IDS.some((id) => checkRes.agents?.[id]?.detected.installed);
         const needsAction = planRes.steps.some((s) => s.action === "install" || s.action === "prereq-node");
         // A brand-new computer starts at Check; a half-set-up one at Plan;
         // everything installed lands on AI brain, or Ready once configured.
-        if (!anyInstalled) setStepIndex(0);
-        else if (needsAction) setStepIndex(1);
-        else setStepIndex(brainReady(checkRes, brainRes) ? 4 : 3);
+        if (!anyInstalled) setStepIndex(STEP.check);
+        else if (needsAction) setStepIndex(STEP.plan);
+        else setStepIndex(brainReady(checkRes, brainRes) ? STEP.ready : STEP.brain);
       }
     } catch {
       setPlanError(true);
@@ -162,7 +171,7 @@ export default function SetupPage() {
       const [checkRes, brainRes, planRes] = await Promise.all([
         getSetupCheck(true),
         getBrainOptions(true),
-        includePlan ? getSetupPlan() : Promise.resolve(null)
+        includePlan ? getSetupPlan("all") : Promise.resolve(null)
       ]);
       setCheck(checkRes);
       setBrain(brainRes);
@@ -201,6 +210,22 @@ export default function SetupPage() {
     setStepIndex(index);
   }
 
+  // ---- where "Continue" leads --------------------------------------------------
+  // Hermes/OpenClaw need an AI brain; the coding agents only need a sign-in. A
+  // step is skipped when nothing in it applies, so a person who installed only
+  // coding agents is never shown a brain screen about agents they don't have.
+  // An agent the install job just finished counts even if the re-check is still
+  // on its way.
+  function groupInstalled(ids: readonly string[]) {
+    const jobDid = Boolean(
+      installJob?.steps.some((s) => s.agentId && ids.includes(s.agentId) && s.action !== "prereq-node" && s.status === "succeeded")
+    );
+    return jobDid || ids.some((id) => check?.agents?.[id as keyof NonNullable<SystemCheck["agents"]>]?.detected.installed);
+  }
+  const afterBrain = () => (groupInstalled(CODING_IDS) ? STEP.signin : STEP.ready);
+  const afterInstall = () => (groupInstalled(OPERATOR_IDS) ? STEP.brain : afterBrain());
+  const afterPlan = () => (groupInstalled(OPERATOR_IDS) && !brainReady(check, brain) ? STEP.brain : afterBrain());
+
   // ---- job polling ----------------------------------------------------------
   useInterval(
     async () => {
@@ -215,8 +240,8 @@ export default function SetupPage() {
   );
 
   function stepState(index: number): SetupStepState {
-    if (index === 2 && installJob?.status === "failed") return "failed";
-    if (index === 3 && brainStatus === "failed") return "failed";
+    if (index === STEP.install && installJob?.status === "failed") return "failed";
+    if (index === STEP.brain && brainStatus === "failed") return "failed";
     if (index < stepIndex) return "done";
     if (index === stepIndex) return "current";
     return "not-reached";
@@ -238,48 +263,44 @@ export default function SetupPage() {
     };
   }
 
-  function selectedStepIds(): string[] {
+  // The steps a group's current choices would run, in plan order.
+  function selectedSteps(ids: readonly string[]): SetupPlanStep[] {
     if (!plan) return [];
-    const ids: string[] = [];
-    for (const agentId of AGENT_IDS) {
+    const picked: SetupPlanStep[] = [];
+    for (const agentId of ids) {
       const sel = selections[agentId];
       const { keepStep, updateStep, installSteps, unsupportedStep } = stepsFor(agentId);
-      if (sel === "keep" && keepStep) ids.push(keepStep.id);
-      else if (sel === "update" && updateStep) ids.push(updateStep.id);
-      else if (sel === "install") ids.push(...installSteps.map((s) => s.id));
-      else if (sel === "unsupported" && unsupportedStep) ids.push(unsupportedStep.id);
+      if (sel === "keep" && keepStep) picked.push(keepStep);
+      else if (sel === "update" && updateStep) picked.push(updateStep);
+      else if (sel === "install") picked.push(...installSteps);
+      else if (sel === "unsupported" && unsupportedStep) picked.push(unsupportedStep);
+      // "skip" (an un-ticked coding agent) adds nothing.
     }
-    return ids;
+    return picked;
   }
+
+  const idsOf = (group: GroupId) => (group === "operators" ? OPERATOR_IDS : CODING_IDS);
+  const workIn = (group: GroupId) =>
+    selectedSteps(idsOf(group)).filter((s) => s.action === "install" || s.action === "update" || s.action === "prereq-node");
 
   const needsOpenClawConsentInstall = selections.openclaw === "install";
-  const jobNeeded = selectedStepIds().some((id) => {
-    const s = plan?.steps.find((p) => p.id === id);
-    return s && (s.action === "install" || s.action === "update" || s.action === "prereq-node");
-  });
-  const planBlocked = jobNeeded && needsOpenClawConsentInstall && !openClawRiskAccepted;
-
-  function onPlanPrimary() {
-    if (!jobNeeded) {
-      goToStep(brainReady(check, brain) ? 4 : 3);
-      return;
-    }
-    setInstallConfirmError("");
-    setShowInstallConfirm(true);
-  }
+  const operatorWork = workIn("operators").length > 0;
+  const codingWork = workIn("coding");
+  const operatorsBlocked = operatorWork && needsOpenClawConsentInstall && !openClawRiskAccepted;
 
   async function confirmInstall() {
+    if (!confirmGroup) return;
     setInstallBusy(true);
     setInstallConfirmError("");
     try {
       const job = await startInstallJob({
-        steps: selectedStepIds(),
-        acceptOpenClawRisk: needsOpenClawConsentInstall && openClawRiskAccepted
+        steps: selectedSteps(idsOf(confirmGroup)).map((s) => s.id),
+        acceptOpenClawRisk: confirmGroup === "operators" && needsOpenClawConsentInstall && openClawRiskAccepted
       });
       rememberJobId("install", job.id);
       setInstallJob(job);
-      setShowInstallConfirm(false);
-      goToStep(2);
+      setConfirmGroup(null);
+      goToStep(STEP.install);
     } catch (error) {
       // Keep the dialog open so the reason is readable next to the button.
       setInstallConfirmError(friendlyError(error));
@@ -336,8 +357,12 @@ export default function SetupPage() {
     }
   }
 
+  const confirmSteps = confirmGroup ? selectedSteps(idsOf(confirmGroup)) : [];
+  const confirmTotals = totalsOf(confirmSteps.filter((s) => s.action === "install" || s.action === "prereq-node"));
+  const wide = stepIndex === STEP.brain || stepIndex === STEP.plan;
+
   return (
-    <div className={`os-setup aos-phase-page${stepIndex === 3 ? " os-setup--wide" : ""}`}>
+    <div className={`os-setup aos-phase-page${wide ? " os-setup--wide" : ""}`}>
       <header className="os-setup__header">
         <span className="os-micro">AGENT OS · SETUP ASSISTANT</span>
         <h1>Setup</h1>
@@ -356,7 +381,7 @@ export default function SetupPage() {
       ) : null}
 
       <div className="os-setup__content" ref={contentRef} tabIndex={-1}>
-        {stepIndex === 0 ? (
+        {stepIndex === STEP.check ? (
           <Panel className="os-setup__panel">
             <div className="os-setup__step-head">
               <h2>Check your computer</h2>
@@ -376,7 +401,7 @@ export default function SetupPage() {
               <>
                 <SetupCheckList check={check} />
                 <div className="os-setup__actions">
-                  <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(1)}>
+                  <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(STEP.plan)}>
                     Continue
                   </button>
                   <button type="button" className="os-btn os-btn--secondary" onClick={() => void onRecheck()} disabled={rechecking}>
@@ -388,11 +413,11 @@ export default function SetupPage() {
           </Panel>
         ) : null}
 
-        {stepIndex === 1 ? (
+        {stepIndex === STEP.plan ? (
           <div className="os-setup__panel">
             <div className="os-setup__step-head">
               <h2>Here's the plan</h2>
-              <p>Choose what to do for each agent. Nothing happens until you press the button at the bottom.</p>
+              <p>Two groups. Choose what to do in each, then press its button. Nothing happens until you do.</p>
             </div>
             {planError || !plan ? (
               <div className="os-fleet__banner">
@@ -406,31 +431,74 @@ export default function SetupPage() {
               </div>
             ) : (
               <>
-                <div className="os-setup-plan__cards">
-                  {AGENT_IDS.map((agentId) => {
-                    const { keepStep, updateStep, installSteps, unsupportedStep } = stepsFor(agentId);
-                    return (
-                      <SetupPlanCard
-                        key={agentId}
-                        label={agentMeta(agentId)?.label || AGENT_LABEL[agentId]}
-                        license={agentMeta(agentId)?.license}
-                        keepStep={keepStep}
-                        updateStep={updateStep}
-                        installSteps={installSteps}
-                        unsupportedStep={unsupportedStep}
-                        selection={selections[agentId] || "keep"}
-                        onSelect={(next) => setSelections((prev) => ({ ...prev, [agentId]: next }))}
-                        disabled={installBusy}
-                        openClawRiskAccepted={agentId === "openclaw" ? openClawRiskAccepted : undefined}
-                        onToggleOpenClawRisk={agentId === "openclaw" && needsOpenClawConsentInstall ? setOpenClawRiskAccepted : undefined}
-                      />
-                    );
-                  })}
+                <div className="os-setup-groups">
+                  <SetupGroupPanel
+                    kicker="Operators"
+                    title="Hermes · OpenClaw"
+                    description="Assistants that keep working in the background, even when you are away."
+                    actionLabel={operatorWork ? "Set up Hermes + OpenClaw" : undefined}
+                    onAction={() => {
+                      setInstallConfirmError("");
+                      setConfirmGroup("operators");
+                    }}
+                    actionDisabled={operatorsBlocked || installBusy}
+                    hint={operatorsBlocked ? "Tick the OpenClaw box below first." : undefined}
+                  >
+                    {!operatorWork ? (
+                      <p className="os-setup__hint">Nothing to install here. What is already installed is kept as it is.</p>
+                    ) : null}
+                    <div className="os-setup-plan__cards">
+                      {AGENT_IDS.map((agentId) => {
+                        const { keepStep, updateStep, installSteps, unsupportedStep } = stepsFor(agentId);
+                        return (
+                          <SetupPlanCard
+                            key={agentId}
+                            label={agentMeta(agentId)?.label || AGENT_NAMES[agentId]}
+                            license={agentMeta(agentId)?.license}
+                            keepStep={keepStep}
+                            updateStep={updateStep}
+                            installSteps={installSteps}
+                            unsupportedStep={unsupportedStep}
+                            selection={selections[agentId] || "keep"}
+                            onSelect={(next) => setSelections((prev) => ({ ...prev, [agentId]: next }))}
+                            disabled={installBusy}
+                            openClawRiskAccepted={agentId === "openclaw" ? openClawRiskAccepted : undefined}
+                            onToggleOpenClawRisk={agentId === "openclaw" && needsOpenClawConsentInstall ? setOpenClawRiskAccepted : undefined}
+                          />
+                        );
+                      })}
+                    </div>
+                  </SetupGroupPanel>
+
+                  <SetupGroupPanel
+                    kicker="Coding agents"
+                    title="Claude Code · Codex · Cursor"
+                    description="Programming helpers you talk to. Each one signs in with its own account in a later step."
+                    actionLabel={codingWork.length ? "Install coding agents" : undefined}
+                    onAction={() => {
+                      setInstallConfirmError("");
+                      setConfirmGroup("coding");
+                    }}
+                    actionDisabled={installBusy}
+                  >
+                    <SetupCodingRows
+                      rows={CODING_IDS.map((agentId) => ({
+                        agentId,
+                        label: AGENT_NAMES[agentId],
+                        ...stepsFor(agentId)
+                      }))}
+                      selections={selections}
+                      onSelect={(agentId, next) => setSelections((prev) => ({ ...prev, [agentId]: next }))}
+                      disabled={installBusy}
+                      selectedSteps={selectedSteps(CODING_IDS)}
+                    />
+                  </SetupGroupPanel>
                 </div>
+
                 {plan.blocked.length ? (
                   <div className="os-setup__alert" role="alert">
                     <AlertTriangle size={16} />
-                    <span>{plan.blocked.map((b) => `${AGENT_LABEL[b.agentId] || b.agentId}: ${b.reason}`).join(" ")}</span>
+                    <span>{plan.blocked.map((b) => `${AGENT_NAMES[b.agentId] || b.agentId}: ${b.reason}`).join(" ")}</span>
                   </div>
                 ) : null}
                 {plan.manualSteps.length ? (
@@ -443,17 +511,20 @@ export default function SetupPage() {
                   </div>
                 ) : null}
                 <div className="os-setup__actions">
-                  <button type="button" className="os-btn os-btn--primary" onClick={onPlanPrimary} disabled={planBlocked}>
-                    {jobNeeded ? "Set up everything" : "Continue"}
+                  <button
+                    type="button"
+                    className={`os-btn ${operatorWork || codingWork.length ? "os-btn--secondary" : "os-btn--primary"}`}
+                    onClick={() => goToStep(afterPlan())}
+                  >
+                    {operatorWork || codingWork.length ? "Skip installing, continue" : "Continue"}
                   </button>
-                  {planBlocked ? <span className="os-setup__hint">Tick the OpenClaw box above to continue.</span> : null}
                 </div>
               </>
             )}
           </div>
         ) : null}
 
-        {stepIndex === 2 ? (
+        {stepIndex === STEP.install ? (
           <div className="os-setup__panel">
             {installJob ? (
               <>
@@ -468,7 +539,7 @@ export default function SetupPage() {
                 />
                 {installJob.status === "succeeded" ? (
                   <div className="os-setup__actions">
-                    <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(3)}>
+                    <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(afterInstall())}>
                       Continue
                     </button>
                   </div>
@@ -481,7 +552,7 @@ export default function SetupPage() {
                   <p>No install is running right now. If your agents were already on this computer, you can move on.</p>
                 </div>
                 <div className="os-setup__actions">
-                  <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(3)}>
+                  <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(afterInstall())}>
                     Continue
                   </button>
                 </div>
@@ -490,7 +561,7 @@ export default function SetupPage() {
           </div>
         ) : null}
 
-        {stepIndex === 3 ? (
+        {stepIndex === STEP.brain ? (
           <div className="os-setup__panel">
             {brain ? (
               <>
@@ -503,7 +574,7 @@ export default function SetupPage() {
                   agents={brainAgents}
                   onChanged={() => void refreshServerState(false)}
                   onStatus={setBrainStatus}
-                  onContinue={() => goToStep(4)}
+                  onContinue={() => goToStep(afterBrain())}
                 />
               </>
             ) : (
@@ -512,7 +583,11 @@ export default function SetupPage() {
           </div>
         ) : null}
 
-        {stepIndex === 4 ? (
+        {stepIndex === STEP.signin ? (
+          <SetupSignInPanel onContinue={() => goToStep(STEP.ready)} onGoToPlan={() => goToStep(STEP.plan)} />
+        ) : null}
+
+        {stepIndex === STEP.ready ? (
           <SetupReadyPanel
             onGoHome={() => navigateTo("fleet")}
             onOpenSafety={() => navigateTo("safety")}
@@ -522,24 +597,29 @@ export default function SetupPage() {
         ) : null}
       </div>
 
-      {showInstallConfirm ? (
+      {confirmGroup ? (
         <SetupModal
-          title="Set up everything?"
-          confirmLabel="Set up everything"
+          title={confirmGroup === "coding" ? "Install coding agents?" : "Set up Hermes + OpenClaw?"}
+          confirmLabel={confirmGroup === "coding" ? "Install coding agents" : "Set up Hermes + OpenClaw"}
           onConfirm={confirmInstall}
-          onClose={() => setShowInstallConfirm(false)}
+          onClose={() => setConfirmGroup(null)}
           busy={installBusy}
           error={installConfirmError}
         >
           <p>This will run:</p>
           <ul>
-            {selectedStepIds().map((id) => (
-              <li key={id}>{planStepLabels[id] || id}</li>
+            {confirmSteps.map((s) => (
+              <li key={s.id}>{planStepLabels[s.id] || s.id}</li>
             ))}
           </ul>
+          {confirmGroup === "coding" && confirmTotals.complete ? (
+            <p>
+              About {formatSize(confirmTotals.mb)} to download and store, roughly {formatMinutes(confirmTotals.minutes)}. Anything
+              already installed is kept as it is.
+            </p>
+          ) : null}
         </SetupModal>
       ) : null}
-
     </div>
   );
 }

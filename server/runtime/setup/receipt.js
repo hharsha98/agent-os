@@ -20,6 +20,25 @@ export function officialUninstallSteps(agentId) {
   if (agentId === "openclaw") {
     return ["openclaw uninstall --all --yes --non-interactive", "npm rm -g openclaw", "Optionally also remove ~/.openclaw"];
   }
+  // Plain text for the person to run themselves: Agent OS never runs these.
+  if (agentId === "claude") {
+    return [
+      "rm -f ~/.local/bin/claude && rm -rf ~/.local/share/claude",
+      "Optionally also remove ~/.claude and ~/.claude.json (settings and history)"
+    ];
+  }
+  if (agentId === "codex") {
+    return [
+      "npm uninstall -g @openai/codex (with the Node it was installed with, in ~/.agent-os/node or ~/.npm-global)",
+      "Optionally also remove ~/.codex"
+    ];
+  }
+  if (agentId === "cursor") {
+    return [
+      "rm -f ~/.local/bin/agent ~/.local/bin/cursor-agent && rm -rf ~/.local/share/cursor-agent",
+      "Optionally also remove ~/.cursor"
+    ];
+  }
   if (agentId === "managed-node") {
     return ["Delete ~/.agent-os/node* (or %LOCALAPPDATA%\\AgentOS\\node* on Windows)"];
   }

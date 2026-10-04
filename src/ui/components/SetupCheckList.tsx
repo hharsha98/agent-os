@@ -103,6 +103,23 @@ export default function SetupCheckList({ check }: { check: SystemCheck }) {
             : "Not installed"
         }
       />
+      {(
+        [
+          ["claude", "Claude Code"],
+          ["codex", "Codex"],
+          ["cursor", "Cursor CLI"]
+        ] as const
+      ).map(([id, label]) => {
+        const detected = check.agents?.[id]?.detected;
+        return (
+          <Row
+            key={id}
+            mark={detected?.installed ? "ok" : "unknown"}
+            label={label}
+            detail={detected?.installed ? detected.version || "installed" : "Not installed"}
+          />
+        );
+      })}
       <Row mark={ollama?.found ? "ok" : "unknown"} label="Ollama" detail={ollama?.found ? ollama.version || "installed" : "Not installed"} />
     </ul>
   );

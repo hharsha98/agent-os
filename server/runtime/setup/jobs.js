@@ -11,11 +11,11 @@ import { Readable } from "node:stream";
 import { ADAPTERS } from "../agents/index.js";
 import { clearDetectCaches } from "../agents/detect.js";
 import { getRunManager } from "../runs/run-manager.js";
-import { runCommand } from "../safety.js";
+import { runCommand, which } from "../safety.js";
 import { readJson, runtimePaths, writeJson } from "../store.js";
-import { getInstallRecipe } from "./recipes.js";
-import { ensureManagedNode } from "./managed-node.js";
-import { buildSetupPlan } from "./plan.js";
+import { agentGroup, getInstallRecipe } from "./recipes.js";
+import { ensureManagedNode, nodeSatisfiesCodex, npmLaunch } from "./managed-node.js";
+import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
 import { clearSystemCheckCache, systemCheck } from "./system-check.js";
 import { appendReceiptEntry } from "./receipt.js";
 import {
@@ -209,6 +209,65 @@ function lastJsonLine(text) {
   return null;
 }
 
+// ---- the coding agents' live log and plain failure reasons ---------------------
+// Hermes and OpenClaw keep their own output in the run only; for Claude Code,
+// Codex and Cursor the installer's lines are copied into the step's log as they
+// arrive, so the Install screen shows what is really happening.
+
+const MAX_STEP_LOG_LINES = 400;
+const MAX_LOG_LINE_CHARS = 300;
+
+const isCodingAgent = (agentId) => agentGroup(agentId) === "coding";
+
+// Copies a run's output lines into step.log (the run manager already removed
+// colour codes and secrets). Events seen twice -- once while catching up, once
+// live -- are skipped by their sequence number. Returns a function that stops it.
+async function mirrorRunOutput(manager, runId, step) {
+  const seen = new Set();
+  const add = (event) => {
+    if (event?.type !== "line" || typeof event.text !== "string" || !event.text.trim()) return;
+    if (seen.has(event.seq)) return;
+    seen.add(event.seq);
+    timestampedLog(step, event.text.trim().slice(0, MAX_LOG_LINE_CHARS));
+    if (step.log.length > MAX_STEP_LOG_LINES) step.log.splice(0, step.log.length - MAX_STEP_LOG_LINES);
+  };
+  const unsubscribe = manager.subscribe(runId, add);
+  for (const event of await manager.readEvents(runId, 0)) add(event);
+  return unsubscribe;
+}
+
+async function waitForInstallRun(manager, runId, step, agentId) {
+  const stop = isCodingAgent(agentId) ? await mirrorRunOutput(manager, runId, step) : () => {};
+  try {
+    return await waitForRunEnd(manager, runId);
+  } finally {
+    stop();
+  }
+}
+
+// The plain-English reason an installer stopped, from the last lines it printed.
+// Only for the coding agents; the older recipes keep their short generic reason.
+async function describeInstallFailure(manager, runId, label, agentId) {
+  const generic = "installer reported a failure; see the log";
+  if (!isCodingAgent(agentId)) return generic;
+  const events = await manager.readEvents(runId, 0);
+  const lines = events.filter((e) => e.type === "line" && typeof e.text === "string" && e.text.trim()).map((e) => e.text.trim());
+  const tail = lines.slice(-12).join("\n");
+  const known = [
+    [/do not run this installer with sudo/i, `${label} must not be installed with sudo; Agent OS runs it as you`],
+    [
+      /could not resolve host|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET|network is unreachable|failed to connect|download failed|curl: \(\d+\)/i,
+      `could not download ${label}; check your internet connection and try again`
+    ],
+    [/checksum/i, `the ${label} download failed its checksum check, so nothing was installed`],
+    [/EACCES|EPERM|permission denied/i, `a folder ${label} needs could not be written to (permission denied)`],
+    [/ENOSPC|no space left/i, "the disk is full"]
+  ].find(([pattern]) => pattern.test(tail));
+  if (known) return known[1];
+  const last = lines[lines.length - 1];
+  return last ? `${generic}. Last line: ${last.slice(0, 160)}` : generic;
+}
+
 async function runInstallerOnce(agentId, recipe, filePath, args, managedNodeBinDir, step) {
   const manager = getRunManager();
   const { command, args: fullArgs } = runnerCommandAndArgs(recipe, filePath, args);
@@ -223,7 +282,7 @@ async function runInstallerOnce(agentId, recipe, filePath, args, managedNodeBinD
     timeoutMs: INSTALL_TIMEOUT_MS
   });
   step.runIds.push(run.id);
-  const finalRun = await waitForRunEnd(manager, run.id);
+  const finalRun = await waitForInstallRun(manager, run.id, step, agentId);
   const stdout = await runStdout(manager, run.id);
   return { run: finalRun, stdout };
 }
@@ -231,7 +290,67 @@ async function runInstallerOnce(agentId, recipe, filePath, args, managedNodeBinD
 async function runPlainInstall(agentId, recipe, filePath, step, managedNodeBinDir) {
   const { run } = await runInstallerOnce(agentId, recipe, filePath, recipe.args, managedNodeBinDir, step);
   if (run.status === "timed_out") throw jobError("install_failed", "took longer than 30 minutes");
-  if (run.status !== "succeeded") throw jobError("install_failed", "installer reported a failure; see the log");
+  if (run.status !== "succeeded") {
+    throw jobError("install_failed", await describeInstallFailure(getRunManager(), run.id, recipe.label, agentId));
+  }
+}
+
+// Where npm puts a global install when told to use a folder of the person's
+// own (never a system folder, so no admin password): next to Agent OS's own
+// Node when that is the one in use, otherwise the usual user-level npm folder.
+function npmPrefixFor(node) {
+  if (node.source === "managed") return process.platform === "win32" ? node.binDir : path.dirname(node.binDir);
+  return process.platform === "win32"
+    ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
+    : path.join(os.homedir(), ".npm-global");
+}
+
+// The Node Codex will be installed with: the one the job's own "Set up a Node 24
+// runtime" step produced, or -- when the plan saw no need for that step -- the
+// Node 22+ already on this computer.
+async function nodeForNpmInstall(job, agentId) {
+  const prepared = job.steps.find((s) => s.agentId === agentId && s.action === "prereq-node")?.managedNode;
+  if (prepared?.binDir) return prepared;
+  const found = await which("node");
+  if (found) {
+    const result = await runCommand(found, ["--version"], 5000);
+    const version = (result.stdout || result.stderr || "").trim();
+    if (nodeSatisfiesCodex(version)) return { source: "system", version, binDir: path.dirname(found) };
+  }
+  throw jobError("install_failed", "Codex needs Node 22 or newer, and none was found. Run Setup's plan again to add one.");
+}
+
+// Codex: `npm install -g @openai/codex --prefix <your folder>`, run through the
+// npm that came with a Node 22+ (Agent OS's own when it had to fetch one).
+async function runNpmInstall(job, step, recipe) {
+  const node = await nodeForNpmInstall(job, step.agentId);
+  const prefix = npmPrefixFor(node);
+  const { command, args: leading } = npmLaunch(node.binDir);
+  timestampedLog(step, `Installing ${recipe.npmPackage} into ${prefix.replace(os.homedir(), "~")} with Node ${node.version}`);
+  await persistJob(job);
+
+  const manager = getRunManager();
+  const run = await manager.startRun({
+    agentId: step.agentId,
+    kind: "install",
+    title: `${recipe.label} installer`,
+    command,
+    args: [...leading, "install", "-g", recipe.npmPackage, "--prefix", prefix],
+    cwd: os.tmpdir(),
+    env: {
+      ...installerEnv(step.agentId, node.binDir),
+      NPM_CONFIG_UPDATE_NOTIFIER: "false",
+      NPM_CONFIG_FUND: "false",
+      NPM_CONFIG_AUDIT: "false"
+    },
+    timeoutMs: INSTALL_TIMEOUT_MS
+  });
+  step.runIds.push(run.id);
+  const finished = await waitForInstallRun(manager, run.id, step, step.agentId);
+  if (finished.status === "timed_out") throw jobError("install_failed", "took longer than 30 minutes");
+  if (finished.status !== "succeeded") {
+    throw jobError("install_failed", await describeInstallFailure(manager, run.id, recipe.label, step.agentId));
+  }
 }
 
 // Hermes-only: --manifest, then one run per stage (each a real run-manager
@@ -289,12 +408,15 @@ async function executeStep(job, step, check) {
     try {
       const result = await ensureManagedNode({
         signal: controller.signal,
+        // Each agent judges the Node by its own rule (OpenClaw 24.16+, Codex 22+).
+        ...(step.agentId === "codex" ? { accepts: nodeSatisfiesCodex } : {}),
         onProgress: (message) => {
           timestampedLog(step, message);
           persistJob(job).catch(() => {});
         }
       });
-      job.managedNode = result;
+      step.managedNode = result;
+      if (step.agentId === "openclaw") job.managedNode = result;
       step.status = "succeeded";
     } finally {
       if (active) active.controller = null;
@@ -304,6 +426,19 @@ async function executeStep(job, step, check) {
 
   const recipe = getInstallRecipe(step.agentId, check.os, check.arch);
   const adapter = ADAPTERS[step.agentId];
+
+  // Belt and braces for "never reinstall over an existing install": the plan
+  // only offers an install for an agent that was not found, but the person (or
+  // an earlier try of this very job) may have put it there since. Looked at
+  // again right before anything is downloaded; only an Update ever replaces it.
+  if (step.action === "install" && isCodingAgent(step.agentId)) {
+    const existing = await adapter.detect({ refresh: true });
+    if (existing.installed) {
+      timestampedLog(step, `${recipe.label}${existing.version ? ` ${existing.version}` : ""} is already installed; kept as it is.`);
+      step.status = "succeeded";
+      return;
+    }
+  }
 
   if (step.action === "update") {
     const detected = await adapter.detect({ refresh: true });
@@ -321,9 +456,13 @@ async function executeStep(job, step, check) {
       timeoutMs: INSTALL_TIMEOUT_MS
     });
     step.runIds.push(run.id);
-    const finished = await waitForRunEnd(manager, run.id);
+    const finished = await waitForInstallRun(manager, run.id, step, step.agentId);
     if (finished.status === "timed_out") throw jobError("install_failed", "took longer than 30 minutes");
-    if (finished.status !== "succeeded") throw jobError("install_failed", "installer reported a failure; see the log");
+    if (finished.status !== "succeeded") {
+      throw jobError("install_failed", await describeInstallFailure(manager, run.id, recipe.label, step.agentId));
+    }
+  } else if (step.action === "install" && recipe.npmPackage) {
+    await runNpmInstall(job, step, recipe);
   } else if (step.action === "install") {
     const downloaded = await downloadInstaller(step.agentId, recipe);
     step.installerSha256 = downloaded.sha256;
@@ -409,7 +548,8 @@ export function startSetupJob(options) {
 
 async function startSetupJobLocked({ steps = [], acceptOpenClawRisk = false } = {}) {
   const check = await systemCheck({ refresh: true });
-  const plan = buildSetupPlan(check);
+  // Every group's steps are valid here; the screen sends one group per click.
+  const plan = buildSetupPlan(check, { agents: ALL_PLAN_AGENT_IDS });
   const validById = new Map(plan.steps.map((s) => [s.id, s]));
   const requestedIds = Array.isArray(steps) ? steps.map(String) : [];
   // Only step ids that exist in a FRESHLY computed plan are honored; a

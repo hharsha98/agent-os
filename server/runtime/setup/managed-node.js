@@ -34,6 +34,13 @@ export function nodeSatisfiesOpenClaw(raw) {
   return version.major > 26;
 }
 
+// Codex's install guide asks for Node 22 or newer (its npm package declares
+// an older minimum, but 22 is what the guide and the CLI are tested on).
+export function nodeSatisfiesCodex(raw) {
+  const version = parseNodeVersion(raw);
+  return Boolean(version) && version.major >= 22;
+}
+
 export function managedNodeRoot() {
   const override = process.env.AGENT_OS_MANAGED_ROOT;
   if (override) return expandHome(override);
@@ -42,6 +49,19 @@ export function managedNodeRoot() {
     return path.join(base, "AgentOS");
   }
   return path.join(os.homedir(), ".agent-os");
+}
+
+// How to run the npm that came with the Node in `binDir`: an absolute command
+// (the run manager only takes absolute paths) and no shell. On Windows npm is
+// a .cmd file that can't be started directly, so Node itself runs npm's script.
+export function npmLaunch(binDir) {
+  if (process.platform === "win32") {
+    return {
+      command: path.join(binDir, "node.exe"),
+      args: [path.join(binDir, "node_modules", "npm", "bin", "npm-cli.js")]
+    };
+  }
+  return { command: path.join(binDir, "npm"), args: [] };
 }
 
 function assetSuffix(platform, arch) {
@@ -112,14 +132,24 @@ async function firstSubdirectory(dir) {
 // verify, and unpack the official build. Progress is reported through
 // onProgress so a job log can show it; signal lets a cancelled setup job
 // abort the download (extraction, being local and fast, is left to finish).
-export async function ensureManagedNode({ signal, onProgress = () => {} } = {}) {
+export async function ensureManagedNode({ signal, onProgress = () => {}, accepts = nodeSatisfiesOpenClaw } = {}) {
   const systemNode = await which("node");
   if (systemNode) {
     const result = await runCommand(systemNode, ["--version"], 5000);
     const version = (result.stdout || result.stderr || "").trim();
-    if (nodeSatisfiesOpenClaw(version)) {
+    // `accepts` is the rule of whoever needs the Node (OpenClaw by default).
+    if (accepts(version)) {
       return { source: "system", version, binDir: path.dirname(systemNode) };
     }
+  }
+
+  // A Node that Agent OS itself unpacked earlier (say for OpenClaw, and now
+  // Codex wants one too) is reused instead of downloaded a second time.
+  const ownBinDir = process.platform === "win32" ? path.join(managedNodeRoot(), "node") : path.join(managedNodeRoot(), "node", "bin");
+  const ownNode = await runCommand(path.join(ownBinDir, process.platform === "win32" ? "node.exe" : "node"), ["--version"], 5000);
+  const ownVersion = (ownNode.stdout || "").trim();
+  if (ownNode.ok && accepts(ownVersion)) {
+    return { source: "managed", version: ownVersion, binDir: ownBinDir };
   }
 
   const suffix = assetSuffix(process.platform, process.arch);

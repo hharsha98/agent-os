@@ -3,7 +3,15 @@
 // frequently. Confirmed live against codex-cli 0.154.0's --help; see the
 // deliverable report for any place the real CLI differed from the docs.
 import { runCommand } from "../safety.js";
-import { cachedFeatures, resolveBinary, runHelp, runVersion, splitVersion, withDetectCache } from "./detect.js";
+import {
+  cachedFeatures,
+  codexFallbackPaths,
+  resolveBinary,
+  runHelp,
+  runVersion,
+  splitVersion,
+  withDetectCache
+} from "./detect.js";
 
 const LOGIN_STATUS_TIMEOUT_MS = 10 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -32,7 +40,7 @@ async function detectFeatures(binPath) {
 async function detect({ refresh = false } = {}) {
   return withDetectCache("codex", refresh, async () => {
     try {
-      const binPath = await resolveBinary("codex", []);
+      const binPath = await resolveBinary("codex", codexFallbackPaths());
       if (!binPath) {
         return {
           installed: false,

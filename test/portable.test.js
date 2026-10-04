@@ -319,7 +319,9 @@ test(
       const env = withSiblingNodePath(tool, { PATH: "/usr/bin:/bin" });
       assert.equal(env.PATH.split(path.delimiter)[0], dir);
 
-      const result = await runCommand(tool, [], 5000, { env: { PATH: "/usr/bin:/bin" } });
+      // Generous timeout: the full suite runs files in parallel and a busy
+      // machine can take seconds to start even this tiny script.
+      const result = await runCommand(tool, [], 20000, { env: { PATH: "/usr/bin:/bin" } });
       assert.match(result.stdout, /SIBLING-NODE-RAN/);
 
       // Non-node tools (e.g. a Python CLI) are left alone.

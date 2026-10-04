@@ -13,7 +13,17 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   job_already_running: "Another setup job is already running. Wait for it to finish, then try again.",
   no_valid_steps: "The plan changed since you opened this page. Go back to Plan and try again.",
   key_required_for_retry: "For your safety Agent OS already forgot your key. Enter it again to retry.",
-  invalid_mode: "Pick OpenRouter or a local model first."
+  invalid_mode: "Pick OpenRouter or a local model first.",
+  invalid_model: "Choose a model first.",
+  no_targets: "Tick at least one agent first.",
+  key_required: "Connect OpenRouter (or paste a key) first.",
+  key_unavailable: "That OpenRouter connection was already used or has expired. Connect OpenRouter again.",
+  connection_not_ready: "Connect OpenRouter first, then try again.",
+  too_many_flows: "Too many sign-ins are already waiting. Cancel one, or wait a few minutes.",
+  server_port_unknown: "Agent OS is still starting. Try again in a moment.",
+  not_available_here: "Connecting OpenRouter only works in the desktop app on your own computer.",
+  local_model_too_big: "That model needs more memory than this computer has to spare. Tick \"Use it anyway\" to try it, or pick another model.",
+  invalid_variant_name: "Agent OS can't make its 64K working-memory copy of that model (its name has characters it can't use). Pick another model, or use OpenRouter."
 };
 
 export function friendlyError(error: unknown, fallback = "Something went wrong. Please try again.") {
@@ -147,20 +157,39 @@ export interface HealthEntry {
   promptOk: boolean;
   replyPreview: string;
   error?: string;
+  // A short plain-English next step when the "say hello" check failed.
+  hint?: string;
 }
+
+export type BrainMode = "openrouter" | "ollama";
+export interface BrainTarget {
+  mode: BrainMode;
+  model: string;
+}
+export type BrainAgentId = "hermes" | "openclaw";
 
 export interface SetupJob {
   id: string;
-  kind: "install" | "configure";
+  kind: "install" | "configure" | "pull";
   status: JobStatus;
   steps: SetupJobStep[];
   currentStepIndex?: number;
   startedAt: string;
   endedAt: string | null;
-  mode?: "openrouter" | "ollama";
+  mode?: BrainMode | "mixed";
   model?: string | null;
+  // configure jobs: what each agent was given (null = left alone), and which
+  // agents the job was allowed to touch.
+  targets?: Record<BrainAgentId, BrainTarget | null>;
+  scope?: BrainAgentId[];
   health?: Record<string, HealthEntry>;
   acceptOpenClawRisk?: boolean;
+  // pull (download) jobs: the model and REAL byte counts from Ollama.
+  pull?: { status: string; completed: number; total: number };
+  // configure jobs with a Local brain: the model -> the 64K copy Agent OS
+  // added to Ollama (it shares the model's weights, no extra download).
+  localVariants?: Record<string, string>;
+  acceptLocalFit?: boolean;
 }
 
 export function startInstallJob(payload: { steps: string[]; acceptOpenClawRisk?: boolean }) {
@@ -191,6 +220,7 @@ export interface BrainOption {
 }
 
 export interface BrainAgentStatus {
+  installed?: boolean;
   configured: boolean;
   source: string;
   summary: string;
@@ -200,6 +230,7 @@ export interface BrainOptionsResponse {
   options: BrainOption[];
   recommendation: "openrouter" | "ollama";
   reason: string;
+  localModel?: string | null;
   current: { hermes: BrainAgentStatus; openclaw: BrainAgentStatus };
   defaults: { hermes: "keep" | "configure"; openclaw: "keep" | "configure" };
 }
@@ -214,8 +245,15 @@ export interface OpenRouterModel {
   contextLength: number;
 }
 
+export interface OpenRouterModelsResponse {
+  models: OpenRouterModel[];
+  // The id the server suggests pre-selecting (see pickRecommendedFreeModel).
+  recommended?: string | null;
+  error?: string;
+}
+
 export function getOpenRouterModels() {
-  return request<{ models: OpenRouterModel[]; error?: string }>("/api/setup/openrouter/models");
+  return request<OpenRouterModelsResponse>("/api/setup/openrouter/models");
 }
 
 export interface VerifyKeyResult {
@@ -223,6 +261,101 @@ export interface VerifyKeyResult {
   error?: string;
   label?: string;
   limit?: number;
+  isFreeTier?: boolean;
+}
+
+// ---- one-click OpenRouter sign-in (OAuth) -----------------------------------
+// The server opens the person's normal browser and keeps the key in memory.
+// The screen only ever sees a flow id and a status -- never the key.
+
+export interface OpenRouterConnectStart {
+  flowId: string;
+  authUrl: string;
+  status: "waiting";
+  // false when the server couldn't open a browser; the screen then shows the
+  // "Open the sign-in page" link prominently.
+  opened: boolean;
+}
+
+export type OpenRouterConnectStatus = "waiting" | "connected" | "failed" | "expired" | "cancelled";
+
+export interface OpenRouterConnectState {
+  status: OpenRouterConnectStatus;
+  error?: string;
+  info?: { label?: string; isFreeTier?: boolean; limit?: number };
+}
+
+export function startOpenRouterConnect() {
+  return request<OpenRouterConnectStart>("/api/setup/openrouter/connect", {
+    method: "POST",
+    body: JSON.stringify({ confirm: true })
+  });
+}
+
+export function getOpenRouterConnect(flowId: string) {
+  return request<OpenRouterConnectState>(`/api/setup/openrouter/connect/${encodeURIComponent(flowId)}`);
+}
+
+export function cancelOpenRouterConnect(flowId: string) {
+  return request<OpenRouterConnectState>(`/api/setup/openrouter/connect/${encodeURIComponent(flowId)}`, {
+    method: "DELETE"
+  });
+}
+
+// ---- local models (Ollama) ----------------------------------------------------
+
+export type LocalVerdictId = "good" | "too_small" | "no_tools" | "unknown";
+
+export type LocalFit = "comfortable" | "tight" | "too_big" | "unknown";
+
+// What the model needs at 64K of working memory, worked out by the server from
+// the model's own numbers (weights + KV cache + a little overhead).
+export interface LocalMemory {
+  memoryAt64kGb: number | null;
+  fit: LocalFit;
+  // What the model was trained for; `stretched` = 64K is past that.
+  nativeContext: number | null;
+  stretched: boolean;
+}
+
+export interface LocalModel {
+  name: string;
+  sizeBytes: number | null;
+  parameterSize: string;
+  contextLength: number | null;
+  verdict: { id: LocalVerdictId; label: string; selectable: boolean };
+  memory: LocalMemory;
+}
+
+export interface LocalDownloadAdvice {
+  minMemoryGb: number;
+  model: string;
+  downloadGb: number;
+  nativeContext: number;
+  memoryAt64kGb: number;
+  installed: boolean;
+}
+
+export interface LocalBrainSummary {
+  available: boolean;
+  reason: string;
+  memoryGb: number;
+  models: LocalModel[];
+  download: LocalDownloadAdvice | null;
+  downloadAdvice: string;
+}
+
+export function getOllamaModels(refresh = false) {
+  return request<LocalBrainSummary>(`/api/setup/ollama/models${refresh ? "?refresh=1" : ""}`);
+}
+
+// A download is large, so the server requires confirm:true; the screen only
+// sends it after the person has seen the size and pressed Download.
+export function startOllamaDownload(model: string) {
+  return request<SetupJob>("/api/setup/ollama/pull", {
+    method: "POST",
+    body: JSON.stringify({ model, confirm: true })
+  });
 }
 
 // The key is sent once, in this one request body, and never again -- see
@@ -234,11 +367,17 @@ export function verifyOpenRouterKey(apiKey: string) {
   });
 }
 
+// `targets` gives each ticked agent its own brain (an agent left out is not
+// touched). The key comes from `keySource` (a connected sign-in, used once by
+// the server) or `apiKey` (the "use an existing key" path, sent once).
 export function postConfigure(payload: {
-  mode: "openrouter" | "ollama";
-  model: string;
+  targets: Partial<Record<BrainAgentId, BrainTarget>>;
+  keySource?: { flowId: string };
   apiKey?: string;
   acceptOpenClawRisk?: boolean;
+  // Only true when the person ticked "Use it anyway" for a local model that is
+  // too big for this computer. The server works out the fit itself anyway.
+  acceptLocalFit?: boolean;
 }) {
   return request<SetupJob>("/api/setup/configure", {
     method: "POST",

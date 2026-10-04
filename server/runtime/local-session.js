@@ -7,7 +7,15 @@ import { isDemoPublic } from "./demo-public.js";
 
 const DEFAULT_ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 // "/agent-builder-source" has no trailing slash so the bare proxy path is gated too.
-const GATED_PREFIXES = ["/api/", "/agent-builder-source", "/_next/"];
+// "/oauth/" is gated too, so the ONE address below that is let through stays
+// the only one: any other /oauth/ path needs the session like /api/ does.
+const GATED_PREFIXES = ["/api/", "/agent-builder-source", "/_next/", "/oauth/"];
+// OpenRouter's sign-in sends the person's normal browser (which has no Agent
+// OS session cookie) back to exactly this address.
+const OAUTH_CALLBACK_PATH = "/oauth/openrouter/callback";
+// The one-time local address the person's browser opens first ("/oauth/
+// openrouter/start/<single-use nonce>"). Exactly this shape, nothing else.
+const OAUTH_START_PATH = /^\/oauth\/openrouter\/start\/[a-f0-9]{64}$/;
 const CLAIM_WINDOW_MS = 60000;
 const CLAIM_MAX_FAILURES = 20;
 
@@ -134,16 +142,29 @@ export function localSessionGate(port) {
       next();
       return;
     }
-    const isGatedPath = GATED_PREFIXES.some((prefix) => req.path.startsWith(prefix));
+    // Express matches routes without caring about letter case ("/API/runs"
+    // reaches the same handler as "/api/runs"), so "is this path protected?"
+    // is asked of the LOWER-CASED path: comparing the raw path would let anyone
+    // skip the session by changing a letter's case.
+    const lowerPath = String(req.path).toLowerCase();
+    const isGatedPath = GATED_PREFIXES.some((prefix) => lowerPath.startsWith(prefix));
     if (!isGatedPath) {
       next();
       return;
     }
-    if (req.method === "GET" && (req.path === "/api/health" || req.path === "/api/session")) {
+    // The few session-free addresses must be written EXACTLY as they really
+    // are (lower case): "/OAUTH/openrouter/callback" is a different address
+    // and stays behind the session.
+    const exactPath = String(req.path);
+    if (req.method === "GET" && (exactPath === "/api/health" || exactPath === "/api/session")) {
       next();
       return;
     }
-    if (req.method === "POST" && req.path === "/api/session/claim") {
+    if (req.method === "POST" && exactPath === "/api/session/claim") {
+      next();
+      return;
+    }
+    if (req.method === "GET" && (exactPath === OAUTH_CALLBACK_PATH || OAUTH_START_PATH.test(exactPath))) {
       next();
       return;
     }

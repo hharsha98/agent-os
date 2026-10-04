@@ -18,7 +18,18 @@ import { ensureManagedNode } from "./managed-node.js";
 import { buildSetupPlan } from "./plan.js";
 import { clearSystemCheckCache, systemCheck } from "./system-check.js";
 import { appendReceiptEntry } from "./receipt.js";
-import { currentBrain } from "./brain.js";
+import {
+  LOCAL_CONTEXT_TOKENS,
+  OLLAMA_MODEL_NAME_PATTERN,
+  clearLocalModelsCache,
+  currentBrain,
+  ensureLocalVariant,
+  listLocalModels,
+  localVariantName,
+  ollamaBaseUrl,
+  streamOllamaPull
+} from "./brain.js";
+import { takeKey } from "./openrouter-oauth.js";
 
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15000;
@@ -33,6 +44,27 @@ function jobError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+// The one-job-at-a-time lock is taken BEFORE a start function's first await.
+// Checking the lock and only claiming it later (after awaits such as the
+// system check) let two requests that arrive together both pass the check and
+// both start a job. A placeholder claim stands in until the real job id
+// replaces it (`runningJobId = id`), and it is released if setup throws.
+function claimJobLock() {
+  if (runningJobId) throw jobError("job_already_running", "A setup job is already running.");
+  const claim = `pending_${crypto.randomBytes(6).toString("hex")}`;
+  runningJobId = claim;
+  return claim;
+}
+
+async function withJobLock(start) {
+  const claim = claimJobLock();
+  try {
+    return await start();
+  } finally {
+    if (runningJobId === claim) runningJobId = null;
+  }
 }
 
 function setupRoot() {
@@ -362,9 +394,11 @@ async function runJobSteps(job, startIndex = 0) {
 
 // ---- public API -----------------------------------------------------
 
-export async function startSetupJob({ steps = [], acceptOpenClawRisk = false } = {}) {
-  if (runningJobId) throw jobError("job_already_running", "A setup job is already running.");
+export function startSetupJob(options) {
+  return withJobLock(() => startSetupJobLocked(options));
+}
 
+async function startSetupJobLocked({ steps = [], acceptOpenClawRisk = false } = {}) {
   const check = await systemCheck({ refresh: true });
   const plan = buildSetupPlan(check);
   const validById = new Map(plan.steps.map((s) => [s.id, s]));
@@ -436,9 +470,23 @@ export async function retrySetupJob(id) {
   if (runningJobId && runningJobId !== id) {
     throw jobError("job_already_running", "A different setup job is already running.");
   }
+  // Claim the lock before the first await (unless this very job holds it).
+  const claim = runningJobId === id ? null : claimJobLock();
+  try {
+    return await retrySetupJobLocked(id);
+  } finally {
+    if (claim && runningJobId === claim) runningJobId = null;
+  }
+}
+
+async function retrySetupJobLocked(id) {
   const stored = await loadJob(id);
   if (!stored) return null;
   if (stored.status === "running") return stored;
+
+  // A download restarts from the top; Ollama keeps the layers it already has,
+  // so it picks up where it left off.
+  if (stored.kind === "pull") return startOllamaPullLocked(stored.model);
 
   const startIndex = stored.steps.findIndex((s) => s.status !== "succeeded");
   if (startIndex === -1) return stored; // nothing left to retry
@@ -496,8 +544,71 @@ async function runConfigureCommand(manager, plan, step, { optional = false } = {
   return { run: finished, stdout };
 }
 
+// How the OpenRouter key reaches Hermes (checked against `hermes auth add
+// --help` and `hermes config set --help`, Hermes 0.x, 2026-10-03). Most
+// private first:
+//   1. `auth add` WITHOUT --api-key. The help says the key is then "prompted
+//      securely". On macOS and Linux our child process has no terminal (spawn
+//      detaches it into its own session), so that prompt reads one line from
+//      standard input: the key travels through a private pipe and never shows
+//      up in `ps`. This is the only place we depend on behaviour the help text
+//      doesn't spell out, so if it fails for any reason we fall back to (2)
+//      and say so in the step log. On WINDOWS this is skipped entirely: a
+//      Windows console prompt reads the console, not standard input, so the
+//      attempt would only hang until its timeout. Windows goes straight to (2).
+//   2. `auth add --api-key <key>`: the key is a command-line argument, which
+//      other programs on this computer can read for the second or two the
+//      command runs. KNOWN LIMITATION: Hermes offers no env-variable or
+//      stdin flag for this.
+//   3. Older Hermes without --api-key: `config set OPENROUTER_API_KEY <key>`,
+//      same limitation (the value is a positional argument).
+const PROMPT_ATTEMPT_TIMEOUT_MS = 20 * 1000;
+
+// Which of the three ways above applies: "config-set" (old Hermes, no
+// --api-key), "api-key" (Windows: no private prompt), or "prompt-then-api-key".
+export function hermesKeyStrategy({ platform = process.platform, authHelpText = "" } = {}) {
+  if (!/--api-key\b/.test(String(authHelpText))) return "config-set";
+  return platform === "win32" ? "api-key" : "prompt-then-api-key";
+}
+
+async function addHermesOpenRouterKey(run, step, ctx, authHelpText) {
+  const redact = [ctx.apiKey];
+  const strategy = hermesKeyStrategy({ authHelpText });
+  if (strategy === "config-set") {
+    timestampedLog(step, "hermes auth add --api-key is unavailable on this version; used config set OPENROUTER_API_KEY.");
+    await run("hermes config set OPENROUTER_API_KEY", ["config", "set", "OPENROUTER_API_KEY", ctx.apiKey], { redact });
+    return;
+  }
+  // --label also stops Hermes from asking for a label on a second prompt.
+  const base = ["auth", "add", "openrouter", "--type", "api-key", ...(/--label\b/.test(authHelpText) ? ["--label", "Agent OS"] : [])];
+  if (strategy === "api-key") {
+    timestampedLog(
+      step,
+      "On Windows Hermes can't take the key through a private prompt, so it is passed with --api-key (briefly visible to other programs on this computer). Known limitation."
+    );
+    await run("hermes auth add openrouter", [...base, "--api-key", ctx.apiKey], { redact });
+    return;
+  }
+  const prompted = await run("hermes auth add openrouter (private prompt)", base, {
+    redact,
+    stdin: `${ctx.apiKey}\n`,
+    timeoutMs: PROMPT_ATTEMPT_TIMEOUT_MS,
+    optional: true
+  });
+  if (prompted.run.status === "succeeded") {
+    timestampedLog(step, "Hermes took the key from a private prompt, not from the command line.");
+    return;
+  }
+  timestampedLog(
+    step,
+    "This Hermes version did not take the key from its private prompt; used --api-key instead (briefly visible to other programs on this computer)."
+  );
+  await run("hermes auth add openrouter", [...base, "--api-key", ctx.apiKey], { redact });
+}
+
 async function configureHermesBrain(step, check, ctx, manager) {
   const detected = check.agents.hermes.detected;
+  const target = ctx.targets.hermes;
   const authHelp = await runCommand(detected.path, ["auth", "add", "--help"], HELP_TIMEOUT_MS);
   const authHelpText = `${authHelp.stdout}\n${authHelp.stderr}`;
 
@@ -512,38 +623,33 @@ async function configureHermesBrain(step, check, ctx, manager) {
         args,
         cwd: os.tmpdir(),
         redact: extra.redact || [],
-        timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+        timeoutMs: extra.timeoutMs || CONFIGURE_RUN_TIMEOUT_MS,
+        ...(typeof extra.stdin === "string" ? { stdin: extra.stdin } : {})
       },
-      step
+      step,
+      { optional: extra.optional === true }
     );
 
-  if (ctx.mode === "openrouter") {
-    // Preference order per the spec: env/stdin > `auth add --api-key` >
-    // `config set OPENROUTER_API_KEY`. This Hermes version's `auth add
-    // --help` documents only an --api-key flag (no stdin/env alternative),
-    // so that is the most private mechanism actually available.
-    if (/--api-key\b/.test(authHelpText)) {
-      await run("hermes auth add openrouter", ["auth", "add", "openrouter", "--type", "api-key", "--api-key", ctx.apiKey], {
-        redact: [ctx.apiKey]
-      });
-    } else {
-      timestampedLog(step, "hermes auth add --api-key is unavailable on this version; used config set OPENROUTER_API_KEY.");
-      await run("hermes config set OPENROUTER_API_KEY", ["config", "set", "OPENROUTER_API_KEY", ctx.apiKey], {
-        redact: [ctx.apiKey]
-      });
-    }
+  if (target.mode === "openrouter") {
+    await addHermesOpenRouterKey(run, step, ctx, authHelpText);
     await run("hermes config set model.provider", ["config", "set", "model.provider", "openrouter"]);
-    await run("hermes config set model.default", ["config", "set", "model.default", ctx.model]);
+    await run("hermes config set model.default", ["config", "set", "model.default", target.model]);
   } else {
+    // Hermes uses Ollama's OpenAI-style /v1 endpoint, which cannot ask for a
+    // bigger context window per request. So it is pointed at the 64K COPY of
+    // the model (see prepareLocalVariants), and told the same size, because
+    // Hermes refuses models it believes have under 64K.
+    const variant = ctx.variants[target.model];
     await run("hermes config set model.provider", ["config", "set", "model.provider", "custom"]);
-    await run("hermes config set model.base_url", ["config", "set", "model.base_url", "http://localhost:11434/v1"]);
-    await run("hermes config set model.default", ["config", "set", "model.default", ctx.model]);
-    await run("hermes config set model.context_length", ["config", "set", "model.context_length", "64000"]);
+    await run("hermes config set model.base_url", ["config", "set", "model.base_url", `${ollamaBaseUrl().replace("127.0.0.1", "localhost")}/v1`]);
+    await run("hermes config set model.default", ["config", "set", "model.default", variant]);
+    await run("hermes config set model.context_length", ["config", "set", "model.context_length", String(LOCAL_CONTEXT_TOKENS)]);
   }
 }
 
 async function configureOpenclawBrain(step, check, ctx, manager) {
   const detected = check.agents.openclaw.detected;
+  const target = ctx.targets.openclaw;
   const help = await runCommand(detected.path, ["onboard", "--help"], HELP_TIMEOUT_MS);
   const helpText = `${help.stdout}\n${help.stderr}`;
 
@@ -553,10 +659,16 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
     }
   }
 
+  // KNOWN LIMITATION: `openclaw onboard --help` (2026.9.6) offers the key
+  // only as `--openrouter-api-key <key>`, so it is a command-line argument,
+  // visible to other programs on this computer for the second or two the
+  // command runs. There is no env-variable or stdin option, and
+  // `--secret-input-mode ref` only stores a pointer to an env variable that
+  // OpenClaw's background gateway would not have, so it can't be used here.
   // Ollama is reached at its native API (no /v1); OpenClaw's docs note that
   // the OpenAI-compatible /v1 path makes tool calling unreliable.
-  const args = ctx.mode === "ollama"
-    ? ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "ollama", "--custom-base-url", "http://127.0.0.1:11434"]
+  const args = target.mode === "ollama"
+    ? ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "ollama", "--custom-base-url", ollamaBaseUrl()]
     : ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "openrouter-api-key", "--openrouter-api-key", ctx.apiKey];
   for (const flag of ["--skip-health", "--skip-channels", "--skip-skills", "--skip-ui", "--install-daemon"]) {
     if (helpText.includes(flag)) {
@@ -575,7 +687,7 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
       command: detected.path,
       args,
       cwd: os.tmpdir(),
-      redact: ctx.apiKey ? [ctx.apiKey] : [],
+      redact: target.mode === "openrouter" && ctx.apiKey ? [ctx.apiKey] : [],
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
     step
@@ -588,7 +700,9 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
       kind: "configure",
       title: "openclaw models set",
       command: detected.path,
-      args: ["models", "set", `${ctx.mode === "ollama" ? "ollama" : "openrouter"}/${ctx.model}`],
+      // A local model is the 64K copy (see prepareLocalVariants), so OpenClaw
+      // gets the same working memory as Hermes.
+      args: ["models", "set", target.mode === "ollama" ? `ollama/${ctx.variants[target.model]}` : `openrouter/${target.model}`],
       cwd: os.tmpdir(),
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
@@ -645,8 +759,14 @@ async function checkHermesSafeDefaults(step, check) {
   }
 }
 
+// The agents this job is allowed to touch: both for the old request shape,
+// only the ticked ones when the request named per-agent `targets`.
+function jobScope(job) {
+  return Array.isArray(job.scope) ? job.scope : ["hermes", "openclaw"];
+}
+
 async function ensureServices(job, step, check, manager) {
-  for (const agentId of ["hermes", "openclaw"]) {
+  for (const agentId of jobScope(job)) {
     const detected = check.agents[agentId].detected;
     if (!detected?.installed) continue;
     const adapter = ADAPTERS[agentId];
@@ -677,11 +797,42 @@ async function ensureServices(job, step, check, manager) {
   }
 }
 
-async function runHealthChecks(job, step, check, manager) {
+// All output of a finished run (both streams), used ONLY to pick a plain-
+// English fix line; it is never stored or returned.
+async function runAllOutput(manager, id) {
+  const events = await manager.readEvents(id, 0);
+  return events.map((event) => event.text || "").join("\n");
+}
+
+// A short, plain next step for a failed "say hello" check. `target` is the
+// brain we just gave that agent.
+function healthFixLine(output, target, timedOut) {
+  const text = String(output || "");
+  if (/\b429\b|rate.?limit|too many requests|free-models-per-day|quota/i.test(text)) {
+    return "OpenRouter's free limit was reached (50 requests a day until you add $10 of credit). Try again tomorrow, add credit, or use Local.";
+  }
+  if (/\b40[13]\b|unauthori[sz]ed|invalid.{0,12}(api )?key|no auth|authentication|credential/i.test(text)) {
+    return "The agent didn't accept the key. Connect OpenRouter again and press the button again.";
+  }
+  if (/econnrefused|enotfound|fetch failed|network|could not resolve|connection (refused|error)/i.test(text)) {
+    return target?.mode === "ollama"
+      ? "Couldn't reach Ollama. Open the Ollama app and try again."
+      : "Couldn't reach OpenRouter. Check your internet connection and try again.";
+  }
+  if (timedOut) {
+    return "The agent didn't answer within a minute. Free models are sometimes busy; try again, or pick another model.";
+  }
+  if (target?.mode === "ollama") {
+    return "This local model didn't answer properly. Try a bigger model, or use OpenRouter.";
+  }
+  return "The agent didn't reply as expected. Open its run on the Runs page for details, or pick another model.";
+}
+
+async function runHealthChecks(job, step, check, manager, ctx) {
   const health = {};
   const workDir = path.join(runtimePaths().root, "setup", "runs-work", "setup-check");
   await fs.mkdir(workDir, { recursive: true });
-  for (const agentId of ["hermes", "openclaw"]) {
+  for (const agentId of jobScope(job)) {
     const detected = check.agents[agentId].detected;
     if (!detected?.installed) continue;
     const adapter = ADAPTERS[agentId];
@@ -695,27 +846,63 @@ async function runHealthChecks(job, step, check, manager) {
       const stdout = await runStdout(manager, run.id);
       entry.replyPreview = stdout.slice(0, 80);
       entry.promptOk = finished.status === "succeeded" && /ready/i.test(stdout);
-      if (!entry.promptOk) entry.error = finished.error || "The test prompt did not reply with \"ready\".";
+      if (!entry.promptOk) {
+        entry.error = finished.error || "The test prompt did not reply with \"ready\".";
+        entry.hint = healthFixLine(await runAllOutput(manager, run.id), ctx.targets[agentId], finished.status === "timed_out");
+      }
     } catch (error) {
       // A health check failing is a result, not a job failure: it must
       // never throw, so the job still finishes and the UI can show it red.
       entry.error = error?.message || "Health check failed.";
+      entry.hint = healthFixLine("", ctx.targets[agentId], false);
     }
     health[agentId] = entry;
   }
   job.health = health;
 }
 
+// "Prepare <model> with 64K working memory": makes the settings-only copy of
+// each chosen local model through Ollama's POST /api/create (no download, it
+// shares the original's weights). Once per model per job, even when both
+// agents use it; a copy that already has the 64K setting is reused.
+async function prepareLocalVariants(job, step, ctx) {
+  for (const base of Object.keys(job.localVariants || {})) {
+    timestampedLog(step, `Prepare ${base} with 64K working memory`);
+    await persistJob(job);
+    const { name, created } = await ensureLocalVariant(base);
+    ctx.variants[base] = name;
+    timestampedLog(
+      step,
+      created
+        ? `Created ${name}, a settings copy of ${base} (no extra download).`
+        : `${name} already has 64K working memory; reused it.`
+    );
+    const fit = job.localFit?.[base];
+    if (fit?.fit === "tight") {
+      const warning = `${base} is a tight fit: it needs about ${fit.memoryAt64kGb} GB of memory at 64K and this computer has ${fit.ramGb} GB. Expect it to be slow when other apps are open.`;
+      step.warnings.push(warning);
+      timestampedLog(step, warning);
+    } else if (fit?.fit === "too_big") {
+      const warning = `${base} needs about ${fit.memoryAt64kGb} GB of memory at 64K and this computer has ${fit.ramGb} GB. You chose to use it anyway; it may be very slow or fail.`;
+      step.warnings.push(warning);
+      timestampedLog(step, warning);
+    }
+  }
+}
+
 async function executeConfigureStep(job, step, check, ctx, manager) {
   step.status = "running";
   await persistJob(job);
 
-  if (step.action === "keep" || step.action === "skip-not-installed") {
+  if (step.action === "keep" || step.action === "skip-not-installed" || step.action === "skip-not-selected") {
     step.status = "succeeded";
     return;
   }
 
   switch (step.id) {
+    case "local-prepare":
+      await prepareLocalVariants(job, step, ctx);
+      break;
     case "hermes-brain":
       await configureHermesBrain(step, check, ctx, manager);
       break;
@@ -732,7 +919,7 @@ async function executeConfigureStep(job, step, check, ctx, manager) {
       await ensureServices(job, step, check, manager);
       break;
     case "health":
-      await runHealthChecks(job, step, check, manager);
+      await runHealthChecks(job, step, check, manager, ctx);
       break;
     default:
       break;
@@ -744,7 +931,15 @@ async function appendConfigureReceipt(job, check) {
   for (const agentId of ["hermes", "openclaw"]) {
     const step = job.steps.find((s) => s.id === `${agentId}-brain`);
     if (!step || step.action !== "configure") continue;
-    const changes = [`Set the model provider to ${job.mode}`, `Set the model to ${job.model}`];
+    const target = job.targets?.[agentId] || { mode: job.mode, model: job.model };
+    const changes = [`Set the model provider to ${target.mode}`, `Set the model to ${target.model}`];
+    const variant = target.mode === "ollama" ? job.localVariants?.[target.model] : null;
+    if (variant) {
+      changes.push(
+        `Added a settings copy named ${variant} to Ollama (no extra download). Remove it any time with \`ollama rm ${variant}\`.`,
+        `Gave ${agentId === "hermes" ? "Hermes" : "OpenClaw"} that copy, which has 64K of working memory (num_ctx ${LOCAL_CONTEXT_TOKENS})`
+      );
+    }
     if (agentId === "openclaw" && job.execModeChanged) {
       changes.push(`tools.exec.mode: ${job.execModeChanged.from} -> ${job.execModeChanged.to}`);
     }
@@ -754,11 +949,24 @@ async function appendConfigureReceipt(job, check) {
       agentId,
       action: "configure",
       version: check.agents[agentId].detected.version,
-      provider: job.mode,
-      model: job.model,
+      provider: target.mode,
+      model: target.model,
       changes
     });
   }
+}
+
+// Every run a configure job starts goes through this wrapper, which adds the
+// key to the run's `redact` list. The key is not in most of those commands,
+// but a run's recorded output is scrubbed of it regardless, so a tool that
+// echoes its environment can't leak it into a log, an event or the screen.
+function redactingManager(manager, ctx) {
+  const secrets = ctx.apiKey ? [ctx.apiKey] : [];
+  if (!secrets.length) return manager;
+  return {
+    ...manager,
+    startRun: (plan) => manager.startRun({ ...plan, redact: [...(plan.redact || []), ...secrets] })
+  };
 }
 
 async function runConfigureJobSteps(job, apiKey) {
@@ -768,13 +976,14 @@ async function runConfigureJobSteps(job, apiKey) {
   activeJobs.set(job.id, { job, controller: null });
   try {
     const check = await systemCheck({ refresh: true });
-    const ctx = { apiKey, mode: job.mode, model: job.model };
+    const ctx = { apiKey, targets: job.targets, variants: {} };
+    const manager = redactingManager(getRunManager(), ctx);
     for (let i = 0; i < job.steps.length; i += 1) {
       const step = job.steps[i];
       if (step.status === "succeeded") continue;
       job.currentStepIndex = i;
       try {
-        await executeConfigureStep(job, step, check, ctx, getRunManager());
+        await executeConfigureStep(job, step, check, ctx, manager);
       } catch (error) {
         step.status = "failed";
         step.error = error?.message || "Configure step failed.";
@@ -801,55 +1010,161 @@ async function runConfigureJobSteps(job, apiKey) {
   }
 }
 
-export async function startConfigureJob({
+function normalizeTarget(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || (raw.mode !== "openrouter" && raw.mode !== "ollama")) {
+    throw jobError("invalid_mode", 'mode must be "openrouter" or "ollama".');
+  }
+  return { mode: raw.mode, model: typeof raw.model === "string" ? raw.model.trim() : "" };
+}
+
+// Two request shapes, one result:
+//   old:  { mode, model, apiKey }                         -> both agents, same brain
+//   new:  { targets: { hermes?: {mode, model}, openclaw?: {mode, model} } }
+//         -> each ticked agent gets its own brain; an agent left out is not
+//            touched at all (no brain, no safe-defaults, no hello check).
+// The key comes from `apiKey` (the "paste a key" path) or from `keySource`
+// ({ flowId } of a connected OpenRouter sign-in, used exactly once).
+export function startConfigureJob(options) {
+  return withJobLock(() => startConfigureJobLocked(options));
+}
+
+async function startConfigureJobLocked({
   mode,
   apiKey,
+  keySource,
   model,
+  targets,
   reconfigure = {},
-  acceptOpenClawRisk = false
+  acceptOpenClawRisk = false,
+  acceptLocalFit = false
 } = {}) {
-  if (runningJobId) throw jobError("job_already_running", "A setup job is already running.");
-  if (mode !== "openrouter" && mode !== "ollama") {
-    throw jobError("invalid_mode", 'mode must be "openrouter" or "ollama".');
+  const explicit = targets !== undefined && targets !== null;
+  let resolved;
+  if (explicit) {
+    if (typeof targets !== "object") throw jobError("invalid_mode", "targets must be an object.");
+    resolved = { hermes: normalizeTarget(targets.hermes), openclaw: normalizeTarget(targets.openclaw) };
+    if (!resolved.hermes && !resolved.openclaw) {
+      throw jobError("no_targets", "Pick at least one agent to give a brain to.");
+    }
+  } else {
+    const shared = normalizeTarget({ mode, model });
+    resolved = { hermes: shared, openclaw: shared };
   }
 
   const check = await systemCheck({ refresh: true });
   const brain = await currentBrain(check);
   const reconfigureFlags = reconfigure && typeof reconfigure === "object" ? reconfigure : {};
 
-  const hermesInstalled = agentInstalled(check, "hermes");
-  const openclawInstalled = agentInstalled(check, "openclaw");
-  const hermesAction = !hermesInstalled
-    ? "skip-not-installed"
-    : brain.hermes.configured && reconfigureFlags.hermes !== true
-      ? "keep"
-      : "configure";
-  const openclawAction = !openclawInstalled
-    ? "skip-not-installed"
-    : brain.openclaw.configured && reconfigureFlags.openclaw !== true
-      ? "keep"
-      : "configure";
+  // An agent that is installed AND (old shape: always | new shape: ticked).
+  const inScope = (agentId) => agentInstalled(check, agentId) && Boolean(resolved[agentId]);
+  // Naming an agent in `targets` IS the person's explicit choice to change
+  // its brain, so it counts as reconfigure:true; the old shape still keeps
+  // an agent that already works unless reconfigure says otherwise.
+  const brainAction = (agentId) => {
+    if (!agentInstalled(check, agentId)) return "skip-not-installed";
+    if (!resolved[agentId]) return "keep";
+    if (explicit) return "configure";
+    return brain[agentId].configured && reconfigureFlags[agentId] !== true ? "keep" : "configure";
+  };
+  const hermesAction = brainAction("hermes");
+  const openclawAction = brainAction("openclaw");
+  const defaultsAction = (agentId) =>
+    !agentInstalled(check, agentId) ? "skip-not-installed" : inScope(agentId) ? "run" : "skip-not-selected";
 
   if (openclawAction === "configure" && acceptOpenClawRisk !== true) {
     throw jobError("openclaw_risk_not_accepted", "OpenClaw brain configuration requires acceptOpenClawRisk:true.");
   }
+  for (const [agentId, action] of [["hermes", hermesAction], ["openclaw", openclawAction]]) {
+    if (action === "configure" && !resolved[agentId].model) {
+      throw jobError("invalid_model", "Choose a model first.");
+    }
+  }
+
+  // Local models: each one chosen gets a 64K "working memory" copy (made in
+  // the local-prepare step). The server works out for ITSELF whether the model
+  // fits this computer, never trusting the screen, and refuses a model that is
+  // too big unless the person explicitly accepted that. This happens before any
+  // command runs and before the OpenRouter key is touched.
+  const localBases = [
+    ...new Set(
+      [["hermes", hermesAction], ["openclaw", openclawAction]]
+        .filter(([agentId, action]) => action === "configure" && resolved[agentId].mode === "ollama")
+        .map(([agentId]) => resolved[agentId].model)
+    )
+  ];
+  const localVariants = {};
+  const localFit = {};
+  if (localBases.length) {
+    const installed = await listLocalModels(check, { refresh: true });
+    const ramGb = Math.round((Number(check?.ramGb) || 0) * 10) / 10;
+    for (const base of localBases) {
+      const variant = localVariantName(base);
+      if (!variant) {
+        throw jobError(
+          "invalid_variant_name",
+          `Can't make a 64K copy of "${base.slice(0, 60)}": its name has characters Agent OS can't use for the copy. Pick another model, or use OpenRouter.`
+        );
+      }
+      localVariants[base] = variant;
+      const row = installed.find((m) => m.name === base);
+      if (row && row.memory.fit !== "unknown") {
+        localFit[base] = { fit: row.memory.fit, memoryAt64kGb: row.memory.memoryAt64kGb, ramGb };
+        if (row.memory.fit === "too_big" && acceptLocalFit !== true) {
+          throw jobError(
+            "local_model_too_big",
+            `${base} needs about ${row.memory.memoryAt64kGb} GB of memory for the 64K working memory agents need, and this computer has ${ramGb} GB. Tick "Use it anyway" to try it; it may be very slow or fail.`
+          );
+        }
+      }
+    }
+  }
+
+  // Only now (nothing else can refuse the request any more) is the key taken
+  // out of the sign-in. It stays in this function's call stack, never on `job`.
+  const needsKey = [["hermes", hermesAction], ["openclaw", openclawAction]].some(
+    ([agentId, action]) => action === "configure" && resolved[agentId].mode === "openrouter"
+  );
+  let key = typeof apiKey === "string" && apiKey.trim() ? apiKey : "";
+  if (needsKey && !key) {
+    if (keySource && typeof keySource === "object" && typeof keySource.flowId === "string") {
+      key = takeKey(keySource.flowId) || "";
+      if (!key) throw jobError("key_unavailable", "That OpenRouter connection is no longer available. Connect again.");
+    } else {
+      throw jobError("key_required", "An OpenRouter key is required.");
+    }
+  }
 
   const steps = [
+    ...(localBases.length ? [makeConfigureStep("local-prepare", null, "run")] : []),
     makeConfigureStep("hermes-brain", "hermes", hermesAction),
     makeConfigureStep("openclaw-brain", "openclaw", openclawAction),
-    makeConfigureStep("openclaw-safe-defaults", "openclaw", openclawInstalled ? "run" : "skip-not-installed"),
-    makeConfigureStep("hermes-safe-defaults", "hermes", hermesInstalled ? "run" : "skip-not-installed"),
+    makeConfigureStep("openclaw-safe-defaults", "openclaw", defaultsAction("openclaw")),
+    makeConfigureStep("hermes-safe-defaults", "hermes", defaultsAction("hermes")),
     makeConfigureStep("services", null, "run"),
     makeConfigureStep("health", null, "run")
   ];
 
+  const sameBrain =
+    resolved.hermes &&
+    resolved.openclaw &&
+    resolved.hermes.mode === resolved.openclaw.mode &&
+    resolved.hermes.model === resolved.openclaw.model;
+  const only = resolved.hermes || resolved.openclaw;
   const id = generateJobId();
   const job = {
     id,
     kind: "configure",
     status: "running",
-    mode,
-    model: model || null,
+    // Kept for older clients: the shared brain, or "mixed" when they differ.
+    mode: sameBrain || !(resolved.hermes && resolved.openclaw) ? only.mode : "mixed",
+    model: sameBrain || !(resolved.hermes && resolved.openclaw) ? only.model || null : null,
+    targets: { hermes: resolved.hermes, openclaw: resolved.openclaw },
+    scope: ["hermes", "openclaw"].filter(inScope),
+    // base model -> the 64K copy that agents are pointed at (ollama only)
+    localVariants,
+    localFit,
+    acceptLocalFit: Object.values(localFit).some((f) => f.fit === "too_big") && acceptLocalFit === true,
     steps,
     startedAt: new Date().toISOString(),
     endedAt: null,
@@ -858,7 +1173,96 @@ export async function startConfigureJob({
   };
   await persistJob(job);
   runningJobId = id;
-  runConfigureJobSteps(job, apiKey).catch(() => {});
+  runConfigureJobSteps(job, key).catch(() => {});
+  return job;
+}
+
+// =========================================================================
+// Downloading a local model (Ollama). Same machinery as the other jobs --
+// one at a time, saved to disk, cancelable -- with one step and real byte
+// counts instead of a guess.
+// =========================================================================
+
+const PULL_PERSIST_EVERY_MS = 2000;
+
+async function runPullJob(job) {
+  const controller = new AbortController();
+  activeJobs.set(job.id, { job, controller });
+  const step = job.steps[0];
+  let lastPersist = 0;
+  // Saves go one after another, so a slow progress save can never land AFTER
+  // (and overwrite) the final one.
+  let saving = Promise.resolve();
+  const save = () => {
+    saving = saving.then(() => persistJob(job)).catch(() => {});
+    return saving;
+  };
+  let finalStatus = "failed";
+  try {
+    await streamOllamaPull(job.model, {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        job.pull = progress;
+        const now = Date.now();
+        if (now - lastPersist >= PULL_PERSIST_EVERY_MS) {
+          lastPersist = now;
+          void save();
+        }
+      }
+    });
+    step.status = "succeeded";
+    finalStatus = "succeeded";
+    clearSystemCheckCache();
+    clearLocalModelsCache(); // the new model must show up in the list straight away
+  } catch (error) {
+    step.status = "failed";
+    if (job.cancelRequested || controller.signal.aborted) {
+      step.error = "Cancelled.";
+      finalStatus = "cancelled";
+    } else {
+      step.error = error?.message || "The download failed.";
+    }
+  }
+  // Write the final state to disk first, THEN make it visible and free the
+  // one-job-at-a-time lock in the same breath: whoever sees "succeeded" can
+  // start the next job straight away without a spurious "already running".
+  job.endedAt = new Date().toISOString();
+  await saving; // any progress save still in flight lands first
+  await persistJob({ ...job, status: finalStatus }).catch(() => {});
+  job.status = finalStatus;
+  activeJobs.delete(job.id);
+  if (runningJobId === job.id) runningJobId = null;
+}
+
+export async function startOllamaPull({ model } = {}) {
+  const name = typeof model === "string" ? model.trim() : "";
+  if (!OLLAMA_MODEL_NAME_PATTERN.test(name)) {
+    throw jobError("invalid_model", "That doesn't look like a valid Ollama model name.");
+  }
+  // A download the person just cancelled needs a moment to hang up; starting
+  // the next one straight away should wait for that, not fail.
+  const deadline = Date.now() + 2000;
+  while (runningJobId && activeJobs.get(runningJobId)?.job.cancelRequested && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return withJobLock(() => startOllamaPullLocked(name));
+}
+
+async function startOllamaPullLocked(name) {
+  const id = generateJobId();
+  const job = {
+    id,
+    kind: "pull",
+    status: "running",
+    model: name,
+    pull: { status: "starting", completed: 0, total: 0 },
+    steps: [{ id: "ollama-pull", agentId: null, action: "pull", status: "running", runIds: [], error: null, log: [] }],
+    startedAt: new Date().toISOString(),
+    endedAt: null
+  };
+  await persistJob(job);
+  runningJobId = id;
+  runPullJob(job).catch(() => {});
   return job;
 }
 

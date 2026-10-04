@@ -9,7 +9,7 @@ import { listAgents } from "../api";
 import { navigateTo } from "../nav";
 import type { AgentSummary } from "../types";
 import Panel from "../ui/components/Panel";
-import SetupBrainPanel, { type BrainAgentLine, type BrainSelection } from "../ui/components/SetupBrainPanel";
+import SetupBrainPanel, { type BrainAgentLine, type BrainPanelStatus } from "../ui/components/SetupBrainPanel";
 import SetupCheckList from "../ui/components/SetupCheckList";
 import SetupInstallPanel from "../ui/components/SetupInstallPanel";
 import SetupModal from "../ui/components/SetupModal";
@@ -25,26 +25,17 @@ import {
   getSetupCheck,
   getSetupJob,
   getSetupPlan,
-  postConfigure,
   recallJobId,
   rememberJobId,
   retrySetupJob,
   startInstallJob
 } from "../setupApi";
+import { BRAIN_AGENT_LABEL } from "../ui/brainShared";
 import "../ui/setup.css";
 
 const STEP_LABELS = ["Check", "Plan", "Install", "AI brain", "Ready"];
 const AGENT_LABEL: Record<string, string> = { hermes: "Hermes Agent", openclaw: "OpenClaw" };
 const AGENT_IDS = ["hermes", "openclaw"] as const;
-
-const CONFIGURE_STEP_LABEL: Record<string, string> = {
-  "hermes-brain": "Configure Hermes",
-  "openclaw-brain": "Configure OpenClaw",
-  "openclaw-safe-defaults": "OpenClaw safe defaults",
-  "hermes-safe-defaults": "Hermes safe defaults check",
-  services: "Start background services",
-  health: "Health check"
-};
 
 // What each agent should do by default: never an update, never a reinstall.
 function defaultSelections(plan: SetupPlan) {
@@ -95,24 +86,19 @@ export default function SetupPage() {
   const [installJob, setInstallJob] = useState<SetupJob | null>(null);
   const [installBusy, setInstallBusy] = useState(false);
 
-  const [configureJob, setConfigureJob] = useState<SetupJob | null>(null);
-  const [pendingBrain, setPendingBrain] = useState<BrainSelection | null>(null);
-  const [applyRiskAccepted, setApplyRiskAccepted] = useState(false);
-  const [applyBusy, setApplyBusy] = useState(false);
-  const [brainError, setBrainError] = useState("");
-  const [brainResetToken, setBrainResetToken] = useState(0);
+  // What the AI brain panel is doing (it runs its own configure job and
+  // result screen); only used to colour the step rail.
+  const [brainStatus, setBrainStatus] = useState<BrainPanelStatus>("idle");
 
   // A job that is still running (or just failed) on the server survives a
   // reload or a trip to another page: re-attach to it instead of showing an
-  // empty Install step. Returns the step to land on, or null.
+  // empty Install step. Returns the step to land on, or null. (A running
+  // configure job is picked up again by the AI brain panel itself.)
   async function restoreJobs(): Promise<number | null> {
     const configureId = recallJobId("configure");
     if (configureId) {
       const job = await getSetupJob(configureId).catch(() => null);
-      if (job && (job.status === "running" || job.status === "failed")) {
-        setConfigureJob(job);
-        return 3;
-      }
+      if (job && job.status === "running") return 3;
       rememberJobId("configure", null);
     }
     const installId = recallJobId("install");
@@ -200,12 +186,6 @@ export default function SetupPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [installStatus]);
 
-  const configureStatus = configureJob?.status;
-  useEffect(() => {
-    if (configureStatus === "succeeded") void refreshServerState(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configureStatus]);
-
   // Moving to a new step unmounts the button that was just pressed, which
   // would drop keyboard focus on <body>; put it on the new step's content.
   useEffect(() => {
@@ -234,21 +214,9 @@ export default function SetupPage() {
     installJob && installJob.status === "running" ? 1000 : null
   );
 
-  useInterval(
-    async () => {
-      if (!configureJob) return;
-      try {
-        setConfigureJob(await getSetupJob(configureJob.id));
-      } catch {
-        // transient poll failure; next tick tries again
-      }
-    },
-    configureJob && configureJob.status === "running" ? 1000 : null
-  );
-
   function stepState(index: number): SetupStepState {
     if (index === 2 && installJob?.status === "failed") return "failed";
-    if (index === 3 && configureJob?.status === "failed") return "failed";
+    if (index === 3 && brainStatus === "failed") return "failed";
     if (index < stepIndex) return "done";
     if (index === stepIndex) return "current";
     return "not-reached";
@@ -342,58 +310,12 @@ export default function SetupPage() {
     }
   }
 
-  const openClawInstalled = Boolean(check?.agents?.openclaw.detected.installed);
-  const needsOpenClawConsentConfigure = Boolean(openClawInstalled && brain && !brain.current.openclaw.configured);
-
   const brainAgents: BrainAgentLine[] = AGENT_IDS.map((id) => ({
     id,
-    label: AGENT_LABEL[id],
+    label: BRAIN_AGENT_LABEL[id],
     installed: Boolean(check?.agents?.[id]?.detected.installed),
     configured: Boolean(brain?.current[id].configured)
   }));
-  const brainTargets = brainAgents.filter((a) => a.installed && !a.configured);
-  const brainKept = brainAgents.filter((a) => a.installed && a.configured);
-
-  async function confirmApply() {
-    if (!pendingBrain) return;
-    setApplyBusy(true);
-    setBrainError("");
-    try {
-      const job = await postConfigure({
-        mode: pendingBrain.mode,
-        model: pendingBrain.model,
-        apiKey: pendingBrain.apiKey,
-        acceptOpenClawRisk: needsOpenClawConsentConfigure && applyRiskAccepted
-      });
-      rememberJobId("configure", job.id);
-      setConfigureJob(job);
-    } catch (error) {
-      setBrainError(`Couldn't apply that: ${friendlyError(error)}`);
-    } finally {
-      setApplyBusy(false);
-      // The key existed only in pendingBrain (and the brain panel's field);
-      // drop both now that POST /configure has returned, win or lose.
-      setPendingBrain(null);
-      setBrainResetToken((n) => n + 1);
-    }
-  }
-
-  async function onCancelConfigure() {
-    if (!configureJob) return;
-    try {
-      setConfigureJob(await cancelSetupJob(configureJob.id));
-    } catch (error) {
-      setActionError(friendlyError(error));
-    }
-  }
-
-  // A configure job's key is gone from the server the moment it stops, so
-  // "retry" means going back to the form to enter the key again.
-  function onBackToBrain() {
-    rememberJobId("configure", null);
-    setConfigureJob(null);
-    setBrainError("");
-  }
 
   // Labels come from the job's own steps (agent + action), so they stay
   // readable after a reload even though the plan has changed since.
@@ -415,7 +337,7 @@ export default function SetupPage() {
   }
 
   return (
-    <div className="os-setup aos-phase-page">
+    <div className={`os-setup aos-phase-page${stepIndex === 3 ? " os-setup--wide" : ""}`}>
       <header className="os-setup__header">
         <span className="os-micro">AGENT OS · SETUP ASSISTANT</span>
         <h1>Setup</h1>
@@ -570,37 +492,18 @@ export default function SetupPage() {
 
         {stepIndex === 3 ? (
           <div className="os-setup__panel">
-            {configureJob ? (
-              <>
-                <SetupInstallPanel
-                  title="Setting up your AI brain"
-                  job={configureJob}
-                  stepLabels={CONFIGURE_STEP_LABEL}
-                  onCancel={onCancelConfigure}
-                  onRetry={onBackToBrain}
-                  retryLabel="Back to AI brain"
-                />
-                {configureJob.status === "succeeded" ? (
-                  <div className="os-setup__actions">
-                    <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(4)}>
-                      Continue
-                    </button>
-                  </div>
-                ) : null}
-              </>
-            ) : brain ? (
+            {brain ? (
               <>
                 <div className="os-setup__step-head">
                   <h2>Choose your AI brain</h2>
-                  <p>Agents need a language model to think with. Pick where it comes from.</p>
+                  <p>Agents need a language model to think with. Pick where it comes from. Each agent can use a different one.</p>
                 </div>
                 <SetupBrainPanel
                   brain={brain}
                   agents={brainAgents}
-                  onApply={setPendingBrain}
-                  busy={applyBusy}
-                  error={brainError}
-                  resetToken={brainResetToken}
+                  onChanged={() => void refreshServerState(false)}
+                  onStatus={setBrainStatus}
+                  onContinue={() => goToStep(4)}
                 />
               </>
             ) : (
@@ -637,32 +540,6 @@ export default function SetupPage() {
         </SetupModal>
       ) : null}
 
-      {pendingBrain ? (
-        <SetupModal
-          title="Apply this AI brain setup?"
-          confirmLabel="Apply"
-          onConfirm={confirmApply}
-          onClose={() => setPendingBrain(null)}
-          busy={applyBusy}
-          confirmDisabled={needsOpenClawConsentConfigure && !applyRiskAccepted}
-        >
-          <p>
-            {brainTargets.length
-              ? `Sets ${brainTargets.map((a) => a.label).join(" and ")} to use ${
-                  pendingBrain.mode === "openrouter" ? "OpenRouter" : "a local Ollama model"
-                } (${pendingBrain.model}), makes sure their safe defaults are on, starts their background services, and runs a health check.${
-                  brainKept.length ? ` ${brainKept.map((a) => a.label).join(" and ")} already has a model and is kept as it is.` : ""
-                }`
-              : "Both agents already have a model, so they are kept as they are. Agent OS will still make sure the safe defaults are on, start the background services, and run a health check."}
-          </p>
-          {needsOpenClawConsentConfigure ? (
-            <label className="os-setup-plan-card__risk">
-              <input type="checkbox" checked={applyRiskAccepted} onChange={(e) => setApplyRiskAccepted(e.target.checked)} />
-              I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands.
-            </label>
-          ) : null}
-        </SetupModal>
-      ) : null}
     </div>
   );
 }

@@ -8,6 +8,10 @@
   flex-direction: column;
   gap: var(--os-sp-6);
 }
+/* The AI brain step shows two cards side by side, so it gets a wider column. */
+.os-setup--wide {
+  max-width: 1120px;
+}
 .os-setup__header h1 {
   margin: var(--os-sp-1) 0 0;
   font-size: var(--os-fs-32);

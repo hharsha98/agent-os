@@ -8,6 +8,7 @@ import os from "node:os";
 import { ADAPTERS } from "../agents/index.js";
 import { runCommand, which } from "../safety.js";
 import { nodeSatisfiesOpenClaw } from "./managed-node.js";
+import { applyMirror } from "./recipes.js";
 
 const CACHE_TTL_MS = 60 * 1000;
 const NETWORK_HOSTS = [
@@ -42,7 +43,9 @@ async function probeHost(host) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NETWORK_TIMEOUT_MS);
   try {
-    const url = `https://${host}/`;
+    // Through the test mirror when one is set, so a test run never touches the
+    // real hosts (openrouter.ai included); unchanged in real use.
+    const url = applyMirror(`https://${host}/`);
     try {
       await fetch(url, { method: "HEAD", signal: controller.signal, redirect: "follow" });
     } catch {

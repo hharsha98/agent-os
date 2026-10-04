@@ -111,7 +111,11 @@ describe("bundled server runs outside the repo", () => {
         AGENT_OS_HOME: tmpHome,
         AGENT_OS_TOKEN: "t",
         AGENT_OS_PACKAGED: "1",
-        HERMES_AGENT_OS_SCHEDULER: "0"
+        HERMES_AGENT_OS_SCHEDULER: "0",
+        // Keep agent detection away from the developer's real CLIs (~/.local/bin etc.).
+        HOME: tmpHome,
+        USERPROFILE: tmpHome,
+        PATH: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter)
       },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -260,7 +264,11 @@ describe("graceful shutdown", () => {
         PORT: "0",
         AGENT_OS_HOME: homeDir,
         AGENT_OS_TOKEN: "t",
-        HERMES_AGENT_OS_SCHEDULER: "0"
+        HERMES_AGENT_OS_SCHEDULER: "0",
+        // Keep agent detection away from the developer's real CLIs (~/.local/bin etc.).
+        HOME: homeDir,
+        USERPROFILE: homeDir,
+        PATH: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter)
       },
       stdio: ["ignore", "pipe", "pipe"]
     });

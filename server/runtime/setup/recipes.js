@@ -7,17 +7,43 @@ const MIRROR_ENV = "AGENT_OS_SETUP_MIRROR";
 // Test-only escape hatch: a suite can point the official hosts at a local
 // http mirror. Anything that isn't an explicit 127.0.0.1 override is ignored
 // (with a warning), so a stray env var can never redirect a real install.
+// The mirror, parsed properly: plain http, the loopback address 127.0.0.1, no
+// user name or password, and no path (just the server's own address). A
+// string-prefix test would also accept "http://127.0.0.1:1@evil.example",
+// which really points at evil.example. Returns the origin, or null.
+export function mirrorOrigin() {
+  const raw = process.env[MIRROR_ENV];
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    const plainPath = url.pathname === "/" || url.pathname === "";
+    const ok =
+      url.protocol === "http:" &&
+      url.hostname === "127.0.0.1" &&
+      !url.username &&
+      !url.password &&
+      plainPath &&
+      !url.search &&
+      !url.hash;
+    return ok ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
 export function applyMirror(url) {
   const mirror = process.env[MIRROR_ENV];
   if (!mirror) return url;
-  if (!mirror.startsWith("http://127.0.0.1:")) {
-    console.warn(`Ignoring ${MIRROR_ENV}: only a http://127.0.0.1:<port> override is honoured (got "${mirror}").`);
+  const origin = mirrorOrigin();
+  if (!origin) {
+    // (The value is not printed: it could hold a user name and password.)
+    console.warn(`Ignoring ${MIRROR_ENV}: only a plain http://127.0.0.1:<port> override is honoured.`);
     return url;
   }
   const original = new URL(url);
   // The mirror is one server standing in for several official hosts, so the
   // original hostname becomes a path segment instead of colliding on "/".
-  return new URL(`${original.hostname}${original.pathname}${original.search}`, mirror).toString();
+  return new URL(`${original.hostname}${original.pathname}${original.search}`, origin).toString();
 }
 
 function hermesRecipe(platform, arch) {

@@ -190,6 +190,8 @@ import { createAgentsRouter } from "./runtime/agents/routes.js";
 import { createTeamRoomsRouter } from "./runtime/team-room/routes.js";
 import { recoverStaleRooms } from "./runtime/team-room/moderator.js";
 import { createSetupRouter } from "./runtime/setup/routes.js";
+import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
+import { setServerPort } from "./runtime/server-info.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -201,6 +203,10 @@ const dist = process.env.AGENT_OS_STATIC_DIR
   : path.join(root, "dist");
 const envFile = loadLocalEnv({ root });
 const app = express();
+// "/API/runs" and "/api/runs" are different addresses. (Express's default
+// treats them as the same, which once let the session gate be skipped by
+// changing a letter's case; the gate also compares lower-cased paths.)
+app.set("case sensitive routing", true);
 const isPackaged = process.env.AGENT_OS_PACKAGED === "1";
 function parsePort(raw) {
   if (raw === undefined || raw === "") return 8090;
@@ -239,6 +245,16 @@ app.use(localSessionGate(() => port));
 
 app.get("/api/session", localSessionStatusHandler(() => port));
 app.post("/api/session/claim", claimSessionHandler(() => port));
+
+// Where OpenRouter sends the person's normal browser back to after they press
+// Authorize. That browser has no Agent OS session cookie, so this ONE path is
+// the only /oauth/ address localSessionGate lets through; the host and origin
+// checks above still ran, and the one-time `state` is the real proof.
+app.get("/oauth/openrouter/callback", createOpenRouterCallbackHandler());
+// The one-time address the person's browser is opened on first: it hands that
+// browser its own cookie, then redirects to OpenRouter. Also session-free (the
+// gate lets exactly this shape through); the single-use nonce is the proof.
+app.get("/oauth/openrouter/start/:nonce", createOpenRouterStartHandler());
 
 app.get("/api/admin/session", (req, res) => {
   res.json(sessionStatus(req));
@@ -1797,6 +1813,8 @@ const server = app.listen(port, bindHost, () => {
   // With PORT=0 the OS just picked a free port; every later reader of
   // `port` (closures above, and this callback) sees this updated value.
   port = server.address().port;
+  // The OpenRouter sign-in needs the real port to build its callback address.
+  setServerPort(port);
   console.log(`AGENT_OS_READY:${port}`);
   const demoPublic = isDemoPublic();
   console.log(

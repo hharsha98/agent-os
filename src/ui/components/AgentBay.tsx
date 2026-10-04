@@ -10,6 +10,7 @@ import type { AgentDetail, AgentSummary, ExecutionGateStatus, RunMeta } from "..
 import { AGENT_LABEL, AGENT_MONOGRAM, AGENT_ROLE, SERVICE_AGENT_SET, SETUP_INSTALLED_AGENT_SET, agentStatusWord, friendlyError } from "../agentsShared";
 import { useInterval } from "./useInterval";
 import StatusMark from "./StatusMark";
+import AgentBrainCard from "./AgentBrainCard";
 import AgentLaunchPanel from "./AgentLaunchPanel";
 import AgentServicePanel from "./AgentServicePanel";
 import AgentSafetyPanel from "./AgentSafetyPanel";
@@ -147,6 +148,8 @@ export default function AgentBay({
           onRefresh={() => void loadDetail()}
         />
       ) : null}
+
+      {installed && (agentId === "hermes" || agentId === "openclaw") ? <AgentBrainCard agentId={agentId} label={label} /> : null}
 
       {/* A not-installed agent has no safety or config facts worth showing; the Launch
           panel already says so, and a green mark there would read as "fine". */}

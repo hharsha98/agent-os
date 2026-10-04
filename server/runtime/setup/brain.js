@@ -22,7 +22,7 @@ export const HERMES_MIN_CONTEXT = 64000;
 
 let modelsCache = null; // { at, value }
 
-async function fetchWithTimeout(url, { timeoutMs, headers, method, body } = {}) {
+export async function fetchWithTimeout(url, { timeoutMs, headers, method, body } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

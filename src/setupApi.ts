@@ -23,7 +23,16 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   server_port_unknown: "Agent OS is still starting. Try again in a moment.",
   not_available_here: "Connecting OpenRouter only works in the desktop app on your own computer.",
   local_model_too_big: "That model needs more memory than this computer has to spare. Tick \"Use it anyway\" to try it, or pick another model.",
-  invalid_variant_name: "Agent OS can't make its 64K working-memory copy of that model (its name has characters it can't use). Pick another model, or use OpenRouter."
+  invalid_variant_name: "Agent OS can't make its 64K working-memory copy of that model (its name has characters it can't use). Pick another model, or use OpenRouter.",
+  invalid_model_id: "That doesn't look like an OpenRouter model ID. It looks like author/model-name, for example anthropic/claude-sonnet-4.6.",
+  model_not_found: "OpenRouter doesn't know that model. Check the ID on the model's page.",
+  model_too_small_for_hermes: "That model's working memory is too small for Hermes, which needs at least 64K. Pick a bigger model, or give it to OpenClaw.",
+  invalid_preset: "A preset name uses only lowercase letters, numbers and dashes, for example my-agent-brain.",
+  preset_not_found: "OpenRouter has no preset with that name. Check the name at openrouter.ai/settings/presets.",
+  agent_not_installed: "That agent isn't installed on this computer.",
+  openrouter_unreachable: "Couldn't reach OpenRouter. Check your internet connection and try again.",
+  invalid_flow_id: "That OpenRouter connection isn't valid. Connect OpenRouter again.",
+  invalid_catalog_query: "Those search settings aren't valid. Change them and try again."
 };
 
 export function friendlyError(error: unknown, fallback = "Something went wrong. Please try again.") {
@@ -170,7 +179,7 @@ export type BrainAgentId = "hermes" | "openclaw";
 
 export interface SetupJob {
   id: string;
-  kind: "install" | "configure" | "pull";
+  kind: "install" | "configure" | "pull" | "model";
   status: JobStatus;
   steps: SetupJobStep[];
   currentStepIndex?: number;
@@ -190,6 +199,11 @@ export interface SetupJob {
   // added to Ollama (it shares the model's weights, no extra download).
   localVariants?: Record<string, string>;
   acceptLocalFit?: boolean;
+  // model jobs (changing one agent's model, or pointing it at a preset): the
+  // agent, the OpenRouter preset name when it was one, and what it used before.
+  agentId?: BrainAgentId;
+  preset?: string | null;
+  previous?: { provider: string | null; model: string | null } | null;
 }
 
 export function startInstallJob(payload: { steps: string[]; acceptOpenClawRisk?: boolean }) {
@@ -382,6 +396,124 @@ export function postConfigure(payload: {
   return request<SetupJob>("/api/setup/configure", {
     method: "POST",
     body: JSON.stringify({ ...payload, confirm: true })
+  });
+}
+
+// ---- the model catalog and changing one agent's model --------------------------
+
+// One OpenRouter model as the picker shows it. The server works out the price
+// sentence (`pricing.label`) and whether Hermes can use it, so the screen
+// never has to guess.
+export interface CatalogModel {
+  id: string;
+  name: string;
+  description: string;
+  contextLength: number;
+  maxCompletionTokens: number | null;
+  created: number | null;
+  isNew: boolean;
+  inputModalities: string[];
+  // The day OpenRouter retires it (YYYY-MM-DD), when it has announced one.
+  expiresAt: string | null;
+  pricing: { promptPerM: number | null; completionPerM: number | null; label: string };
+  free: boolean;
+  rateLimitedFree: boolean;
+  hermesOk: boolean;
+  pageUrl: string;
+}
+
+export type CatalogSort = "agentic-high-to-low" | "newest" | "pricing-low-to-high" | "context-high-to-low";
+
+export interface CatalogResponse {
+  models: CatalogModel[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  // "account" = narrowed to what the connected OpenRouter account may use.
+  source: "public" | "account";
+  keyRejected?: boolean;
+  error?: string;
+}
+
+// `flowId` is a connected OpenRouter sign-in (an id, never the key): the
+// server then narrows the list to the models that account may use.
+export function getModelCatalog(params: { free: "only" | "all"; sort: CatalogSort; q: string; offset: number; limit?: number; flowId?: string | null }) {
+  const query = new URLSearchParams({
+    tools: "1",
+    free: params.free,
+    sort: params.sort,
+    offset: String(params.offset),
+    limit: String(params.limit ?? 50)
+  });
+  if (params.q.trim()) query.set("q", params.q.trim());
+  if (params.flowId) query.set("flowId", params.flowId);
+  return request<CatalogResponse>(`/api/setup/openrouter/models?${query.toString()}`);
+}
+
+// One model by its id (what the person copies from OpenRouter's website).
+export function lookupOpenRouterModel(id: string) {
+  return request<{ ok: true; model: CatalogModel }>(`/api/setup/openrouter/models/lookup?id=${encodeURIComponent(id)}`);
+}
+
+// Which model an agent uses right now, read from the agent itself.
+export interface AgentModelInfo {
+  agentId: BrainAgentId;
+  installed: boolean;
+  provider: string | null;
+  providerLabel: string | null;
+  model: string | null;
+  isPreset: boolean;
+  presetSlug: string | null;
+}
+
+export function getAgentModel(agentId: BrainAgentId) {
+  return request<AgentModelInfo>(`/api/setup/agents/${encodeURIComponent(agentId)}/model`);
+}
+
+// The server decides what a change needs: an agent already on OpenRouter only
+// changes its model; one on Local (or with no brain) also needs a connected
+// sign-in (`keySource`) and, for OpenClaw, `acceptOpenClawRisk`.
+interface AgentChangeExtras {
+  keySource?: { flowId: string };
+  acceptOpenClawRisk?: boolean;
+}
+
+export function applyAgentModel(agentId: BrainAgentId, payload: { model: string } & AgentChangeExtras) {
+  return request<SetupJob>(`/api/setup/agents/${encodeURIComponent(agentId)}/model`, {
+    method: "POST",
+    body: JSON.stringify({ ...payload, confirm: true })
+  });
+}
+
+export function applyAgentPreset(agentId: BrainAgentId, payload: { slug: string } & AgentChangeExtras) {
+  return request<SetupJob>(`/api/setup/agents/${encodeURIComponent(agentId)}/preset`, {
+    method: "POST",
+    body: JSON.stringify({ ...payload, confirm: true })
+  });
+}
+
+// Opens an OpenRouter page in the person's own browser (the server does it,
+// and only for OpenRouter's addresses). `opened:false` comes with the address,
+// so the screen can show it as a link instead.
+export interface OpenPageResult {
+  opened: boolean;
+  url: string;
+  reason?: string;
+}
+
+// No id: OpenRouter's model list. With one: that model's page.
+export function openOpenRouterModels(id?: string) {
+  return request<OpenPageResult>("/api/setup/openrouter/models/open", {
+    method: "POST",
+    body: JSON.stringify({ confirm: true, ...(id ? { id } : {}) })
+  });
+}
+
+export function openOpenRouterPresets(createNew = false) {
+  return request<OpenPageResult>("/api/setup/openrouter/presets/open", {
+    method: "POST",
+    body: JSON.stringify({ confirm: true, ...(createNew ? { new: true } : {}) })
   });
 }
 

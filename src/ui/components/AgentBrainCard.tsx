@@ -1,16 +1,19 @@
-// The "Brain" card on a Hermes / OpenClaw page: what brain it has right now,
-// and "Change brain", which opens the same two-card panel used in Setup with
-// only this agent ticked.
+// The "Brain" card on a Hermes / OpenClaw page: what brain and model it has
+// right now, "Change model" (the picker) and "Choose on OpenRouter" (paste a
+// model ID, or use a preset), and "Change brain", which opens the same
+// two-card panel used in Setup with only this agent ticked.
 //
-// Honesty: Agent OS never reads an agent's own config files, so it can say
-// whether the agent has a model (from the agent's own status) and what Agent
-// OS itself last gave it (from the setup receipt) -- but not which model a
-// brain chosen outside Agent OS is.
+// Honesty: Agent OS never reads an agent's own config files. The model shown
+// is what the agent itself reports (its own `config get`); when that can't be
+// read, the card falls back to its own status and the setup receipt (what Agent
+// OS last gave it).
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import BrainModelActions from "./BrainModelActions";
 import SetupBrainPanel from "./SetupBrainPanel";
 import { TimeAgo } from "./RelativeTime";
 import StatusMark from "./StatusMark";
+import { useAgentModels } from "./useAgentModels";
 import type { BrainAgentId, BrainOptionsResponse, ReceiptEntry } from "../../setupApi";
 import { getBrainOptions, getReceipt } from "../../setupApi";
 import { BRAIN_AGENT_IDS, BRAIN_AGENT_LABEL, type BrainAgentLine } from "../brainShared";
@@ -57,6 +60,14 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
       }))
     : [];
 
+  // What the agent itself says it uses (both agents, because the picker can give a model to either).
+  const { models, reload: reloadModels } = useAgentModels(lines);
+  const live = models[agentId];
+  function onModelChanged() {
+    void load();
+    void reloadModels();
+  }
+
   return (
     <>
       <section className="os-panel os-agent-brain" aria-labelledby={`os-agent-brain-${agentId}`}>
@@ -79,7 +90,17 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
             <p className="os-agent-brain__line">
               <StatusMark kind={current.configured ? "ok" : "warn"} label={current.configured ? "has a model" : "needs a model"} />
               <span>
-                {current.configured ? (
+                {live?.model ? (
+                  live.isPreset ? (
+                    <>
+                      <strong>OpenRouter preset</strong> · <span className="os-mono">{live.presetSlug}</span>
+                    </>
+                  ) : (
+                    <>
+                      <strong>{live.providerLabel || "Model"}</strong> · <span className="os-mono">{live.model}</span>
+                    </>
+                  )
+                ) : current.configured ? (
                   receipt ? (
                     <>
                       <strong>{PROVIDER_NAME[receipt.provider] || receipt.provider}</strong> · <span className="os-mono">{receipt.model}</span>
@@ -93,23 +114,36 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
               </span>
             </p>
             <p className="os-agent-brain__sub">
+              {live?.isPreset ? (
+                <>Following your OpenRouter preset {live.presetSlug}: change it on openrouter.ai and {label} follows. </>
+              ) : null}
               {current.configured ? (
                 receipt ? (
                   <>
                     Last set by Agent OS <TimeAgo since={receipt.at} />.
                   </>
+                ) : live?.model ? (
+                  "Read from the agent itself; it was set up outside Agent OS."
                 ) : (
                   `It was set up outside Agent OS, so we can't tell you which model it is. ${current.summary}`
                 )
+              ) : live?.model ? (
+                current.summary
               ) : (
-                `${current.summary} Press Change brain to give ${label} one.`
+                `${current.summary} Press Change model, or Change brain, to give ${label} one.`
               )}
             </p>
-            <div className="os-agent-brain__actions">
-              <button type="button" className="os-btn os-btn--secondary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-                {open ? "Close" : "Change brain"}
-              </button>
-            </div>
+            <BrainModelActions
+              agents={lines}
+              models={models}
+              initialAgents={[agentId]}
+              onChanged={onModelChanged}
+              extraActions={
+                <button type="button" className="os-btn os-btn--secondary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+                  {open ? "Close" : "Change brain"}
+                </button>
+              }
+            />
           </>
         )}
       </section>
@@ -119,7 +153,8 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
           brain={brain}
           agents={lines}
           initialAgents={[agentId]}
-          onChanged={() => void load()}
+          showModelActions={false}
+          onChanged={onModelChanged}
           onContinue={() => setOpen(false)}
           continueLabel="Done"
         />

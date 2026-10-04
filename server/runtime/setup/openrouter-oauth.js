@@ -281,6 +281,16 @@ export function takeKey(flowId) {
   return key;
 }
 
+// Internal: lets the server USE a connected key for a read-only OpenRouter
+// question (the model list for this account, "does this preset exist?")
+// without using it up. Never returned by any API, event or page.
+export function peekKey(flowId) {
+  sweep();
+  const flow = flows.get(String(flowId));
+  if (!flow || flow.status !== "connected" || !flow.key) return null;
+  return flow.key;
+}
+
 export function cancel(flowId) {
   sweep();
   const flow = flows.get(String(flowId));

@@ -13,9 +13,11 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import BrainLocalCard from "./BrainLocalCard";
+import BrainModelActions from "./BrainModelActions";
 import BrainOpenRouterCard, { type OpenRouterGive } from "./BrainOpenRouterCard";
 import SetupInstallPanel from "./SetupInstallPanel";
 import StatusMark from "./StatusMark";
+import { useAgentModels } from "./useAgentModels";
 import { useInterval } from "./useInterval";
 import type { BrainAgentId, BrainOptionsResponse, BrainTarget, SetupJob } from "../../setupApi";
 import { cancelSetupJob, friendlyError, getSetupJob, postConfigure, recallJobId, rememberJobId } from "../../setupApi";
@@ -34,7 +36,8 @@ export default function SetupBrainPanel({
   onStatus,
   onContinue,
   continueLabel = "Continue",
-  initialAgents
+  initialAgents,
+  showModelActions = true
 }: {
   brain: BrainOptionsResponse;
   agents: BrainAgentLine[];
@@ -45,6 +48,8 @@ export default function SetupBrainPanel({
   continueLabel?: string;
   // Only these agents start ticked (the Agents page opens this for one agent).
   initialAgents?: BrainAgentId[];
+  // "Change model" / "Choose on OpenRouter" buttons; off where the parent already shows them.
+  showModelActions?: boolean;
 }) {
   // "Choose for me" is ALWAYS OpenRouter: a local model with the 64K working
   // memory agents need is a stretch even for a 24 GB computer. Local is always
@@ -67,6 +72,8 @@ export default function SetupBrainPanel({
   const [resetToken, setResetToken] = useState(0);
   const [job, setJob] = useState<SetupJob | null>(null);
   const [actionError, setActionError] = useState("");
+  // What each agent uses now, from the agents themselves (shown next to each name below).
+  const { models, reload: reloadModels } = useAgentModels(agents);
 
   // A configure job that is still running on the server survives a reload or
   // a trip to another page: pick it up again instead of starting over.
@@ -101,7 +108,10 @@ export default function SetupBrainPanel({
   const status: BrainPanelStatus = !job ? "idle" : job.status === "running" ? "running" : job.status === "succeeded" ? "succeeded" : "failed";
   useEffect(() => {
     onStatus?.(status);
-    if (status === "succeeded") onChanged();
+    if (status === "succeeded") {
+      onChanged();
+      void reloadModels();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
@@ -217,6 +227,18 @@ export default function SetupBrainPanel({
       <p className="os-brain-note" role="status">
         {pickedNote}
       </p>
+      {/* The two ways to pick one specific model: in this app, or on OpenRouter's website. */}
+      {showModelActions ? (
+        <BrainModelActions
+          agents={agents}
+          models={models}
+          initialAgents={initialAgents}
+          onChanged={() => {
+            onChanged();
+            void reloadModels();
+          }}
+        />
+      ) : null}
       {/* Where each agent will get its brain, in one line, built from the ticks below. */}
       <p className="os-brain-summary" aria-label="Where each agent's brain comes from">
         {agents
@@ -225,7 +247,17 @@ export default function SetupBrainPanel({
             <span key={a.id} className="os-brain-summary__item">
               {index > 0 ? <span className="os-brain-summary__sep"> · </span> : null}
               <strong>{a.label}</strong> →{" "}
-              {assignment[a.id] === "openrouter" ? "OpenRouter" : assignment[a.id] === "local" ? "Local" : a.configured ? "keeps its model" : "no brain yet"}
+              {assignment[a.id] === "openrouter" ? (
+                "OpenRouter"
+              ) : assignment[a.id] === "local" ? (
+                "Local"
+              ) : a.configured ? (
+                <>
+                  keeps <span className="os-mono">{models[a.id]?.model || "its model"}</span>
+                </>
+              ) : (
+                "no brain yet"
+              )}
             </span>
           ))}
       </p>

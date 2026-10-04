@@ -8,10 +8,39 @@ import { isDemoPublic } from "../demo-public.js";
 import { getServerPort } from "../server-info.js";
 import { systemCheck } from "./system-check.js";
 import { buildSetupPlan } from "./plan.js";
-import { cancelSetupJob, getSetupJob, retrySetupJob, startConfigureJob, startOllamaPull, startSetupJob } from "./jobs.js";
+import {
+  cancelSetupJob,
+  getSetupJob,
+  retrySetupJob,
+  startConfigureJob,
+  startModelJob,
+  startOllamaPull,
+  startSetupJob
+} from "./jobs.js";
 import { readReceipt } from "./receipt.js";
 import { brainOptions, currentBrain, listFreeOpenRouterModels, localBrainSummary, verifyOpenRouterKey } from "./brain.js";
-import { FLOW_ID_PATTERN, cancel as cancelOpenRouterFlow, getStatus as getOpenRouterFlowStatus, openSystemBrowser, startFlow } from "./openrouter-oauth.js";
+import {
+  OPENROUTER_BROWSE_URL,
+  OPENROUTER_NEW_PRESET_URL,
+  OPENROUTER_PRESETS_URL,
+  checkPreset,
+  listCatalog,
+  lookupModel,
+  modelPageUrl,
+  parseCatalogQuery,
+  parseModelId,
+  parsePresetSlug,
+  presetModelId,
+  readAgentModel
+} from "./models.js";
+import {
+  FLOW_ID_PATTERN,
+  cancel as cancelOpenRouterFlow,
+  getStatus as getOpenRouterFlowStatus,
+  openSystemBrowser,
+  peekKey,
+  startFlow
+} from "./openrouter-oauth.js";
 
 const JOB_ID_PATTERN = /^[a-z0-9_-]{6,64}$/;
 
@@ -26,7 +55,42 @@ function validateJobId(req, res, next) {
 // Errors whose `message` is a fixed sentence written in this codebase (it may
 // include the model name and memory figures, never request secrets), so it is
 // safe and useful to show to the person.
-const MESSAGE_CODES = new Set(["too_many_flows", "local_model_too_big", "invalid_variant_name"]);
+const MESSAGE_CODES = new Set([
+  "too_many_flows",
+  "local_model_too_big",
+  "invalid_variant_name",
+  "invalid_model_id",
+  "invalid_preset",
+  "invalid_catalog_query",
+  "invalid_flow_id",
+  "model_not_found",
+  "preset_not_found",
+  "model_too_small_for_hermes",
+  "agent_not_installed",
+  "openrouter_unreachable",
+  "connection_not_ready"
+]);
+
+function apiError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+const MODEL_ID_HELP =
+  "That doesn't look like an OpenRouter model ID. It looks like author/model-name, for example anthropic/claude-sonnet-4.6.";
+const UNREACHABLE = "Couldn't reach OpenRouter. Check your internet connection and try again.";
+const AGENT_LABEL = { hermes: "Hermes", openclaw: "OpenClaw" };
+
+// A sign-in id given in a request: undefined when there is none, an error
+// when it isn't the shape of one.
+function flowIdFrom(value) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !FLOW_ID_PATTERN.test(value)) {
+    throw apiError("invalid_flow_id", "That OpenRouter connection isn't valid. Connect OpenRouter again.");
+  }
+  return value;
+}
 
 function mapJobError(error, res, next) {
   const mapped = {
@@ -42,7 +106,18 @@ function mapJobError(error, res, next) {
     local_model_too_big: 400,
     invalid_variant_name: 400,
     server_port_unknown: 503,
-    key_required_for_retry: 409
+    key_required_for_retry: 409,
+    invalid_model_id: 400,
+    invalid_preset: 400,
+    invalid_catalog_query: 400,
+    invalid_flow_id: 400,
+    invalid_agent: 400,
+    model_not_found: 404,
+    preset_not_found: 404,
+    model_too_small_for_hermes: 400,
+    agent_not_installed: 409,
+    openrouter_unreachable: 502,
+    connection_not_ready: 409
   }[error?.code];
   if (mapped) {
     // Never spread the source error here: it may carry no extra fields, but
@@ -153,11 +228,83 @@ export function createSetupRouter() {
     }
   });
 
-  router.get("/openrouter/models", async (_req, res, next) => {
+  // With no search settings this is the short list of free models the Setup
+  // cards use. With any of them (tools, free, sort, q, offset, limit, flowId)
+  // it is a page of OpenRouter's whole catalog for the "Change model" picker.
+  // `flowId` is a connected sign-in: its key (kept in memory, never returned)
+  // narrows the list to the models this account may use.
+  const CATALOG_PARAMS = ["tools", "free", "sort", "q", "offset", "limit", "flowId"];
+
+  router.get("/openrouter/models", async (req, res, next) => {
     try {
-      res.json(await listFreeOpenRouterModels());
+      if (!CATALOG_PARAMS.some((name) => req.query[name] !== undefined)) {
+        res.json(await listFreeOpenRouterModels());
+        return;
+      }
+      const parsed = parseCatalogQuery(req.query);
+      if (parsed.error) throw apiError("invalid_catalog_query", parsed.error);
+      const flowId = flowIdFrom(req.query.flowId);
+      res.json(await listCatalog({ ...parsed.value, key: (flowId && peekKey(flowId)) || "" }));
     } catch (error) {
-      next(error);
+      mapJobError(error, res, next);
+    }
+  });
+
+  // One model by its id (what the person pastes from OpenRouter's website).
+  router.get("/openrouter/models/lookup", async (req, res, next) => {
+    try {
+      const id = parseModelId(req.query.id);
+      if (!id) throw apiError("invalid_model_id", MODEL_ID_HELP);
+      const found = await lookupModel(id);
+      if (found.notFound) throw apiError("model_not_found", "OpenRouter doesn't know that model. Check the ID on the model's page.");
+      if (found.unreachable) throw apiError("openrouter_unreachable", UNREACHABLE);
+      res.json({ ok: true, model: found.model });
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  // Opens an OpenRouter page in the person's normal browser (argv, never a
+  // shell; only addresses built here, which openSystemBrowser allows). Opening a
+  // browser only means something on the person's own computer; elsewhere the
+  // address is handed back so the screen can show it as a link.
+  async function openOpenRouterPage(res, url) {
+    if (isDemoPublic() || authRequired()) {
+      res.json({ opened: false, reason: "not_local", url });
+      return;
+    }
+    const opened = await openSystemBrowser(url).catch(() => ({ opened: false, reason: "spawn_failed" }));
+    res.json({ opened: Boolean(opened?.opened), url, ...(opened?.opened ? {} : { reason: opened?.reason || "spawn_failed" }) });
+  }
+
+  router.post("/openrouter/models/open", async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      // No id: OpenRouter's model list (tools only). With one: that model's page.
+      let url = OPENROUTER_BROWSE_URL;
+      if (req.body?.id !== undefined) {
+        const id = parseModelId(req.body.id);
+        if (!id) throw apiError("invalid_model_id", MODEL_ID_HELP);
+        url = modelPageUrl(id);
+      }
+      await openOpenRouterPage(res, url);
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  router.post("/openrouter/presets/open", async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      await openOpenRouterPage(res, req.body?.new === true ? OPENROUTER_NEW_PRESET_URL : OPENROUTER_PRESETS_URL);
+    } catch (error) {
+      mapJobError(error, res, next);
     }
   });
 
@@ -354,6 +501,105 @@ export function createSetupRouter() {
         acceptLocalFit: req.body?.acceptLocalFit === true
       });
       res.json(job);
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  // ---- change one agent's model, or point it at an OpenRouter preset -----------------
+
+  function validateAgentId(req, res, next) {
+    if (!AGENT_IDS.includes(req.params.agentId)) {
+      res.status(404).json({ ok: false, error: "unknown agent" });
+      return;
+    }
+    next();
+  }
+
+  // Which model Hermes / OpenClaw uses right now (read through the agent's own
+  // `config get`, never from its files).
+  router.get("/agents/:agentId/model", validateAgentId, async (req, res, next) => {
+    try {
+      const check = await systemCheck({ refresh: req.query.refresh === "1" });
+      res.json(await readAgentModel(req.params.agentId, check.agents?.[req.params.agentId]?.detected));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Starts the job that gives one agent `ref` (a model id, or "@preset/<name>").
+  // An agent already on OpenRouter has its key, so only its model setting
+  // changes. One that is not (Local, or no brain yet) needs the key too, so it
+  // needs a connected sign-in, and then goes through the full brain job.
+  async function startAgentChange(agentId, ref, { presetSlug = null, body }) {
+    const check = await systemCheck({});
+    const detected = check.agents?.[agentId]?.detected;
+    if (!detected?.installed) throw apiError("agent_not_installed", `${AGENT_LABEL[agentId]} isn't installed on this computer.`);
+    const current = await readAgentModel(agentId, detected);
+    if (current.provider === "openrouter") {
+      return startModelJob({ agentId, model: ref, presetSlug, previous: { provider: current.provider, model: current.model } });
+    }
+    const flowId = flowIdFrom(body?.keySource?.flowId);
+    if (!flowId || getOpenRouterFlowStatus(flowId)?.status !== "connected") {
+      throw apiError("connection_not_ready", "Connect OpenRouter first, then try again.");
+    }
+    return startConfigureJob({
+      targets: { [agentId]: { mode: "openrouter", model: ref } },
+      keySource: { flowId },
+      acceptOpenClawRisk: body?.acceptOpenClawRisk === true
+    });
+  }
+
+  router.post("/agents/:agentId/model", validateAgentId, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      const model = parseModelId(req.body?.model);
+      if (!model) throw apiError("invalid_model_id", MODEL_ID_HELP);
+      // Ask OpenRouter first: a model that doesn't exist, or (for Hermes) is too
+      // small, stops here with a plain reason instead of failing half way.
+      const found = await lookupModel(model);
+      if (found.notFound) throw apiError("model_not_found", "OpenRouter doesn't know that model. Check the ID on the model's page.");
+      if (found.unreachable) throw apiError("openrouter_unreachable", UNREACHABLE);
+      if (req.params.agentId === "hermes" && !found.model.hermesOk) {
+        throw apiError(
+          "model_too_small_for_hermes",
+          "That model's working memory is too small for Hermes, which needs at least 64K. Pick a bigger model, or give it to OpenClaw."
+        );
+      }
+      res.json(await startAgentChange(req.params.agentId, model, { body: req.body }));
+    } catch (error) {
+      mapJobError(error, res, next);
+    }
+  });
+
+  // A preset is a model setup made on openrouter.ai and used by name
+  // ("@preset/<name>"). Whether each agent accepts one is not proven, so the
+  // job's hello test is what says yes.
+  router.post("/agents/:agentId/preset", validateAgentId, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      const slug = parsePresetSlug(req.body?.slug);
+      if (!slug) {
+        throw apiError("invalid_preset", "A preset name uses only lowercase letters, numbers and dashes, for example my-agent-brain.");
+      }
+      // With a connected sign-in, ask OpenRouter whether the preset exists (the
+      // key is used for that one question and never returned). Without one,
+      // or if OpenRouter can't answer, the hello test decides.
+      const flowId = flowIdFrom(req.body?.keySource?.flowId);
+      const key = flowId ? peekKey(flowId) : null;
+      if (key && (await checkPreset(slug, key)).exists === false) {
+        throw apiError(
+          "preset_not_found",
+          "OpenRouter has no preset with that name. Check the name at openrouter.ai/settings/presets."
+        );
+      }
+      res.json(await startAgentChange(req.params.agentId, presetModelId(slug), { presetSlug: slug, body: req.body }));
     } catch (error) {
       mapJobError(error, res, next);
     }

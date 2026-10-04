@@ -29,6 +29,15 @@ import {
   ollamaBaseUrl,
   streamOllamaPull
 } from "./brain.js";
+import {
+  OPENCLAW_MODEL_PATH,
+  cleanCliText,
+  hermesModelCommands,
+  openclawModelRef,
+  openclawOverrideWarnings,
+  parseJsonOutput,
+  readAgentModel
+} from "./models.js";
 import { takeKey } from "./openrouter-oauth.js";
 
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
@@ -506,7 +515,9 @@ async function retrySetupJobLocked(id) {
   stored.steps[startIndex].error = null;
   await persistJob(stored);
   runningJobId = id;
-  runJobSteps(stored, startIndex).catch(() => {});
+  // A model change needs no key (the agent already has it), so it can resume.
+  if (stored.kind === "model") runConfigureJobSteps(stored, "").catch(() => {});
+  else runJobSteps(stored, startIndex).catch(() => {});
   return stored;
 }
 
@@ -521,6 +532,9 @@ const CONFIGURE_RUN_TIMEOUT_MS = 60 * 1000;
 const HELP_TIMEOUT_MS = 5000;
 const CONFIG_GET_TIMEOUT_MS = 10 * 1000;
 const HEALTH_PROMPT = "Reply with exactly: ready";
+// The "hello" after a model change may take at most this long (a busy free
+// model can be slow; the screen then says so instead of waiting for half an hour).
+const MODEL_HEALTH_TIMEOUT_MS = 90 * 1000;
 
 function agentInstalled(check, agentId) {
   return Boolean(check?.agents?.[agentId]?.detected?.installed);
@@ -832,6 +846,10 @@ async function runHealthChecks(job, step, check, manager, ctx) {
   const health = {};
   const workDir = path.join(runtimePaths().root, "setup", "runs-work", "setup-check");
   await fs.mkdir(workDir, { recursive: true });
+  // After a model change the "hello" must prove the NEW model works, and must
+  // not hang for long: OpenClaw gets a conversation of its own (an old one
+  // could still be pinned to the previous model) and every agent a short limit.
+  const afterModelChange = job.kind === "model";
   for (const agentId of jobScope(job)) {
     const detected = check.agents[agentId].detected;
     if (!detected?.installed) continue;
@@ -839,8 +857,11 @@ async function runHealthChecks(job, step, check, manager, ctx) {
     const doctorStatus = await adapter.configStatus(detected);
     const entry = { doctorOk: Boolean(doctorStatus.ok), promptOk: false, replyPreview: "" };
     try {
-      const plan = await adapter.buildRun({ prompt: HEALTH_PROMPT, cwd: workDir, detected, runDir: workDir });
-      const run = await manager.startRun(plan);
+      const options = afterModelChange && agentId === "openclaw" ? { sessionId: `agentos-check-${crypto.randomBytes(4).toString("hex")}` } : undefined;
+      const plan = await adapter.buildRun({ prompt: HEALTH_PROMPT, cwd: workDir, detected, runDir: workDir, ...(options ? { options } : {}) });
+      const run = await manager.startRun(
+        afterModelChange ? { ...plan, timeoutMs: Math.min(plan.timeoutMs || MODEL_HEALTH_TIMEOUT_MS, MODEL_HEALTH_TIMEOUT_MS) } : plan
+      );
       step.runIds.push(run.id);
       const finished = await waitForRunEnd(manager, run.id);
       const stdout = await runStdout(manager, run.id);
@@ -890,6 +911,100 @@ async function prepareLocalVariants(job, step, ctx) {
   }
 }
 
+// ---- changing ONE agent's model (the model picker and OpenRouter presets) ----------
+// The agent already has its OpenRouter key, so only the model is set; the job
+// then says hello to the agent to prove the new model answers.
+
+// Runs one `config set` / `models set`. Resolves { ok, why }, where `why` is
+// what the program said, short and plain, when it refused.
+async function runModelSetCommand(manager, step, plan) {
+  const { run } = await runConfigureCommand(manager, plan, step, { optional: true });
+  if (run.status === "succeeded") return { ok: true, why: "" };
+  // What the program itself printed (its error text first), not the run's own
+  // "Started ..." / "Exited with code" lines.
+  const events = await manager.readEvents(step.runIds[step.runIds.length - 1], 0).catch(() => []);
+  const printed = (stream) => events.filter((event) => event.stream === stream).map((event) => event.text || "").join("\n");
+  return { ok: false, why: cleanCliText(printed("stderr") || printed("stdout")) };
+}
+
+async function setHermesModel(job, step, check, ctx, manager) {
+  const detected = check.agents.hermes.detected;
+  const target = ctx.targets.hermes;
+  for (const args of hermesModelCommands(target.model)) {
+    const result = await runModelSetCommand(manager, step, {
+      agentId: "hermes",
+      kind: "configure",
+      title: `hermes config set ${args[2]}`,
+      command: detected.path,
+      args,
+      cwd: os.tmpdir(),
+      timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+    });
+    if (!result.ok) throw jobError("configure_failed", `Hermes didn't accept ${target.model}${result.why ? `: ${result.why}` : "."}`);
+  }
+  // Hermes doesn't check what it is given, so read it back: a value that did
+  // not stick is worth saying out loud.
+  const back = await readAgentModel("hermes", detected);
+  if (back.model !== target.model) {
+    const warning = `Hermes reports its model as ${back.model || "not set"}, not ${target.model}. The hello test below shows what it really uses.`;
+    step.warnings.push(warning);
+    timestampedLog(step, warning);
+  }
+}
+
+// What `config get` printed for a whole section (JSON), or null.
+async function readOpenclawSection(detected, key) {
+  const result = await runCommand(detected.path, ["config", "get", key], CONFIG_GET_TIMEOUT_MS);
+  return result.ok ? parseJsonOutput(result.stdout) : null;
+}
+
+// Says so when OpenClaw has a setting that would keep it from using the new
+// default (an agent with its own model, an allow-list). Never fails the job.
+async function warnAboutOpenclawOverrides(step, detected, ref) {
+  try {
+    const [entries, allow] = await Promise.all([
+      readOpenclawSection(detected, "agents.entries"),
+      readOpenclawSection(detected, "modelPolicy.allow")
+    ]);
+    for (const warning of openclawOverrideWarnings(entries, allow, ref)) {
+      step.warnings.push(warning);
+      timestampedLog(step, warning);
+    }
+  } catch {
+    timestampedLog(step, "Couldn't check whether an OpenClaw agent has its own model.");
+  }
+}
+
+async function setOpenclawModel(job, step, check, ctx, manager) {
+  const detected = check.agents.openclaw.detected;
+  const target = ctx.targets.openclaw;
+  const ref = openclawModelRef(target.model);
+  const set = (title, args) =>
+    runModelSetCommand(manager, step, { agentId: "openclaw", kind: "configure", title, command: detected.path, args, cwd: os.tmpdir(), timeoutMs: CONFIGURE_RUN_TIMEOUT_MS });
+  const refused = (why) => jobError("configure_failed", `OpenClaw didn't accept ${target.model}${why ? `: ${why}` : "."}`);
+
+  // OpenClaw is strict: it refuses a model it doesn't know. Ask first with
+  // --dry-run (nothing is written), so a refusal reads clearly.
+  const dryRun = await set(`openclaw config set ${OPENCLAW_MODEL_PATH} (dry run)`, ["config", "set", OPENCLAW_MODEL_PATH, ref, "--dry-run"]);
+  if (dryRun.ok) {
+    const real = await set(`openclaw config set ${OPENCLAW_MODEL_PATH}`, ["config", "set", OPENCLAW_MODEL_PATH, ref]);
+    if (!real.ok) throw refused(real.why);
+  } else if (!job.preset) {
+    throw refused(dryRun.why);
+  } else {
+    // A preset ("@preset/<name>") is not a model OpenClaw knows, so its strict
+    // check may refuse it; `models set` is the other way to give OpenClaw a model.
+    timestampedLog(step, `OpenClaw's config check refused the preset${dryRun.why ? ` (${dryRun.why})` : ""}; trying "openclaw models set".`);
+    const fallback = await set("openclaw models set", ["models", "set", ref]);
+    if (!fallback.ok) {
+      throw jobError("configure_failed", "OpenClaw doesn't accept OpenRouter presets yet. Use Change model to pick a model instead.");
+    }
+    timestampedLog(step, "openclaw models set took the preset.");
+  }
+  await warnAboutOpenclawOverrides(step, detected, ref);
+  timestampedLog(step, "Chats that already have a model pinned keep it until you send /model default in them.");
+}
+
 async function executeConfigureStep(job, step, check, ctx, manager) {
   step.status = "running";
   await persistJob(job);
@@ -908,6 +1023,12 @@ async function executeConfigureStep(job, step, check, ctx, manager) {
       break;
     case "openclaw-brain":
       await configureOpenclawBrain(step, check, ctx, manager);
+      break;
+    case "hermes-model":
+      await setHermesModel(job, step, check, ctx, manager);
+      break;
+    case "openclaw-model":
+      await setOpenclawModel(job, step, check, ctx, manager);
       break;
     case "openclaw-safe-defaults":
       await configureOpenclawSafeDefaults(job, step, check, manager);
@@ -928,6 +1049,22 @@ async function executeConfigureStep(job, step, check, ctx, manager) {
 }
 
 async function appendConfigureReceipt(job, check) {
+  if (job.kind === "model") {
+    const target = job.targets?.[job.agentId];
+    if (!target) return;
+    await appendReceiptEntry({
+      agentId: job.agentId,
+      action: "configure",
+      version: check.agents[job.agentId].detected.version,
+      provider: "openrouter",
+      model: target.model,
+      changes: [
+        `Changed the model to ${target.model}${job.previous?.model ? ` (it was ${job.previous.model})` : ""}`,
+        ...(job.preset ? [`Follows your OpenRouter preset ${job.preset}; change it on openrouter.ai and the agent follows`] : [])
+      ]
+    });
+    return;
+  }
   for (const agentId of ["hermes", "openclaw"]) {
     const step = job.steps.find((s) => s.id === `${agentId}-brain`);
     if (!step || step.action !== "configure") continue;
@@ -1174,6 +1311,52 @@ async function startConfigureJobLocked({
   await persistJob(job);
   runningJobId = id;
   runConfigureJobSteps(job, key).catch(() => {});
+  return job;
+}
+
+// =========================================================================
+// Changing ONE agent's model (the model picker, or an OpenRouter preset).
+// Same machinery as the configure job: one at a time, saved to disk,
+// cancelable, and a "say hello" check at the end. No key is involved: the
+// agent already has one, so only its model setting is changed.
+// =========================================================================
+
+export function startModelJob(options) {
+  return withJobLock(() => startModelJobLocked(options));
+}
+
+// `model` is what the agent is given: an OpenRouter model id, or
+// "@preset/<name>" together with `presetSlug`. `previous` is what it used
+// before ({ provider, model }), shown on screen if the new one doesn't work.
+async function startModelJobLocked({ agentId, model, presetSlug = null, previous = null } = {}) {
+  if (agentId !== "hermes" && agentId !== "openclaw") {
+    throw jobError("invalid_agent", "Only Hermes and OpenClaw have a model to change.");
+  }
+  const chosen = typeof model === "string" ? model.trim() : "";
+  if (!chosen) throw jobError("invalid_model", "Choose a model first.");
+  const check = await systemCheck({});
+  if (!agentInstalled(check, agentId)) throw jobError("agent_not_installed", `${ADAPTERS[agentId].label} isn't installed.`);
+
+  const target = { mode: "openrouter", model: chosen };
+  const id = generateJobId();
+  const job = {
+    id,
+    kind: "model",
+    status: "running",
+    mode: "openrouter",
+    model: chosen,
+    agentId,
+    preset: presetSlug || null,
+    previous: previous ? { provider: previous.provider || null, model: previous.model || null } : null,
+    targets: { hermes: agentId === "hermes" ? target : null, openclaw: agentId === "openclaw" ? target : null },
+    scope: [agentId],
+    steps: [makeConfigureStep(`${agentId}-model`, agentId, "run"), makeConfigureStep("health", null, "run")],
+    startedAt: new Date().toISOString(),
+    endedAt: null
+  };
+  await persistJob(job);
+  runningJobId = id;
+  runConfigureJobSteps(job, "").catch(() => {});
   return job;
 }
 

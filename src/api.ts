@@ -96,6 +96,21 @@ import type {
   DemoTimelineResult
 } from "./demo";
 
+// An error from the server. `message` stays the short code (what every screen
+// has always matched on); `detail` is the plain sentence the server wrote for
+// the person, when it sent one (the coding agents' brain refusals do).
+export class ApiError extends Error {
+  detail: string;
+  status: number;
+
+  constructor(message: string, detail: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.detail = detail;
+    this.status = status;
+  }
+}
+
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -107,7 +122,11 @@ export async function request<T>(url: string, options?: RequestInit): Promise<T>
     if (response.status === 401 && body?.error === "session_required") {
       window.dispatchEvent(new CustomEvent("agentos:locked"));
     }
-    throw new Error(body?.error || `${response.status} ${response.statusText}`);
+    throw new ApiError(
+      body?.error || `${response.status} ${response.statusText}`,
+      typeof body?.message === "string" ? body.message : "",
+      response.status
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -970,8 +989,16 @@ export function getAgentDetail(id: string) {
   return request<AgentDetail>(`/api/agents/${encodeURIComponent(id)}`);
 }
 
+// A brain picked for ONE run (Claude Code and Codex: plan, OpenRouter or a local
+// model; Cursor: plan, with an optional model). Left out, the saved setting applies.
+export interface RunBrain {
+  mode: "plan" | "openrouter" | "local";
+  model?: string | null;
+}
+
 export interface AgentRunOptions {
   allowEdits?: boolean;
+  brain?: RunBrain;
 }
 
 // Dry preview only: spawns nothing, just returns the exact command/folder
@@ -1041,7 +1068,7 @@ export function stopRun(id: string) {
 // server/runtime/runs/run-manager.js and server/runtime/agents/*.js).
 const RUN_STREAM_EVENT_TYPES = [
   "system", "line", "text", "thinking", "tool", "tool_result",
-  "usage", "result", "setup", "error"
+  "usage", "result", "setup", "error", "limit"
 ];
 
 export function useRunStream(runId: string | null) {

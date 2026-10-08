@@ -39,12 +39,14 @@ export interface ModelPickerProps {
   badgeLabels?: Partial<Record<ModelBadge, string>>;
   // Hides models that can't work for the caller.
   filter?: (model: CatalogModel) => boolean;
+  // The words on the Apply button ("Use for this run" ...), given the ticked targets' names.
+  applyLabel?: (targetLabels: string[]) => string;
   onClose: () => void;
   // At least one target really was changed.
   onApplied?: () => void;
 }
 
-export default function ModelPicker({ title = "Change model", targets, initialTargets, apply, recommend, badgeLabels, filter, onClose, onApplied }: ModelPickerProps) {
+export default function ModelPicker({ title = "Change model", targets, initialTargets, apply, recommend, badgeLabels, filter, applyLabel, onClose, onApplied }: ModelPickerProps) {
   const labels = { ...DEFAULT_BADGE_LABELS, ...badgeLabels };
 
   // ---- what to list --------------------------------------------------------------------
@@ -407,6 +409,7 @@ export default function ModelPicker({ title = "Change model", targets, initialTa
                   targets={targets}
                   initialTargets={initialTargets}
                   apply={apply}
+                  applyLabel={applyLabel}
                   flowId={flowId}
                   onFlowChange={setFlowId}
                   onBusyChange={setBusy}

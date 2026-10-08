@@ -2,7 +2,9 @@
 // filter counts (never fabricated) and the live accent-pulse mark driven
 // only by the run actually being "running".
 import type { RunMeta } from "../../types";
-import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runStatusMark } from "../fleetShared";
+import { isBuilderId } from "../builderShared";
+import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runMarkFor } from "../fleetShared";
+import BuilderBrainBadge from "./BuilderBrainBadge";
 import RelativeTime, { TimeAgo } from "./RelativeTime";
 import StatusMark from "./StatusMark";
 
@@ -84,7 +86,7 @@ export default function RunList({
                   <span className="os-run-list__body">
                     <span className="os-run-list__row">
                       {/* No per-event pulse here: the list never sees events, only the open console does. */}
-                      <StatusMark kind={runStatusMark(run.status)} />
+                      <StatusMark kind={runMarkFor(run)} />
                       <span className="os-run-list__title">{run.title || firstLine(run.commandPreview, 46) || "Run"}</span>
                     </span>
                     <span className="os-run-list__row os-run-list__row--meta">
@@ -94,6 +96,12 @@ export default function RunList({
                       </span>
                       <span className="os-mono">{costLabel(run.usage)}</span>
                     </span>
+                    {isBuilderId(run.agentId) && run.brain ? (
+                      <span className="os-run-list__row os-run-list__row--brain">
+                        <BuilderBrainBadge agentId={run.agentId} brain={run.brain} />
+                        {run.limit ? <span className="os-bb-flag">plan limit</span> : null}
+                      </span>
+                    ) : null}
                   </span>
                 </button>
               </li>

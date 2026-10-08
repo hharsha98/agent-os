@@ -8,6 +8,7 @@ import type { AgentSummary, ExecutionGateStatus, RunMeta } from "../types";
 import { AGENTS_ORDER } from "../ui/agentsShared";
 import AgentBay from "../ui/components/AgentBay";
 import AgentRail from "../ui/components/AgentRail";
+import { useBuilderBrains } from "../ui/components/useBuilderBrains";
 import { useInterval } from "../ui/components/useInterval";
 import "../ui/agents.css";
 
@@ -22,6 +23,8 @@ export default function AgentsPage() {
   const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
   const [gateFailed, setGateFailed] = useState(false);
   const [selectedId, setSelectedId] = useState(() => queryParam("agent") || "");
+  // Which brain Claude Code, Codex and Cursor use (shown in the rail and the bay).
+  const { brains, failed: brainsFailed, reload: reloadBrains } = useBuilderBrains();
 
   async function loadAgents(refresh = false) {
     try {
@@ -125,6 +128,7 @@ export default function AgentsPage() {
           timedOut={agentsTimedOut && agents === null}
           failed={agentsFailed}
           liveCountByAgent={liveCountByAgent}
+          brains={brains}
           selectedId={effectiveId}
           onSelect={selectAgent}
           onRetry={retryAll}
@@ -141,6 +145,9 @@ export default function AgentsPage() {
           onReloadGate={loadGate}
           onRecheckAgents={() => loadAgents(true)}
           onRunLaunched={(run) => navigateTo("runs", { run: run.id })}
+          brains={brains}
+          brainsFailed={brainsFailed}
+          onBrainsChanged={reloadBrains}
         />
       </div>
     </div>

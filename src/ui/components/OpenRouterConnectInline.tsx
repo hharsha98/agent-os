@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import RelativeTime from "./RelativeTime";
+import RememberKeyTick from "./RememberKeyTick";
 import StatusMark from "./StatusMark";
 import { useInterval } from "./useInterval";
 import type { OpenRouterConnectState } from "../../setupApi";
@@ -20,11 +21,14 @@ type Phase = "idle" | "starting" | "waiting" | "connected" | "failed";
 export default function OpenRouterConnectInline({
   flowId,
   onFlowChange,
-  disabled = false
+  disabled = false,
+  rememberTick = false
 }: {
   flowId: string | null;
   onFlowChange: (flowId: string | null) => void;
   disabled?: boolean;
+  // Offer "Remember for coding agents" (off by default) once connected.
+  rememberTick?: boolean;
 }) {
   const [phase, setPhase] = useState<Phase>(flowId ? "connected" : "idle");
   const [message, setMessage] = useState("");
@@ -125,9 +129,12 @@ export default function OpenRouterConnectInline({
 
   if (phase === "connected") {
     return (
-      <p className="os-mp-connect__ok" role="status">
-        <StatusMark kind="ok" label="connected" /> OpenRouter connected ✓
-      </p>
+      <>
+        <p className="os-mp-connect__ok" role="status">
+          <StatusMark kind="ok" label="connected" /> OpenRouter connected ✓
+        </p>
+        {rememberTick ? <RememberKeyTick flowId={flowId} /> : null}
+      </>
     );
   }
 

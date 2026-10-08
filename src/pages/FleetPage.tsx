@@ -2,17 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { getAgentService, listAgents, listRuns, useRunStream } from "../api";
+import type { BuilderBrains } from "../buildersApi";
 import { navigateTo } from "../nav";
 import type { AgentServiceStatus, AgentSummary, RunMeta } from "../types";
 import ActivityTrace, { emptyBuckets } from "../ui/components/ActivityTrace";
+import BuilderBrainBadge from "../ui/components/BuilderBrainBadge";
 import FlightLog from "../ui/components/FlightLog";
 import Panel from "../ui/components/Panel";
 import Readout from "../ui/components/Readout";
 import { TimeAgo } from "../ui/components/RelativeTime";
 import SegmentMeter, { type MeterSegmentState } from "../ui/components/SegmentMeter";
 import StatusMark, { type StatusKind } from "../ui/components/StatusMark";
+import { useBuilderBrains } from "../ui/components/useBuilderBrains";
 import { useCountUp } from "../ui/components/useCountUp";
 import { useInterval } from "../ui/components/useInterval";
+import { isBuilderId } from "../ui/builderShared";
 import { AGENT_MONOGRAM, firstLine } from "../ui/fleetShared";
 import "../ui/fleet.css";
 
@@ -142,6 +146,7 @@ function useAgentActivity(runId: string | null) {
 }
 
 export default function FleetPage() {
+  const { brains } = useBuilderBrains();
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [agentsFailed, setAgentsFailed] = useState(false);
   const [agentsTimedOut, setAgentsTimedOut] = useState(false);
@@ -346,6 +351,7 @@ export default function FleetPage() {
                 liveCount={liveCountByAgent[id] || 0}
                 liveRun={liveRunByAgent[id]}
                 lastRun={lastRunByAgent[id]}
+                brains={brains}
                 service={SERVICE_AGENT_SET.has(id) ? services[id] : undefined}
                 serviceChecked={servicesChecked}
                 failed={agentsFailed}
@@ -368,6 +374,7 @@ function FleetCard({
   liveCount,
   liveRun,
   lastRun,
+  brains,
   service,
   serviceChecked,
   failed
@@ -380,6 +387,7 @@ function FleetCard({
   liveCount: number;
   liveRun?: RunMeta;
   lastRun?: RunMeta;
+  brains: BuilderBrains | null;
   service?: AgentServiceStatus | null;
   serviceChecked: boolean;
   failed: boolean;
@@ -446,6 +454,12 @@ function FleetCard({
             ? firstLine(agent.detected.version) || "—"
             : agent?.detected.error || "Not installed"}
       </p>
+
+      {brains && isBuilderId(agentId) && agent?.detected.installed ? (
+        <p className="os-fleet-card__brain">
+          <span className="os-micro">Brain</span> <BuilderBrainBadge agentId={agentId} brain={brains[agentId]} />
+        </p>
+      ) : null}
 
       {isServiceAgent ? (
         <p className="os-fleet-card__gateway">

@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import type { RunStreamEvent } from "../../types";
 import type { TranscriptGroup } from "../runsShared";
+import { formatResetTime } from "../builderShared";
 import StatusMark from "./StatusMark";
 
 function FoldRow({ label, children }: { label: string; children: ReactNode }) {
@@ -153,6 +154,19 @@ export default function RunTranscript({
             // just "Started" and keep the full text one hover away.
             <p key={group.id} className="os-transcript__system os-mono" title={event.text}>
               {String(event.text || "").startsWith("Started ") ? "Started" : event.text}
+            </p>
+          );
+        }
+        if (event.type === "limit") {
+          // The agent stopped because the plan ran out; the banner above has the choices.
+          const reset = formatResetTime(typeof event.resetsAt === "string" ? event.resetsAt : "");
+          return (
+            <p key={group.id} className="os-transcript__limit">
+              <StatusMark kind="warn" />
+              <span>
+                {String(event.message || "The plan limit was reached.")}
+                {reset ? ` It resets ${reset}.` : ""}
+              </span>
             </p>
           );
         }

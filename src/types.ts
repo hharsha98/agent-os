@@ -2328,6 +2328,8 @@ export interface AgentRunPreview {
   commandPreview: string;
   cwd: string;
   transport: string;
+  // Which brain this run would use; null for agents that have no brain choice.
+  brain?: RunBrainInfo | null;
   gate: { enabled: boolean };
 }
 
@@ -2364,6 +2366,21 @@ export interface RunUsage {
   costUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
+  // How big the conversation was at the last answer (Claude Code).
+  lastInputTokens?: number;
+}
+
+// Which brain paid for a Claude Code / Codex / Cursor run.
+export interface RunBrainInfo {
+  mode: "plan" | "openrouter" | "local" | string;
+  model: string | null;
+}
+
+// Set on a coding agent's run that stopped because its PLAN ran out.
+export interface RunLimit {
+  kind: string;
+  message: string;
+  resetsAt?: string;
 }
 
 export type RunStatus =
@@ -2393,6 +2410,15 @@ export interface RunMeta {
   truncated: boolean;
   usage: RunUsage;
   error: string | null;
+  // Coding agents only (absent on older runs and on Hermes / OpenClaw runs).
+  brain?: RunBrainInfo | null;
+  // The model the agent itself reported using.
+  model?: string;
+  limit?: RunLimit;
+  // The plan was close to its limit (not stopped yet).
+  nearLimit?: boolean;
+  continuedFrom?: string;
+  continuedBy?: string;
 }
 
 export interface RunListResponse {

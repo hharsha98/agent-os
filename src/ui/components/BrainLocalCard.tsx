@@ -18,20 +18,20 @@ import { formatBytes, formatContext, formatGb, giveItTo, variantNameFor } from "
 
 type Download = { phase: "idle" } | { phase: "confirming" } | { phase: "running"; job: SetupJob } | { phase: "failed"; message: string };
 
-function verdictMark(id: LocalModel["verdict"]["id"]) {
+export function verdictMark(id: LocalModel["verdict"]["id"]) {
   if (id === "good") return "ok" as const;
   if (id === "no_tools") return "error" as const;
   return "warn" as const;
 }
 
-function fitMark(fit: LocalFit) {
+export function fitMark(fit: LocalFit) {
   if (fit === "comfortable") return "ok" as const;
   if (fit === "tight") return "warn" as const;
   if (fit === "too_big") return "error" as const;
   return "unknown" as const;
 }
 
-const FIT_PHRASE: Record<LocalFit, string> = {
+export const FIT_PHRASE: Record<LocalFit, string> = {
   comfortable: "fits this computer",
   tight: "tight for this computer",
   too_big: "too big for this computer",
@@ -39,7 +39,7 @@ const FIT_PHRASE: Record<LocalFit, string> = {
 };
 
 // "needs ~14.3 GB · tight for this computer (24 GB)"
-function memoryLine(model: LocalModel, computerGb: number) {
+export function memoryLine(model: LocalModel, computerGb: number) {
   const { memoryAt64kGb, fit } = model.memory;
   if (memoryAt64kGb === null) return "Memory needed at 64K: unknown (Ollama didn't report this model's settings)";
   const computer = computerGb > 0 ? ` (${computerGb} GB)` : "";

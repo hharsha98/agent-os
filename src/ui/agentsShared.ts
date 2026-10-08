@@ -1,6 +1,7 @@
 // Small helpers shared by the Agents screen ("the hangar") and its
 // components. Kept separate from fleetShared.ts (Home's helpers) so this
 // worker's files never touch that one.
+import { ApiError } from "../api";
 
 // Fixed order + copy, matching FleetPage's "mixing desk" layout so the two
 // screens read as one system.
@@ -73,7 +74,10 @@ export function friendlyError(error: unknown): string {
   const code = error instanceof Error ? error.message : String(error || "");
   // fetch() rejects with the browser's own wording when the server is down.
   if (/failed to fetch|networkerror|load failed/i.test(code)) return "Couldn't reach Agent OS.";
-  return ERROR_MESSAGES[code] || code || "Something went wrong.";
+  if (ERROR_MESSAGES[code]) return ERROR_MESSAGES[code];
+  // A refusal the server explained in a sentence (a coding agent's brain, for example).
+  const detail = error instanceof ApiError ? error.detail : "";
+  return detail || code || "Something went wrong.";
 }
 
 // The rail's per-agent status mark + word: the same shape+colour states as

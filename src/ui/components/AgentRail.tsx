@@ -1,7 +1,10 @@
 import { useEffect, useRef } from "react";
 import { RefreshCw } from "lucide-react";
+import type { BuilderBrains } from "../../buildersApi";
 import type { AgentSummary } from "../../types";
 import { AGENT_LABEL, AGENT_MONOGRAM, AGENT_ROLE, AGENTS_ORDER, agentStatusWord } from "../agentsShared";
+import { isBuilderId } from "../builderShared";
+import BuilderBrainBadge from "./BuilderBrainBadge";
 import StatusMark from "./StatusMark";
 
 // The hangar's left rail on desktop (≥1100px, see agents.css); the same
@@ -13,6 +16,7 @@ export default function AgentRail({
   timedOut,
   failed,
   liveCountByAgent,
+  brains = null,
   selectedId,
   onSelect,
   onRetry
@@ -22,6 +26,8 @@ export default function AgentRail({
   timedOut: boolean;
   failed: boolean;
   liveCountByAgent: Record<string, number>;
+  // The coding agents' saved brains, shown as a small tag under each of them.
+  brains?: BuilderBrains | null;
   selectedId: string;
   onSelect: (id: string) => void;
   onRetry: () => void;
@@ -55,6 +61,11 @@ export default function AgentRail({
             <span className="os-agent-rail__text">
               <strong>{agent?.label || AGENT_LABEL[id]}</strong>
               <span className="os-agent-rail__role">{AGENT_ROLE[id]}</span>
+              {brains && isBuilderId(id) ? (
+                <span className="os-agent-rail__brain">
+                  <BuilderBrainBadge agentId={id} brain={brains[id]} />
+                </span>
+              ) : null}
             </span>
             <span className="os-agent-rail__status">
               <StatusMark kind={mark} label={word} />

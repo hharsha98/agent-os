@@ -310,11 +310,9 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     state.meta.signal = signal;
     state.meta.endedAt = new Date().toISOString();
     if (error) state.meta.error = error;
-    await enqueue(state, () => persistMeta(state));
-    await enqueue(state, () => {
-      broadcast(state, { type: "end", status: state.meta.status });
-    });
-    // Best-effort plan cleanup (e.g. an adapter deleting its query file).
+    // Best-effort plan cleanup (e.g. an adapter deleting its query or
+    // settings file) runs BEFORE the terminal status is saved and announced,
+    // so anyone who sees "ended" can rely on the temp files being gone.
     // Never allowed to throw: cleanup failing must not affect run status.
     if (typeof state.plan?.onExit === "function") {
       try {
@@ -323,6 +321,10 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
         // cleanup is best-effort only
       }
     }
+    await enqueue(state, () => persistMeta(state));
+    await enqueue(state, () => {
+      broadcast(state, { type: "end", status: state.meta.status });
+    });
   }
 
   async function startRun(plan) {

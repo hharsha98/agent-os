@@ -25,6 +25,13 @@ export function runStatusMark(status: string): StatusKind {
   return "unknown";
 }
 
+// The mark for one run. A coding agent's run that stopped at its plan's limit can still say
+// "succeeded" (some of them exit 0 there), but it did not finish its job, so it gets the warning mark.
+export function runMarkFor(run: Pick<RunMeta, "status" | "limit">): StatusKind {
+  if (run.limit && run.status !== "running" && run.status !== "queued") return "warn";
+  return runStatusMark(run.status);
+}
+
 export function costLabel(usage?: { costUsd?: number }) {
   return typeof usage?.costUsd === "number" ? `$${usage.costUsd.toFixed(2)}` : "—";
 }

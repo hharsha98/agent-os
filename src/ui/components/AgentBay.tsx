@@ -6,11 +6,16 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { getAgentDetail } from "../../api";
 import { navigateTo } from "../../nav";
+import type { BuilderBrains } from "../../buildersApi";
 import type { AgentDetail, AgentSummary, ExecutionGateStatus, RunMeta } from "../../types";
 import { AGENT_LABEL, AGENT_MONOGRAM, AGENT_ROLE, SERVICE_AGENT_SET, SETUP_INSTALLED_AGENT_SET, agentStatusWord, friendlyError } from "../agentsShared";
+import { isBuilderId } from "../builderShared";
 import { useInterval } from "./useInterval";
 import StatusMark from "./StatusMark";
 import AgentBrainCard from "./AgentBrainCard";
+import BuilderBrainBadge from "./BuilderBrainBadge";
+import BuilderBrainCard from "./BuilderBrainCard";
+import PlanLimitSettings from "./PlanLimitSettings";
 import AgentLaunchPanel from "./AgentLaunchPanel";
 import AgentServicePanel from "./AgentServicePanel";
 import AgentSafetyPanel from "./AgentSafetyPanel";
@@ -28,7 +33,10 @@ export default function AgentBay({
   gateFailed,
   onReloadGate,
   onRecheckAgents,
-  onRunLaunched
+  onRunLaunched,
+  brains = null,
+  brainsFailed = false,
+  onBrainsChanged
 }: {
   agentId: string;
   agent: AgentSummary | undefined;
@@ -41,6 +49,10 @@ export default function AgentBay({
   onReloadGate: () => Promise<void>;
   onRecheckAgents: () => Promise<void>;
   onRunLaunched: (run: RunMeta) => void;
+  // Claude Code, Codex and Cursor: the saved brains (see useBuilderBrains).
+  brains?: BuilderBrains | null;
+  brainsFailed?: boolean;
+  onBrainsChanged?: () => void | Promise<void>;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [detailError, setDetailError] = useState("");
@@ -84,6 +96,7 @@ export default function AgentBay({
   const installed = agent?.detected.installed ?? false;
   const { mark, word } = agentStatusWord(installed, true, false, false, liveCount);
   const versionFull = detail?.detected.versionFull;
+  const builderId = isBuilderId(agentId) ? agentId : null;
 
   return (
     <div className="os-agent-bay">
@@ -96,6 +109,11 @@ export default function AgentBay({
             <StatusMark kind={mark} label={word} /> {word}
             {installed ? <span className="os-mono os-agent-bay__version">{agent?.detected.version || "—"}</span> : null}
           </p>
+          {builderId && brains ? (
+            <p className="os-agent-bay__brain">
+              <span className="os-micro">Brain</span> <BuilderBrainBadge agentId={builderId} brain={brains[builderId]} />
+            </p>
+          ) : null}
           {installed && versionFull ? (
             <details className="os-agent-bay__details">
               <summary>Details</summary>
@@ -137,6 +155,7 @@ export default function AgentBay({
         onReloadGate={onReloadGate}
         onRecheck={onRecheckAgents}
         onLaunched={onRunLaunched}
+        brains={brains}
       />
 
       {installed && SERVICE_AGENT_SET.has(agentId) ? (
@@ -150,6 +169,13 @@ export default function AgentBay({
       ) : null}
 
       {installed && (agentId === "hermes" || agentId === "openclaw") ? <AgentBrainCard agentId={agentId} label={label} /> : null}
+
+      {installed && builderId ? (
+        <>
+          <BuilderBrainCard agentId={builderId} label={label} brains={brains} failed={brainsFailed} onChanged={() => onBrainsChanged?.()} />
+          <PlanLimitSettings brains={brains} onChanged={() => onBrainsChanged?.()} />
+        </>
+      ) : null}
 
       {/* A not-installed agent has no safety or config facts worth showing; the Launch
           panel already says so, and a green mark there would read as "fine". */}

@@ -1,6 +1,8 @@
 import type { RunMeta } from "../../types";
-import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runStatusMark } from "../fleetShared";
+import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runMarkFor } from "../fleetShared";
 import Panel from "./Panel";
+import { isBuilderId } from "../builderShared";
+import BuilderBrainBadge from "./BuilderBrainBadge";
 import RelativeTime, { TimeAgo } from "./RelativeTime";
 import StatusMark from "./StatusMark";
 
@@ -39,7 +41,7 @@ export default function FlightLog({ runs, onOpenChat }: { runs: RunMeta[] | null
           {items.map((run) => (
             <li key={run.id} className="os-flightlog__node">
               <span className="os-flightlog__mark">
-                <StatusMark kind={runStatusMark(run.status)} />
+                <StatusMark kind={runMarkFor(run)} />
               </span>
               <div className="os-flightlog__body">
                 <div className="os-flightlog__row">
@@ -53,6 +55,11 @@ export default function FlightLog({ runs, onOpenChat }: { runs: RunMeta[] | null
                   </span>
                   <span className="os-mono">{costLabel(run.usage)}</span>
                 </div>
+                {isBuilderId(run.agentId) && run.brain ? (
+                  <div className="os-flightlog__row os-flightlog__row--brain">
+                    <BuilderBrainBadge agentId={run.agentId} brain={run.brain} />
+                  </div>
+                ) : null}
               </div>
             </li>
           ))}

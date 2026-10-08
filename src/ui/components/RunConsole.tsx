@@ -4,7 +4,7 @@
 // no Stop button and no flight-plan disclosure — just "is it still going".
 import { useEffect, useRef, useState } from "react";
 import { getRun, stopRun, useRunStream } from "../../api";
-import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runStatusMark } from "../fleetShared";
+import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runMarkFor } from "../fleetShared";
 import { collapseHomePath, friendlyError } from "../agentsShared";
 import { codexConfigHint, groupTranscript, statusLabel } from "../runsShared";
 import type { RunMeta } from "../../types";
@@ -12,6 +12,10 @@ import RelativeTime from "./RelativeTime";
 import StatusMark from "./StatusMark";
 import RunTranscript from "./RunTranscript";
 import AgentConfirmModal from "./AgentConfirmModal";
+import BuilderBrainBadge from "./BuilderBrainBadge";
+import RunLimitBanner from "./RunLimitBanner";
+import { isBuilderId } from "../builderShared";
+import { navigateTo } from "../../nav";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 
@@ -151,8 +155,15 @@ export default function RunConsole({
         <div className="os-run-console__headtext">
           <strong>{meta.title || firstLine(meta.commandPreview, 60) || "Run"}</strong>
           <span className="os-run-console__meta">
-            <StatusMark key={pulseTick} kind={runStatusMark(meta.status)} pulse={isActive && pulseTick > 0} />
-            {stopping && isActive ? "Stopping…" : statusLabel(meta.status)}
+            <StatusMark key={pulseTick} kind={runMarkFor(meta)} pulse={isActive && pulseTick > 0} />
+            {stopping && isActive ? "Stopping…" : meta.limit && !isActive ? "Plan limit reached" : statusLabel(meta.status)}
+            {isBuilderId(meta.agentId) && meta.brain ? (
+              <>
+                <BuilderBrainBadge agentId={meta.agentId} brain={meta.brain} />
+                {/* Plan runs name no model in the brain; show the one the agent itself reported. */}
+                {meta.brain.mode === "plan" && meta.model ? <span className="os-mono os-run-console__model">{meta.model}</span> : null}
+              </>
+            ) : null}
           </span>
         </div>
         {!compact ? (
@@ -186,6 +197,22 @@ export default function RunConsole({
           <code className="os-mono">{meta.commandPreview}</code>
           <p className="os-mono os-run-console__plan-folder">{collapseHomePath(meta.cwd)}</p>
         </details>
+      ) : null}
+
+      {!compact && meta.continuedFrom ? (
+        <p className="os-run-console__note">
+          This run carries on from an earlier one that hit its plan limit.{" "}
+          <button type="button" className="os-mp-link" onClick={() => navigateTo("runs", { run: meta.continuedFrom || "" })}>
+            Open it
+          </button>
+        </p>
+      ) : null}
+
+      {!compact && meta.limit && !isActive ? <RunLimitBanner run={meta} /> : null}
+      {!compact && meta.nearLimit && !meta.limit ? (
+        <p className="os-run-console__note">
+          <StatusMark kind="warn" label="note" /> This run got close to your plan&apos;s limit.
+        </p>
       ) : null}
 
       {showCodexHint ? (

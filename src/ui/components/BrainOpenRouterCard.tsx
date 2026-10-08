@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ExternalLink } from "lucide-react";
 import BrainAgentChecks from "./BrainAgentChecks";
 import RelativeTime from "./RelativeTime";
+import RememberKeyTick from "./RememberKeyTick";
 import StatusMark from "./StatusMark";
 import { useInterval } from "./useInterval";
 import type { BrainAgentId, OpenRouterConnectState, OpenRouterModel } from "../../setupApi";
@@ -379,6 +380,8 @@ export default function BrainOpenRouterCard({
               <StatusMark kind="ok" label="connected" /> OpenRouter connected ✓
             </p>
           ) : null}
+          {/* Opt-in (off by default): keep this key for Claude Code and Codex too. */}
+          {!useKey && flowId ? <RememberKeyTick flowId={flowId} /> : null}
           {info?.isFreeTier === true ? <p className="os-brain-card__hint">Free account: 50 free-model requests a day.</p> : null}
           {info?.isFreeTier === false ? <p className="os-brain-card__hint">You&apos;ve added credit: up to 1,000 free-model requests a day.</p> : null}
 

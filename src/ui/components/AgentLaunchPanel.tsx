@@ -5,10 +5,15 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { previewAgentRun, startAgentRun } from "../../api";
+import type { AgentRunOptions } from "../../api";
+import type { BuilderBrains } from "../../buildersApi";
 import { navigateTo } from "../../nav";
 import type { AgentRunPreview, ExecutionGateStatus, RunMeta } from "../../types";
 import { ALLOW_EDITS_AGENT_SET, SETUP_INSTALLED_AGENT_SET, collapseHomePath, friendlyError } from "../agentsShared";
+import { brainText, isBuilderId } from "../builderShared";
 import AgentConfirmModal from "./AgentConfirmModal";
+import LaunchBrainOverride from "./LaunchBrainOverride";
+import type { BrainOverrideState } from "./LaunchBrainOverride";
 
 export default function AgentLaunchPanel({
   agentId,
@@ -19,7 +24,8 @@ export default function AgentLaunchPanel({
   gateFailed,
   onReloadGate,
   onRecheck,
-  onLaunched
+  onLaunched,
+  brains = null
 }: {
   agentId: string;
   label: string;
@@ -30,6 +36,8 @@ export default function AgentLaunchPanel({
   onReloadGate: () => Promise<void>;
   onRecheck: () => Promise<void>;
   onLaunched: (run: RunMeta) => void;
+  // The coding agents' saved brains (for the "Brain for this run" choice).
+  brains?: BuilderBrains | null;
 }) {
   const [prompt, setPrompt] = useState("");
   const [folder, setFolder] = useState("");
@@ -41,13 +49,25 @@ export default function AgentLaunchPanel({
   const [launchBusy, setLaunchBusy] = useState(false);
   const [launchError, setLaunchError] = useState("");
   const [rechecking, setRechecking] = useState(false);
+  const [brainState, setBrainState] = useState<BrainOverrideState>({ override: null, problem: "" });
 
   const canAllowEdits = ALLOW_EDITS_AGENT_SET.has(agentId);
   const trimmedPrompt = prompt.trim();
+  const builderId = isBuilderId(agentId) ? agentId : null;
+  // What this one run asks for beyond the defaults (nothing at all for most runs).
+  const runOptions: AgentRunOptions | undefined =
+    canAllowEdits || (builderId && brainState.override)
+      ? { ...(canAllowEdits ? { allowEdits } : {}), ...(builderId && brainState.override ? { brain: brainState.override } : {}) }
+      : undefined;
+  const brainProblem = builderId ? brainState.problem : "";
 
   async function runPreview(): Promise<AgentRunPreview | null> {
     if (!trimmedPrompt) {
       setPreviewError("Write a prompt first.");
+      return null;
+    }
+    if (brainProblem) {
+      setPreviewError(brainProblem);
       return null;
     }
     setPreviewBusy(true);
@@ -56,7 +76,7 @@ export default function AgentLaunchPanel({
       const result = await previewAgentRun(agentId, {
         prompt,
         folder: folder.trim() || undefined,
-        options: canAllowEdits ? { allowEdits } : undefined
+        options: runOptions
       });
       setPreview(result);
       return result;
@@ -90,7 +110,7 @@ export default function AgentLaunchPanel({
       const run = await startAgentRun(agentId, {
         prompt,
         folder: folder.trim() || undefined,
-        options: canAllowEdits ? { allowEdits } : undefined
+        options: runOptions
       });
       setConfirmOpen(false);
       onLaunched(run);
@@ -205,15 +225,16 @@ export default function AgentLaunchPanel({
             <span>Allow edits in this folder</span>
           </label>
         ) : null}
+        {builderId ? <LaunchBrainOverride agentId={builderId} label={label} brains={brains} onChange={setBrainState} /> : null}
         <div className="os-launch__actions">
-          <button type="submit" className="os-btn os-btn--secondary" disabled={previewBusy || !trimmedPrompt}>
+          <button type="submit" className="os-btn os-btn--secondary" disabled={previewBusy || !trimmedPrompt || Boolean(brainProblem)}>
             {previewBusy ? "Previewing…" : "Preview"}
           </button>
           <button
             type="button"
             className="os-btn os-btn--primary"
             onClick={handleLaunchClick}
-            disabled={launchBusy || !trimmedPrompt}
+            disabled={launchBusy || !trimmedPrompt || Boolean(brainProblem)}
             aria-busy={previewBusy}
           >
             Launch
@@ -227,6 +248,7 @@ export default function AgentLaunchPanel({
           <span className="os-micro">Flight plan</span>
           <code className="os-mono os-flightplan__command">{preview.commandPreview}</code>
           <p className="os-flightplan__folder os-mono">{collapseHomePath(preview.cwd)}</p>
+          {builderId && preview.brain ? <p className="os-flightplan__brain">Brain: {brainText(builderId, preview.brain)}</p> : null}
         </div>
       ) : null}
 
@@ -239,6 +261,10 @@ export default function AgentLaunchPanel({
           onClose={() => (launchBusy ? null : setConfirmOpen(false))}
         >
           <p>This will actually run {label}.</p>
+          {builderId && preview?.brain?.mode === "openrouter" ? (
+            <p>It runs on OpenRouter ({preview.brain.model}), paid per use from your OpenRouter credit.</p>
+          ) : null}
+          {builderId && preview?.brain?.mode === "local" ? <p>It runs on a model on this computer ({preview.brain.model}). That is free, but slower.</p> : null}
           {preview ? (
             <div className="os-flightplan os-flightplan--modal">
               <code className="os-mono os-flightplan__command">{preview.commandPreview}</code>

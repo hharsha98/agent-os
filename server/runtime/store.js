@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
 
-export const RUNTIME_VERSION = "0.3.1";
+export const RUNTIME_VERSION = "0.3.2";
 const runtimeContext = new AsyncLocalStorage();
 
 export function expandHome(value) {

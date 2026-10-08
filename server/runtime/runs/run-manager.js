@@ -14,8 +14,10 @@ import {
   listRunIds,
   readRunEvents,
   readRunMeta,
+  readRunPrompt,
   runsDir,
-  writeRunMeta
+  writeRunMeta,
+  writeRunPrompt
 } from "./run-store.js";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -26,6 +28,11 @@ export const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "stopped", 
 // How often waitForRun() re-checks as a safety net, in case the "end" event
 // was missed (a run owned by another process never sends one to us at all).
 const WAIT_POLL_MS = 500;
+// What a plan may put on its run's metadata (plan.meta): which brain paid for
+// it, the task it was given, and which run it continues. Nothing else is copied.
+const PLAN_META_KEYS = ["brain", "task", "continuedFrom"];
+// What annotateRun() may change on a finished run.
+const ANNOTATE_KEYS = ["continuedBy"];
 
 function invalidPlanError(message) {
   const error = new Error(message);
@@ -194,6 +201,8 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     if (typeof evt.costUsd === "number") usage.costUsd = (usage.costUsd || 0) + evt.costUsd;
     if (typeof evt.inputTokens === "number") usage.inputTokens = (usage.inputTokens || 0) + evt.inputTokens;
     if (typeof evt.outputTokens === "number") usage.outputTokens = (usage.outputTokens || 0) + evt.outputTokens;
+    // Not a total: how big the conversation was at the last answer (the last one wins).
+    if (typeof evt.lastInputTokens === "number") usage.lastInputTokens = evt.lastInputTokens;
   }
 
   // A `system` event may name the model the agent used; keep it on the run's
@@ -204,10 +213,31 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     }
   }
 
+  // Other facts an agent reports that a screen (or a later run) needs without
+  // reading the whole transcript:
+  //   system.sessionId / apiKeySource -> meta.sessionId / meta.apiKeySource
+  //   limit                           -> meta.limit {kind, message, resetsAt?} (the first one)
+  //   setup with warning:"near_limit" -> meta.nearLimit = true
+  function noteFacts(state, evt) {
+    if (evt?.type === "system") {
+      if (typeof evt.sessionId === "string" && evt.sessionId) state.meta.sessionId = evt.sessionId.slice(0, 80);
+      if (typeof evt.apiKeySource === "string" && evt.apiKeySource) state.meta.apiKeySource = evt.apiKeySource.slice(0, 40);
+    } else if (evt?.type === "limit" && !state.meta.limit) {
+      state.meta.limit = {
+        kind: String(evt.kind || "usage_limit").slice(0, 40),
+        message: String(evt.message || "").slice(0, 200),
+        ...(typeof evt.resetsAt === "string" && evt.resetsAt ? { resetsAt: evt.resetsAt.slice(0, 40) } : {})
+      };
+    } else if (evt?.type === "setup" && evt.warning === "near_limit") {
+      state.meta.nearLimit = true;
+    }
+  }
+
   async function appendParsedEvents(state, events, stream) {
     for (const evt of events) {
       accumulateUsage(state, evt);
       noteModel(state, evt);
+      noteFacts(state, evt);
       await appendEvent(state, { stream, ...evt });
     }
   }
@@ -241,7 +271,9 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     });
 
     return {
-      async flush() {
+      // `ending` ({ exitCode, signal }) is what is known about how the process
+      // ended; it is absent when the process could not be started at all.
+      async flush(ending = {}) {
         if (stdoutBuf) await processLine(state, plan, stdoutBuf, "stdout");
         if (stderrBuf) await processLine(state, plan, stderrBuf, "stderr");
         // For output that only makes sense as a whole (OpenClaw prints one
@@ -250,7 +282,7 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
         if (typeof plan.onOutputEnd === "function") {
           let events = null;
           try {
-            events = await plan.onOutputEnd();
+            events = await plan.onOutputEnd(ending);
           } catch {
             events = null;
           }
@@ -320,6 +352,12 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       usage: {},
       error: null
     };
+    // plan.meta: the few things an adapter may record on its run (see PLAN_META_KEYS).
+    if (plan.meta && typeof plan.meta === "object") {
+      for (const key of PLAN_META_KEYS) {
+        if (plan.meta[key] !== undefined) meta[key] = plan.meta[key];
+      }
+    }
     const state = {
       meta,
       dir,
@@ -339,6 +377,11 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     });
     runs.set(id, state);
     await persistMeta(state);
+    // plan.taskPrompt: the task text, in a private file of its own, so a run
+    // that stops at a plan limit can be continued. Best-effort.
+    if (typeof plan.taskPrompt === "string" && plan.taskPrompt) {
+      await writeRunPrompt(dir, id, plan.taskPrompt.slice(0, 20000)).catch(() => {});
+    }
 
     const env = withSiblingNodePath(plan.command, childEnv(process.env, plan.env || {}));
     const stdinMode = typeof plan.stdin === "string" ? "pipe" : "ignore";
@@ -406,7 +449,7 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       if (settled) return;
       settled = true;
       try {
-        await output.flush();
+        await output.flush({ exitCode: code, signal });
       } catch {
         // output storage is best-effort once the process has exited
       }
@@ -473,6 +516,34 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     if (state) return { ...state.meta };
     const dir = await runsDir();
     return readRunMeta(dir, id);
+  }
+
+  // The task text this run was started with (null for runs that did not save one).
+  async function readPrompt(id) {
+    const dir = await runsDir();
+    return readRunPrompt(dir, id);
+  }
+
+  // Writes a few facts onto a run after it has ended (ANNOTATE_KEYS only), for
+  // example which run continued it. Returns the run's meta, or null.
+  async function annotateRun(id, patch = {}) {
+    const apply = (meta) => {
+      for (const key of ANNOTATE_KEYS) {
+        if (patch[key] !== undefined) meta[key] = patch[key];
+      }
+    };
+    const state = runs.get(id);
+    if (state) {
+      apply(state.meta);
+      await enqueue(state, () => persistMeta(state));
+      return { ...state.meta };
+    }
+    const dir = await runsDir();
+    const meta = await readRunMeta(dir, id);
+    if (!meta) return null;
+    apply(meta);
+    await writeRunMeta(dir, meta);
+    return meta;
   }
 
   async function listRuns({ limit = 100, agentId, kind } = {}) {
@@ -605,6 +676,8 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
     startRun,
     stopRun,
     getRun,
+    readPrompt,
+    annotateRun,
     listRuns,
     readEvents,
     subscribe,

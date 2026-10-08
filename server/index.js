@@ -190,6 +190,8 @@ import { createAgentsRouter } from "./runtime/agents/routes.js";
 import { createTeamRoomsRouter } from "./runtime/team-room/routes.js";
 import { recoverStaleRooms } from "./runtime/team-room/moderator.js";
 import { createSetupRouter } from "./runtime/setup/routes.js";
+import { createBuildersRouter } from "./runtime/builders/routes.js";
+import { createSecretsRouter } from "./runtime/secrets/routes.js";
 import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
 import { setServerPort } from "./runtime/server-info.js";
 
@@ -1028,6 +1030,12 @@ app.use("/api/team-rooms", requireAdminWhenPublic, createTeamRoomsRouter());
 // (provider onboarding) -- no sub-path here collides with those.
 app.use("/api/setup", requireAdminWhenPublic, createSetupRouter());
 
+// Which brain (the person's plan, OpenRouter, or a local model) Claude Code,
+// Codex and Cursor use, and the saved OpenRouter key they use it with. Both are
+// under /api/, so the local session gate covers them; the key is never returned.
+app.use("/api/builders", requireAdminWhenPublic, createBuildersRouter());
+app.use("/api/secrets", requireAdminWhenPublic, createSecretsRouter());
+
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.json(await getModuleSessions(req.params.id));
@@ -1800,9 +1808,17 @@ app.get("*", (_req, res) => {
 });
 
 app.use((error, _req, res, _next) => {
+  // express.json() rejects unreadable JSON with the raw request text in
+  // error.body, and its message quotes the start of that text, which could be
+  // a pasted API key. Never echo or log either of them.
+  if (typeof error?.type === "string" && typeof error?.body === "string") {
+    console.error(`Request body rejected (${error.type}).`);
+    res.status(error.status || 400).json({ ok: false, error: "The request body could not be read." });
+    return;
+  }
   console.error(error);
   res.status(error?.status || 500).json({
-    ...(error?.body || {}),
+    ...(error?.body && typeof error.body === "object" ? error.body : {}),
     ok: false,
     error: error?.message || "Internal server error",
     audit: error?.audit

@@ -388,3 +388,21 @@ test("15. demo mode stays anonymous but still enforces the Host allow-list", asy
     await rm(demoHome, { recursive: true, force: true });
   }
 });
+
+test("16. unreadable JSON never echoes the request text (it could hold a key) in the reply or the log", async () => {
+  const fakeKey = "sk-or-v1-NOTAREALKEY0123456789abcdef";
+  const response = await fetch(`${base}/api/setup/configure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-agent-os-token": TOKEN },
+    body: `{"apiKey":"${fakeKey}"` // cut off on purpose: not valid JSON
+  });
+  assert.equal(response.status, 400);
+  // The old handler spread the raw text into the reply one character per key
+  // ({"0":"{","1":"\"",...}), so check the reply's exact shape, not a substring.
+  const reply = await response.json();
+  assert.deepEqual(Object.keys(reply).sort(), ["error", "ok"]);
+  assert.ok(!JSON.stringify(reply).includes("NOTAREALKEY"), "the reply must not quote the request");
+  // Give the server a moment to write its log line, then check the log too.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(!logs.text.includes("NOTAREALKEY"), "the server log must not quote the request");
+});

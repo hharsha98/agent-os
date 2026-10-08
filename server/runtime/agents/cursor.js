@@ -3,6 +3,8 @@
 // hard-coded, because Cursor Agent releases frequently. Confirmed live
 // against Cursor Agent 2026.09.23's --help; see the deliverable report for
 // any place the real CLI differed from the docs.
+import { brainError, brainNotices, normalizeBrain, runRecord } from "../builders/brain-launch.js";
+import { USAGE_LIMIT_TEXT, limitEvent } from "../builders/limits.js";
 import { runCommand } from "../safety.js";
 import {
   cachedFeatures,
@@ -30,6 +32,8 @@ async function detectFeatures(binPath) {
     streamJson: /stream-json/i.test(text),
     workspace: /--workspace\b/.test(text),
     trust: /--trust\b/.test(text),
+    // Only needed for the per-run model (composer-2.5 or auto).
+    model: /--model\b/.test(text),
     // The real CLI's --help never documents stdin support for the prompt
     // argument (only `agent -p "text"` examples), so this stays false unless
     // a future --help explicitly says otherwise.
@@ -115,6 +119,19 @@ async function buildRun({ prompt, cwd, detected, runDir, options = {} }) {
   // buildRun ever runs), never an arbitrary path a request could pick.
   if (features.trust) args.push("--trust");
 
+  // Cursor's command-line agent only runs models from the person's Cursor
+  // plan, so the only choice here is a per-run --model (composer-2.5, Cursor's
+  // own, or auto); OpenRouter and Local are refused with brain_not_supported.
+  // No model (the default) adds nothing, so the command line is what it always was.
+  const brain = normalizeBrain(options.brain, "cursor");
+  if (brain.model) {
+    if (!features.model) {
+      throw brainError("brain_not_supported_by_cli", "This version of Cursor's agent can't switch models for one run. Update it, then try again.");
+    }
+    args.push("--model", brain.model);
+  }
+  const notices = brainNotices("cursor", brain);
+
   let stdin;
   if (features.stdinPrompt) {
     stdin = prompt;
@@ -122,6 +139,7 @@ async function buildRun({ prompt, cwd, detected, runDir, options = {} }) {
     args.push("--", prompt);
   }
 
+  const parserState = {}; // one per run
   return {
     agentId: "cursor",
     kind: "agent",
@@ -131,7 +149,18 @@ async function buildRun({ prompt, cwd, detected, runDir, options = {} }) {
     cwd: runDir,
     stdin,
     timeoutMs: RUN_TIMEOUT_MS,
-    parseLine
+    ...runRecord({ prompt, cwd, brain, options }),
+    ...(notices.length ? { notices } : {}),
+    parseLine: (line, stream) => parseLine(line, stream, parserState),
+    // Cursor documents no limit field. The sentence it prints counts as a plan
+    // limit only if the run also ended badly (a non-zero exit or no final
+    // `result`): a run that merely QUOTES the sentence and finishes is not one.
+    onOutputEnd: ({ exitCode } = {}) => {
+      if (!parserState.limitText || parserState.limitSeen) return null;
+      if (exitCode === 0 && parserState.sawResult) return null;
+      parserState.limitSeen = true;
+      return [limitEvent("cursor")];
+    }
   };
 }
 
@@ -161,7 +190,11 @@ function toolCallPreview(evt) {
 // Event shapes follow https://cursor.com/docs/cli/reference/output-format:
 // system/init once at start, assistant messages carry full text per
 // segment, tool_call started/completed, and a terminal result event.
-function parseLine(line) {
+// `ctx` is per-run memory (see buildRun): whether the plan-limit sentence was
+// seen and whether a final `result` arrived. buildRun's onOutputEnd decides
+// once the exit code is known.
+function parseLine(line, _stream, ctx = {}) {
+  if (USAGE_LIMIT_TEXT.test(line)) ctx.limitText = true;
   let evt;
   try {
     evt = JSON.parse(line);
@@ -198,6 +231,8 @@ function parseLine(line) {
       return [{ type: "line", text: line }];
     }
     case "result":
+      // A final result that reports an error is not a clean ending either.
+      ctx.sawResult = evt.is_error !== true;
       return [{ type: "result", text: String(evt.result ?? ""), data: { is_error: Boolean(evt.is_error) } }];
     default:
       return [{ type: "line", text: line }];

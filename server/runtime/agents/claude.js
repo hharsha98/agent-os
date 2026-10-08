@@ -2,6 +2,18 @@
 // (see detect.js) rather than hard-coded, because Claude Code releases
 // frequently. Confirmed live against Claude Code 2.1.281's --help; see the
 // deliverable report for any place the real CLI differed from the docs.
+import {
+  brainError,
+  brainNotices,
+  buildClaudeSettings,
+  keyHelper,
+  normalizeBrain,
+  normalizeBudget,
+  normalizeResume,
+  runRecord,
+  writeClaudeSettingsFile
+} from "../builders/brain-launch.js";
+import { CLAUDE_LIMIT_TEXT, limitEvent, resetsAtFrom } from "../builders/limits.js";
 import { runCommand } from "../safety.js";
 import {
   cachedFeatures,
@@ -36,6 +48,11 @@ async function detectFeatures(binPath) {
     verbose: /--verbose\b/.test(text),
     permissionMode: /--permission-mode\b/.test(text),
     addDir: /--add-dir\b/.test(text),
+    // Only needed for a run on OpenRouter/Local, or one continued after a limit.
+    settings: /--settings\b/.test(text),
+    model: /--model\b/.test(text),
+    resume: /--resume\b/.test(text) && /--fork-session\b/.test(text),
+    maxBudgetUsd: /--max-budget-usd\b/.test(text),
     permissionModes: parsePermissionModes(text),
     // "auth" only shows up as a top-level command when `claude auth status`
     // (a read-only check) actually exists.
@@ -125,16 +142,56 @@ async function buildRun({ prompt, cwd, detected, runDir, options = {} }) {
 
   if (features.addDir) args.push("--add-dir", cwd);
 
+  // Which brain pays for the run. `plan` (the default) adds nothing to the
+  // items above, so the command line is exactly what it always was.
+  // options.brain comes from trusted server code (see builders/resolve.js);
+  // options.resume ({ sessionId, fork }) continues an earlier conversation and
+  // options.maxBudgetUsd caps what one run may spend (both set by builders/continue.js).
+  const brain = normalizeBrain(options.brain, "claude");
+  const resume = normalizeResume(options.resume);
+  const budget = brain.mode === "plan" ? null : normalizeBudget(options.maxBudgetUsd);
+  if (brain.mode !== "plan" && !(features.settings && features.model)) {
+    throw brainError("brain_not_supported_by_cli", "This version of Claude Code can't be pointed at another model. Update Claude Code, then try again.");
+  }
+  if (resume && !features.resume) {
+    throw brainError("brain_not_supported_by_cli", "This version of Claude Code can't continue an earlier conversation. Update Claude Code, then try again.");
+  }
+  const notices = brain.mode === "plan" ? [] : brainNotices("claude", brain);
+  let settingsFile = null;
+  if (brain.mode !== "plan") {
+    // Throws (and writes nothing) when an OpenRouter run has no saved key, or
+    // when the settings would name another address without a credential.
+    const settings = buildClaudeSettings(brain, brain.mode === "openrouter" ? await keyHelper() : null);
+    settingsFile = await writeClaudeSettingsFile(runDir, settings);
+    args.push("--settings", settingsFile.file, "--model", brain.mode === "local" ? brain.local.model : brain.model);
+    if (budget && features.maxBudgetUsd) {
+      args.push("--max-budget-usd", String(budget));
+    } else if (budget) {
+      notices.push("This version of Claude Code can't enforce a spending limit, so only the estimate keeps this run in budget.");
+    }
+  }
+  if (resume) {
+    args.push("--resume", resume.sessionId);
+    if (resume.fork) args.push("--fork-session");
+  }
+
+  const transport = streamJson ? "stream-json" : "text";
+  const where = brain.mode === "openrouter" ? ", OpenRouter" : brain.mode === "local" ? ", local model" : "";
+  const parserState = {}; // one per run, so a limit is reported once
   return {
     agentId: "claude",
     kind: "agent",
-    title: `Claude Code (${streamJson ? "stream-json" : "text"} transport)`,
+    title: `Claude Code (${transport} transport${where})`,
     command: detected.path,
     args,
     cwd: runDir,
     stdin: prompt,
     timeoutMs: RUN_TIMEOUT_MS,
-    parseLine: (line, stream) => parseLine(line, stream)
+    ...runRecord({ prompt, cwd, brain, options }),
+    ...(notices.length ? { notices } : {}),
+    // The settings file holds no key, but it is still removed as soon as the run ends.
+    ...(settingsFile ? { onExit: () => settingsFile.remove() } : {}),
+    parseLine: (line, stream) => parseLine(line, stream, parserState)
   };
 }
 
@@ -185,7 +242,10 @@ function blockText(content) {
 // (https://code.claude.com/docs/en/headless): system/init once at start,
 // assistant/user messages carry Anthropic Messages-API-style content
 // blocks, and a single terminal "result" event carries totals.
-function parseLine(line) {
+// `ctx` is per-run memory (see buildRun): whether a limit was already reported,
+// and how big the conversation was at the last answer. Called without one (as
+// the tests do), every line is judged on its own.
+function parseLine(line, _stream, ctx = {}) {
   let evt;
   try {
     evt = JSON.parse(line);
@@ -196,18 +256,46 @@ function parseLine(line) {
   switch (evt.type) {
     case "system": {
       if (evt.subtype === "init") {
-        return [{ type: "system", text: `session started (model ${evt.model || "unknown"})` }];
+        const init = { type: "system", text: `session started (model ${evt.model || "unknown"})` };
+        // Kept on the run: the session id lets a later run continue this
+        // conversation; apiKeySource ("apiKeyHelper" on OpenRouter, "none" on
+        // a plan sign-in) shows which credential this run really used.
+        if (typeof evt.session_id === "string" && evt.session_id) init.sessionId = evt.session_id.slice(0, 80);
+        if (typeof evt.apiKeySource === "string" && evt.apiKeySource) init.apiKeySource = evt.apiKeySource.slice(0, 40);
+        return [init];
       }
       if (["hook_started", "hook_response", "commands_changed"].includes(evt.subtype)) {
         return [setupEvent(evt, evt.subtype)];
       }
       return null;
     }
-    case "rate_limit_event":
+    case "rate_limit_event": {
+      const info = evt.rate_limit_info && typeof evt.rate_limit_info === "object" ? evt.rate_limit_info : {};
+      // "rejected" is the real stop. "allowed_warning" only means "near your
+      // limit" and is not a stop.
+      if (info.status === "rejected") {
+        if (ctx.limitSeen) return null;
+        ctx.limitSeen = true;
+        return [limitEvent("claude", { kind: info.rateLimitType, resetsAt: resetsAtFrom(info.resetsAt) })];
+      }
+      if (info.status === "allowed_warning") {
+        return [{ type: "setup", text: "rate_limit_event: near your limit", warning: "near_limit" }];
+      }
       return [setupEvent(evt, "rate_limit_event")];
+    }
     case "assistant": {
       const parts = evt.message?.content;
       if (!Array.isArray(parts)) return null;
+      // How much the model read for this answer (new + cached input). The last
+      // one is the size of the whole conversation, which is what continuing it
+      // somewhere else has to read again. A sub-agent's answers are its own chat.
+      const used = evt.message?.usage;
+      if (used && typeof used === "object" && !evt.parent_tool_use_id) {
+        const total = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+          .map((key) => (Number.isFinite(used[key]) ? used[key] : 0))
+          .reduce((a, b) => a + b, 0);
+        if (total > 0) ctx.lastInputTokens = total;
+      }
       const events = [];
       for (const part of parts) {
         if (part?.type === "text") events.push({ type: "text", text: String(part.text ?? "") });
@@ -232,12 +320,19 @@ function parseLine(line) {
           data: { is_error: Boolean(evt.is_error), num_turns: evt.num_turns ?? null }
         }
       ];
+      // The exit code can be 0 even when the plan ran out, so the words decide.
+      if (evt.is_error === true && CLAUDE_LIMIT_TEXT.test(String(evt.result ?? "")) && !ctx.limitSeen) {
+        ctx.limitSeen = true;
+        events.push(limitEvent("claude"));
+      }
       const costUsd = evt.total_cost_usd;
       const usage = evt.usage || {};
       const inputTokens = usage.input_tokens;
       const outputTokens = usage.output_tokens;
       if (typeof costUsd === "number" || typeof inputTokens === "number" || typeof outputTokens === "number") {
-        events.push({ type: "usage", costUsd, inputTokens, outputTokens });
+        const usageEvent = { type: "usage", costUsd, inputTokens, outputTokens };
+        if (ctx.lastInputTokens) usageEvent.lastInputTokens = ctx.lastInputTokens;
+        events.push(usageEvent);
       }
       return events;
     }

@@ -49,8 +49,12 @@
  * @property {(line: string, stream: "stdout"|"stderr") => Array<Object>|null} [parseLine]
  * @property {(meta: Object) => Promise<void>} [onExit] - best-effort cleanup after the run ends
  * @property {string[]} [notices] - plain-English heads-ups recorded as `system` events right after "Started"
- * @property {() => Array<Object>|null|Promise<Array<Object>|null>} [onOutputEnd] - called once when the output has ended; returns events
- *   built from everything parseLine collected (for output that only makes sense as a whole, like one JSON document)
+ * @property {(ending: {exitCode?: number|null, signal?: string|null}) => Array<Object>|null|Promise<Array<Object>|null>} [onOutputEnd] - called once when the output has ended; returns events
+ *   built from everything parseLine collected (for output that only makes sense as a whole, like one JSON document, or
+ *   a verdict that needs the exit code); `ending` is empty when the process could not be started
+ * @property {{brain?: {mode: string, model: string|null}, task?: {cwd: string, allowEdits: boolean}, continuedFrom?: string}} [meta] -
+ *   the few facts an adapter may put on its run's metadata (anything else is ignored)
+ * @property {string} [taskPrompt] - the task text, kept in a private file next to the run so a run that stops at a plan limit can be continued
  */
 
 /**
@@ -70,7 +74,9 @@
  * @property {(detected: DetectedAgent) => Promise<ConfigStatus>} configStatus
  * @property {(detected: DetectedAgent) => Promise<SafetyStatus>} safetyStatus
  * @property {(input: {prompt: string, cwd: string, detected: DetectedAgent, runDir: string, options?: Object}) => Promise<RunPlan>} buildRun
- *   options is adapter-specific and set by trusted server code only (Hermes: talkOnly; OpenClaw: sessionId, model)
+ *   options is adapter-specific and set by trusted server code only (Hermes: talkOnly; OpenClaw: sessionId, model;
+ *   Claude Code / Codex / Cursor: allowEdits, brain {mode, model, local?} from builders/resolve.js, and for continuing a
+ *   run after a plan limit: originalPrompt, continuedFrom, and for Claude resume {sessionId, fork} and maxBudgetUsd)
  * @property {(line: string, stream: "stdout"|"stderr", ctx?: Object) => Array<Object>|null} parseLine
  * @property {{status: (detected: DetectedAgent) => Promise<ServiceStatus>, start: (detected: DetectedAgent) => RunPlan, stop: (detected: DetectedAgent) => RunPlan}} [service]
  * @property {(actionId: string, detected: DetectedAgent) => RunPlan|null} [safetyAction] - builds the plan for a safetyStatus() action id

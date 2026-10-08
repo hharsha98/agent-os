@@ -47,6 +47,10 @@ async function main() {
 
   await cp(distDir, path.join(outDir, "web"), { recursive: true });
 
+  // The small script that prints a saved OpenRouter key to Claude Code and
+  // Codex (server/runtime/secrets/keystore.js looks for it next to the bundle).
+  await cp(path.join(root, "server", "runtime", "secrets", "print-key.mjs"), path.join(outDir, "print-key.mjs"));
+
   const pkg = require(path.join(root, "package.json"));
   await writeFile(
     path.join(outDir, "bundle.json"),

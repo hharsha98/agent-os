@@ -388,3 +388,95 @@ test("15. demo mode stays anonymous but still enforces the Host allow-list", asy
     await rm(demoHome, { recursive: true, force: true });
   }
 });
+
+test("16. changing the letter case of a protected path does not skip the session", async () => {
+  // Express answers "/API/..." with the same handler as "/api/...", so the gate
+  // has to treat both the same. Every one of these must be stopped at the gate
+  // (401 session_required) and must never reach a real handler.
+  const attempts = [
+    ["GET", "/API/health"],
+    ["GET", "/Api/Health"],
+    ["GET", "/API/session"],
+    ["POST", "/API/session/claim"],
+    ["POST", "/Api/Session/Claim"],
+    ["GET", "/API/local-agents"],
+    ["GET", "/Api/Agents"],
+    ["POST", "/API/runs"],
+    ["POST", "/Api/Agents/hermes/message"],
+    ["GET", "/_NEXT/x"],
+    ["GET", "/Agent-Builder-Source"]
+  ];
+  for (const [method, urlPath] of attempts) {
+    const response = await fetch(`${base}${urlPath}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      // Even the CORRECT token in the body must not turn "/API/session/claim"
+      // into a working login: only the exact lower-case address is the login.
+      ...(method === "POST" ? { body: JSON.stringify({ token: TOKEN }) } : {})
+    });
+    assert.equal(response.status, 401, `${method} ${urlPath} should be 401, got ${response.status}`);
+    const body = await response.json();
+    assert.equal(body.error, "session_required", `${method} ${urlPath} should stop at the gate`);
+    assert.equal(response.headers.get("set-cookie"), null, `${method} ${urlPath} must not hand out a session`);
+  }
+});
+
+test("17. the lower-case session-free addresses still work without a session", async () => {
+  const health = await fetch(`${base}/api/health`);
+  assert.equal(health.status, 200);
+
+  const session = await fetch(`${base}/api/session`);
+  assert.equal(session.status, 200);
+  const sessionBody = await session.json();
+  assert.equal(sessionBody.authenticated, false);
+
+  const claim = await fetch(`${base}/api/session/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: TOKEN })
+  });
+  assert.equal(claim.status, 200);
+});
+
+test("18. a protected lower-case route with a valid session still works, and the upper-case twin is not a route", async () => {
+  const withSession = await fetch(`${base}/api/local-agents`, {
+    headers: { "x-agent-os-token": TOKEN }
+  });
+  assert.equal(withSession.status, 200);
+  assert.match(withSession.headers.get("content-type") || "", /application\/json/);
+
+  const withSessionAgents = await fetch(`${base}/api/agents`, {
+    headers: { "x-agent-os-token": TOKEN }
+  });
+  assert.notEqual(withSessionAgents.status, 401);
+  assert.notEqual(withSessionAgents.status, 404);
+
+  // Case-sensitive routing: even WITH a valid session, "/API/local-agents" is a
+  // different address from "/api/local-agents" and the API handler never answers it.
+  // (Once dist/ exists, the single-page-app fallback may answer 200 with HTML, so
+  // only "200 with the API's JSON" counts as the handler having run.)
+  const upper = await fetch(`${base}/API/local-agents`, {
+    headers: { "x-agent-os-token": TOKEN }
+  });
+  const upperIsApiJson = upper.status === 200 && (upper.headers.get("content-type") || "").includes("application/json");
+  assert.equal(upperIsApiJson, false);
+});
+
+test("19. unreadable JSON never echoes the request text in the reply or the log", async () => {
+  // A cut-off body (a pasted key with the closing brace missing) makes
+  // express.json() fail. The failure carries the raw request text, and the
+  // error handler used to spread it into the reply and print it in the log.
+  const response = await fetch(`${base}/api/setup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-agent-os-token": TOKEN },
+    body: '{"apiKey":"sk-or-v1-NOTAREALKEY0123456789abcdef"'
+  });
+  assert.equal(response.status, 400);
+  const replyText = await response.text();
+  const reply = JSON.parse(replyText);
+  assert.deepEqual(Object.keys(reply).sort(), ["error", "ok"]);
+  assert.equal(replyText.includes("NOTAREALKEY"), false);
+
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(logs.text.includes("NOTAREALKEY"), false);
+});

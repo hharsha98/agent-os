@@ -134,16 +134,25 @@ export function localSessionGate(port) {
       next();
       return;
     }
-    const isGatedPath = GATED_PREFIXES.some((prefix) => req.path.startsWith(prefix));
+    // Express matches routes without caring about letter case ("/API/runs"
+    // reaches the same handler as "/api/runs"), so "is this path protected?"
+    // is asked of the LOWER-CASED path: comparing the raw path would let anyone
+    // skip the session by changing a letter's case.
+    const lowerPath = String(req.path).toLowerCase();
+    const isGatedPath = GATED_PREFIXES.some((prefix) => lowerPath.startsWith(prefix));
     if (!isGatedPath) {
       next();
       return;
     }
-    if (req.method === "GET" && (req.path === "/api/health" || req.path === "/api/session")) {
+    // The few session-free addresses must be written EXACTLY as they really
+    // are (lower case): "/API/health" is a different address and stays behind
+    // the session.
+    const exactPath = String(req.path);
+    if (req.method === "GET" && (exactPath === "/api/health" || exactPath === "/api/session")) {
       next();
       return;
     }
-    if (req.method === "POST" && req.path === "/api/session/claim") {
+    if (req.method === "POST" && exactPath === "/api/session/claim") {
       next();
       return;
     }

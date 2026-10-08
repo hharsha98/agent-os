@@ -201,6 +201,9 @@ const dist = process.env.AGENT_OS_STATIC_DIR
   : path.join(root, "dist");
 const envFile = loadLocalEnv({ root });
 const app = express();
+// "/api/runs" and "/API/runs" must not be the same address: a route only
+// answers to the exact lower-case path the session gate protects.
+app.set("case sensitive routing", true);
 const isPackaged = process.env.AGENT_OS_PACKAGED === "1";
 function parsePort(raw) {
   if (raw === undefined || raw === "") return 8090;
@@ -1784,9 +1787,17 @@ app.get("*", (_req, res) => {
 });
 
 app.use((error, _req, res, _next) => {
+  // express.json() rejects unreadable JSON with the raw request text in
+  // error.body, and its message quotes the start of that text, which could be
+  // a pasted API key. Never echo or log either of them.
+  if (typeof error?.type === "string" && typeof error?.body === "string") {
+    console.error(`Request body rejected (${error.type}).`);
+    res.status(error.status || 400).json({ ok: false, error: "The request body could not be read." });
+    return;
+  }
   console.error(error);
   res.status(error?.status || 500).json({
-    ...(error?.body || {}),
+    ...(error?.body && typeof error.body === "object" ? error.body : {}),
     ok: false,
     error: error?.message || "Internal server error",
     audit: error?.audit

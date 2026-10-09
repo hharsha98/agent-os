@@ -10,6 +10,7 @@ import AgentBay from "../ui/components/AgentBay";
 import AgentRail from "../ui/components/AgentRail";
 import { useBuilderBrains } from "../ui/components/useBuilderBrains";
 import { useInterval } from "../ui/components/useInterval";
+import { SAFE_EXAMPLE_PROMPT } from "../ui/onboardingShared";
 import "../ui/agents.css";
 
 const AGENTS_WATCHDOG_MS = 15000;
@@ -23,6 +24,9 @@ export default function AgentsPage() {
   const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
   const [gateFailed, setGateFailed] = useState(false);
   const [selectedId, setSelectedId] = useState(() => queryParam("agent") || "");
+  // ?example=safe (from the Get started checklist) types the safe example prompt
+  // into the Launch panel. It is only typed in; the person still presses Launch.
+  const [exampleAsked, setExampleAsked] = useState(() => queryParam("example") === "safe");
   // Which brain Claude Code, Codex and Cursor use (shown in the rail and the bay).
   const { brains, failed: brainsFailed, reload: reloadBrains } = useBuilderBrains();
 
@@ -80,6 +84,7 @@ export default function AgentsPage() {
   useEffect(() => {
     function sync() {
       setSelectedId(queryParam("agent") || "");
+      setExampleAsked(queryParam("example") === "safe");
     }
     window.addEventListener("aos-navigate", sync);
     return () => window.removeEventListener("aos-navigate", sync);
@@ -145,6 +150,7 @@ export default function AgentsPage() {
           onReloadGate={loadGate}
           onRecheckAgents={() => loadAgents(true)}
           onRunLaunched={(run) => navigateTo("runs", { run: run.id })}
+          initialPrompt={exampleAsked ? SAFE_EXAMPLE_PROMPT : undefined}
           brains={brains}
           brainsFailed={brainsFailed}
           onBrainsChanged={reloadBrains}

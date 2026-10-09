@@ -2,7 +2,7 @@
 // confirmed launch. Also owns the three states that replace the form
 // entirely — not installed, gate off, and (implicitly) loading — because
 // each is really "there is no form to show yet", not a form overlay.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { previewAgentRun, startAgentRun } from "../../api";
 import type { AgentRunOptions } from "../../api";
@@ -25,7 +25,8 @@ export default function AgentLaunchPanel({
   onReloadGate,
   onRecheck,
   onLaunched,
-  brains = null
+  brains = null,
+  initialPrompt
 }: {
   agentId: string;
   label: string;
@@ -38,8 +39,10 @@ export default function AgentLaunchPanel({
   onLaunched: (run: RunMeta) => void;
   // The coding agents' saved brains (for the "Brain for this run" choice).
   brains?: BuilderBrains | null;
+  // Typed into the prompt box when it arrives (never launched for the person).
+  initialPrompt?: string;
 }) {
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(initialPrompt || "");
   const [folder, setFolder] = useState("");
   const [allowEdits, setAllowEdits] = useState(false);
   const [preview, setPreview] = useState<AgentRunPreview | null>(null);
@@ -50,6 +53,12 @@ export default function AgentLaunchPanel({
   const [launchError, setLaunchError] = useState("");
   const [rechecking, setRechecking] = useState(false);
   const [brainState, setBrainState] = useState<BrainOverrideState>({ override: null, problem: "" });
+
+  // Arriving with a prompt types it in. This only runs again if the prompt or
+  // the agent changes, so what the person types afterwards is never overwritten.
+  useEffect(() => {
+    if (initialPrompt) setPrompt(initialPrompt);
+  }, [initialPrompt, agentId]);
 
   const canAllowEdits = ALLOW_EDITS_AGENT_SET.has(agentId);
   const trimmedPrompt = prompt.trim();

@@ -87,7 +87,9 @@ export default function RunList({
                     <span className="os-run-list__row">
                       {/* No per-event pulse here: the list never sees events, only the open console does. */}
                       <StatusMark kind={runMarkFor(run)} />
-                      <span className="os-run-list__title">{run.title || firstLine(run.commandPreview, 46) || "Run"}</span>
+                      <span className="os-run-list__title" title={run.title || run.commandPreview || undefined}>
+                        {run.title || firstLine(run.commandPreview, 46) || "Run"}
+                      </span>
                     </span>
                     <span className="os-run-list__row os-run-list__row--meta">
                       <TimeAgo since={run.createdAt} />

@@ -172,3 +172,13 @@ describe("release workflow", async () => {
     assert.ok(!/@/.test(notes.replace(/mechaharsh@gmail\.com/g, "")), "the only email in the notes is mechaharsh@gmail.com");
   });
 });
+
+describe("desktop window", () => {
+  test("cannot be made smaller than 1024x640 (the smallest the laptop layout is built for)", async () => {
+    const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
+    const main = conf.app.windows.find((window) => window.label === "main");
+    assert.equal(main.minWidth, 1024);
+    assert.equal(main.minHeight, 640);
+    assert.ok(main.width >= main.minWidth && main.height >= main.minHeight, "the opening size is not below the minimum");
+  });
+});

@@ -36,7 +36,8 @@ export default function AgentBay({
   onRunLaunched,
   brains = null,
   brainsFailed = false,
-  onBrainsChanged
+  onBrainsChanged,
+  initialPrompt
 }: {
   agentId: string;
   agent: AgentSummary | undefined;
@@ -53,6 +54,8 @@ export default function AgentBay({
   brains?: BuilderBrains | null;
   brainsFailed?: boolean;
   onBrainsChanged?: () => void | Promise<void>;
+  // A prompt to type into the Launch panel (the Get started checklist's safe example).
+  initialPrompt?: string;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [detailError, setDetailError] = useState("");
@@ -156,6 +159,7 @@ export default function AgentBay({
         onRecheck={onRecheckAgents}
         onLaunched={onRunLaunched}
         brains={brains}
+        initialPrompt={initialPrompt}
       />
 
       {installed && SERVICE_AGENT_SET.has(agentId) ? (

@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { listAgents } from "../api";
-import { navigateTo } from "../nav";
+import { navigateTo, queryParam } from "../nav";
 import type { AgentSummary } from "../types";
 import Panel from "../ui/components/Panel";
 import SetupBrainPanel, { type BrainAgentLine, type BrainPanelStatus } from "../ui/components/SetupBrainPanel";
@@ -64,6 +64,13 @@ function installStepLabel(agentId: string | null, action: string) {
   if (action === "prereq-node") return `Set up a Node 24 runtime for ${name}`;
   if (action === "keep") return `Keep ${name} as it is`;
   return `Skip ${name} (not supported here)`;
+}
+
+// A step asked for in the address (?step=brain), e.g. from the Get started
+// checklist; anything that is not one of the six names is ignored.
+function stepFromUrl(): number | null {
+  const name = queryParam("step");
+  return Object.prototype.hasOwnProperty.call(STEP, name) ? STEP[name as keyof typeof STEP] : null;
 }
 
 function brainReady(check: SystemCheck | null, brain: BrainOptionsResponse | null) {
@@ -151,6 +158,13 @@ export default function SetupPage() {
           setStepIndex(restored);
           return;
         }
+        // A step named in the address (the Get started checklist uses this) wins
+        // over the one worked out from what is installed.
+        const asked = stepFromUrl();
+        if (asked !== null) {
+          setStepIndex(asked);
+          return;
+        }
         const anyInstalled = ALL_AGENT_IDS.some((id) => checkRes.agents?.[id]?.detected.installed);
         const needsAction = planRes.steps.some((s) => s.action === "install" || s.action === "prereq-node");
         // A brand-new computer starts at Check; a half-set-up one at Plan;
@@ -187,6 +201,20 @@ export default function SetupPage() {
   useEffect(() => {
     void loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Already on Setup and a link (the checklist, the ⌘K palette) names another
+  // step: go there instead of staying put.
+  useEffect(() => {
+    function onNavigate() {
+      const asked = stepFromUrl();
+      if (asked !== null && initializedRef.current) {
+        focusOnStepChange.current = true;
+        setStepIndex(asked);
+      }
+    }
+    window.addEventListener("aos-navigate", onNavigate);
+    return () => window.removeEventListener("aos-navigate", onNavigate);
   }, []);
 
   const installStatus = installJob?.status;

@@ -191,6 +191,7 @@ import { createTeamRoomsRouter } from "./runtime/team-room/routes.js";
 import { recoverStaleRooms } from "./runtime/team-room/moderator.js";
 import { createSetupRouter } from "./runtime/setup/routes.js";
 import { createBuildersRouter } from "./runtime/builders/routes.js";
+import { createOnboardingRouter } from "./runtime/onboarding.js";
 import { createSecretsRouter } from "./runtime/secrets/routes.js";
 import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
 import { setServerPort } from "./runtime/server-info.js";
@@ -1035,6 +1036,11 @@ app.use("/api/setup", requireAdminWhenPublic, createSetupRouter());
 // under /api/, so the local session gate covers them; the key is never returned.
 app.use("/api/builders", requireAdminWhenPublic, createBuildersRouter());
 app.use("/api/secrets", requireAdminWhenPublic, createSecretsRouter());
+
+// The "Get started" checklist on Home: real state (what is installed, set up,
+// signed in, run) plus the person's skip/hide choices. Under /api/, so the
+// local session gate covers it like every other route.
+app.use("/api/onboarding", requireAdminWhenPublic, createOnboardingRouter());
 
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {

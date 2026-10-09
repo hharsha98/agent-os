@@ -34,6 +34,9 @@ import "./ui/fonts";
 import "./ui/tokens.css";
 import "./ui/base.css";
 import "./ui/shell.css";
+import "./ui/onboarding.css";
+import "./ui/palette.css";
+import "./ui/laptop.css";
 
 type ShellPage =
   | "fleet"

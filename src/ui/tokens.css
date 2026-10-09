@@ -111,6 +111,29 @@
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
+/* Compact density (the header switch, or ⌘K): every spacing token about a
+   fifth tighter, plus the two controls that set their own height. The choice
+   is remembered per viewer (see ui/density.ts); "comfortable" is the :root
+   values above. Colours, type sizes and motion never change. */
+:root[data-density="compact"] {
+  --os-sp-1: 3px;
+  --os-sp-2: 6px;
+  --os-sp-3: 10px;
+  --os-sp-4: 13px;
+  --os-sp-5: 16px;
+  --os-sp-6: 19px;
+  --os-sp-7: 26px;
+  --os-sp-8: 32px;
+  --os-sp-9: 45px;
+  --os-sp-10: 58px;
+}
+:root[data-density="compact"] .os-nav__item {
+  min-height: 32px;
+}
+:root[data-density="compact"] .os-btn {
+  min-height: 28px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

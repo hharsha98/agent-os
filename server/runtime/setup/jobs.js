@@ -670,6 +670,7 @@ async function retrySetupJobLocked(id) {
 
 const CONFIGURE_RUN_TIMEOUT_MS = 60 * 1000;
 const HELP_TIMEOUT_MS = 5000;
+const HERMES_AUTH_HELP_TIMEOUT_MS = 15 * 1000;
 const CONFIG_GET_TIMEOUT_MS = 10 * 1000;
 const HEALTH_PROMPT = "Reply with exactly: ready";
 // The "hello" after a model change may take at most this long (a busy free
@@ -720,6 +721,21 @@ const PROMPT_ATTEMPT_TIMEOUT_MS = 20 * 1000;
 
 // Which of the three ways above applies: "config-set" (old Hermes, no
 // --api-key), "api-key" (Windows: no private prompt), or "prompt-then-api-key".
+// Hermes itself is broken when its own `auth add --help` crashes (a Python
+// traceback) or answers nothing at all. Say so plainly instead of trying an
+// older way to store the key, which would only fail with a confusing error.
+export function hermesHelpProblem({ ok = true, stdout = "", stderr = "" } = {}) {
+  const text = `${stdout}\n${stderr}`;
+  if (/Traceback \(most recent call last\)/.test(text)) {
+    const last = text.trim().split(/\r?\n/).filter((line) => line.trim()).pop() || "";
+    return `Hermes isn't working: its own command crashed (${last.trim().slice(0, 160)}). Repair Hermes, then try again.`;
+  }
+  if (!ok && !text.trim()) {
+    return "Hermes didn't answer: its own help command failed or timed out. Check that Hermes starts, then try again.";
+  }
+  return null;
+}
+
 export function hermesKeyStrategy({ platform = process.platform, authHelpText = "" } = {}) {
   if (!/--api-key\b/.test(String(authHelpText))) return "config-set";
   return platform === "win32" ? "api-key" : "prompt-then-api-key";
@@ -763,7 +779,10 @@ async function addHermesOpenRouterKey(run, step, ctx, authHelpText) {
 async function configureHermesBrain(step, check, ctx, manager) {
   const detected = check.agents.hermes.detected;
   const target = ctx.targets.hermes;
-  const authHelp = await runCommand(detected.path, ["auth", "add", "--help"], HELP_TIMEOUT_MS);
+  // A cold Hermes (a Python start) can take several seconds to print help.
+  const authHelp = await runCommand(detected.path, ["auth", "add", "--help"], HERMES_AUTH_HELP_TIMEOUT_MS);
+  const problem = hermesHelpProblem(authHelp);
+  if (problem) throw jobError("configure_failed", problem);
   const authHelpText = `${authHelp.stdout}\n${authHelp.stderr}`;
 
   const run = (title, args, extra = {}) =>

@@ -8,6 +8,7 @@ import type { AgentServiceStatus, AgentSummary, RunMeta } from "../types";
 import ActivityTrace, { emptyBuckets } from "../ui/components/ActivityTrace";
 import BuilderBrainBadge from "../ui/components/BuilderBrainBadge";
 import FlightLog from "../ui/components/FlightLog";
+import GetStartedCard from "../ui/components/GetStartedCard";
 import Panel from "../ui/components/Panel";
 import Readout from "../ui/components/Readout";
 import { TimeAgo } from "../ui/components/RelativeTime";
@@ -307,6 +308,8 @@ export default function FleetPage() {
           </button>
         </div>
       ) : null}
+
+      <GetStartedCard />
 
       <div className="os-instrument">
         <div className="os-instrument__cell">

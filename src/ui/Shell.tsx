@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   Activity,
   Blocks,
@@ -19,12 +19,18 @@ import {
   KeyRound,
   LayoutDashboard,
   Layers3,
+  ListChecks,
   Menu,
   MessageSquare,
   Monitor,
   Network,
   NotebookTabs,
+  OctagonX,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Play,
   Repeat,
+  Rows3,
   Search,
   Sparkles,
   Target,
@@ -32,15 +38,45 @@ import {
   Workflow
 } from "lucide-react";
 import { getAgentService, getExecutionGateStatus, listRuns } from "../api";
+import { navigateTo } from "../nav";
+import CommandPalette from "./components/CommandPalette";
+import type { PaletteItem } from "./components/CommandPalette";
+import GetStartedPill from "./components/GetStartedPill";
 import StatusMark from "./components/StatusMark";
+import StopAllRunsModal from "./components/StopAllRunsModal";
 import UpdateBanner from "./components/UpdateBanner";
 import { useInterval } from "./components/useInterval";
+import { OnboardingProvider, useOnboarding } from "./components/useOnboarding";
+import { setDensity, useDensity } from "./density";
+import { revealGetStarted } from "./onboardingShared";
 
 const LABS_STORAGE_KEY = "agentos.labsOpen";
 // Same cadence as Home's run polling, so the strip and the page never
 // disagree about how many runs are live for more than a moment.
 const STATUS_POLL_MS = 5000;
 const MOBILE_BREAKPOINT = 900;
+// At or below this width the sidebar is a 64px icon rail (see shell.css, which
+// uses the same number). Between this and MOBILE_BREAKPOINT it can be expanded
+// over the page; below MOBILE_BREAKPOINT it is the off-canvas menu as before.
+const RAIL_BREAKPOINT = 1366;
+const RAIL_QUERY = `(min-width: ${MOBILE_BREAKPOINT + 1}px) and (max-width: ${RAIL_BREAKPOINT}px)`;
+// What the palette shortcut is called on this computer.
+const SHORTCUT_LABEL = typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "") ? "⌘K" : "Ctrl K";
+
+// True while the window is in the rail range; follows resizes.
+function useIsRail() {
+  const [isRail, setIsRail] = useState(() => window.matchMedia(RAIL_QUERY).matches);
+  useEffect(() => {
+    const query = window.matchMedia(RAIL_QUERY);
+    function onChange() {
+      setIsRail(query.matches);
+    }
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return isRail;
+}
 
 interface NavItem {
   id: string;
@@ -75,20 +111,37 @@ function machineControlLabel(remainingMs: number | null | undefined) {
   return `Machine control · ${minutes}m left`;
 }
 
-export default function Shell({
-  page,
-  onNavigate,
-  demoPublic,
-  children
-}: {
+interface ShellProps {
   page: string;
   onNavigate: (page: string) => void;
   demoPublic: boolean;
   children: ReactNode;
-}) {
+}
+
+// The "Get started" checklist state is shared by the header pill, the card on
+// Home and the palette, so it is provided here, above all of them. (It is not
+// asked for in the public demo, where this computer's agents are not the point.)
+export default function Shell(props: ShellProps) {
+  return (
+    <OnboardingProvider enabled={!props.demoPublic}>
+      <ShellFrame {...props} />
+    </OnboardingProvider>
+  );
+}
+
+function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [labsOpen, setLabsOpen] = useState(false);
+  // The icon rail (901-1366px): collapsed by default, expandable over the page.
+  const isRail = useIsRail();
+  const [railExpanded, setRailExpanded] = useState(false);
+  const [tip, setTip] = useState<{ label: string; top: number } | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [stopAllOpen, setStopAllOpen] = useState(false);
+  const density = useDensity();
+  const onboarding = useOnboarding();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const railToggleRef = useRef<HTMLButtonElement>(null);
   const firstNavRef = useRef<HTMLButtonElement>(null);
 
   const coreItems: NavItem[] = useMemo(
@@ -153,6 +206,16 @@ export default function Shell({
   function go(id: string) {
     onNavigate(id);
     setMenuOpen(false);
+    setRailExpanded(false);
+    setTip(null);
+  }
+
+  // The tooltip for a rail icon (its label is hidden there, but kept for screen
+  // readers). Only while the rail is collapsed; mouse and keyboard focus both show it.
+  function showTip(event: ReactMouseEvent<HTMLElement> | { currentTarget: HTMLElement }, label: string) {
+    if (!isRail || railExpanded) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    setTip({ label, top: box.top + box.height / 2 });
   }
 
   // The demo canvas renders for both "builder" and (when demoPublic) the
@@ -176,13 +239,99 @@ export default function Shell({
       if (event.key === "Escape" && menuOpen) {
         setMenuOpen(false);
         menuButtonRef.current?.focus();
+      } else if (event.key === "Escape" && railExpanded) {
+        setRailExpanded(false);
+        railToggleRef.current?.focus();
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [menuOpen]);
+  }, [menuOpen, railExpanded]);
+
+  // Leaving the rail range (a wider window) puts the sidebar back to normal.
+  useEffect(() => {
+    if (!isRail) {
+      setRailExpanded(false);
+      setTip(null);
+    }
+  }, [isRail]);
+
+  // ⌘K on a Mac, Ctrl+K elsewhere: open the palette (or close it again).
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const onboardingData = onboarding.data;
+  const setOnboardingHidden = onboarding.setHidden;
+  const paletteItems: PaletteItem[] = useMemo(() => {
+    const items: PaletteItem[] = [
+      { id: "new-run", label: "New run…", group: "Actions", keywords: "launch start agent task prompt", icon: Play, run: () => navigateTo("agents") },
+      {
+        id: "stop-all",
+        label: "Stop all runs",
+        group: "Actions",
+        hint: "Asks first",
+        keywords: "halt kill cancel stop running",
+        icon: OctagonX,
+        run: () => setStopAllOpen(true)
+      },
+      { id: "open-setup", label: "Open Setup", group: "Actions", keywords: "install sign in brain assistant", icon: Wand2, run: () => onNavigate("setup") }
+    ];
+    if (onboardingData) {
+      items.push({
+        id: "get-started",
+        label: "Get started checklist",
+        group: "Actions",
+        hint: `${onboardingData.counts.done} of ${onboardingData.counts.total} done`,
+        keywords: "onboarding first run steps help",
+        icon: ListChecks,
+        run: () => void revealGetStarted(setOnboardingHidden, onboardingData.hidden)
+      });
+    }
+    items.push(
+      {
+        id: "density-compact",
+        label: "Compact density",
+        group: "Actions",
+        hint: density === "compact" ? "Current" : "Tighter spacing",
+        keywords: "spacing tighter smaller denser",
+        icon: Rows3,
+        run: () => setDensity("compact")
+      },
+      {
+        id: "density-comfortable",
+        label: "Comfortable density",
+        group: "Actions",
+        hint: density === "comfortable" ? "Current" : "Roomier spacing",
+        keywords: "spacing roomier larger looser",
+        icon: Rows3,
+        run: () => setDensity("comfortable")
+      }
+    );
+    for (const item of coreItems) {
+      items.push({ id: `page-${item.id}`, label: item.label, group: "Pages", hint: page === item.id ? "You are here" : undefined, icon: item.icon, run: () => onNavigate(item.id) });
+    }
+    for (const item of labsItems.filter((entry) => !entry.hidden)) {
+      items.push({ id: `page-${item.id}`, label: item.label, group: "Labs", hint: page === item.id ? "You are here" : undefined, icon: item.icon, run: () => onNavigate(item.id) });
+    }
+    return items;
+  }, [onboardingData, setOnboardingHidden, density, coreItems, labsItems, page, onNavigate]);
 
   const status = useStatusStrip();
+  // Hover and focus handlers for one nav button's rail tooltip.
+  const tipHandlers = (label: string) => ({
+    onMouseEnter: (event: ReactMouseEvent<HTMLElement>) => showTip(event, label),
+    onFocus: (event: { currentTarget: HTMLElement }) => showTip(event, label),
+    onMouseLeave: () => setTip(null),
+    onBlur: () => setTip(null)
+  });
 
   return (
     <div className="aos-phase2-shell os-shell">
@@ -197,6 +346,29 @@ export default function Shell({
           <Menu size={18} />
         </button>
         <div className="os-statusbar__chips">
+          <GetStartedPill />
+          <button
+            type="button"
+            className="os-btn os-btn--ghost os-palette-trigger"
+            onClick={() => setPaletteOpen(true)}
+            aria-haspopup="dialog"
+            aria-label={`Search pages and actions (${SHORTCUT_LABEL})`}
+            title={`Search pages and actions (${SHORTCUT_LABEL})`}
+          >
+            <Search size={14} aria-hidden="true" />
+            <span className="os-palette-trigger__text">Search</span>
+            <span className="os-kbd" aria-hidden="true">
+              {SHORTCUT_LABEL}
+            </span>
+          </button>
+          <div className="os-density" role="group" aria-label="Density">
+            <button type="button" aria-pressed={density === "comfortable"} onClick={() => setDensity("comfortable")}>
+              Comfortable
+            </button>
+            <button type="button" aria-pressed={density === "compact"} onClick={() => setDensity("compact")}>
+              Compact
+            </button>
+          </div>
           <div className="os-statusbar__group">
             <span className="os-statusbar__seg" title={status.safetyHint}>
               <StatusMark kind={status.safetyMark} />
@@ -223,14 +395,30 @@ export default function Shell({
         </div>
       </div>
 
-      <aside className={`os-sidebar${menuOpen ? " is-open" : ""}`}>
+      <aside className={`os-sidebar${menuOpen ? " is-open" : ""}${railExpanded ? " is-expanded" : ""}`}>
         <div className="os-logo">
           <div className="os-logo-mark">A</div>
-          <div>
+          <div className="os-logo__text">
             <strong>Agent OS</strong>
             <span className="os-micro os-mono">{demoPublic ? "Public demo" : "v0.3 · local"}</span>
           </div>
         </div>
+        {/* Only shown in the icon-rail range (shell.css): opens the labels over the page. */}
+        <button
+          ref={railToggleRef}
+          type="button"
+          className="os-rail-toggle"
+          aria-expanded={railExpanded}
+          aria-label={railExpanded ? "Collapse sidebar" : "Expand sidebar"}
+          onClick={() => {
+            setRailExpanded((open) => !open);
+            setTip(null);
+          }}
+          {...(railExpanded ? {} : tipHandlers("Expand sidebar"))}
+        >
+          {railExpanded ? <PanelLeftClose size={16} aria-hidden="true" /> : <PanelLeftOpen size={16} aria-hidden="true" />}
+          <span className="os-nav__label">{railExpanded ? "Collapse" : "Expand"}</span>
+        </button>
         <nav className="os-nav" aria-label="Main">
           <p className="os-micro os-nav__section">Core</p>
           {coreItems.map((item, index) => (
@@ -238,9 +426,11 @@ export default function Shell({
               key={item.id}
               ref={index === 0 ? firstNavRef : undefined}
               className={`os-nav__item${isActive(item.id) ? " is-active" : ""}`}
+              aria-current={isActive(item.id) ? "page" : undefined}
               onClick={() => go(item.id)}
+              {...tipHandlers(item.label)}
             >
-              <item.icon size={16} /> {item.label}
+              <item.icon size={16} aria-hidden="true" /> <span className="os-nav__label">{item.label}</span>
             </button>
           ))}
 
@@ -248,11 +438,13 @@ export default function Shell({
             className="os-nav__labs-toggle"
             onClick={toggleLabs}
             aria-expanded={labsOpen}
+            aria-label="Labs (experimental)"
+            {...tipHandlers("Labs (experimental)")}
           >
-            <FlaskConical size={14} />
-            <span className="os-micro">Labs</span>
-            <span className="os-chip os-chip--experimental">Experimental</span>
-            <ChevronDown size={14} className={`os-nav__chevron${labsOpen ? " is-open" : ""}`} />
+            <FlaskConical size={14} aria-hidden="true" />
+            <span className="os-micro os-nav__label">Labs</span>
+            <span className="os-chip os-chip--experimental os-nav__label">Experimental</span>
+            <ChevronDown size={14} aria-hidden="true" className={`os-nav__chevron${labsOpen ? " is-open" : ""}`} />
           </button>
           {labsOpen ? (
             <div className="os-nav__labs">
@@ -262,26 +454,41 @@ export default function Shell({
                   <button
                     key={item.id}
                     className={`os-nav__item${isActive(item.id) ? " is-active" : ""}`}
+                    aria-current={isActive(item.id) ? "page" : undefined}
                     onClick={() => go(item.id)}
+                    {...tipHandlers(item.label)}
                   >
-                    <item.icon size={16} /> {item.label}
+                    <item.icon size={16} aria-hidden="true" /> <span className="os-nav__label">{item.label}</span>
                   </button>
                 ))}
             </div>
           ) : null}
         </nav>
-        <button className="os-sidebar__safety" onClick={() => go("safety")} title={status.safetyHint || "Open Safety"}>
+        <button
+          className="os-sidebar__safety"
+          onClick={() => go("safety")}
+          title={status.safetyHint || "Open Safety"}
+          {...tipHandlers(status.level === null ? status.safetyLabel : safetyLevelLabel(status.level))}
+        >
           {/* Falls back to the top strip's own label/mark when the level is
               unknown, so "still loading" and "checked, but unreachable" read
               distinctly here too — same as the strip above. */}
           <StatusMark kind={status.level === null ? status.safetyMark : safetyLevelMark(status.level)} />
-          <span>{status.level === null ? status.safetyLabel : safetyLevelLabel(status.level)}</span>
+          <span className="os-nav__label">{status.level === null ? status.safetyLabel : safetyLevelLabel(status.level)}</span>
         </button>
       </aside>
       {menuOpen ? <button className="os-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
+      {railExpanded ? <button className="os-rail-backdrop" aria-label="Close sidebar" tabIndex={-1} onClick={() => setRailExpanded(false)} /> : null}
+      {tip ? (
+        <div className="os-rail-tip" role="tooltip" style={{ top: tip.top }}>
+          {tip.label}
+        </div>
+      ) : null}
 
       <div className="aos-phase2-content os-content">{children}</div>
       <UpdateBanner />
+      {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
+      {stopAllOpen ? <StopAllRunsModal onClose={() => setStopAllOpen(false)} /> : null}
     </div>
   );
 }

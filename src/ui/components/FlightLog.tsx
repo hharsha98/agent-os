@@ -46,7 +46,9 @@ export default function FlightLog({ runs, onOpenChat }: { runs: RunMeta[] | null
               <div className="os-flightlog__body">
                 <div className="os-flightlog__row">
                   <span className="os-mono os-flightlog__monogram">{AGENT_MONOGRAM[run.agentId || ""] || "—"}</span>
-                  <span className="os-flightlog__run-title">{run.title || firstLine(run.commandPreview, 42) || "Run"}</span>
+                  <span className="os-flightlog__run-title" title={run.title || run.commandPreview || undefined}>
+                    {run.title || firstLine(run.commandPreview, 42) || "Run"}
+                  </span>
                 </div>
                 <div className="os-flightlog__row os-flightlog__row--meta">
                   <TimeAgo since={run.createdAt} />

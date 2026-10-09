@@ -28,6 +28,7 @@ import {
 } from "../server/runtime/setup/brain.js";
 import {
   getSetupJob,
+  hermesHelpProblem,
   hermesKeyStrategy,
   resetSetupJobsForTest,
   retrySetupJob,
@@ -1434,4 +1435,24 @@ test("hermesKeyStrategy(): the private-prompt attempt is skipped on Windows (it 
   assert.equal(hermesKeyStrategy({ platform: "win32", authHelpText: withFlag }), "api-key");
   assert.equal(hermesKeyStrategy({ platform: "darwin", authHelpText: "usage: hermes auth add provider" }), "config-set");
   assert.equal(hermesKeyStrategy({ platform: "win32", authHelpText: "" }), "config-set");
+});
+
+test("hermesHelpProblem(): a crashed or silent Hermes is reported plainly; an old Hermes's usage text is not", () => {
+  // The real failure seen on 2026-10-09: Hermes's own code files had gone missing.
+  const crash = {
+    ok: false,
+    stdout: "",
+    stderr:
+      "Traceback (most recent call last):\n  File \"<string>\", line 21, in <module>\n" +
+      "ModuleNotFoundError: No module named 'hermes_cli.subcommands.sync'\n"
+  };
+  const crashed = hermesHelpProblem(crash);
+  assert.match(crashed, /^Hermes isn't working/);
+  assert.match(crashed, /No module named 'hermes_cli\.subcommands\.sync'/);
+
+  assert.match(hermesHelpProblem({ ok: false, stdout: "", stderr: "" }), /^Hermes didn't answer/);
+
+  // An older Hermes that simply lacks --api-key is not "broken": the fall-back still applies.
+  assert.equal(hermesHelpProblem({ ok: false, stdout: "", stderr: "usage: hermes auth add provider\nerror: unrecognized arguments" }), null);
+  assert.equal(hermesHelpProblem({ ok: true, stdout: "usage: hermes auth add [--api-key API_KEY] provider", stderr: "" }), null);
 });

@@ -1,6 +1,6 @@
 [package]
 name = "agent-os-desktop"
-version = "0.3.1"
+version = "0.3.2"
 description = "Agent OS desktop app: a Tauri shell around a bundled Node server"
 edition = "2021"
 # Not published; this crate only ever builds into the app bundle.

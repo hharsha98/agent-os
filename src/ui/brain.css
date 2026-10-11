@@ -300,7 +300,7 @@
 }
 .os-brain-model:has(input:checked) {
   border-color: var(--os-accent);
-  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
+  box-shadow: 0 0 0 1px var(--os-accent-line), var(--os-e2);
 }
 .os-brain-model--off {
   cursor: not-allowed;

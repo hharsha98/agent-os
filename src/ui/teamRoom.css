@@ -368,7 +368,7 @@
   padding: var(--os-sp-4);
 }
 .os-team__turn--live {
-  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
+  box-shadow: 0 0 0 1px var(--os-accent-line), var(--os-e2);
 }
 .os-team__turn-head {
   display: flex;

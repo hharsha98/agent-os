@@ -31,10 +31,11 @@
   opacity: 0.82;
 }
 /* Lit plate: raised, with an accent hairline. Only the plate that matches
-   the server's level ever gets this. */
-.os-safety-plate--lit {
+   the server's level ever gets this. The doubled class beats .os-panel's
+   own box-shadow (same specificity, and base.css loads after this file). */
+.os-safety-plate.os-safety-plate--lit {
   opacity: 1;
-  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
+  box-shadow: 0 0 0 1px var(--os-accent-line), var(--os-e2);
 }
 .os-safety-plate--disabled {
   opacity: 0.72;

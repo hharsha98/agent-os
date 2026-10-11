@@ -91,7 +91,7 @@
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.35), transparent);
+  background: linear-gradient(90deg, transparent, var(--os-accent-line), transparent);
 }
 .os-instrument__cell {
   padding: var(--os-sp-5);
@@ -326,7 +326,7 @@
   transition: border-color var(--os-dur-slow) var(--os-ease-out);
 }
 .os-trace--live .os-trace__lane {
-  border-color: rgba(92, 225, 255, 0.35);
+  border-color: var(--os-accent-line);
 }
 .os-trace__svg {
   width: 100%;
@@ -372,7 +372,7 @@
   left: var(--os-r-lg);
   right: var(--os-r-lg);
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.35), transparent);
+  background: linear-gradient(90deg, transparent, var(--os-accent-line), transparent);
 }
 .os-flightlog__title {
   margin: 0;

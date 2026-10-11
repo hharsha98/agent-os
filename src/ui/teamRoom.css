@@ -368,7 +368,7 @@
   padding: var(--os-sp-4);
 }
 .os-team__turn--live {
-  box-shadow: var(--os-glow);
+  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
 }
 .os-team__turn-head {
   display: flex;
@@ -431,7 +431,7 @@
   font-family: var(--os-font-mono);
   font-size: var(--os-fs-12);
   color: var(--os-accent-strong);
-  border-color: rgba(92, 225, 255, 0.3);
+  border-color: var(--os-accent-line);
   background: var(--os-accent-soft);
 }
 .os-team__tag--none {

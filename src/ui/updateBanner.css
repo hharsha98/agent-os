@@ -27,11 +27,9 @@
   max-width: 100%;
   min-height: 44px;
   padding: var(--os-sp-2) var(--os-sp-2) var(--os-sp-2) var(--os-sp-4);
-  background: var(--os-glass-bg);
-  backdrop-filter: var(--os-glass-blur);
-  -webkit-backdrop-filter: var(--os-glass-blur);
+  background: var(--os-surface-2);
   border-radius: var(--os-r-pill);
-  box-shadow: var(--os-e2), var(--os-glow);
+  box-shadow: var(--os-e3);
   color: var(--os-text-1);
   font-size: var(--os-fs-13);
   animation: os-update-in var(--os-dur-slow) var(--os-ease-out);

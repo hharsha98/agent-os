@@ -228,7 +228,7 @@
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.4), transparent);
+  background: linear-gradient(90deg, transparent, var(--os-accent-line), transparent);
 }
 .os-launch__title {
   margin: 0 0 var(--os-sp-4);
@@ -437,8 +437,7 @@
 }
 .os-modal {
   width: min(440px, 100%);
-  background: var(--os-glass-bg);
-  backdrop-filter: var(--os-glass-blur);
+  background: var(--os-surface-2);
   border-radius: var(--os-r-lg);
   box-shadow: var(--os-e3);
   padding: var(--os-sp-5);

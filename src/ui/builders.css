@@ -37,7 +37,7 @@
 }
 .os-bb-tag--openrouter {
   background: var(--os-accent-soft);
-  border-color: rgba(92, 225, 255, 0.35);
+  border-color: var(--os-accent-line);
   color: var(--os-accent-strong);
 }
 .os-bb-tag--local {
@@ -339,7 +339,7 @@
 }
 .os-bb-choice--on {
   border-color: var(--os-accent);
-  box-shadow: var(--os-glow);
+  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
 }
 .os-bb-choice input[type="radio"] {
   width: 18px;

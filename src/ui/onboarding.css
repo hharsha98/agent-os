@@ -26,10 +26,10 @@
   right: 0;
   height: 1px;
   transform-origin: left center;
-  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.35), transparent);
+  background: linear-gradient(90deg, transparent, var(--os-accent-line), transparent);
 }
 .os-gs--done.is-fresh .os-gs__topline {
-  animation: os-gs-done var(--os-dur-deliberate) var(--os-ease-out) 1;
+  animation: os-gs-done var(--os-dur-base) var(--os-ease-out) 1;
 }
 @keyframes os-gs-done {
   from {

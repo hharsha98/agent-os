@@ -256,7 +256,6 @@
   width: 2px;
   border-radius: var(--os-r-pill);
   background: var(--os-accent);
-  box-shadow: 0 0 8px rgba(92, 225, 255, 0.6);
 }
 
 .os-nav__labs-toggle {

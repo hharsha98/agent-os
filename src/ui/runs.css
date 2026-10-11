@@ -111,7 +111,7 @@
 }
 .os-run-list__filter--active {
   background: var(--os-accent-soft);
-  border-color: rgba(92, 225, 255, 0.35);
+  border-color: var(--os-accent-line);
   color: var(--os-accent-strong);
 }
 .os-run-list__rail {
@@ -479,8 +479,7 @@
 }
 .os-modal {
   width: min(440px, 100%);
-  background: var(--os-glass-bg);
-  backdrop-filter: var(--os-glass-blur);
+  background: var(--os-surface-2);
   border-radius: var(--os-r-lg);
   box-shadow: var(--os-e3);
   padding: var(--os-sp-5);

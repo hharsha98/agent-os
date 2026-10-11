@@ -183,7 +183,7 @@
   fill: var(--os-accent);
 }
 .os-mark--live.os-mark--pulse svg circle {
-  animation: os-pulse var(--os-dur-slow) var(--os-ease-pulse);
+  animation: os-pulse var(--os-dur-slow) var(--os-ease-out);
 }
 @keyframes os-pulse {
   0% {

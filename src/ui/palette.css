@@ -18,9 +18,7 @@
   flex-direction: column;
   width: min(560px, 100%);
   max-height: min(70vh, 520px);
-  background: var(--os-glass-bg);
-  -webkit-backdrop-filter: var(--os-glass-blur);
-  backdrop-filter: var(--os-glass-blur);
+  background: var(--os-surface-2);
   border-radius: var(--os-r-lg);
   box-shadow: var(--os-e3);
   overflow: hidden;

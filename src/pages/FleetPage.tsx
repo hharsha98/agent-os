@@ -40,7 +40,7 @@ const AGENT_ROLE: Record<string, string> = {
 const SERVICE_AGENTS = ["hermes", "openclaw"];
 const SERVICE_AGENT_SET = new Set(SERVICE_AGENTS);
 const AGENTS_WATCHDOG_MS = 15000;
-const COUNT_UP_MS = 600; // --os-dur-deliberate
+const COUNT_UP_MS = 600; // count-up length; Home is rebuilt in SP2
 
 function platformLabel() {
   const platform = typeof navigator !== "undefined" ? navigator.platform || navigator.userAgent || "" : "";

@@ -351,7 +351,7 @@
 }
 .os-setup-brain__card--selected {
   border-color: var(--os-accent);
-  box-shadow: var(--os-glow);
+  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
 }
 .os-setup-brain__card header {
   display: flex;
@@ -515,8 +515,7 @@
 }
 .os-setup-modal {
   width: min(480px, 100%);
-  background: var(--os-glass-bg);
-  backdrop-filter: var(--os-glass-blur);
+  background: var(--os-surface-2);
   border: 1px solid var(--os-line-2);
   border-radius: var(--os-r-lg);
   box-shadow: var(--os-e3);
@@ -873,7 +872,7 @@
   border: 1px solid var(--os-line-2);
 }
 .os-setup-agent--on {
-  border-color: rgba(92, 225, 255, 0.35);
+  border-color: var(--os-accent-line);
 }
 .os-setup-agent__main {
   display: flex;
@@ -979,7 +978,7 @@
   border-color: rgba(255, 92, 122, 0.4);
 }
 .os-setup-signin__row--running {
-  border-color: rgba(92, 225, 255, 0.45);
+  border-color: var(--os-accent-line);
 }
 .os-setup-signin__row > :not(.os-setup-signin__who):not(.os-setup-signin__actions) {
   grid-column: 1 / -1;

@@ -269,7 +269,7 @@
 }
 .os-mp-row--picked {
   border-color: var(--os-accent);
-  box-shadow: var(--os-glow);
+  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
 }
 .os-mp-row:has(.os-mp-row__radio:focus-visible) {
   outline: 2px solid var(--os-accent);

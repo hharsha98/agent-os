@@ -30,11 +30,11 @@
 .os-safety-plate--dim {
   opacity: 0.82;
 }
-/* Lit plate: accent hairline + soft glow (the brief's --os-glow, tinted per
-   plate). Only the plate that matches the server's level ever gets this. */
+/* Lit plate: raised, with an accent hairline. Only the plate that matches
+   the server's level ever gets this. */
 .os-safety-plate--lit {
   opacity: 1;
-  box-shadow: var(--os-e2), 0 0 0 1px var(--os-plate-c, var(--os-line-2)), 0 0 28px color-mix(in srgb, var(--os-plate-c, transparent) 18%, transparent);
+  box-shadow: var(--os-e2), 0 0 0 1px var(--os-accent-line);
 }
 .os-safety-plate--disabled {
   opacity: 0.72;

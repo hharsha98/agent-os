@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import Logo from "./ui/Logo";
 
 // shown when the local session cookie is missing or wrong
 // (a 401 session_required from any API call fires "agentos:locked"). Lets
@@ -41,7 +42,7 @@ export default function LockedScreen() {
     <div className="os-shell os-locked">
       <form className="os-panel os-panel--raised os-locked__card" onSubmit={unlock}>
         <div className="os-locked__brand">
-          <div className="os-logo-mark">A</div>
+          <Logo size={40} title="Agent OS" />
           <span className="os-micro">LOCKED</span>
         </div>
         <h2 className="os-locked__title">Agent OS is locked</h2>

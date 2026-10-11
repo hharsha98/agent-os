@@ -22,19 +22,15 @@
       body {
         margin: 0;
         height: 100%;
-        background: #05070b;
-        color: #e9eef5;
-        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        background: #0C0E12;
+        color: #E6E9EF;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
       }
       body {
         display: flex;
         align-items: center;
         justify-content: center;
-        background:
-          radial-gradient(ellipse 900px 600px at 8% 0%, rgba(92, 225, 255, 0.07), transparent 60%),
-          radial-gradient(ellipse 900px 700px at 100% 100%, rgba(140, 120, 255, 0.06), transparent 60%),
-          #05070b;
       }
       .wrap {
         text-align: center;
@@ -42,17 +38,10 @@
         padding: 0 24px;
       }
       .mark {
-        width: 56px;
-        height: 56px;
+        width: 48px;
+        height: 48px;
         margin: 0 auto 22px;
-        border-radius: 14px;
-        background: linear-gradient(135deg, #5ce1ff, #8aebff);
-        color: #031018;
-        display: grid;
-        place-items: center;
-        font-weight: 800;
-        font-size: 28px;
-        box-shadow: 0 0 0 1px rgba(92, 225, 255, 0.35), 0 0 32px rgba(92, 225, 255, 0.18);
+        display: block;
       }
       .spinner {
         width: 22px;
@@ -60,7 +49,7 @@
         margin: 0 auto 16px;
         border-radius: 50%;
         border: 2px solid rgba(148, 163, 184, 0.18);
-        border-top-color: #5ce1ff;
+        border-top-color: #3866EE;
         animation: spin 0.9s linear infinite;
       }
       @keyframes spin {
@@ -70,17 +59,17 @@
       }
       #status {
         font-size: 14px;
-        color: #a7b2c2;
+        color: #9AA3B2;
         line-height: 1.55;
         white-space: pre-wrap;
         word-break: break-word;
       }
       #status.error {
-        color: #ff5c7a;
+        color: #e5675f;
         text-align: left;
         font-size: 13px;
-        background: rgba(255, 92, 122, 0.08);
-        border: 1px solid rgba(255, 92, 122, 0.3);
+        background: rgba(229, 103, 95, 0.08);
+        border: 1px solid rgba(229, 103, 95, 0.4);
         border-radius: 10px;
         padding: 14px 16px;
       }
@@ -93,7 +82,7 @@
   </head>
   <body>
     <div class="wrap">
-      <div class="mark" aria-hidden="true">A</div>
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(-0.9 0)"><mask id="aos-cut" maskUnits="userSpaceOnUse" x="-2" y="-2" width="28" height="28"><rect x="-2" y="-2" width="28" height="28" fill="#fff"/><circle cx="19.99" cy="9.4" r="4" fill="#000"/></mask><circle cx="12" cy="12" r="8.4" fill="none" stroke="#E6E9EF" stroke-width="1.8" mask="url(#aos-cut)"/><circle cx="12" cy="3.6" r="1.85" fill="#E6E9EF"/><circle cx="16.94" cy="18.8" r="1.85" fill="#E6E9EF"/><circle cx="7.06" cy="18.8" r="1.85" fill="#E6E9EF"/><circle cx="4.01" cy="9.4" r="1.85" fill="#E6E9EF"/><circle cx="19.99" cy="9.4" r="3" fill="#3866EE"/></g></svg>
       <div class="spinner" id="spinner"></div>
       <div id="status" role="status">Starting Agent OS…</div>
     </div>

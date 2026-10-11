@@ -194,7 +194,7 @@ export default function DashboardRoot() {
   }, []);
 
   useEffect(() => {
-    document.title = demoPublic ? "Agent OS — public demo" : liveChat ? "Agent OS — live" : "Agent OS — local v1";
+    document.title = demoPublic ? "Agent OS — public demo" : liveChat ? "Agent OS — live" : "Agent OS";
   }, [demoPublic, liveChat]);
 
   if (locked) {

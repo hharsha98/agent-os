@@ -1091,6 +1091,23 @@ test("retrySetupJob(): a failed configure job can't be retried once its key is g
   });
 });
 
+test("retrySetupJob(): a retry the moment a configure job fails still asks for the key again", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeOpenclawShim(home);
+    await writeFile(path.join(home, ".fake-openclaw-onboard-fail"), "1");
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k", acceptOpenClawRisk: true });
+    // Watch the in-memory job as closely as the event loop allows and retry the
+    // moment it stops running: before its final save has reached the disk.
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      const current = await getSetupJob(job.id);
+      if (current && current.status !== "running") break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await assert.rejects(() => retrySetupJob(job.id), (error) => error.code === "key_required_for_retry");
+  });
+});
+
 // =====================================================================
 // 13. How the key reaches Hermes, and per-agent targets
 // =====================================================================

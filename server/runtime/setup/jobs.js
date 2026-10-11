@@ -67,6 +67,21 @@ function claimJobLock() {
   return claim;
 }
 
+// How long a retry waits for a job that has just ended to finish saving.
+const JOB_SETTLE_TIMEOUT_MS = 5000;
+
+// A job that has just ended keeps its in-memory entry (and the job lock) until
+// its final save has reached the disk. A retry in that moment would read the
+// older saved copy, which still says "running", so wait for the entry to go.
+async function waitForJobToSettle(id) {
+  const deadline = Date.now() + JOB_SETTLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const active = activeJobs.get(id);
+    if (!active || active.job.status === "running") return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function withJobLock(start) {
   const claim = claimJobLock();
   try {
@@ -616,6 +631,8 @@ export async function cancelSetupJob(id) {
 }
 
 export async function retrySetupJob(id) {
+  // This job may have just ended and still be saving its final status.
+  if (runningJobId === id) await waitForJobToSettle(id);
   if (runningJobId && runningJobId !== id) {
     throw jobError("job_already_running", "A different setup job is already running.");
   }

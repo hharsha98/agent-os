@@ -484,3 +484,31 @@
     transition: none;
   }
 }
+
+/* Sessions placeholder (SP1; replaced by the real Sessions page in SP3) */
+.os-sessions-soon {
+  max-width: 720px;
+}
+.os-sessions-soon h1 {
+  font-size: var(--os-fs-34);
+  font-stretch: 87.5%;
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--os-sp-2);
+}
+.os-sessions-soon__lead {
+  color: var(--os-text-2);
+  font-size: var(--os-fs-15);
+  margin: 0 0 var(--os-sp-7);
+}
+.os-sessions-soon__body {
+  display: flex;
+  gap: var(--os-sp-4);
+  align-items: flex-start;
+  border-top: 1px solid var(--os-line-1);
+  padding-top: var(--os-sp-6);
+  color: var(--os-text-2);
+}
+.os-sessions-soon__body p {
+  margin: 0 0 var(--os-sp-3);
+  max-width: 62ch;
+}

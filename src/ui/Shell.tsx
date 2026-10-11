@@ -4,10 +4,10 @@ import {
   Activity,
   Blocks,
   Bot,
-  Boxes,
   ShieldCheck,
   Wand2,
   BookOpen,
+  Check,
   Clapperboard,
   ChevronDown,
   Cpu,
@@ -17,7 +17,6 @@ import {
   Home,
   KanbanSquare,
   KeyRound,
-  LayoutDashboard,
   Layers3,
   ListChecks,
   Menu,
@@ -32,7 +31,9 @@ import {
   Repeat,
   Rows3,
   Search,
+  SlidersHorizontal,
   Sparkles,
+  SquareTerminal,
   Target,
   Users,
   Workflow
@@ -48,6 +49,7 @@ import UpdateBanner from "./components/UpdateBanner";
 import { useInterval } from "./components/useInterval";
 import { OnboardingProvider, useOnboarding } from "./components/useOnboarding";
 import { setDensity, useDensity } from "./density";
+import Logo from "./Logo";
 import { revealGetStarted } from "./onboardingShared";
 
 const LABS_STORAGE_KEY = "agentos.labsOpen";
@@ -62,6 +64,9 @@ const RAIL_BREAKPOINT = 1366;
 const RAIL_QUERY = `(min-width: ${MOBILE_BREAKPOINT + 1}px) and (max-width: ${RAIL_BREAKPOINT}px)`;
 // What the palette shortcut is called on this computer.
 const SHORTCUT_LABEL = typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "") ? "⌘K" : "Ctrl K";
+// What to call this computer in the menu footer.
+const PLATFORM = typeof navigator !== "undefined" ? navigator.platform || navigator.userAgent || "" : "";
+const MACHINE_LABEL = /mac/i.test(PLATFORM) ? "On this Mac" : /win/i.test(PLATFORM) ? "On this PC" : "On this computer";
 
 // True while the window is in the rail range; follows resizes.
 function useIsRail() {
@@ -83,6 +88,9 @@ interface NavItem {
   label: string;
   icon: typeof Home;
   hidden?: boolean;
+  // Short trailing text in the menu (for example "4 of 4") and its spoken form.
+  meta?: string;
+  metaLabel?: string;
 }
 
 function readLabsPreference(): boolean | null {
@@ -144,22 +152,30 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const railToggleRef = useRef<HTMLButtonElement>(null);
   const firstNavRef = useRef<HTMLButtonElement>(null);
 
+  const onboardingCounts = onboarding.data?.counts;
   const coreItems: NavItem[] = useMemo(
     () => [
-      { id: "fleet", label: "Home", icon: LayoutDashboard },
-      { id: "agents", label: "Agents", icon: Boxes },
+      { id: "fleet", label: "Home", icon: Home },
+      { id: "sessions", label: "Sessions", icon: SquareTerminal },
+      { id: "agents", label: "Agents", icon: Bot },
       { id: "runs", label: "Runs", icon: Activity },
       { id: "team", label: "Team Room", icon: Users },
-      { id: "chat", label: "Chat", icon: MessageSquare },
       { id: "workspace", label: "Workspace", icon: FolderOpen },
-      { id: "setup", label: "Setup", icon: Wand2 },
+      {
+        id: "setup",
+        label: "Setup",
+        icon: SlidersHorizontal,
+        meta: onboardingCounts ? `${onboardingCounts.done} of ${onboardingCounts.total}` : undefined,
+        metaLabel: onboardingCounts ? `${onboardingCounts.done} of ${onboardingCounts.total} steps done` : undefined
+      },
       { id: "safety", label: "Safety", icon: ShieldCheck }
     ],
-    []
+    [onboardingCounts]
   );
 
   const labsItems: NavItem[] = useMemo(
     () => [
+      { id: "chat", label: "Dry-run chat", icon: MessageSquare },
       { id: "mission", label: "Mission Control", icon: Gauge },
       { id: "goals", label: "Goals", icon: Target },
       { id: "kanban", label: "Kanban", icon: KanbanSquare },
@@ -397,11 +413,8 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
 
       <aside className={`os-sidebar${menuOpen ? " is-open" : ""}${railExpanded ? " is-expanded" : ""}`}>
         <div className="os-logo">
-          <div className="os-logo-mark">A</div>
-          <div className="os-logo__text">
-            <strong>Agent OS</strong>
-            <span className="os-micro os-mono">{demoPublic ? "Public demo" : "v0.3 · local"}</span>
-          </div>
+          <Logo size={24} className="os-logo__mark" />
+          <strong className="os-logo__text os-nav__label">Agent OS</strong>
         </div>
         {/* Only shown in the icon-rail range (shell.css): opens the labels over the page. */}
         <button
@@ -420,17 +433,23 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
           <span className="os-nav__label">{railExpanded ? "Collapse" : "Expand"}</span>
         </button>
         <nav className="os-nav" aria-label="Main">
-          <p className="os-micro os-nav__section">Core</p>
           {coreItems.map((item, index) => (
             <button
               key={item.id}
               ref={index === 0 ? firstNavRef : undefined}
               className={`os-nav__item${isActive(item.id) ? " is-active" : ""}`}
               aria-current={isActive(item.id) ? "page" : undefined}
+              aria-label={item.metaLabel ? `${item.label}, ${item.metaLabel}` : undefined}
               onClick={() => go(item.id)}
               {...tipHandlers(item.label)}
             >
               <item.icon size={16} aria-hidden="true" /> <span className="os-nav__label">{item.label}</span>
+              {item.meta ? (
+                <span className="os-nav__meta os-nav__label" aria-hidden="true">
+                  {onboardingCounts && onboardingCounts.done === onboardingCounts.total ? <Check size={12} aria-hidden="true" /> : null}
+                  {item.meta}
+                </span>
+              ) : null}
             </button>
           ))}
 
@@ -443,7 +462,6 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
           >
             <FlaskConical size={14} aria-hidden="true" />
             <span className="os-micro os-nav__label">Labs</span>
-            <span className="os-chip os-chip--experimental os-nav__label">Experimental</span>
             <ChevronDown size={14} aria-hidden="true" className={`os-nav__chevron${labsOpen ? " is-open" : ""}`} />
           </button>
           {labsOpen ? (
@@ -464,18 +482,11 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
             </div>
           ) : null}
         </nav>
-        <button
-          className="os-sidebar__safety"
-          onClick={() => go("safety")}
-          title={status.safetyHint || "Open Safety"}
-          {...tipHandlers(status.level === null ? status.safetyLabel : safetyLevelLabel(status.level))}
-        >
-          {/* Falls back to the top strip's own label/mark when the level is
-              unknown, so "still loading" and "checked, but unreachable" read
-              distinctly here too — same as the strip above. */}
-          <StatusMark kind={status.level === null ? status.safetyMark : safetyLevelMark(status.level)} />
-          <span className="os-nav__label">{status.level === null ? status.safetyLabel : safetyLevelLabel(status.level)}</span>
-        </button>
+        <div className="os-sidebar__footer" title={demoPublic ? "Public demo" : `Agent OS ${__APP_VERSION__}`}>
+          <Monitor size={14} aria-hidden="true" />
+          <span className="os-nav__label">{demoPublic ? "Public demo" : MACHINE_LABEL}</span>
+          <span className="os-nav__label os-mono os-sidebar__version">v{__APP_VERSION__}</span>
+        </div>
       </aside>
       {menuOpen ? <button className="os-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
       {railExpanded ? <button className="os-rail-backdrop" aria-label="Close sidebar" tabIndex={-1} onClick={() => setRailExpanded(false)} /> : null}

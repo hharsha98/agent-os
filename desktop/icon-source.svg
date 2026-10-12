@@ -1,4 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Agent OS app icon">
+  <!-- The Agent OS app icon: the Orbit mark (the same mark as src/ui/Logo.tsx)
+       on a dark rounded tile. Regenerate every size with:
+       npx tauri icon desktop/icon-source.svg -o desktop/src-tauri/icons
+       then delete the android and ios folders it creates, because the desktop
+       app does not ship them. -->
   <title>Agent OS</title>
   <defs>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".09"/><stop offset=".55" stop-color="#fff" stop-opacity=".02"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>

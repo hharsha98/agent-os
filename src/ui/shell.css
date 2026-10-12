@@ -215,6 +215,18 @@
     transform: translate(-50%, 8px);
   }
 }
+/* The update notice (updateBanner.css) sits at the bottom of the window too:
+   its bar starts var(--os-sp-5) above the edge and is 48px tall (44px in
+   compact density, where its padding is tighter). While it shows, lift the
+   toast above it, with a gap, so the toast never covers it. With the release
+   notes open (a box up to 220px tall, under the bar with a var(--os-sp-2) gap)
+   the toast goes above those as well. */
+.os-shell:has(.os-update__bar) .os-toast {
+  bottom: calc(var(--os-sp-5) + 48px + var(--os-sp-3));
+}
+.os-shell:has(.os-update__notes) .os-toast {
+  bottom: calc(var(--os-sp-5) + 48px + var(--os-sp-2) + 220px + var(--os-sp-3));
+}
 .os-toast > svg {
   flex: 0 0 auto;
 }

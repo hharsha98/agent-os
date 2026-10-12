@@ -2,7 +2,9 @@ import { useEffect, useRef } from "react";
 import { CheckCircle2, CircleAlert, Info, X, XCircle } from "lucide-react";
 
 // A short result message at the bottom of the window. Announced politely to
-// screen readers, closes itself after 8 seconds, or with its close button.
+// screen readers. Good news ("ok") and plain news ("neutral") close themselves
+// after 8 seconds. Messages that need a decision or a look ("warn", "danger")
+// stay until the person closes them with the close button.
 const ICONS = { ok: CheckCircle2, warn: CircleAlert, danger: XCircle, neutral: Info } as const;
 
 interface ToastProps {
@@ -19,10 +21,12 @@ export default function Toast({ message, tone, onClose }: ToastProps) {
   useEffect(() => {
     onCloseRef.current = onClose;
   });
+  const stays = tone === "warn" || tone === "danger";
   useEffect(() => {
+    if (stays) return undefined;
     const timer = window.setTimeout(() => onCloseRef.current(), 8000);
     return () => window.clearTimeout(timer);
-  }, [message]);
+  }, [message, stays]);
   const Icon = ICONS[tone];
   return (
     <div className={`os-toast os-toast--${tone}`} role="status" aria-live="polite">

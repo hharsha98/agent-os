@@ -15,9 +15,9 @@ export default function SessionsPage() {
             Soon you will open Claude Code, Codex, Cursor, Hermes and OpenClaw on this page, each in its real terminal with your own
             settings, and Agent OS will tell you when one is waiting for you.
           </p>
-          <p>Until then, you can start a background run from Runs.</p>
-          <button type="button" className="os-btn os-btn--secondary" onClick={() => navigateTo("runs")}>
-            Open Runs
+          <p>Until then, you can start a background run from Agents.</p>
+          <button type="button" className="os-btn os-btn--secondary" onClick={() => navigateTo("agents")}>
+            Open Agents
           </button>
         </div>
       </div>

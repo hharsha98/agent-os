@@ -43,7 +43,7 @@ export default function LockedScreen() {
       <form className="os-panel os-panel--raised os-locked__card" onSubmit={unlock}>
         <div className="os-locked__brand">
           <Logo size={40} title="Agent OS" />
-          <span className="os-micro">LOCKED</span>
+          <span className="os-micro">Locked</span>
         </div>
         <h2 className="os-locked__title">Agent OS is locked</h2>
         <p className="os-locked__copy">Open the login link printed in the terminal where you started it.</p>

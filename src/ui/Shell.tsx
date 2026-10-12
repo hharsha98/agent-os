@@ -93,6 +93,10 @@ interface NavItem {
   // Short trailing text in the menu (for example "4 of 4") and its spoken form.
   meta?: string;
   metaLabel?: string;
+  // Shows a tick next to the meta text.
+  metaDone?: boolean;
+  // Replaces the whole spoken name (otherwise "label, metaLabel").
+  ariaLabel?: string;
 }
 
 function readLabsPreference(): boolean | null {
@@ -158,6 +162,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const firstNavRef = useRef<HTMLButtonElement>(null);
 
   const onboardingCounts = onboarding.data?.counts;
+  // The same rule as the Get started pill: the server counts a skipped step as
+  // finished, so "complete" can be true while the count still reads "3 of 4".
+  const setupComplete = onboarding.data?.complete === true;
   const coreItems: NavItem[] = useMemo(
     () => [
       { id: "fleet", label: "Home", icon: Home },
@@ -170,12 +177,14 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         id: "setup",
         label: "Setup",
         icon: SlidersHorizontal,
-        meta: onboardingCounts ? `${onboardingCounts.done} of ${onboardingCounts.total}` : undefined,
-        metaLabel: onboardingCounts ? `${onboardingCounts.done} of ${onboardingCounts.total} steps done` : undefined
+        meta: setupComplete ? "Done" : onboardingCounts ? `${onboardingCounts.done} of ${onboardingCounts.total}` : undefined,
+        metaLabel: !setupComplete && onboardingCounts ? `${onboardingCounts.done} of ${onboardingCounts.total} steps done` : undefined,
+        metaDone: setupComplete,
+        ariaLabel: setupComplete ? "Setup done" : undefined
       },
       { id: "safety", label: "Safety", icon: ShieldCheck }
     ],
-    [onboardingCounts]
+    [onboardingCounts, setupComplete]
   );
 
   const labsItems: NavItem[] = useMemo(
@@ -426,14 +435,14 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
               ref={index === 0 ? firstNavRef : undefined}
               className={`os-nav__item${isActive(item.id) ? " is-active" : ""}`}
               aria-current={isActive(item.id) ? "page" : undefined}
-              aria-label={item.metaLabel ? `${item.label}, ${item.metaLabel}` : undefined}
+              aria-label={item.ariaLabel ?? (item.metaLabel ? `${item.label}, ${item.metaLabel}` : undefined)}
               onClick={() => go(item.id)}
               {...tipHandlers(item.label)}
             >
               <item.icon size={16} aria-hidden="true" /> <span className="os-nav__label">{item.label}</span>
               {item.meta ? (
                 <span className="os-nav__meta os-nav__label" aria-hidden="true">
-                  {onboardingCounts && onboardingCounts.total > 0 && onboardingCounts.done === onboardingCounts.total ? <Check size={12} aria-hidden="true" /> : null}
+                  {item.metaDone ? <Check size={12} aria-hidden="true" /> : null}
                   {item.meta}
                 </span>
               ) : null}

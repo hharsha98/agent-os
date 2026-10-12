@@ -34,7 +34,7 @@ export default function Logo({ size = 24, title, className }: LogoProps) {
         <circle cx="16.94" cy="18.8" r="1.85" fill="currentColor" />
         <circle cx="7.06" cy="18.8" r="1.85" fill="currentColor" />
         <circle cx="4.01" cy="9.4" r="1.85" fill="currentColor" />
-        <circle cx="19.99" cy="9.4" r="3" fill="var(--os-accent)" />
+        <circle cx="19.99" cy="9.4" r="3" style={{ fill: "var(--os-accent)" }} />
       </g>
     </svg>
   );

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { listRuns, stopRun } from "../../api";
 import type { RunMeta } from "../../types";
 import { friendlyError } from "../agentsShared";
+import { MAX_RUNS } from "../stopAll";
 import AgentConfirmModal from "./AgentConfirmModal";
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -18,7 +19,7 @@ export default function StopAllRunsModal({ onClose }: { onClose: () => void }) {
 
   async function look() {
     try {
-      const { runs } = await listRuns({ limit: 100 });
+      const { runs } = await listRuns({ limit: MAX_RUNS });
       setLive(runs.filter((run) => ACTIVE.has(run.status)));
     } catch (caught) {
       setError(friendlyError(caught));

@@ -1,20 +1,33 @@
-/* Layout for the new app shell: a 48px status strip across the top, a
-   248px sidebar below it, and content offset to clear both. One
+/* Layout for the new app shell: a 48px (56px above 1366px) top bar across the
+   top, a 248px sidebar below it, and content offset to clear both. One
    breakpoint (900px) governs both the menu button and the off-canvas
    sidebar — the old shell used two (840 and 900) and they disagreed.
    Between 901px and 1366px (a 13-14" laptop) the sidebar is a 64px icon
    rail instead; see the "icon rail" block near the bottom. */
 
+/* --os-bar-h is the top bar's height; everything that sits under the bar
+   (menu, content, backdrops) uses it. It is 48px in a laptop window (the icon
+   rail range and below) and --os-topbar-h (56px) above 1366px. */
 .os-shell {
+  --os-bar-h: 48px;
   min-height: 100svh;
 }
+@media (min-width: 1367px) {
+  .os-shell {
+    --os-bar-h: var(--os-topbar-h);
+  }
+}
 
+/* The top bar: menu button (narrow windows) and search on the left; the
+   "Get started" pill, the safety level and "Hold to stop all" on the right.
+   One row that never wraps, so narrower windows drop pieces instead (see
+   the media queries below). */
 .os-statusbar {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 48px;
+  height: var(--os-bar-h);
   z-index: 40;
   display: flex;
   align-items: center;
@@ -23,101 +36,180 @@
   background: var(--os-bg-1);
   border-bottom: 1px solid var(--os-line-1);
 }
-
-/* One row, never wrapping: the strip stays 48px tall (a wrapped row would
-   grow it past the 56px ceiling). Narrower windows drop the optional
-   pieces instead (see the media queries below). */
-.os-statusbar__chips {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  margin-left: auto;
+.os-statusbar__spacer {
+  flex: 1;
   min-width: 0;
-  flex-wrap: nowrap;
-  justify-content: flex-end;
 }
 
-/* The ⌘K button, the density switch and the "Get started" pill sit left of
-   the instrument group, all 30px tall like it. */
+/* The search field, the "Get started" pill, the safety level and the hold
+   button are all 32px tall. */
 .os-palette-trigger,
-.os-gs-pill {
-  height: 30px;
-  min-height: 30px;
-  padding: 0 var(--os-sp-3);
+.os-gs-pill,
+.os-statusbar .os-statusbar__level,
+.os-statusbar .os-holdstop {
+  height: 32px;
+  min-height: 32px;
   font-size: var(--os-fs-12);
   white-space: nowrap;
   flex: 0 0 auto;
 }
+.os-palette-trigger,
+.os-gs-pill {
+  padding: 0 var(--os-sp-3);
+}
 .os-palette-trigger {
   background: var(--os-surface-1);
-  border-color: var(--os-line-1);
+  border-color: var(--os-line-2);
   color: var(--os-text-2);
   font-weight: 500;
 }
 .os-palette-trigger:hover {
-  border-color: var(--os-line-2);
+  border-color: var(--os-line-3);
+}
+/* The search trigger reads as a field: icon and word on the left, the key hint on the right. */
+.os-palette-trigger--field {
+  width: min(300px, 28vw);
+  justify-content: flex-start;
+}
+.os-palette-trigger--field .os-kbd {
+  margin-left: auto;
 }
 .os-gs-pill svg {
   color: var(--os-accent);
 }
 
-.os-density {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  height: 30px;
-  padding: 2px;
-  flex: 0 0 auto;
-  border-radius: var(--os-r-md);
-  background: var(--os-surface-1);
-  border: 1px solid var(--os-line-1);
-}
-.os-density button {
-  border: 0;
-  background: transparent;
-  color: var(--os-text-2);
-  font-family: var(--os-font-ui);
-  font-size: var(--os-fs-12);
-  padding: 0 var(--os-sp-3);
-  border-radius: var(--os-r-sm);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.os-density button:hover {
-  color: var(--os-text-1);
-}
-.os-density button[aria-pressed="true"] {
-  background: var(--os-accent-soft);
-  color: var(--os-text-1);
-}
-
-/* One instrument-style segmented group instead of loose pills: hairline
-   dividers, mono values. */
-.os-statusbar__group {
-  display: flex;
-  align-items: stretch;
-  height: 30px;
-  border-radius: var(--os-r-md);
-  background: var(--os-surface-1);
-  border: 1px solid var(--os-line-1);
-  overflow: hidden;
-}
-.os-statusbar__seg {
-  display: flex;
+/* The safety level: a ghost button, the level number in full-strength ink. */
+.os-statusbar .os-statusbar__level {
+  display: inline-flex;
   align-items: center;
   gap: var(--os-sp-2);
   padding: 0 var(--os-sp-3);
-  font-size: var(--os-fs-12);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--os-r-sm);
   color: var(--os-text-2);
-  white-space: nowrap;
-  border-left: 1px solid var(--os-line-1);
+  font-family: var(--os-font-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out);
 }
-.os-statusbar__seg:first-child {
-  border-left: 0;
+.os-statusbar .os-statusbar__level:hover {
+  background: var(--os-surface-2);
+  color: var(--os-text-1);
 }
-.os-statusbar__seg-value {
-  font-family: var(--os-font-mono);
-  font-variant-numeric: tabular-nums;
+.os-statusbar__level b {
+  color: var(--os-text-1);
+  font-weight: 600;
+}
+
+/* "Hold to stop all": a danger ghost button. The fill grows left to right
+   over the 1.2 s hold (HOLD_MS in HoldToStopAll.tsx); letting go drains it. */
+.os-statusbar .os-holdstop {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--os-sp-2);
+  min-width: 152px;
+  padding: 0 var(--os-sp-3);
+  background: transparent;
+  border: 1px solid var(--os-danger-line);
+  border-radius: var(--os-r-sm);
+  color: var(--os-danger);
+  font-family: var(--os-font-ui);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.os-statusbar .os-holdstop:hover:not(:disabled) {
+  border-color: var(--os-danger);
+}
+.os-statusbar .os-holdstop:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.os-holdstop__fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: left;
+  background: var(--os-danger-wash);
+  transition: transform 120ms var(--os-ease-out);
+  pointer-events: none;
+}
+.os-holdstop.is-holding .os-holdstop__fill {
+  transform: scaleX(1);
+  transition: transform 1200ms linear;
+}
+/* The icon and the words sit above the fill. */
+.os-holdstop svg,
+.os-holdstop__label {
+  position: relative;
+}
+
+/* The result of "Hold to stop all": a short message at the bottom of the window. */
+.os-toast {
+  position: fixed;
+  left: 50%;
+  bottom: var(--os-sp-6);
+  transform: translateX(-50%);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  max-width: min(520px, calc(100vw - 2 * var(--os-sp-4)));
+  padding: var(--os-sp-3) var(--os-sp-3) var(--os-sp-3) var(--os-sp-4);
+  background: var(--os-surface-2);
+  border-radius: var(--os-r-md);
+  box-shadow: var(--os-e3);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  animation: os-toast-in var(--os-dur-base) var(--os-ease-out);
+}
+@keyframes os-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+.os-toast > svg {
+  flex: 0 0 auto;
+}
+.os-toast--ok > svg {
+  color: var(--os-ok);
+}
+.os-toast--warn > svg {
+  color: var(--os-warn);
+}
+.os-toast--danger > svg {
+  color: var(--os-danger);
+}
+.os-toast--neutral > svg {
+  color: var(--os-text-2);
+}
+.os-toast__text {
+  flex: 1;
+  min-width: 0;
+}
+.os-toast__close {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--os-r-sm);
+  color: var(--os-text-2);
+  cursor: pointer;
+}
+.os-toast__close:hover {
+  background: var(--os-surface-3);
   color: var(--os-text-1);
 }
 
@@ -127,7 +219,7 @@
 
 .os-sidebar {
   position: fixed;
-  top: 48px;
+  top: var(--os-bar-h);
   left: 0;
   bottom: 0;
   width: 248px;
@@ -299,10 +391,10 @@
    than phase2.css's plain .aos-phase2-content so this wins regardless of
    import order, without touching that file. */
 .os-shell .aos-phase2-content {
-  margin-top: 48px;
+  margin-top: var(--os-bar-h);
   margin-left: 248px;
   width: calc(100% - 248px);
-  min-height: calc(100svh - 48px);
+  min-height: calc(100svh - var(--os-bar-h));
   padding: var(--os-sp-7) var(--os-sp-7) var(--os-sp-9);
   box-sizing: border-box;
 }
@@ -327,7 +419,7 @@
   .os-menu-backdrop {
     display: block;
     position: fixed;
-    top: 48px;
+    top: var(--os-bar-h);
     left: 0;
     right: 0;
     bottom: 0;
@@ -335,13 +427,6 @@
     border: 0;
     z-index: 25;
     padding: 0;
-  }
-  .os-statusbar__seg {
-    display: none;
-  }
-  .os-statusbar__seg:first-child {
-    display: flex;
-    border-left: 0;
   }
 }
 
@@ -390,7 +475,7 @@
   .os-rail-backdrop {
     display: block;
     position: fixed;
-    top: 48px;
+    top: var(--os-bar-h);
     left: 0;
     right: 0;
     bottom: 0;
@@ -464,18 +549,38 @@
   }
 }
 
-/* A narrower window drops the optional header pieces, least important first. */
+/* A narrower window drops the optional top bar pieces, least important first.
+   Dropped words stay in the page for screen readers (clipped, not removed). */
 @media (max-width: 1180px) {
-  .os-density button {
-    padding: 0 var(--os-sp-2);
+  .os-palette-trigger--field {
+    width: auto;
   }
   .os-palette-trigger__text {
     display: none;
   }
 }
-@media (max-width: 1060px) {
-  .os-density {
+@media (max-width: 760px) {
+  .os-statusbar .os-statusbar__level span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+@media (max-width: 520px) {
+  .os-statusbar {
+    gap: var(--os-sp-2);
+    padding: 0 var(--os-sp-3);
+  }
+  .os-palette-trigger .os-kbd,
+  .os-gs-pill span {
     display: none;
+  }
+  .os-statusbar .os-holdstop {
+    min-width: 0;
+    padding: 0 10px;
   }
 }
 

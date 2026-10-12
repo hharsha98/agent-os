@@ -42,7 +42,7 @@
   box-shadow: var(--os-e1);
   padding: var(--os-sp-3);
   position: sticky;
-  top: calc(48px + var(--os-sp-5));
+  top: calc(var(--os-bar-h, 48px) + var(--os-sp-5));
 }
 @media (max-width: 1099px) {
   .os-agent-rail {

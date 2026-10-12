@@ -38,19 +38,21 @@ import {
   Users,
   Workflow
 } from "lucide-react";
-import { getAgentService, getExecutionGateStatus, listRuns } from "../api";
+import { getExecutionGateStatus } from "../api";
 import { navigateTo } from "../nav";
 import CommandPalette from "./components/CommandPalette";
 import type { PaletteItem } from "./components/CommandPalette";
 import GetStartedPill from "./components/GetStartedPill";
-import StatusMark from "./components/StatusMark";
+import HoldToStopAll from "./components/HoldToStopAll";
 import StopAllRunsModal from "./components/StopAllRunsModal";
+import Toast from "./components/Toast";
 import UpdateBanner from "./components/UpdateBanner";
 import { useInterval } from "./components/useInterval";
 import { OnboardingProvider, useOnboarding } from "./components/useOnboarding";
 import { setDensity, useDensity } from "./density";
 import Logo from "./Logo";
 import { revealGetStarted } from "./onboardingShared";
+import { stopAllMessage } from "./stopAll";
 
 const LABS_STORAGE_KEY = "agentos.labsOpen";
 // Same cadence as Home's run polling, so the strip and the page never
@@ -146,6 +148,8 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const [tip, setTip] = useState<{ label: string; top: number } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
+  // The result of "Hold to stop all", shown as a toast at the bottom of the window.
+  const [toast, setToast] = useState<{ message: string; tone: "ok" | "warn" | "danger" | "neutral" } | null>(null);
   const density = useDensity();
   const onboarding = useOnboarding();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -361,54 +365,36 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         >
           <Menu size={18} />
         </button>
-        <div className="os-statusbar__chips">
-          <GetStartedPill />
-          <button
-            type="button"
-            className="os-btn os-btn--ghost os-palette-trigger"
-            onClick={() => setPaletteOpen(true)}
-            aria-haspopup="dialog"
-            aria-label={`Search pages and actions (${SHORTCUT_LABEL})`}
-            title={`Search pages and actions (${SHORTCUT_LABEL})`}
-          >
-            <Search size={14} aria-hidden="true" />
-            <span className="os-palette-trigger__text">Search</span>
-            <span className="os-kbd" aria-hidden="true">
-              {SHORTCUT_LABEL}
-            </span>
-          </button>
-          <div className="os-density" role="group" aria-label="Density">
-            <button type="button" aria-pressed={density === "comfortable"} onClick={() => setDensity("comfortable")}>
-              Comfortable
-            </button>
-            <button type="button" aria-pressed={density === "compact"} onClick={() => setDensity("compact")}>
-              Compact
-            </button>
-          </div>
-          <div className="os-statusbar__group">
-            <span className="os-statusbar__seg" title={status.safetyHint}>
-              <StatusMark kind={status.safetyMark} />
-              <span className="os-statusbar__seg-value">{status.safetyLabel}</span>
-            </span>
-            <span className="os-statusbar__seg" title="Always-on gateways currently running">
-              <StatusMark
-                kind={!status.gatewaysLoaded || status.gatewaysRunning === null ? "unknown" : status.gatewaysRunning > 0 ? "ok" : "unknown"}
-              />
-              <span className="os-statusbar__seg-value">
-                Gateways {!status.gatewaysLoaded ? "…" : status.gatewaysRunning === null ? "—" : `${status.gatewaysRunning}/2`}
-              </span>
-            </span>
-            <span className="os-statusbar__seg" title="Runs currently in progress">
-              <StatusMark
-                kind={!status.liveRunsLoaded || status.liveRuns === null ? "unknown" : status.liveRuns > 0 ? "live" : "unknown"}
-                pulse={false}
-              />
-              <span className="os-statusbar__seg-value">
-                Live runs {!status.liveRunsLoaded ? "…" : status.liveRuns === null ? "—" : status.liveRuns}
-              </span>
-            </span>
-          </div>
-        </div>
+        <button
+          type="button"
+          className="os-btn os-btn--ghost os-palette-trigger os-palette-trigger--field"
+          onClick={() => setPaletteOpen(true)}
+          aria-haspopup="dialog"
+          aria-label={`Search pages and actions (${SHORTCUT_LABEL})`}
+          title={`Search pages and actions (${SHORTCUT_LABEL})`}
+        >
+          <Search size={14} aria-hidden="true" />
+          <span className="os-palette-trigger__text">Search</span>
+          <span className="os-kbd" aria-hidden="true">
+            {SHORTCUT_LABEL}
+          </span>
+        </button>
+        <span className="os-statusbar__spacer" />
+        <GetStartedPill />
+        <button type="button" className="os-statusbar__level" onClick={() => go("safety")} title={status.safetyHint || "Open Safety"}>
+          <ShieldCheck size={15} aria-hidden="true" />
+          <span>
+            {status.level === null ? (
+              status.safetyLabel
+            ) : (
+              <>
+                <b>Level {status.level}</b> · {safetyLevelLabel(status.level, status.remainingMs)}
+              </>
+            )}
+          </span>
+        </button>
+        {/* SP4: "Waiting for you (n)" badge, hidden while n = 0 */}
+        <HoldToStopAll onResult={(result) => setToast(stopAllMessage(result))} />
       </div>
 
       <aside className={`os-sidebar${menuOpen ? " is-open" : ""}${railExpanded ? " is-expanded" : ""}`}>
@@ -446,7 +432,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
               <item.icon size={16} aria-hidden="true" /> <span className="os-nav__label">{item.label}</span>
               {item.meta ? (
                 <span className="os-nav__meta os-nav__label" aria-hidden="true">
-                  {onboardingCounts && onboardingCounts.done === onboardingCounts.total ? <Check size={12} aria-hidden="true" /> : null}
+                  {onboardingCounts && onboardingCounts.total > 0 && onboardingCounts.done === onboardingCounts.total ? <Check size={12} aria-hidden="true" /> : null}
                   {item.meta}
                 </span>
               ) : null}
@@ -498,6 +484,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
 
       <div className="aos-phase2-content os-content">{children}</div>
       <UpdateBanner />
+      {toast ? <Toast message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
       {stopAllOpen ? <StopAllRunsModal onClose={() => setStopAllOpen(false)} /> : null}
     </div>
@@ -506,48 +493,25 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
 
 function useStatusStrip() {
   const [safetyLabel, setSafetyLabel] = useState("Checking…");
-  const [safetyMark, setSafetyMark] = useState<"unknown" | "ok" | "warn">("unknown");
   const [safetyHint, setSafetyHint] = useState("");
   const [level, setLevel] = useState<number | null>(null);
-  const [gatewaysRunning, setGatewaysRunning] = useState<number | null>(null);
-  const [gatewaysLoaded, setGatewaysLoaded] = useState(false);
-  const [liveRuns, setLiveRuns] = useState<number | null>(null);
-  const [liveRunsLoaded, setLiveRunsLoaded] = useState(false);
+  const [remainingMs, setRemainingMs] = useState<number | null>(null);
 
   async function refresh() {
     try {
       const gate = await getExecutionGateStatus();
-      const remainingMs = gate.machineControl?.remainingMs ?? null;
+      const remaining = gate.machineControl?.remainingMs ?? null;
       const armed = Boolean(gate.machineControl?.armed ?? gate.machineControl?.enabled);
-      if (armed) {
-        setSafetyLabel(machineControlLabel(remainingMs));
-        setSafetyMark("warn");
-      } else {
-        setSafetyLabel(gate.enabled ? "Run agents" : "Look only");
-        setSafetyMark(gate.enabled ? "ok" : "unknown");
-      }
+      setSafetyLabel(armed ? machineControlLabel(remaining) : gate.enabled ? "Run agents" : "Look only");
       setSafetyHint(gate.publicSummary || gate.reason || "");
       setLevel(typeof gate.level === "number" ? gate.level : armed ? 2 : gate.enabled ? 1 : 0);
+      setRemainingMs(remaining);
     } catch {
-      setSafetyLabel("Safety —");
-      setSafetyMark("unknown");
+      setSafetyLabel("Safety unknown");
       setSafetyHint("Could not reach Agent OS.");
       setLevel(null);
+      setRemainingMs(null);
     }
-
-    const results = await Promise.allSettled([getAgentService("hermes"), getAgentService("openclaw")]);
-    const running = results.filter((r) => r.status === "fulfilled" && r.value.running).length;
-    const anyChecked = results.some((r) => r.status === "fulfilled");
-    setGatewaysRunning(anyChecked ? running : null);
-    setGatewaysLoaded(true);
-
-    try {
-      const { runs } = await listRuns({ limit: 100 });
-      setLiveRuns(runs.filter((run) => run.status === "running").length);
-    } catch {
-      setLiveRuns(null);
-    }
-    setLiveRunsLoaded(true);
   }
 
   useEffect(() => {
@@ -556,21 +520,14 @@ function useStatusStrip() {
   }, []);
   useInterval(() => void refresh(), STATUS_POLL_MS);
 
-  return { safetyLabel, safetyMark, safetyHint, level, gatewaysRunning, gatewaysLoaded, liveRuns, liveRunsLoaded };
+  return { safetyLabel, safetyHint, level, remainingMs };
 }
 
-// 0 = look only, 1 = run agents, 2 = machine control armed. Shape+colour,
-// never colour alone, and "—"-equivalent (a hollow ring) only while the
-// level genuinely hasn't been checked yet.
-function safetyLevelMark(level: number | null): "unknown" | "ok" | "warn" {
-  if (level === 1) return "ok";
-  if (level === 2) return "warn";
-  return "unknown";
-}
-function safetyLevelLabel(level: number | null) {
+// 0 = look only, 1 = run agents, 2 = machine control armed (with its time left).
+function safetyLevelLabel(level: number | null, remainingMs: number | null) {
   if (level === 0) return "Look only";
   if (level === 1) return "Run agents";
-  if (level === 2) return "Machine control";
+  if (level === 2) return machineControlLabel(remainingMs);
   return "Checking…";
 }
 

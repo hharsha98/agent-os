@@ -24,7 +24,14 @@ export default function GetStartedPill() {
       title={data.hidden ? "Show the Get started checklist" : "Go to the Get started checklist"}
     >
       <ListChecks size={14} aria-hidden="true" />
-      <span className="os-mono">{label}</span>
+      {/* The words are the UI font; only the count is data, so only the count is mono. */}
+      {data.complete ? (
+        <span>{label}</span>
+      ) : (
+        <span>
+          Get started <span className="os-mono">{counts.done}/{counts.total}</span>
+        </span>
+      )}
     </button>
   );
 }

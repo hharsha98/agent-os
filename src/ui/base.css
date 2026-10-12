@@ -1,5 +1,10 @@
 /* Small .os- primitives shared by the new shell and Fleet page. Legacy
-   pages never see these — they keep using their own aos- classes. */
+   pages never see these — they keep using their own aos- classes.
+
+   Colour note: the rule just below sets `color` on every button in the shell
+   (specificity 0,1,1), so a lone `.os-btn--ghost { color }` (0,1,0) loses to
+   it. The button kinds further down use two classes (0,2,0) so their colours
+   really apply, in the shell and on the lock screen alike. */
 
 .os-shell,
 .os-shell button,
@@ -9,18 +14,29 @@
   font-family: var(--os-font-ui);
   color: var(--os-text-1);
 }
+/* Body text is regular weight (400). */
+.os-shell {
+  font-weight: 400;
+}
+/* Page and section headings: the condensed Archivo, a little tighter. */
+.os-shell h1,
+.os-shell h2 {
+  font-stretch: 87.5%;
+  letter-spacing: -0.02em;
+}
 
 .os-mono {
   font-family: var(--os-font-mono);
   font-variant-numeric: tabular-nums;
 }
 
+/* Small caption: 12px, sentence case, faint ink (the prototype's table-head
+   and group-label style). It never goes below 12px. */
 .os-micro {
-  font-size: var(--os-fs-11);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
+  font-size: var(--os-fs-12);
+  letter-spacing: 0.01em;
   color: var(--os-text-3);
-  font-weight: 600;
+  font-weight: 560;
 }
 
 /* Read aloud by screen readers, not shown. */
@@ -33,14 +49,16 @@
   white-space: nowrap;
 }
 
-/* Buttons */
+/* Buttons. The kinds are written with two classes (see the colour note at the
+   top). Shape and size stay on the single `.os-btn` class so the page files'
+   `.os-x .os-btn { min-height }` and density overrides keep working. */
 .os-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--os-sp-2);
   min-height: 32px;
   padding: 0 var(--os-sp-4);
-  border-radius: var(--os-r-md);
+  border-radius: var(--os-r-sm);
   font-size: var(--os-fs-13);
   font-weight: 600;
   border: 1px solid transparent;
@@ -50,37 +68,62 @@
 .os-btn:active {
   transform: translateY(1px);
 }
-.os-btn--primary {
+.os-btn.os-btn--primary {
   background: var(--os-accent);
   color: var(--os-accent-ink);
 }
-.os-btn--primary:hover {
-  background: var(--os-accent-strong);
+.os-btn.os-btn--primary:hover {
+  background: var(--os-accent-hover);
 }
-.os-btn--secondary {
+.os-btn.os-btn--primary:active {
+  background: var(--os-accent-press);
+}
+.os-btn.os-btn--secondary {
   background: var(--os-surface-2);
   border-color: var(--os-line-2);
   color: var(--os-text-1);
 }
-.os-btn--secondary:hover {
+.os-btn.os-btn--secondary:hover {
+  background: var(--os-surface-3);
   border-color: var(--os-line-3);
 }
-.os-btn--ghost {
+.os-btn.os-btn--secondary:active {
+  background: var(--os-surface-1);
+}
+.os-btn.os-btn--ghost {
   background: transparent;
   color: var(--os-text-2);
 }
-.os-btn--ghost:hover {
+.os-btn.os-btn--ghost:hover {
   background: var(--os-surface-2);
   color: var(--os-text-1);
 }
-.os-btn--danger {
-  background: rgba(255, 92, 122, 0.14);
-  border-color: rgba(255, 92, 122, 0.4);
+.os-btn.os-btn--ghost:active {
+  background: var(--os-surface-3);
+}
+.os-btn.os-btn--danger {
+  background: transparent;
+  border-color: var(--os-danger-line);
   color: var(--os-danger);
 }
-.os-btn:disabled {
-  opacity: 0.45;
+.os-btn.os-btn--danger:hover {
+  background: var(--os-danger-wash);
+  border-color: var(--os-danger);
+}
+.os-btn.os-btn--danger:active {
+  background: var(--os-danger-wash);
+  border-color: var(--os-danger);
+}
+/* Disabled: calm, never broken-looking. Soft grey words on the quietest
+   surface with a hairline, and no opacity on the label. `.os-btn.os-btn` (three
+   classes with the state) outranks the kinds' hover and press rules above. */
+.os-btn.os-btn:disabled,
+.os-btn.os-btn[aria-disabled="true"] {
+  background: var(--os-surface-1);
+  border-color: var(--os-line-1);
+  color: var(--os-disabled);
   cursor: not-allowed;
+  transform: none;
 }
 
 /* Chip */
@@ -91,17 +134,19 @@
   height: 26px;
   padding: 0 var(--os-sp-3);
   border-radius: var(--os-r-pill);
-  background: var(--os-surface-2);
+  background: var(--os-surface-1);
   border: 1px solid var(--os-line-2);
   font-size: var(--os-fs-12);
+  font-weight: 500;
   color: var(--os-text-2);
   white-space: nowrap;
 }
+/* A heads-up, not a status: words in full ink, the amber only in the wash and the hairline. */
 .os-chip--experimental {
-  color: var(--os-warn);
-  border-color: rgba(245, 184, 75, 0.25);
-  background: transparent;
-  font-size: var(--os-fs-11);
+  color: var(--os-text-1);
+  border-color: var(--os-warn-line);
+  background: var(--os-warn-wash);
+  font-size: var(--os-fs-12);
   height: 22px;
 }
 
@@ -124,11 +169,10 @@
   gap: var(--os-sp-1);
 }
 .os-readout__label {
-  font-size: var(--os-fs-11);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
+  font-size: var(--os-fs-12);
+  letter-spacing: 0.01em;
   color: var(--os-text-3);
-  font-weight: 600;
+  font-weight: 560;
 }
 .os-readout__value {
   font-family: var(--os-font-mono);
@@ -213,27 +257,50 @@
   .os-mark--live.os-mark--pulse svg circle {
     animation: none;
   }
+  .os-btn:active {
+    transform: none;
+  }
 }
 
 /* Field */
 .os-field {
   display: flex;
   flex-direction: column;
-  gap: var(--os-sp-1);
+  gap: 6px;
 }
 .os-field__label {
-  font-size: var(--os-fs-12);
-  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  font-weight: 500;
+  color: var(--os-text-1);
 }
+/* A field is surface-1 with a clear edge (--os-line-3, 3:1 or more on the canvas). */
 .os-field input,
 .os-field select,
 .os-field textarea {
-  background: var(--os-surface-3);
-  border: 1px solid var(--os-line-2);
-  border-radius: var(--os-r-md);
+  background: var(--os-surface-1);
+  border: 1px solid var(--os-line-3);
+  border-radius: var(--os-r-sm);
   padding: var(--os-sp-2) var(--os-sp-3);
   font-size: var(--os-fs-14);
   color: var(--os-text-1);
+  transition: border-color var(--os-dur-quick) var(--os-ease-out), background var(--os-dur-quick) var(--os-ease-out);
+}
+.os-field input::placeholder,
+.os-field textarea::placeholder {
+  color: var(--os-text-3);
+}
+.os-field input:focus-visible,
+.os-field select:focus-visible,
+.os-field textarea:focus-visible {
+  border-color: var(--os-accent);
+}
+.os-field input:disabled,
+.os-field select:disabled,
+.os-field textarea:disabled {
+  background: transparent;
+  border-color: var(--os-line-1);
+  color: var(--os-disabled);
+  cursor: not-allowed;
 }
 
 /* Keyboard hint */
@@ -243,13 +310,14 @@
   justify-content: center;
   min-width: 20px;
   height: 20px;
-  padding: 0 5px;
-  border-radius: var(--os-r-sm);
-  background: var(--os-surface-3);
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--os-surface-1);
   border: 1px solid var(--os-line-2);
+  border-bottom-width: 2px;
   color: var(--os-text-2);
   font-family: var(--os-font-mono);
-  font-size: 11px;
+  font-size: var(--os-fs-11);
 }
 
 /* Skeleton: static, never shimmering */
@@ -269,7 +337,7 @@
 
 /* Focus ring, everywhere, never removed without a replacement */
 .os-shell :focus-visible {
-  outline: 2px solid var(--os-accent);
+  outline: 2px solid var(--os-accent-strong);
   outline-offset: 2px;
   border-radius: var(--os-r-sm);
 }

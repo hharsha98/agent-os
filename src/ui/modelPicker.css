@@ -191,7 +191,7 @@
   color: var(--os-text-2);
 }
 .os-mp-search:focus-within {
-  outline: 2px solid var(--os-accent);
+  outline: 2px solid var(--os-accent-strong);
   outline-offset: 2px;
 }
 .os-mp-search input {
@@ -272,7 +272,7 @@
   box-shadow: 0 0 0 1px var(--os-accent-line), var(--os-e2);
 }
 .os-mp-row:has(.os-mp-row__radio:focus-visible) {
-  outline: 2px solid var(--os-accent);
+  outline: 2px solid var(--os-accent-strong);
   outline-offset: 2px;
 }
 .os-mp-row--skeleton {

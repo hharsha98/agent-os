@@ -1,9 +1,11 @@
 /* Desktop-only update notice. A slim floating bar at the bottom of the
-   content area (beside the 248px sidebar), so it never covers page headings.
+   content area, so it never covers page headings. It starts where the content
+   starts: at the sidebar's right edge (--os-side-w above 1366px, the 64px icon
+   rail from 901px to 1366px, the window edge at 900px and below).
    The wrapper ignores the pointer; only the bar itself is clickable. */
 .os-update {
   position: fixed;
-  left: 248px;
+  left: var(--os-side-w);
   right: 0;
   bottom: var(--os-sp-5);
   z-index: 45;
@@ -88,6 +90,12 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1366px) {
+  .os-update {
+    left: 64px;
   }
 }
 

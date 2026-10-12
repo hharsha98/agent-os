@@ -103,8 +103,8 @@ export default function HoldToStopAll({ onResult }: { onResult: (result: StopAll
       {/* Outside the button, so it describes the button without becoming part of its name. */}
       <span id="os-holdstop-hint" className="os-visually-hidden">
         Press and hold for about one second to stop all agent work. It does not stop the Hermes or OpenClaw background services or
-        setup jobs. If holding does not work for you, open the search with ⌘K or Ctrl K and choose Stop all runs, which lists every
-        run and asks before stopping them.
+        setup jobs. If holding does not work for you, open the search with ⌘K or Ctrl K and choose Stop all runs, which shows what
+        it will stop and asks first.
       </span>
     </>
   );

@@ -153,7 +153,8 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
   // The result of "Hold to stop all", shown as a toast at the bottom of the window.
-  // Each result gets its own id, so a repeated message starts a fresh 8 second timer.
+  // Each result gets its own id, so a repeated message shows as new (and an ok or
+  // neutral one gets a fresh 8 second timer; warnings and failures stay until closed).
   const [toast, setToast] = useState<{ id: number; message: string; tone: "ok" | "warn" | "danger" | "neutral" } | null>(null);
   const density = useDensity();
   const onboarding = useOnboarding();

@@ -26,6 +26,10 @@ export default function HoldToStopAll({ onResult }: { onResult: (result: StopAll
     setHolding(true);
     timer.current = window.setTimeout(async () => {
       const viaKeyboard = keyDown.current;
+      // The button is about to be disabled, so the key-up may never reach it.
+      // Clear the "key is down" flag now, or the next key press would be ignored.
+      // (Auto-repeat while the key stays down is filtered by event.repeat.)
+      keyDown.current = false;
       timer.current = null;
       setHolding(false);
       setStopping(true);
@@ -39,11 +43,14 @@ export default function HoldToStopAll({ onResult }: { onResult: (result: StopAll
   }
 
   // The button is disabled while stopping, which drops keyboard focus to the
-  // page. After a keyboard hold, put focus back so the person keeps their place.
+  // page. After a keyboard hold, put focus back so the person keeps their place,
+  // but only if focus is still on the page itself: never take it from wherever
+  // the person has moved on to (for example the search palette).
   useEffect(() => {
     if (!stopping && restoreFocus.current) {
       restoreFocus.current = false;
-      buttonRef.current?.focus();
+      const active = document.activeElement;
+      if (!active || active === document.body) buttonRef.current?.focus();
     }
   }, [stopping]);
 
@@ -71,29 +78,33 @@ export default function HoldToStopAll({ onResult }: { onResult: (result: StopAll
   }
 
   return (
-    <button
-      ref={buttonRef}
-      type="button"
-      className={`os-holdstop${holding ? " is-holding" : ""}`}
-      disabled={stopping}
-      aria-describedby="os-holdstop-hint"
-      onPointerDown={(event) => {
-        if (event.button === 0) begin();
-      }}
-      onPointerUp={cancel}
-      onPointerLeave={cancel}
-      onPointerCancel={cancel}
-      onBlur={cancel}
-      onKeyDown={onKeyDown}
-      onKeyUp={onKeyUp}
-      onClick={(event) => event.preventDefault()}
-    >
-      <span className="os-holdstop__fill" aria-hidden="true" />
-      <OctagonX size={15} aria-hidden="true" />
-      <span className="os-holdstop__label">{stopping ? "Stopping…" : holding ? "Keep holding…" : "Hold to stop all"}</span>
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`os-holdstop${holding ? " is-holding" : ""}`}
+        disabled={stopping}
+        aria-describedby="os-holdstop-hint"
+        onPointerDown={(event) => {
+          if (event.button === 0) begin();
+        }}
+        onPointerUp={cancel}
+        onPointerLeave={cancel}
+        onPointerCancel={cancel}
+        onBlur={cancel}
+        onKeyDown={onKeyDown}
+        onKeyUp={onKeyUp}
+        onClick={(event) => event.preventDefault()}
+      >
+        <span className="os-holdstop__fill" aria-hidden="true" />
+        <OctagonX size={15} aria-hidden="true" />
+        <span className="os-holdstop__label">{stopping ? "Stopping…" : holding ? "Keep holding…" : "Hold to stop all"}</span>
+      </button>
+      {/* Outside the button, so it describes the button without becoming part of its name. */}
       <span id="os-holdstop-hint" className="os-visually-hidden">
-        Press and hold for about one second to stop every run. It does not stop the Hermes or OpenClaw background services.
+        Press and hold for about one second to stop every run. It does not stop the Hermes or OpenClaw background services. If holding
+        does not work for you, open the search with ⌘K or Ctrl K and choose Stop all runs, which is another way to stop every run.
       </span>
-    </button>
+    </>
   );
 }

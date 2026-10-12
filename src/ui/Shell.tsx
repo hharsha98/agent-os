@@ -149,7 +149,8 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
   // The result of "Hold to stop all", shown as a toast at the bottom of the window.
-  const [toast, setToast] = useState<{ message: string; tone: "ok" | "warn" | "danger" | "neutral" } | null>(null);
+  // Each result gets its own id, so a repeated message starts a fresh 8 second timer.
+  const [toast, setToast] = useState<{ id: number; message: string; tone: "ok" | "warn" | "danger" | "neutral" } | null>(null);
   const density = useDensity();
   const onboarding = useOnboarding();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -394,7 +395,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
           </span>
         </button>
         {/* SP4: "Waiting for you (n)" badge, hidden while n = 0 */}
-        <HoldToStopAll onResult={(result) => setToast(stopAllMessage(result))} />
+        <HoldToStopAll onResult={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />
       </div>
 
       <aside className={`os-sidebar${menuOpen ? " is-open" : ""}${railExpanded ? " is-expanded" : ""}`}>
@@ -484,7 +485,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
 
       <div className="aos-phase2-content os-content">{children}</div>
       <UpdateBanner />
-      {toast ? <Toast message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
+      {toast ? <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
       {stopAllOpen ? <StopAllRunsModal onClose={() => setStopAllOpen(false)} /> : null}
     </div>

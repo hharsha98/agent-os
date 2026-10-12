@@ -160,6 +160,9 @@
   display: flex;
   align-items: center;
   gap: var(--os-sp-3);
+  /* left: 50% would limit an auto-width box to about half the window, so size
+     it to its words, then cap it at 520px and at the window minus its margins. */
+  width: max-content;
   max-width: min(520px, calc(100vw - 2 * var(--os-sp-4)));
   padding: var(--os-sp-3) var(--os-sp-3) var(--os-sp-3) var(--os-sp-4);
   background: var(--os-surface-2);

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { CheckCircle2, CircleAlert, Info, X, XCircle } from "lucide-react";
 
 // A short result message at the bottom of the window. Announced politely to
@@ -12,10 +12,17 @@ interface ToastProps {
 }
 
 export default function Toast({ message, tone, onClose }: ToastProps) {
+  // The parent may pass a new onClose on every render. Keeping the latest one in
+  // a ref lets the 8 second timer depend on the message only, so a re-render
+  // (for example the status poll) never restarts it.
+  const onCloseRef = useRef(onClose);
   useEffect(() => {
-    const timer = window.setTimeout(onClose, 8000);
+    onCloseRef.current = onClose;
+  });
+  useEffect(() => {
+    const timer = window.setTimeout(() => onCloseRef.current(), 8000);
     return () => window.clearTimeout(timer);
-  }, [message, onClose]);
+  }, [message]);
   const Icon = ICONS[tone];
   return (
     <div className={`os-toast os-toast--${tone}`} role="status" aria-live="polite">

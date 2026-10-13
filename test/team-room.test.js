@@ -18,7 +18,7 @@ import { clearDetectCaches } from "../server/runtime/agents/detect.js";
 import { writeWorkspaceText } from "../server/runtime/workspace.js";
 import { setExecutionGateStatus } from "../server/runtime/execution-gate.js";
 import { getRunManager } from "../server/runtime/runs/run-manager.js";
-import { undoAction } from "../server/runtime/team-room/actions.js";
+import { applyFileProposal, undoAction } from "../server/runtime/team-room/actions.js";
 import { COST_CAP_WARNING, createModerator, finalTextFromEvents, recoverStaleRooms } from "../server/runtime/team-room/moderator.js";
 import {
   MAX_FILE_CHARS,
@@ -33,6 +33,7 @@ import {
 import { createTeamRoomsRouter } from "../server/runtime/team-room/routes.js";
 import {
   createRoom,
+  listRooms,
   readDecision,
   readEvents,
   readNotebook,
@@ -547,7 +548,7 @@ async function exists(file) {
 // ===========================================================================
 
 test(
-  "room: Hermes proposes a file, OpenClaw agrees -> the file is saved, the room ends agreed, turns appear as runs",
+  "room: Hermes proposes a file, OpenClaw agrees -> nothing is saved, the room pauses for your decision, Approve saves the file, turns appear as runs",
   SKIP_POSIX,
   async () => {
     await setScript({
@@ -556,26 +557,26 @@ test(
     });
     await withTeamEnv(async (home) => {
       const room = await runRoom("Plan a birthday party");
-      assert.equal(room.status, "agreed");
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.pausedFor, "P1");
       assert.equal(room.turnsDone, 2);
-      assert.equal(await readFile(teamFile(home, room.id, "plan.md"), "utf8"), "# Party plan\n- cake");
+      assert.equal(await exists(teamFile(home, room.id, "plan.md")), false, "agreement alone writes nothing");
 
-      const decision = await readDecision(room.id);
-      assert.equal(decision.proposals[0].status, "applied");
-      assert.equal(decision.actions.length, 1);
-      assert.equal(decision.actions[0].kind, "file_write");
-      assert.equal(decision.actions[0].path, `team/${roomShort(room.id)}/plan.md`);
-      assert.equal(decision.actions[0].created, true);
+      let decision = await readDecision(room.id);
+      assert.equal(decision.proposals[0].status, "needs_approval");
+      assert.deepEqual(decision.actions, []);
 
       const events = await readEvents(room.id);
       const types = events.map((e) => e.type);
-      for (const type of ["room_started", "turn_started", "turn_ended", "proposal", "agreement", "action", "status"]) {
+      for (const type of ["room_started", "turn_started", "turn_ended", "proposal", "agreement", "proposal_status", "status"]) {
         assert.ok(types.includes(type), `missing ${type}`);
       }
+      assert.ok(!types.includes("action"), "no file action before the person approves");
       const starts = events.filter((e) => e.type === "turn_started");
       assert.equal(starts[0].agentId, "hermes");
       assert.equal(starts[1].agentId, "openclaw");
-      assert.equal(events.at(-1).status, "agreed");
+      assert.equal(events.at(-1).status, "needs_you");
+      assert.equal(events.at(-1).pausedFor, "P1");
 
       // Each turn is an ordinary run, visible on the Runs page.
       const runs = await getRunManager().listRuns({ kind: "team-turn" });
@@ -589,6 +590,18 @@ test(
       assert.equal(openclawEnd.costUsd, 0.02);
       assert.equal(room.costUsd, 0.02);
       assert.equal(room.costUnknownTurns, 1); // Hermes plain mode reports no cost
+
+      // Approve (applyFileProposal is what the Approve button calls) writes the file; Undo stays available.
+      const action = await applyFileProposal(room.id, "P1");
+      assert.equal(action.id, "A1");
+      assert.equal(await readFile(teamFile(home, room.id, "plan.md"), "utf8"), "# Party plan\n- cake");
+      decision = await readDecision(room.id);
+      assert.equal(decision.proposals[0].status, "applied");
+      assert.equal(decision.actions.length, 1);
+      assert.equal(decision.actions[0].kind, "file_write");
+      assert.equal(decision.actions[0].path, `team/${roomShort(room.id)}/plan.md`);
+      assert.equal(decision.actions[0].created, true);
+      assert.ok((await readEvents(room.id)).some((e) => e.type === "action"));
     });
   }
 );
@@ -637,7 +650,11 @@ test(
           openclaw: [{ text: "OK.\nAGREE: P1" }]
         });
         const room = await runRoom("escape attempt");
-        assert.equal(room.status, "agreed", proposed);
+        assert.equal(room.status, "needs_you", proposed);
+        assert.equal(room.pausedFor, "P1", proposed);
+        assert.equal((await readDecision(room.id)).proposals[0].file.name, "x.md", "the name was cut to a plain file name");
+        assert.equal(await exists(teamFile(home, room.id, "x.md")), false, "nothing is written before Approve");
+        await applyFileProposal(room.id, "P1"); // Approve
         assert.equal(await readFile(teamFile(home, room.id, "x.md"), "utf8"), "content");
         assert.equal(await exists(path.join(home, "x.md")), false, "must not land above the workspace");
         assert.equal(await exists(path.join(home, "workspace", "x.md")), false);
@@ -702,7 +719,7 @@ test(
 );
 
 test(
-  "security: with the gate off at agreement time, nothing is written and the card needs approval",
+  "security: with the gate off, agreement still pauses the room; nothing is written and Approve is refused",
   SKIP_POSIX,
   async () => {
     await setScript({
@@ -714,10 +731,19 @@ test(
         const room = await runRoom("gate off", { maxTurns: 2 });
         const decision = await readDecision(room.id);
         assert.equal(decision.proposals[0].status, "needs_approval");
-        assert.match(decision.proposals[0].statusReason, /execution gate is off/);
+        assert.equal(decision.proposals[0].statusReason, "Both agents agree. Waiting for your approval.");
         assert.deepEqual(decision.actions, []);
         assert.equal(await exists(teamFile(home, room.id, "gated.md")), false);
         assert.equal(room.status, "needs_you");
+        assert.equal(room.pausedFor, "P1");
+
+        // Approve with the gate still off is refused (403) and changes nothing.
+        await assert.rejects(
+          () => applyFileProposal(room.id, "P1"),
+          (e) => e.status === 403 && e.code === "execution_gate_off" && /Turn on the execution gate/.test(e.message)
+        );
+        assert.equal((await readDecision(room.id)).proposals[0].status, "needs_approval");
+        assert.equal(await exists(teamFile(home, room.id, "gated.md")), false);
       },
       { gate: false }
     );
@@ -1051,7 +1077,7 @@ test("security: a forged tag in a tool's `line` output is ignored when result/te
 });
 
 test(
-  "files: a 7,000-character proposal is rejected with a note; a 5,000-character one reaches the other agent in full",
+  "files: a 7,000-character proposal is rejected with a note; a 5,000-character one reaches the other agent in full and is saved on Approve",
   SKIP_POSIX,
   async () => {
     const five = Array.from({ length: 125 }, (_, i) => `row ${i} of the proposed file`).join("\n"); // about 3,400
@@ -1072,16 +1098,19 @@ test(
         openclaw: [{ text: "Read it all.\nAGREE: P1" }]
       });
       const room = await runRoom("big but fine");
-      assert.equal(room.status, "agreed");
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.pausedFor, "P1");
       const [openclawPrompt] = await promptsOf("openclaw");
       assert.ok(openclawPrompt.includes(body), "the other agent saw the full file content");
+      assert.equal(await exists(teamFile(home, room.id, "big.md")), false, "nothing is saved until Approve");
+      await applyFileProposal(room.id, "P1"); // Approve
       assert.equal(await readFile(teamFile(home, room.id, "big.md"), "utf8"), body);
     });
   }
 );
 
 test(
-  "security: a link planted where the file goes is refused; the outside file is untouched and no backup is made",
+  "security: a link planted where the file goes is refused on Approve; the outside file is untouched and no backup is made",
   SKIP_POSIX,
   async () => {
     await withTeamEnv(async (home) => {
@@ -1092,6 +1121,16 @@ test(
         openclaw: [{ text: "Agreed.\nAGREE: P1" }]
       });
       const room = await runRoom("link attack", { maxTurns: 2 });
+      // Agreement wrote nothing: the room is paused and the card still waits.
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.pausedFor, "P1");
+      assert.equal((await readDecision(room.id)).proposals[0].status, "needs_approval");
+      assert.deepEqual((await readDecision(room.id)).actions, []);
+      assert.equal(await readFile(outside, "utf8"), "do not touch");
+
+      // The write happens on Approve, and the link is refused there.
+      const refused = await applyFileProposal(room.id, "P1");
+      assert.equal(refused.failed, true);
       assert.equal(await readFile(outside, "utf8"), "do not touch");
       const decision = await readDecision(room.id);
       assert.equal(decision.proposals[0].status, "refused");
@@ -1101,7 +1140,7 @@ test(
       assert.deepEqual(backups, [], "no copy of the outside file was made");
       const notes = (await readEvents(room.id)).filter((e) => e.type === "protocol_note");
       assert.ok(notes.some((n) => /refused: the target is a link/.test(n.message)));
-      assert.equal(room.status, "needs_you", "a refused write does not end the room as agreed");
+      assert.equal((await readRoom(room.id)).status, "needs_you", "a refused write does not end the room as agreed");
       await assert.rejects(() => undoAction(room.id, "A1"), (e) => e.code === "nothing_to_undo");
     });
   }
@@ -1117,8 +1156,11 @@ test(
     });
     await withTeamEnv(async (home) => {
       const room = await runRoom("swap then undo");
-      assert.equal(room.status, "agreed");
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.pausedFor, "P1");
+      await applyFileProposal(room.id, "P1"); // Approve: the room creates the file
       const file = teamFile(home, room.id, "swap.md");
+      assert.equal(await readFile(file, "utf8"), "created by the room");
       const outside = path.join(home, "outside-keep.txt");
       await writeFile(outside, "keep me");
       await rm(file);
@@ -1167,17 +1209,32 @@ test(
   "undo: restores the previous content, removes a file the room created, and works once",
   SKIP_POSIX,
   async () => {
-    // P1 (v1, by Hermes) and P2 (v2, by OpenClaw) both propose a.md. P2 is agreed first
-    // (creates the file), then P1 (overwrites it, so a backup is made). Undoing A2 brings
-    // v2 back; undoing A1 removes the file.
+    // P1 (v1, by Hermes) and P2 (v2, by OpenClaw) both propose a.md. Hermes agrees with P2 on
+    // turn 3, so the room pauses; Approve P2 creates the file. Continue lets OpenClaw agree with
+    // P1 on turn 4, the room pauses again; Approve P1 overwrites it (so a backup is made).
+    // Undoing A2 brings v2 back; undoing A1 removes the file.
     await setScript({
       hermes: [{ text: fileReply("a.md", "v1") }, { text: "AGREE: P2" }, { text: "NOTE: done" }],
       openclaw: [{ text: fileReply("a.md", "v2") }, { text: "AGREE: P1" }]
     });
     await withTeamEnv(async (home) => {
-      const room = await runRoom("overwrite then undo", { maxTurns: 6 });
-      assert.equal(room.status, "agreed");
+      const moderator = createModerator();
+      let room = await runRoom("overwrite then undo", { maxTurns: 6 }, moderator);
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.pausedFor, "P2");
+      assert.equal(room.turnsDone, 3);
       const file = teamFile(home, room.id, "a.md");
+      assert.equal(await exists(file), false, "agreement wrote nothing");
+
+      await applyFileProposal(room.id, "P2"); // Approve P2: creates the file
+      assert.equal(await readFile(file, "utf8"), "v2");
+      const next = await moderator.continueRoom(room.id, 1);
+      await next.done;
+      room = await readRoom(room.id);
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.pausedFor, "P1");
+      assert.equal(room.turnsDone, 4);
+      await applyFileProposal(room.id, "P1"); // Approve P1: overwrites it, keeping a backup
       assert.equal(await readFile(file, "utf8"), "v1");
       const { actions } = await readDecision(room.id);
       assert.deepEqual(
@@ -1207,6 +1264,7 @@ test(
     });
     await withTeamEnv(async (home) => {
       const room = await runRoom("tampered record");
+      await applyFileProposal(room.id, "P1"); // Approve: the file is written, A1 is recorded
       const decisionFile = path.join(home, "teams", room.id, "decision.json");
       const decision = JSON.parse(await readFile(decisionFile, "utf8"));
       decision.actions[0].path = "team/someone-else/keep.md";
@@ -1230,6 +1288,267 @@ test("recoverStaleRooms(): a room left 'running' by a dead process becomes inter
     assert.equal((await readRoom(finished.id)).status, "agreed");
     assert.equal((await readEvents(room.id)).at(-1).status, "interrupted");
   });
+});
+
+// ===========================================================================
+// 4b. D10: the Team Room asks first (agreement never writes; the room pauses)
+// ===========================================================================
+
+// Hermes proposes plan.md on turn 1 and OpenClaw agrees on turn 2, so the room
+// pauses. Any later turn (after Approve, Reject or Continue) is a plain note.
+const PAUSING_SCRIPT = {
+  hermes: [{ text: fileReply("plan.md", "# Party plan\n- cake") }, { text: "NOTE: after the decision, Hermes" }],
+  openclaw: [{ text: "Looks good to me.\nAGREE: P1" }, { text: "NOTE: after the decision, OpenClaw" }]
+};
+
+test(
+  "D10: agreement alone never writes a file; the room pauses as needs_you with pausedFor set (gate on and gate off)",
+  SKIP_POSIX,
+  async () => {
+    for (const gate of [true, false]) {
+      await setScript(PAUSING_SCRIPT);
+      await withTeamEnv(
+        async (home) => {
+          const room = await runRoom("Plan a birthday party", { maxTurns: 6 });
+          assert.equal(room.status, "needs_you", `gate ${gate}`);
+          assert.equal(room.pausedFor, "P1");
+          assert.equal(room.turnsDone, 2);
+          assert.equal(room.endReason, "Paused for your decision: Hermes Agent's file plan.md needs your approval.");
+          assert.equal(room.currentTurn, null);
+          assert.equal(typeof room.clockUsedMs, "number");
+          assert.equal(await exists(teamFile(home, room.id, "plan.md")), false);
+          const decision = await readDecision(room.id);
+          assert.equal(decision.proposals[0].status, "needs_approval");
+          assert.equal(decision.proposals[0].statusReason, "Both agents agree. Waiting for your approval.");
+          assert.deepEqual(decision.actions, []);
+          const events = await readEvents(room.id);
+          assert.ok(!events.some((e) => e.type === "action"), "no file action");
+          const last = events.at(-1);
+          assert.equal(last.type, "status");
+          assert.equal(last.status, "needs_you");
+          assert.equal(last.pausedFor, "P1");
+          assert.match(last.reason, /^Paused for your decision/);
+        },
+        { gate }
+      );
+    }
+  }
+);
+
+test(
+  "D10: an agreed decision proposal (not a file) becomes a card and the room does not pause",
+  SKIP_POSIX,
+  async () => {
+    await setScript({
+      hermes: [{ text: "PROPOSE: buy balloons" }, { text: "NOTE: h" }],
+      openclaw: [{ text: "AGREE: P1" }, { text: "NOTE: o" }]
+    });
+    await withTeamEnv(async () => {
+      const room = await runRoom("Plan a party", { maxTurns: 4 });
+      assert.equal(room.turnsDone, 4, "the room kept taking turns after the agreement");
+      assert.equal(room.status, "needs_you");
+      assert.match(room.endReason, /^Reached the limit of 4 turns\./);
+      assert.equal(room.pausedFor, null);
+      assert.equal(room.clockUsedMs, null);
+      const decision = await readDecision(room.id);
+      assert.equal(decision.proposals[0].status, "needs_approval");
+      assert.equal(decision.proposals[0].statusReason, "Both agents agree. Waiting for your approval.");
+    });
+  }
+);
+
+test(
+  "D10: the clock stops while paused: clockUsedMs keeps the time used, and time passing while paused is not counted",
+  SKIP_POSIX,
+  async () => {
+    await setScript(PAUSING_SCRIPT);
+    await withTeamEnv(async () => {
+      let offsetMs = 0;
+      const moderator = createModerator({ now: () => Date.now() + offsetMs });
+      const realStart = Date.now();
+      const { room: started, done } = await moderator.startRoom({ task: "slow talk", limits: { maxTurns: 6, maxMinutes: 1 } });
+      const unsubscribe = subscribeRoom(started.id, (event) => {
+        if (event.type === "turn_ended" && event.turn === 1) offsetMs += 40 * 1000;
+        if (event.type === "turn_ended" && event.turn === 2) offsetMs += 10 * 1000;
+      });
+      await done;
+      unsubscribe();
+      const paused = await readRoom(started.id);
+      assert.equal(paused.status, "needs_you");
+      assert.equal(paused.pausedFor, "P1");
+      // 50 seconds of fake time plus the real time the two fake turns took
+      // (measured, so a slow machine cannot fail it; +1 for rounding).
+      const realMs = Date.now() - realStart;
+      assert.ok(
+        paused.clockUsedMs >= 50000 && paused.clockUsedMs <= 50000 + realMs + 1,
+        `clockUsedMs was ${paused.clockUsedMs}, real time ${realMs} ms`
+      );
+
+      // Ten minutes pass while the room waits for the person: nothing is used up.
+      offsetMs += 10 * 60 * 1000;
+      const later = await readRoom(started.id);
+      assert.equal(later.status, "needs_you");
+      assert.equal(later.clockUsedMs, paused.clockUsedMs);
+    });
+  }
+);
+
+test(
+  "D10: a room ends agreed only at its limit with an approved file saved and nothing open; otherwise needs_you",
+  SKIP_POSIX,
+  async () => {
+    await withTeamEnv(async () => {
+      // Each case pauses at turn 2 (turn limit 2), then Continue adds turns. applyFileProposal is what Approve calls.
+      async function pausedRoom(script, task, moderator) {
+        await setScript(script);
+        const room = await runRoom(task, { maxTurns: 2 }, moderator);
+        assert.equal(room.pausedFor, "P1", task);
+        return room;
+      }
+      async function continueAndWait(moderator, roomId, extra) {
+        const { done } = await moderator.continueRoom(roomId, extra);
+        await done;
+        return readRoom(roomId);
+      }
+
+      // A. Approved and saved, nothing open: agreed at the limit. The old early exit is gone:
+      // turns 3 and 4 are still played after the file was saved.
+      let moderator = createModerator();
+      let room = await pausedRoom(PAUSING_SCRIPT, "A: approved", moderator);
+      await applyFileProposal(room.id, "P1");
+      room = await continueAndWait(moderator, room.id, 2);
+      assert.equal(room.status, "agreed");
+      assert.equal(room.turnsDone, 4);
+      assert.equal(room.endReason, "Reached the limit of 4 turns with your approved file saved and nothing left open.");
+      assert.equal(room.pausedFor, null);
+
+      // B. Never approved: the card still waits, so it ends needs_you.
+      moderator = createModerator();
+      room = await pausedRoom(PAUSING_SCRIPT, "B: not approved", moderator);
+      room = await continueAndWait(moderator, room.id, 1);
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.endReason, "Reached the limit of 3 turns. You can let it continue for a few more.");
+      assert.equal((await readDecision(room.id)).proposals[0].status, "needs_approval");
+
+      // C. Approved and saved, but another proposal is still open: needs_you.
+      const withOpen = {
+        hermes: [{ text: fileReply("plan.md", "# Party plan\n- cake") }, { text: "PROPOSE: hire a clown" }, { text: "NOTE: h" }],
+        openclaw: [{ text: "Looks good to me.\nAGREE: P1" }, { text: "NOTE: o" }]
+      };
+      moderator = createModerator();
+      room = await pausedRoom(withOpen, "C: open proposal", moderator);
+      await applyFileProposal(room.id, "P1");
+      room = await continueAndWait(moderator, room.id, 2);
+      assert.equal((await readDecision(room.id)).proposals[1].status, "open");
+      assert.equal(room.status, "needs_you");
+
+      // D. Approved and saved, but another card waits for approval: needs_you.
+      const withCard = {
+        hermes: [{ text: fileReply("plan.md", "# Party plan\n- cake") }, { text: "PROPOSE: hire a clown" }, { text: "NOTE: h" }],
+        openclaw: [{ text: "Looks good to me.\nAGREE: P1" }, { text: "AGREE: P2" }, { text: "NOTE: o" }]
+      };
+      moderator = createModerator();
+      room = await pausedRoom(withCard, "D: card waits", moderator);
+      await applyFileProposal(room.id, "P1");
+      room = await continueAndWait(moderator, room.id, 3);
+      assert.equal((await readDecision(room.id)).proposals[1].status, "needs_approval");
+      assert.equal(room.status, "needs_you");
+      assert.equal(room.pausedFor, null, "a decision card never pauses the room");
+
+      // E. The saved file was undone: nothing is saved any more, so needs_you.
+      moderator = createModerator();
+      room = await pausedRoom(PAUSING_SCRIPT, "E: undone", moderator);
+      await applyFileProposal(room.id, "P1");
+      await undoAction(room.id, "A1");
+      room = await continueAndWait(moderator, room.id, 2);
+      assert.equal(room.status, "needs_you");
+    });
+  }
+);
+
+test(
+  "D10: the time limit also ends the room agreed when an approved file is saved and nothing is open",
+  SKIP_POSIX,
+  async () => {
+    await setScript(PAUSING_SCRIPT);
+    await withTeamEnv(async () => {
+      let offsetMs = 0;
+      const moderator = createModerator({ now: () => Date.now() + offsetMs });
+      let room = await runRoom("time limit", { maxTurns: 10, maxMinutes: 1 }, moderator);
+      assert.equal(room.pausedFor, "P1");
+      await applyFileProposal(room.id, "P1");
+      // Continue restarts the clock; two minutes pass during turn 3.
+      const unsubscribe = subscribeRoom(room.id, (event) => {
+        if (event.type === "turn_ended" && event.turn === 3) offsetMs += 2 * 60 * 1000;
+      });
+      const { done } = await moderator.continueRoom(room.id, 3);
+      await done;
+      unsubscribe();
+      room = await readRoom(room.id);
+      assert.equal(room.turnsDone, 3);
+      assert.equal(room.status, "agreed");
+      assert.equal(room.endReason, "Reached the 1-minute time limit with your approved file saved and nothing left open.");
+    });
+  }
+);
+
+test(
+  "restart while paused: the room still reads 'Paused for your decision' after a restart, with its clock, proposal and reason untouched",
+  SKIP_POSIX,
+  async () => {
+    await setScript(PAUSING_SCRIPT);
+    await withTeamEnv(async () => {
+      let offsetMs = 0;
+      const firstRun = createModerator({ now: () => Date.now() + offsetMs });
+      const { room: started, done } = await firstRun.startRoom({ task: "survive a restart", limits: { maxTurns: 6, maxMinutes: 1 } });
+      const unsubscribe = subscribeRoom(started.id, (event) => {
+        if (event.type === "turn_ended" && event.turn === 1) offsetMs += 45 * 1000;
+      });
+      await done;
+      unsubscribe();
+      const paused = await readRoom(started.id);
+      assert.equal(paused.pausedFor, "P1");
+      const eventCount = (await readEvents(started.id)).length;
+
+      // Restart: the old process is gone, half an hour passes, a new moderator starts and, like the
+      // server, runs recoverStaleRooms() once.
+      offsetMs += 30 * 60 * 1000;
+      const secondRun = createModerator({ now: () => Date.now() + offsetMs });
+      await recoverStaleRooms();
+      const after = await readRoom(started.id);
+      assert.equal(after.status, "needs_you");
+      assert.equal(after.pausedFor, "P1");
+      assert.equal(after.clockUsedMs, paused.clockUsedMs);
+      assert.equal(after.endReason, paused.endReason);
+      assert.equal(after.endedAt, paused.endedAt);
+      assert.equal((await readDecision(started.id)).proposals[0].status, "needs_approval");
+      assert.equal((await readEvents(started.id)).length, eventCount, "no 'interrupted' event was written");
+      assert.equal(secondRun.activeRoomId(), null, "the room did not start running by itself");
+
+      const [summary] = await listRooms();
+      assert.equal(summary.status, "needs_you");
+      assert.equal(summary.pausedFor, "P1");
+      assert.equal(summary.needsApproval, 1);
+    });
+  }
+);
+
+test("createRoom(): a new room starts with pausedFor and clockUsedMs both null", SKIP_POSIX, async () => {
+  await withTeamEnv(async () => {
+    const room = await createRoom({ task: "fresh", limits: { maxTurns: 6, maxMinutes: 10, maxCostUsd: null } });
+    assert.equal(room.pausedFor, null);
+    assert.equal(room.clockUsedMs, null);
+    const [summary] = await listRooms();
+    assert.equal(summary.pausedFor, null);
+  });
+});
+
+test("buildTurnPrompt(): tells the agents that agreeing on a file asks the user, and only the user's approval saves it", () => {
+  const prompt = buildTurnPrompt(BASE_PROMPT);
+  assert.match(prompt, /the room pauses and asks the user; the file is saved only if the user approves it/);
+  assert.match(prompt, /Even a small text file is only saved after the user approves it/);
+  assert.ok(!/only saved when both of you agree/.test(prompt), "the old promise is gone");
+  assert.ok(!/for anything beyond saving a small text file/.test(prompt), "the old exception is gone");
 });
 
 // ===========================================================================
@@ -1376,20 +1695,22 @@ test("routes: ids that do not match the pattern give 404 without touching the di
 });
 
 test(
-  "routes: start, list, detail, SSE replay, decision cards (approve/reject), file approve after the gate comes on, undo",
+  "routes: start, list, detail, SSE replay, decision cards (approve/reject), the room paused at the file, file approve after the gate comes on, undo",
   SKIP_POSIX,
   async () => {
+    // P1 and P2 are decision cards. The agreement on P3 (a file) is turn 6, so the room pauses there.
     await setScript({
-      hermes: [{ text: "PROPOSE: buy balloons" }, { text: fileReply("menu.md", "# Menu") }, { text: "PROPOSE: hire a clown" }],
+      hermes: [{ text: "PROPOSE: buy balloons" }, { text: "PROPOSE: hire a clown" }, { text: fileReply("menu.md", "# Menu") }],
       openclaw: [{ text: "AGREE: P1" }, { text: "AGREE: P2" }, { text: "AGREE: P3" }]
     });
     await withTeamEnv(async (home) => {
       await withRouter(async (api, base) => {
-        // The gate is on for the start, then switched off so the file agreement needs approval.
+        // The gate is on for the start, then switched off: the pause happens either way.
         const started = await api("POST", "/", { task: "Plan a party", confirm: true, limits: { maxTurns: 6, maxMinutes: 5 } });
         assert.equal(started.status, 200);
         assert.equal(started.body.status, "running");
         assert.equal(started.body.limits.maxTurns, 6);
+        assert.equal(started.body.pausedFor, null);
         const roomId = started.body.id;
         await setExecutionGateStatus({ enabled: false });
         await waitFor(async () => (await readRoom(roomId)).status !== "running", { timeoutMs: 30000 });
@@ -1397,47 +1718,57 @@ test(
         const list = await api("GET", "/");
         assert.equal(list.body.rooms[0].id, roomId);
         assert.equal(list.body.rooms[0].needsApproval, 3);
+        assert.equal(list.body.rooms[0].pausedFor, "P3");
 
         const detail = await api("GET", `/${roomId}`);
         assert.equal(detail.body.room.status, "needs_you");
+        assert.equal(detail.body.room.pausedFor, "P3");
+        assert.equal(typeof detail.body.room.clockUsedMs, "number");
+        assert.equal(detail.body.room.endReason, "Paused for your decision: Hermes Agent's file menu.md needs your approval.");
         assert.equal(detail.body.proposals.length, 3);
+        assert.equal(detail.body.proposals[2].status, "needs_approval");
+        assert.deepEqual(detail.body.actions, []);
         assert.ok(detail.body.events.some((e) => e.type === "turn_ended"));
         assert.equal(typeof detail.body.notebook, "string");
 
-        // SSE replay of a finished room: all events, then end.
+        // SSE replay of a paused room: all events, the pause reason, then end.
         const stream = await fetch(`${base}/${roomId}/stream`);
         const text = await stream.text();
         assert.match(text, /event: turn_started/);
         assert.match(text, /event: proposal\b/);
         assert.match(text, /event: status/);
+        assert.match(text, /"pausedFor":"P3"/);
         assert.match(text, /event: end\ndata: {"status":"needs_you"}/);
 
         // Cards: a decision proposal can be approved (nothing else happens) or rejected.
+        // Neither is the proposal the room is paused on, so the room stays paused.
         let res = await api("POST", `/${roomId}/proposals/P1`, { decision: "approve" });
         assert.equal(res.status, 200);
         assert.equal(res.body.proposal.status, "approved");
         assert.equal(res.body.action, null);
         res = await api("POST", `/${roomId}/proposals/P1`, { decision: "approve" });
         assert.equal(res.status, 409);
-        res = await api("POST", `/${roomId}/proposals/P3`, { decision: "reject" });
+        res = await api("POST", `/${roomId}/proposals/P2`, { decision: "reject" });
         assert.equal(res.body.proposal.status, "rejected");
-        res = await api("POST", `/${roomId}/proposals/P2`, { decision: "maybe" });
+        res = await api("POST", `/${roomId}/proposals/P3`, { decision: "maybe" });
         assert.equal(res.status, 400);
         res = await api("POST", `/${roomId}/proposals/P99`, { decision: "approve" });
         assert.equal(res.status, 404);
         res = await api("POST", `/${roomId}/proposals/..%2f..`, { decision: "approve" });
         assert.equal(res.status, 404);
+        assert.equal((await readRoom(roomId)).pausedFor, "P3", "deciding another card does not end the pause");
 
         // Approving the file with the gate still off refuses and changes nothing.
-        res = await api("POST", `/${roomId}/proposals/P2`, { decision: "approve" });
+        res = await api("POST", `/${roomId}/proposals/P3`, { decision: "approve" });
         assert.equal(res.status, 403);
         assert.equal(res.body.error, "execution_gate_off");
-        assert.equal((await readDecision(roomId)).proposals[1].status, "needs_approval");
+        assert.equal((await readDecision(roomId)).proposals[2].status, "needs_approval");
+        assert.equal((await readRoom(roomId)).pausedFor, "P3", "the room stays paused");
         assert.equal(await exists(teamFile(home, roomId, "menu.md")), false);
 
         // Gate on: approve writes the file; Undo removes it.
         await setExecutionGateStatus({ enabled: true });
-        res = await api("POST", `/${roomId}/proposals/P2`, { decision: "approve" });
+        res = await api("POST", `/${roomId}/proposals/P3`, { decision: "approve" });
         assert.equal(res.status, 200);
         assert.equal(res.body.proposal.status, "applied");
         assert.equal(res.body.action.created, true);
@@ -1548,12 +1879,15 @@ async function collectSse(response, isDone) {
 }
 
 test(
-  "end to end: the real server runs a Hermes + OpenClaw room, streams it over SSE, and saves the agreed file",
+  "end to end: the real server runs a Hermes + OpenClaw room, streams it over SSE, pauses at the agreed file, and saves it only on Approve",
   SKIP_POSIX,
   async () => {
     await setScript({
-      hermes: [{ text: fileReply("summary.md", "# Summary\n- agreed by both", "I suggest we write this down.") }],
-      openclaw: [{ text: "Agreed, that covers it.\nAGREE: P1", costUsd: 0.01 }]
+      hermes: [
+        { text: fileReply("summary.md", "# Summary\n- agreed by both", "I suggest we write this down.") },
+        { text: "NOTE: thanks, that is done" }
+      ],
+      openclaw: [{ text: "Agreed, that covers it.\nAGREE: P1", costUsd: 0.01 }, { text: "NOTE: all set" }]
     });
     const home = await mkdtemp(path.join(os.tmpdir(), "agent-os-team-e2e-"));
     const port = await freePort();
@@ -1604,30 +1938,46 @@ test(
       const room = await startRes.json();
       assert.match(room.id, /^room-\d{8}-\d{6}-[0-9a-f]{4}$/);
 
+      // The stream ends when the room pauses for the person's decision.
       const streamRes = await fetch(`${base}/api/team-rooms/${room.id}/stream`, { headers: authed });
       assert.equal(streamRes.status, 200);
       const blocks = await collectSse(streamRes, (all) => all.some((b) => b.event === "end"));
       const names = blocks.map((b) => b.event);
-      for (const expected of ["turn_started", "turn_ended", "proposal", "agreement", "action", "status"]) {
+      for (const expected of ["turn_started", "turn_ended", "proposal", "agreement", "proposal_status", "status"]) {
         assert.ok(names.includes(expected), `SSE is missing ${expected}: ${names.join(",")}`);
       }
-      const lastStatus = blocks.filter((b) => b.event === "status").at(-1);
-      assert.equal(JSON.parse(lastStatus.data).status, "agreed");
-      assert.equal(JSON.parse(blocks.find((b) => b.event === "end").data).status, "agreed");
+      assert.ok(!names.includes("action"), "no file action before the person approves");
+      const lastStatus = JSON.parse(blocks.filter((b) => b.event === "status").at(-1).data);
+      assert.equal(lastStatus.status, "needs_you");
+      assert.equal(lastStatus.pausedFor, "P1");
+      assert.match(lastStatus.reason, /^Paused for your decision: Hermes Agent's file summary\.md needs your approval\.$/);
+      assert.equal(JSON.parse(blocks.find((b) => b.event === "end").data).status, "needs_you");
       const seqs = blocks.filter((b) => b.id !== null).map((b) => Number(b.id));
       assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), "events arrive in order");
 
       const detail = await (await fetch(`${base}/api/team-rooms/${room.id}`, { headers: authed })).json();
-      assert.equal(detail.room.status, "agreed");
+      assert.equal(detail.room.status, "needs_you");
+      assert.equal(detail.room.pausedFor, "P1");
       assert.equal(detail.room.turnsDone, 2);
-      assert.equal(detail.actions.length, 1);
+      assert.equal(detail.proposals[0].status, "needs_approval");
+      assert.equal(detail.actions.length, 0);
       const written = path.join(home, "workspace", "team", roomShort(room.id), "summary.md");
-      assert.equal(await readFile(written, "utf8"), "# Summary\n- agreed by both");
+      assert.equal(await exists(written), false, "agreement alone wrote nothing");
 
       // The turns also show up on the Runs page, with real usage for OpenClaw.
       const runs = await (await fetch(`${base}/api/runs?kind=team-turn`, { headers: authed })).json();
       assert.equal(runs.runs.length, 2);
       assert.equal(runs.runs.find((r) => r.agentId === "openclaw").usage.costUsd, 0.01);
+
+      // Approve over HTTP saves the file.
+      const approve = await fetch(`${base}/api/team-rooms/${room.id}/proposals/P1`, {
+        method: "POST",
+        headers: authed,
+        body: JSON.stringify({ decision: "approve" })
+      });
+      assert.equal(approve.status, 200, logs.text.slice(-1500));
+      assert.equal((await approve.json()).proposal.status, "applied");
+      assert.equal(await readFile(written, "utf8"), "# Summary\n- agreed by both");
 
       // Undo over HTTP removes the file the room created.
       const undo = await fetch(`${base}/api/team-rooms/${room.id}/actions/A1/undo`, {

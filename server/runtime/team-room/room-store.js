@@ -121,6 +121,11 @@ export async function createRoom({ task, limits }) {
     turnsDone: 0,
     clockStartedAt: nowIso,
     currentTurn: null,
+    // Set while the room is paused for the person's decision (the id of the
+    // file proposal that waits), and the time the room had used when it
+    // paused. Both are null otherwise. The status is still needs_you.
+    pausedFor: null,
+    clockUsedMs: null,
     // null until a turn reports a cost; unknown costs are counted apart,
     // never added as 0 (see costUnknownTurns).
     costUsd: null,
@@ -190,6 +195,7 @@ export function summarizeRoom(meta, decision) {
     id: meta.id,
     task: meta.task,
     status: meta.status,
+    pausedFor: meta.pausedFor || null,
     createdAt: meta.createdAt,
     endedAt: meta.endedAt,
     endReason: meta.endReason,

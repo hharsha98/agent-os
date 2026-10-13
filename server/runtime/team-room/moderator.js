@@ -8,16 +8,16 @@
 // and applies at most ONE tag from it: a note, a proposal, or an agreement.
 // A reply is only ever data; nothing in it is run.
 //
-// Only one thing can happen on its own: when BOTH agents agree on a proposal
-// to save a small text file, and the execution gate is on, the file is saved
-// into the room's own folder (and can be undone). Everything else becomes a
-// card for you to approve or reject.
+// Nothing happens on its own. When BOTH agents agree on a proposal it becomes a
+// card for you to approve or reject. When the card is a file, the room also
+// pauses ("Paused for your decision") and its time limit stops running until
+// you decide. Only your Approve saves a file, into the room's own folder (and
+// it can be undone).
 import { promises as fs } from "node:fs";
 import { getAdapter } from "../agents/index.js";
 import { OPENCLAW_MODEL_PATTERN } from "../agents/openclaw.js";
 import { makeRunDir, resolveRunCwd } from "../agents/routes.js";
 import { TERMINAL_RUN_STATUSES, getRunManager } from "../runs/run-manager.js";
-import { applyFileProposal } from "./actions.js";
 import { buildTurnPromptDetailed, parseReply } from "./protocol.js";
 import {
   appendEvent,
@@ -245,15 +245,37 @@ export function createModerator({
 
   // Ends the room: frees the "one active room" slot first (so a client that
   // reacts to the status event can immediately continue), then records it.
-  async function finish(state, status, reason) {
+  // `pausedFor` (a proposal id) and `clockUsedMs` are only given when the room
+  // pauses for a decision; every other ending clears them.
+  async function finish(state, status, reason, { pausedFor = null, clockUsedMs = null } = {}) {
     if (active === state) active = null;
     await updateRoom(state.roomId, (meta) => {
       meta.status = status;
       meta.endReason = scrubPaths(reason);
       meta.endedAt = new Date().toISOString();
       meta.currentTurn = null;
+      meta.pausedFor = pausedFor;
+      meta.clockUsedMs = clockUsedMs;
     });
-    await appendEvent(state.roomId, { type: "status", status, reason: scrubPaths(reason) });
+    await appendEvent(state.roomId, {
+      type: "status",
+      status,
+      reason: scrubPaths(reason),
+      ...(pausedFor ? { pausedFor } : {})
+    });
+  }
+
+  // The room waits for the person to decide on an agreed file. The status is
+  // the existing needs_you; `pausedFor` says why, and `clockUsedMs` keeps the
+  // time used so far, so the wait never counts against the time limit.
+  async function pauseRoom(state, pause) {
+    const used = Math.max(0, Math.round(now() - state.clockStart));
+    await finish(
+      state,
+      "needs_you",
+      `Paused for your decision: ${pause.byLabel}'s file ${pause.fileName} needs your approval.`,
+      { pausedFor: pause.proposalId, clockUsedMs: used }
+    );
   }
 
   async function protocolNote(roomId, turn, agentId, message) {
@@ -271,34 +293,18 @@ export function createModerator({
     await appendEvent(roomId, { type: "proposal_status", proposalId, status, reason: reason || null });
   }
 
-  // Both agents agree. A file proposal is saved on the spot if (and only if)
-  // the execution gate is on; everything else waits for the user.
-  async function resolveAgreement(roomId, turn, agentId, proposal) {
-    if (proposal.kind === "file") {
-      try {
-        // A refused write (a link in the way) is recorded and noted by
-        // applyFileProposal itself; there is nothing more to do here.
-        await applyFileProposal(roomId, proposal.id);
-        return;
-      } catch (error) {
-        if (error?.code === "execution_gate_off") {
-          await setProposalStatus(
-            roomId,
-            proposal.id,
-            "needs_approval",
-            "Both agents agree, but the execution gate is off, so nothing was saved."
-          );
-          return;
-        }
-        await protocolNote(roomId, turn, agentId, `The file could not be saved: ${error?.message || "unknown error"}.`);
-        await setProposalStatus(roomId, proposal.id, "needs_approval", "Both agents agree, but saving the file failed.");
-        return;
-      }
-    }
+  // Both agents agree. Nothing is ever written here, whether the execution gate
+  // is on or off: the proposal becomes a card for you ("needs approval"). For a
+  // file the caller also pauses the room, so this returns what to pause for;
+  // a decision proposal returns null and the room keeps taking turns.
+  async function resolveAgreement(roomId, proposal) {
     await setProposalStatus(roomId, proposal.id, "needs_approval", "Both agents agree. Waiting for your approval.");
+    if (proposal.kind !== "file") return null;
+    return { proposalId: proposal.id, fileName: proposal.file?.name || "", byLabel: proposal.byLabel || labelOf(proposal.by) };
   }
 
   // Applies the one tag found in a reply. Never runs anything an agent wrote.
+  // Returns what the room must pause for (an agreed file proposal), or null.
   async function applyReply(roomId, agentId, turn, parsed, shownFileIds) {
     const label = labelOf(agentId);
 
@@ -357,8 +363,7 @@ export function createModerator({
         proposalId: outcome.proposal.id,
         proposedBy: outcome.proposal.by
       });
-      await resolveAgreement(roomId, turn, agentId, outcome.proposal);
-      return;
+      return resolveAgreement(roomId, outcome.proposal);
     }
 
     if (parsed.kind === "disagree") {
@@ -395,7 +400,15 @@ export function createModerator({
     );
   }
 
-  function limitReached(room, state) {
+  // The room only ends "agreed" when at least one file you approved is saved
+  // (and not undone) and no proposal is still open or waiting for you.
+  function approvedFileSavedAndNothingOpen(decision) {
+    const saved = decision.actions.some((a) => a.kind === "file_write" && !a.failed && !a.undone);
+    const waiting = decision.proposals.some((p) => p.status === "open" || p.status === "needs_approval");
+    return saved && !waiting;
+  }
+
+  function limitReached(room, state, decision) {
     const { maxMinutes, maxCostUsd } = room.limits;
     if (maxCostUsd != null && room.costUsd != null && room.costUsd >= maxCostUsd) {
       return {
@@ -403,17 +416,28 @@ export function createModerator({
         reason: `The cost cap of $${maxCostUsd} was reached (about $${room.costUsd.toFixed(4)} spent).`
       };
     }
+    const saved = approvedFileSavedAndNothingOpen(decision);
     if (room.turnsDone >= room.turnsAllowed) {
-      return {
-        status: "needs_you",
-        reason: `Reached the limit of ${room.turnsAllowed} turns. You can let it continue for a few more.`
-      };
+      return saved
+        ? {
+            status: "agreed",
+            reason: `Reached the limit of ${room.turnsAllowed} turns with your approved file saved and nothing left open.`
+          }
+        : {
+            status: "needs_you",
+            reason: `Reached the limit of ${room.turnsAllowed} turns. You can let it continue for a few more.`
+          };
     }
     if (now() - state.clockStart >= maxMinutes * 60 * 1000) {
-      return {
-        status: "needs_you",
-        reason: `Reached the ${maxMinutes}-minute time limit. You can let it continue for a few more turns.`
-      };
+      return saved
+        ? {
+            status: "agreed",
+            reason: `Reached the ${maxMinutes}-minute time limit with your approved file saved and nothing left open.`
+          }
+        : {
+            status: "needs_you",
+            reason: `Reached the ${maxMinutes}-minute time limit. You can let it continue for a few more turns.`
+          };
     }
     return null;
   }
@@ -545,7 +569,7 @@ export function createModerator({
           return;
         }
         const room = await readRoom(roomId);
-        const limit = limitReached(room, state);
+        const limit = limitReached(room, state, await readDecision(roomId));
         if (limit) {
           await finish(state, limit.status, limit.reason);
           return;
@@ -571,7 +595,12 @@ export function createModerator({
         }
         if (status !== "succeeded") {
           if (status === "timed_out" && now() - state.clockStart >= room.limits.maxMinutes * 60 * 1000) {
-            await finish(state, "needs_you", `Ran out of the ${room.limits.maxMinutes}-minute time limit during turn ${turn}.`);
+            const ran = `Ran out of the ${room.limits.maxMinutes}-minute time limit during turn ${turn}`;
+            if (approvedFileSavedAndNothingOpen(await readDecision(roomId))) {
+              await finish(state, "agreed", `${ran}, with your approved file saved and nothing left open.`);
+            } else {
+              await finish(state, "needs_you", `${ran}.`);
+            }
             return;
           }
           const detail = failureDetail(result.meta, result.runEvents);
@@ -583,13 +612,11 @@ export function createModerator({
           return;
         }
 
-        await applyReply(roomId, agentId, turn, result.parsed, result.shownFileIds);
-
-        // Done early: a file was saved and nothing is still waiting for agreement.
-        const decision = await readDecision(roomId);
-        const savedAFile = decision.actions.some((a) => a.kind === "file_write" && !a.failed);
-        if (savedAFile && !decision.proposals.some((p) => p.status === "open")) {
-          await finish(state, "agreed", "Both agents agreed and the file was saved.");
+        // An agreed file proposal pauses the room for your decision. There is
+        // no other early exit: the room ends at its limits, by Stop, or on a failure.
+        const pause = await applyReply(roomId, agentId, turn, result.parsed, result.shownFileIds);
+        if (pause) {
+          await pauseRoom(state, pause);
           return;
         }
       }
@@ -652,6 +679,10 @@ export function createModerator({
         meta.status = "running";
         meta.endedAt = null;
         meta.endReason = null;
+        // Continue also ends a pause: the proposal stays "needs approval" and
+        // its card can still be decided later. The clock restarts (new state).
+        meta.pausedFor = null;
+        meta.clockUsedMs = null;
         meta.clockStartedAt = new Date().toISOString();
       });
     } catch (error) {

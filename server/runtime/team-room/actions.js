@@ -1,7 +1,8 @@
 // The only thing a Team Room can ever DO to your computer: save one small
 // text file (.md, .txt or .html) into its own folder, workspace/team/<room>/.
-// It happens when both agents agreed (or when you approved a card), only
-// while the execution gate is on, and it can be undone.
+// It happens only when you approve a file card (agreement between the agents
+// never writes anything), only while the execution gate is on, and it can be
+// undone.
 //
 // Safety, in layers: the file name must match a strict pattern; the folder is
 // fixed by us (never by an agent); the workspace writer sanitises again and
@@ -87,9 +88,9 @@ function actionEventFields(action) {
   };
 }
 
-// Saves an agreed (or user-approved) file proposal. Returns the action
-// record. Throws a roomError with code "execution_gate_off" when the gate is
-// off, which the caller turns into "needs your approval".
+// Saves a file proposal the person approved. Returns the action record.
+// Throws a roomError with code "execution_gate_off" (403) when the gate is
+// off; the proposal then stays "needs approval" and nothing changes.
 export async function applyFileProposal(roomId, proposalId) {
   if (!(await isExecutionEnabled())) {
     throw roomError(403, "execution_gate_off", "Turn on the execution gate to let the room save files.");

@@ -7,6 +7,20 @@ import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS, agentGroup, getInstallRecipe } fr
 // operators; the coding agents are asked for by name (see routes.js, ?group=).
 export const ALL_PLAN_AGENT_IDS = [...OPERATOR_AGENT_IDS, ...CODING_AGENT_IDS];
 
+// Agents whose installed copy the plan never offers to update. Hermes is a git
+// checkout, and `hermes update` can overwrite changes a person made in it.
+// Until Agent OS can tell that a checkout is clean (SP5's Hermes clean check),
+// Setup offers Hermes only as "keep"; no Hermes update step exists, so a new job
+// cannot start one (jobs.js honours only ids the fresh plan holds). Retrying a
+// job stored before this change is refused too: jobs.js asks setupOffersUpdate()
+// before it runs any update step.
+const NO_UPDATE_STEP = new Set(["hermes"]);
+
+// Does Setup still update this agent? False for the agents in NO_UPDATE_STEP.
+export function setupOffersUpdate(agentId) {
+  return !NO_UPDATE_STEP.has(agentId);
+}
+
 // The facts every step carries so the screen can group it, name it and add up
 // the size and time of what is ticked. Only installs have a size; Hermes and
 // OpenClaw sizes were never measured, so theirs stay null instead of invented.
@@ -123,6 +137,7 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS } = {}) {
         ...stepMeta(recipe),
         installedVersion: detected.version || ""
       });
+      if (NO_UPDATE_STEP.has(agentId)) continue;
       steps.push({
         id: `${agentId}-update`,
         agentId,

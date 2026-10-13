@@ -68,7 +68,10 @@ function hermesRecipe(platform, arch) {
     stageFlag: isWindows ? "-Stage" : "--stage",
     // Appended after "--stage NAME" / "-Stage NAME" for each per-stage run.
     stageArgs: isWindows ? ["-Json", "-NonInteractive"] : ["--json", "--non-interactive", "--skip-setup"],
-    updateArgs: ["update", "--yes"],
+    // No answer is ever supplied to an updater: an update job's stdin is empty,
+    // so a question gets end of input, never an automatic yes (design spec, SP2,
+    // Setup). Hermes is also not offered an update at all yet; see plan.js.
+    updateArgs: ["update"],
     changes: [
       "Creates ~/.hermes (its own Python, its own Node, config, and the Hermes code)",
       "Adds ~/.local/bin to PATH in your shell startup files",
@@ -97,7 +100,7 @@ function openclawRecipe(platform, arch) {
     shell: isWindows ? "powershell" : "bash",
     args: isWindows ? ["-NoOnboard"] : ["--no-onboard", "--no-prompt"],
     supportsStages: false,
-    updateArgs: ["update", "--yes", "--json"],
+    updateArgs: ["update", "--json"],
     changes: [
       "Installs the openclaw npm package globally (or into ~/.npm-global if the global folder isn't writable)",
       "Normally installs Node via Homebrew/winget/NodeSource if none is found -- Agent OS Setup avoids this by providing a managed Node first",

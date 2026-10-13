@@ -15,7 +15,7 @@ import { runCommand, which } from "../safety.js";
 import { readJson, runtimePaths, writeJson } from "../store.js";
 import { agentGroup, getInstallRecipe } from "./recipes.js";
 import { ensureManagedNode, nodeSatisfiesCodex, npmLaunch } from "./managed-node.js";
-import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
+import { ALL_PLAN_AGENT_IDS, buildSetupPlan, setupOffersUpdate } from "./plan.js";
 import { clearSystemCheckCache, systemCheck } from "./system-check.js";
 import { appendReceiptEntry } from "./receipt.js";
 import {
@@ -225,14 +225,17 @@ function lastJsonLine(text) {
 }
 
 // ---- the coding agents' live log and plain failure reasons ---------------------
-// Hermes and OpenClaw keep their own output in the run only; for Claude Code,
-// Codex and Cursor the installer's lines are copied into the step's log as they
-// arrive, so the Install screen shows what is really happening.
+// Hermes and OpenClaw keep their installer's output in the run only; for Claude
+// Code, Codex and Cursor the installer's lines are copied into the step's log as
+// they arrive, so the Install screen shows what is really happening. An update
+// step does the same for every agent: the updater's own words (a question it
+// asked, a warning) are the reason the update stopped, so the person sees them.
 
 const MAX_STEP_LOG_LINES = 400;
 const MAX_LOG_LINE_CHARS = 300;
 
 const isCodingAgent = (agentId) => agentGroup(agentId) === "coding";
+const showsRunOutput = (agentId, action) => isCodingAgent(agentId) || action === "update";
 
 // Copies a run's output lines into step.log (the run manager already removed
 // colour codes and secrets). Events seen twice -- once while catching up, once
@@ -252,7 +255,7 @@ async function mirrorRunOutput(manager, runId, step) {
 }
 
 async function waitForInstallRun(manager, runId, step, agentId) {
-  const stop = isCodingAgent(agentId) ? await mirrorRunOutput(manager, runId, step) : () => {};
+  const stop = showsRunOutput(agentId, step.action) ? await mirrorRunOutput(manager, runId, step) : () => {};
   try {
     return await waitForRunEnd(manager, runId);
   } finally {
@@ -261,10 +264,11 @@ async function waitForInstallRun(manager, runId, step, agentId) {
 }
 
 // The plain-English reason an installer stopped, from the last lines it printed.
-// Only for the coding agents; the older recipes keep their short generic reason.
-async function describeInstallFailure(manager, runId, label, agentId) {
+// For the coding agents and for any update step; the older install recipes keep
+// their short generic reason.
+async function describeInstallFailure(manager, runId, label, agentId, action) {
   const generic = "installer reported a failure; see the log";
-  if (!isCodingAgent(agentId)) return generic;
+  if (!showsRunOutput(agentId, action)) return generic;
   const events = await manager.readEvents(runId, 0);
   const lines = events.filter((e) => e.type === "line" && typeof e.text === "string" && e.text.trim()).map((e) => e.text.trim());
   const tail = lines.slice(-12).join("\n");
@@ -456,6 +460,12 @@ async function executeStep(job, step, check) {
   }
 
   if (step.action === "update") {
+    // A job saved before an agent's update was withdrawn can still hold that
+    // step, and Retry resumes the stored steps. Refuse it before anything is
+    // detected or started, so the updater never runs.
+    if (!setupOffersUpdate(step.agentId)) {
+      throw jobError("install_failed", "Agent OS no longer updates Hermes from Setup, so this step was not run. Nothing was changed.");
+    }
     const detected = await adapter.detect({ refresh: true });
     if (!detected.installed) {
       throw jobError("install_failed", `${recipe.label} is not installed; cannot update.`);
@@ -474,7 +484,7 @@ async function executeStep(job, step, check) {
     const finished = await waitForInstallRun(manager, run.id, step, step.agentId);
     if (finished.status === "timed_out") throw jobError("install_failed", "took longer than 30 minutes");
     if (finished.status !== "succeeded") {
-      throw jobError("install_failed", await describeInstallFailure(manager, run.id, recipe.label, step.agentId));
+      throw jobError("install_failed", await describeInstallFailure(manager, run.id, recipe.label, step.agentId, step.action));
     }
   } else if (step.action === "install" && recipe.npmPackage) {
     await runNpmInstall(job, step, recipe);

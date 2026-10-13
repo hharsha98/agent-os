@@ -34,6 +34,7 @@ import "./phase2.css";
 import "./ui/fonts";
 import "./ui/tokens.css";
 import "./ui/base.css";
+import "./ui/kit.css";
 import "./ui/shell.css";
 import "./ui/onboarding.css";
 import "./ui/palette.css";

@@ -17,7 +17,9 @@ import { promises as fs } from "node:fs";
 import { getAdapter } from "../agents/index.js";
 import { OPENCLAW_MODEL_PATTERN } from "../agents/openclaw.js";
 import { makeRunDir, resolveRunCwd } from "../agents/routes.js";
+import { isExecutionEnabled } from "../execution-gate.js";
 import { TERMINAL_RUN_STATUSES, getRunManager } from "../runs/run-manager.js";
+import { applyFileProposal } from "./actions.js";
 import { buildTurnPromptDetailed, parseReply } from "./protocol.js";
 import {
   appendEvent,
@@ -88,6 +90,27 @@ export function normalizeLimits(raw, openclawModel = "") {
 
 function labelOf(agentId) {
   return getAdapter(agentId)?.label || agentId;
+}
+
+// What the person decided on the file card a room was paused on, for the agents
+// that have not been told yet. `decideProposal` marks such a card with `toTell`
+// (both agents); each agent's next prompt carries the decision once.
+function decisionsToTell(decision, agentId) {
+  return decision.proposals
+    .filter((p) => p.userDecision && Array.isArray(p.toTell) && p.toTell.includes(agentId))
+    .map((p) => ({ id: p.id, fileName: p.file?.name || "", decision: p.userDecision, saved: p.status === "applied" }));
+}
+
+async function markDecisionsTold(roomId, agentId, told) {
+  if (!told.length) return;
+  const ids = new Set(told.map((item) => item.id));
+  await updateDecision(roomId, (decision) => {
+    for (const proposal of decision.proposals) {
+      if (ids.has(proposal.id) && Array.isArray(proposal.toTell)) {
+        proposal.toTell = proposal.toTell.filter((id) => id !== agentId);
+      }
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -229,8 +252,10 @@ export function createModerator({
   // Only one room can run at a time; this is that room's in-memory state.
   let active = null;
 
-  function newState(roomId) {
-    const state = { roomId, stopRequested: false, currentRunId: null, clockStart: now() };
+  // `clockUsedMs` is the time a paused room had already used: the clock then
+  // carries on from there, so the wait for a decision never counts.
+  function newState(roomId, clockUsedMs = 0) {
+    const state = { roomId, stopRequested: false, currentRunId: null, clockStart: now() - clockUsedMs };
     state.done = new Promise((resolve) => {
       state.resolveDone = resolve;
     });
@@ -450,6 +475,7 @@ export function createModerator({
     const otherId = TURN_ORDER.find((id) => id !== agentId);
 
     const [decision, notebook, events] = await Promise.all([readDecision(roomId), readNotebook(roomId), readEvents(roomId)]);
+    const toldNow = decisionsToTell(decision, agentId);
     const transcript = events
       .filter((event) => event.type === "turn_ended")
       .map((event) => ({ turn: event.turn, agentLabel: labelOf(event.agentId), text: event.text || "" }));
@@ -460,6 +486,7 @@ export function createModerator({
       notebook,
       transcript,
       openProposals: decision.proposals.filter((p) => p.status === "open"),
+      userDecisions: toldNow,
       turnNumber: turn,
       maxTurns: room.turnsAllowed
     });
@@ -499,6 +526,7 @@ export function createModerator({
     }
 
     state.currentRunId = run.id;
+    await markDecisionsTold(roomId, agentId, toldNow);
     await updateRoom(roomId, (meta) => {
       meta.currentTurn = { turn, agentId, runId: run.id };
     });
@@ -693,10 +721,169 @@ export function createModerator({
     await appendEvent(roomId, {
       type: "status",
       status: "running",
-      reason: `Continuing for ${extra} more turn${extra === 1 ? "" : "s"}.`
+      reason: `Continuing for ${extra} more turn${extra === 1 ? "" : "s"}.${
+        existing.pausedFor ? ` ${existing.pausedFor} still waits for your decision.` : ""
+      }`
     });
     runRoom(state, detected);
     return { room, done: state.done };
+  }
+
+  // ---- deciding on a card ----------------------------------------------------
+
+  // Decisions on one room are handled one at a time, so a double click (or two
+  // windows) cannot write the file twice or resume the room twice: the second
+  // request waits, then sees the proposal is already decided and gets a 409.
+  const decisionChains = new Map();
+
+  function oneDecisionAtATime(roomId, task) {
+    const previous = decisionChains.get(roomId) || Promise.resolve();
+    const next = previous.then(task, task);
+    const tail = next.catch(() => {});
+    decisionChains.set(roomId, tail);
+    tail.then(() => {
+      if (decisionChains.get(roomId) === tail) decisionChains.delete(roomId);
+    });
+    return next;
+  }
+
+  // The room is paused on a card that was just decided, but cannot carry on
+  // (gate off, another room running, an agent not ready). The decision stays
+  // recorded; the pause ends and the room waits for Continue.
+  async function releasePause(roomId, proposalId, reason) {
+    let released = false;
+    await updateRoom(roomId, (meta) => {
+      if (meta.status === "needs_you" && meta.pausedFor === proposalId) {
+        meta.pausedFor = null;
+        meta.clockUsedMs = null;
+        meta.endReason = scrubPaths(reason);
+        released = true;
+      }
+    });
+    if (released) await appendEvent(roomId, { type: "status", status: "needs_you", reason: scrubPaths(reason) });
+    return released;
+  }
+
+  // Carries a paused room on with the turns it has left (no extra turns), once
+  // its card is decided. Only when Continue could: the execution gate is on,
+  // no other room runs and both agents are ready. Returns true when it resumed.
+  async function resumeAfterDecision(roomId, proposalId) {
+    if (!(await isExecutionEnabled())) {
+      await releasePause(
+        roomId,
+        proposalId,
+        "Your decision is saved. Turn on the execution gate, then press Continue to let the room carry on."
+      );
+      return false;
+    }
+    // Check and claim the "one active room" slot with no await in between.
+    // If it is THIS room, Continue got there first and will end the pause itself.
+    if (active?.roomId === roomId) return false;
+    if (active) {
+      await releasePause(
+        roomId,
+        proposalId,
+        "Your decision is saved. Another Team Room is running; press Continue when it has finished."
+      );
+      return false;
+    }
+    const state = newState(roomId);
+    active = state;
+    let detected;
+    let room = null;
+    let transitioned = false;
+    try {
+      detected = await checkAgentsReady();
+      room = await updateRoom(roomId, (meta) => {
+        // Something else already ended the pause; then there is nothing to resume.
+        if (meta.status !== "needs_you" || meta.pausedFor !== proposalId) return meta;
+        state.clockStart = now() - (meta.clockUsedMs || 0);
+        meta.status = "running";
+        meta.pausedFor = null;
+        meta.clockUsedMs = null;
+        meta.endedAt = null;
+        meta.endReason = null;
+        // Rewind the shown start by the time already used, so the page's clock
+        // (now - clockStartedAt) and the server's limit (state.clockStart) agree.
+        meta.clockStartedAt = new Date(state.clockStart).toISOString();
+        transitioned = true;
+        return meta;
+      });
+    } catch (error) {
+      if (active === state) active = null;
+      await releasePause(
+        roomId,
+        proposalId,
+        `Your decision is saved, but the room could not carry on: ${error?.message || "an agent is not ready"}`
+      );
+      return false;
+    }
+    if (!transitioned) {
+      if (active === state) active = null;
+      return false;
+    }
+    const left = Math.max(0, room.turnsAllowed - room.turnsDone);
+    await appendEvent(roomId, {
+      type: "status",
+      status: "running",
+      reason:
+        left > 0
+          ? `Your decision is saved. Continuing with the ${left} turn${left === 1 ? "" : "s"} that ${left === 1 ? "is" : "are"} left.`
+          : "Your decision is saved. No turns are left, so the room wraps up."
+    });
+    runRoom(state, detected);
+    return true;
+  }
+
+  // Approve or reject a decision card. Returns { proposal, action, resumed, room }.
+  // Approving a file writes it through applyFileProposal (403 execution_gate_off
+  // when the gate is off, and then nothing changes). Deciding the card a room is
+  // paused on also ends the pause and, when it can, resumes the room.
+  async function decideProposal(roomId, proposalId, choice) {
+    if (choice !== "approve" && choice !== "reject") {
+      throw roomError(400, "invalid_decision", "decision must be approve or reject");
+    }
+    return oneDecisionAtATime(roomId, async () => {
+      const room = await readRoom(roomId);
+      if (!room) throw roomError(404, "room_not_found", "Room not found.");
+      const before = (await readDecision(roomId)).proposals.find((p) => p.id === proposalId);
+      if (!before) throw roomError(404, "proposal_not_found", "Proposal not found.");
+      if (before.status !== "needs_approval") {
+        const decided = ["approved", "rejected", "applied", "refused"].includes(before.status);
+        throw roomError(
+          409,
+          "not_pending",
+          decided
+            ? `That proposal was already decided (it is ${before.status}).`
+            : `That proposal is ${before.status}, so it is not waiting for your decision.`,
+          { status: before.status }
+        );
+      }
+      const pausedOnThis = room.status === "needs_you" && room.pausedFor === proposalId;
+
+      let action = null;
+      if (choice === "approve" && before.kind === "file") {
+        action = await applyFileProposal(roomId, proposalId);
+      }
+      const proposal = await updateDecision(roomId, (decision) => {
+        const found = decision.proposals.find((p) => p.id === proposalId);
+        if (!found) throw roomError(404, "proposal_not_found", "Proposal not found.");
+        if (!action) {
+          if (found.status !== "needs_approval") {
+            throw roomError(409, "not_pending", `That proposal is ${found.status}, so it is not waiting for your decision.`);
+          }
+          found.status = choice === "approve" ? "approved" : "rejected";
+        }
+        found.userDecision = choice;
+        found.decidedAt = new Date().toISOString();
+        // The agents hear about a decision that ended a pause, once each.
+        if (pausedOnThis) found.toTell = [...TURN_ORDER];
+        return { ...found };
+      });
+      await appendEvent(roomId, { type: "proposal_decided", proposalId, decision: choice, status: proposal.status });
+      const resumed = pausedOnThis ? await resumeAfterDecision(roomId, proposalId) : false;
+      return { proposal, action, resumed, room: await readRoom(roomId) };
+    });
   }
 
   async function stopRoom(roomId) {
@@ -721,7 +908,7 @@ export function createModerator({
     return active?.roomId || null;
   }
 
-  return { startRoom, continueRoom, stopRoom, activeRoomId };
+  return { startRoom, continueRoom, decideProposal, stopRoom, activeRoomId };
 }
 
 let defaultModerator = null;
@@ -736,7 +923,24 @@ export function getModerator() {
 export async function recoverStaleRooms() {
   for (const roomId of await listRoomIds()) {
     const room = await readRoom(roomId);
-    if (!room || room.status !== "running") continue;
+    if (!room) continue;
+    if (room.status === "needs_you" && room.pausedFor) {
+      // A room paused for a decision stays paused across a restart. Only when
+      // the card was decided just before the app stopped (the decision was
+      // saved but the pause was not cleared yet) is the pause over.
+      const proposal = (await readDecision(roomId)).proposals.find((p) => p.id === room.pausedFor);
+      if (!proposal || proposal.status !== "needs_approval") {
+        const reason = "Your decision is saved. Press Continue to let the room carry on.";
+        await updateRoom(roomId, (meta) => {
+          meta.pausedFor = null;
+          meta.clockUsedMs = null;
+          meta.endReason = reason;
+        });
+        await appendEvent(roomId, { type: "status", status: "needs_you", reason });
+      }
+      continue;
+    }
+    if (room.status !== "running") continue;
     await updateRoom(roomId, (meta) => {
       meta.status = "interrupted";
       meta.endedAt = new Date().toISOString();

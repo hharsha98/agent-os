@@ -1369,7 +1369,7 @@ app.get("/api/workspace/raw", requireAdminWhenPublic, async (req, res, next) => 
 
 app.post("/api/workspace/files", requireAdminWhenPublic, async (req, res, next) => {
   try {
-    res.status(201).json(await writeWorkspaceText(req.body || {}));
+    res.status(201).json(await writeWorkspaceText(req.body || {}, { savedBy: "you" }));
   } catch (error) {
     next(error);
   }

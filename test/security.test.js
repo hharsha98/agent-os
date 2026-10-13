@@ -364,6 +364,23 @@ test("13. workspace raw responses carry a sandboxed CSP for html files", async (
   assert.match(raw.headers.get("content-security-policy") || "", /sandbox/);
 });
 
+test("13b. a note saved through POST /api/workspace/files is listed as saved by You", async () => {
+  const write = await fetch(`${base}/api/workspace/files`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-agent-os-token": TOKEN },
+    body: JSON.stringify({ folder: "notes", name: "saved-by-you-check.md", content: "# mine" })
+  });
+  assert.equal(write.status, 201);
+  const list = await fetch(`${base}/api/workspace?query=saved-by-you-check`, {
+    headers: { "x-agent-os-token": TOKEN }
+  });
+  assert.equal(list.status, 200);
+  const body = await list.json();
+  assert.equal(body.files.length, 1);
+  assert.equal(body.files[0].savedBy.kind, "you");
+  assert.equal(body.files[0].savedBy.label, "You");
+});
+
 test("14. startup stdout prints the login link with the pinned token", () => {
   assert.match(logs.text, new RegExp(`Open: http://127\\.0\\.0\\.1:${port}/\\?launch=${TOKEN}`));
 });

@@ -2255,6 +2255,26 @@ export interface WorkspaceFile {
   publicPath: string;
 }
 
+// Who saved a listed file (server/runtime/workspace.js, "Saved by"). Undo this
+// save is offered only for kind "team-room": that is the only kind that carries
+// roomId and actionId.
+export interface WorkspaceSavedBy {
+  kind: "you" | "agent-os" | "team-room" | "unknown";
+  // "You", "Agent OS", the agent's name for a Team Room save, or "—" when unknown.
+  label: string;
+  // When it was saved (ISO time). Absent for "agent-os" and for an "unknown"
+  // file with nothing on record ("—"); present for "Changed outside Agent OS".
+  at?: string;
+  roomId?: string;
+  actionId?: string;
+}
+
+// A file as GET /api/workspace lists it. The one-file detail
+// (GET /api/workspace/file) is a plain WorkspaceFile and carries no savedBy.
+export interface WorkspaceListedFile extends WorkspaceFile {
+  savedBy: WorkspaceSavedBy;
+}
+
 export interface WorkspaceListing {
   ok: boolean;
   generatedAt: string;
@@ -2264,11 +2284,13 @@ export interface WorkspaceListing {
     publicPath: string;
     fileCount: number;
   }>;
-  files: WorkspaceFile[];
+  files: WorkspaceListedFile[];
   empty: boolean;
   summary: {
     total: number;
     shown: number;
+    // Files a Team Room saved, counted over every file, not only the shown ones.
+    savedByAgents: number;
   };
 }
 

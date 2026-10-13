@@ -1,8 +1,10 @@
+import crypto from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { demoWorkspaceFiles, isDemoPublic } from "./demo-public.js";
-import { ensureRuntimeStore, publicRuntimePath, runtimePaths, writeJson } from "./store.js";
+import { ensureRuntimeStore, publicRuntimePath, readJson, runtimePaths, writeJson } from "./store.js";
+import { ACTION_ID_PATTERN, isValidRoomId, readDecision } from "./team-room/room-store.js";
 
 const ROOT_IDS = new Set(["workspace", "exports"]);
 const WRITE_EXTS = new Set([".md", ".txt", ".html"]);
@@ -141,6 +143,205 @@ async function ensureDemoWorkspaceFiles() {
   }
 }
 
+// ---- who saved each file ("Saved by") ------------------------------------------
+//
+// Every listed file carries `savedBy`: { kind, label, at?, roomId?, actionId? }
+//   kind "you"        label "You"         a note from POST /api/workspace/files (kept in
+//                                          config/workspace-provenance.json)
+//   kind "unknown"    label "Changed outside Agent OS"
+//                                          a Team Room file, or a note you saved, that was
+//                                          changed after it was saved (Agent OS cannot tell
+//                                          who changed it, so it does not say "You")
+//   kind "agent-os"   label "Agent OS"    the one-time welcome note, and the demo files
+//   kind "team-room"  label <agent name>  a Team Room saved it; roomId and actionId name the
+//                                          save, read from the room's own decision.json
+//   kind "unknown"    label "—"           nothing on record (dropped in by hand, written by
+//                                          an agent run, or the room's log is gone or damaged)
+// The screen offers "Undo this save" only for kind "team-room", because only
+// then are roomId and actionId present and the save is still the file's content.
+const PROVENANCE_FILE = "workspace-provenance.json";
+const WELCOME_MARKER = "workspace-welcome-seeded.json";
+// A file's modified time and the log's clock are read a moment apart. A change
+// counts as made outside Agent OS only if it is later than the last thing Agent
+// OS did to the file by more than this.
+const CLOCK_SLACK_MS = 2000;
+const TEAM_FILE_PATH = /^team\/([^/]+)\/([^/]+)$/;
+const NO_ONE = Object.freeze({ kind: "unknown", label: "—" });
+
+// A file changed after Agent OS (or the person, through Agent OS) saved it.
+// Agent OS cannot tell who changed it, so it names no one and offers no Undo.
+function changedOutside(file) {
+  return { kind: "unknown", label: "Changed outside Agent OS", at: file.updatedAt };
+}
+
+// A short fingerprint of a file's text. The same one team-room/actions.js uses
+// for Undo (that file imports this one, so it cannot be imported back).
+function sha256(text) {
+  return crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
+}
+
+function provenancePath() {
+  return path.join(runtimePaths().config, PROVENANCE_FILE);
+}
+
+function millis(iso) {
+  const value = Date.parse(iso);
+  return Number.isFinite(value) ? value : 0;
+}
+
+// The person's own notes: { "workspace/loop/x.md": { kind: "you", at } }. A
+// missing, empty or damaged file reads as "no notes on record".
+async function readUserRecords() {
+  const data = await readJson(provenancePath(), null);
+  const files = data && typeof data === "object" ? data.files : null;
+  return files && typeof files === "object" && !Array.isArray(files) ? files : {};
+}
+
+// Changes are queued one after another so two quick saves cannot lose a record.
+// `change(files)` returns true when it changed something worth writing.
+let provenanceQueue = Promise.resolve();
+function updateUserRecords(change) {
+  const job = provenanceQueue.then(async () => {
+    const files = await readUserRecords();
+    if (change(files)) await writeJson(provenancePath(), { version: 1, files });
+  });
+  provenanceQueue = job.catch(() => {});
+  return job;
+}
+
+function recordUserWrite(fileId) {
+  return updateUserRecords((files) => {
+    files[fileId] = { kind: "you", at: new Date().toISOString() };
+    return true;
+  });
+}
+
+// Anything but the person's own save makes the content someone else's.
+function forgetUserWrite(fileId) {
+  return updateUserRecords((files) => {
+    if (!Object.hasOwn(files, fileId)) return false;
+    delete files[fileId];
+    return true;
+  });
+}
+
+// A save worth naming: a real, finished file_write for a file inside this
+// room's own folder. Mirrors what Undo itself insists on (actions.js).
+function isUsableSave(action, short) {
+  if (!action || typeof action !== "object" || action.kind !== "file_write" || action.failed) return false;
+  if (typeof action.id !== "string" || !ACTION_ID_PATTERN.test(action.id)) return false;
+  const match = typeof action.path === "string" ? TEAM_FILE_PATH.exec(action.path) : null;
+  return Boolean(match) && match[1] === short;
+}
+
+// Each listed Team Room file's saves, from its room's actions log
+// (teams/<room>/decision.json). Only rooms that have a file in the listing are
+// read, and a room whose log is gone or damaged just has no saves.
+async function readTeamSaves(files) {
+  const shorts = new Set();
+  for (const file of files) {
+    const match = file.root === "workspace" ? TEAM_FILE_PATH.exec(file.relativePath) : null;
+    if (match) shorts.add(match[1]);
+  }
+  const byPath = new Map();
+  for (const short of shorts) {
+    const roomId = `room-${short}`;
+    if (!isValidRoomId(roomId)) continue;
+    let decision;
+    try {
+      decision = await readDecision(roomId);
+    } catch {
+      continue;
+    }
+    for (const action of decision.actions) {
+      if (!isUsableSave(action, short)) continue;
+      const proposal = decision.proposals.find((item) => item && item.id === action.proposalId) || null;
+      const saves = byPath.get(action.path) || [];
+      saves.push({ roomId, action, proposal });
+      byPath.set(action.path, saves);
+    }
+  }
+  return byPath;
+}
+
+// The save whose content the file holds now: the latest one that was not
+// undone. `lastTouch` is the last moment Agent OS itself changed the file (a
+// save, or an Undo that put an older copy back).
+function currentTeamSave(saves) {
+  const live = saves.filter((save) => !save.action.undone).sort((a, b) => millis(a.action.at) - millis(b.action.at));
+  const current = live[live.length - 1];
+  if (!current) return null;
+  const lastTouch = Math.max(...saves.map((save) => Math.max(millis(save.action.at), save.action.undone ? millis(save.action.undoneAt) : 0)));
+  return { ...current, lastTouch };
+}
+
+// Does the file still hold what this Team Room save wrote? The modified time
+// cannot say: an Undo that puts a person's edit back, or a copy that keeps its
+// old date, leaves a time that looks like Agent OS's own. So this uses the rule
+// Undo itself uses (actions.js): the fingerprint recorded with the save, or for
+// older saves the proposal's own text. With nothing to compare against, Undo
+// would go ahead, so the file counts as the save's. A file that cannot be read
+// as plain text (a link, too big, unreadable) is not what the room wrote.
+async function holdsTheSavedText(file, save, workspaceRoot) {
+  const expected =
+    save.action.contentSha256 || (typeof save.proposal?.file?.content === "string" ? sha256(save.proposal.file.content) : null);
+  if (!expected) return true;
+  if (file.size > MAX_TEXT_PREVIEW_BYTES) return false;
+  try {
+    const current = await readFileNoFollow(path.join(workspaceRoot, ...file.relativePath.split("/")));
+    return current === null || sha256(current) === expected;
+  } catch {
+    return false;
+  }
+}
+
+// Plain, short text, whatever the log holds.
+function agentNameOf(save) {
+  const raw = save.proposal?.byLabel || save.proposal?.by;
+  const name = typeof raw === "string" ? raw.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 60) : "";
+  return name || "An agent";
+}
+
+async function savedByFor(file, { userRecords, teamSaves, welcomeFile, demoPaths, workspaceRoot }) {
+  if (file.root !== "workspace") return NO_ONE;
+  const saves = teamSaves.get(file.relativePath);
+  const team = saves ? currentTeamSave(saves) : null;
+  if (team) {
+    // Changed after Agent OS last touched it, or no longer the saved text:
+    // someone edited it outside. Undo would throw that edit away (it refuses),
+    // so no room and no action are given.
+    if (millis(file.updatedAt) > team.lastTouch + CLOCK_SLACK_MS || !(await holdsTheSavedText(file, team, workspaceRoot))) {
+      return changedOutside(file);
+    }
+    return { kind: "team-room", label: agentNameOf(team), at: team.action.at, roomId: team.roomId, actionId: team.action.id };
+  }
+  const record = userRecords[file.id];
+  if (record && record.kind === "you" && typeof record.at === "string" && Number.isFinite(Date.parse(record.at))) {
+    // The record's time is taken just after the person's save was written, so
+    // a file modified later than that is no longer the person's note.
+    if (millis(file.updatedAt) > millis(record.at) + CLOCK_SLACK_MS) return changedOutside(file);
+    return { kind: "you", label: "You", at: record.at };
+  }
+  if (file.relativePath === welcomeFile || demoPaths.has(file.relativePath)) return { kind: "agent-os", label: "Agent OS" };
+  return NO_ONE;
+}
+
+async function attachSavedBy(files, { demoOn }) {
+  const [userRecords, teamSaves, marker, workspaceRoot] = await Promise.all([
+    readUserRecords(),
+    readTeamSaves(files),
+    readJson(path.join(runtimePaths().config, WELCOME_MARKER), null),
+    rootDir("workspace")
+  ]);
+  const welcomeFile = typeof marker?.file === "string" ? marker.file : "";
+  const demoPaths = new Set(demoOn ? demoWorkspaceFiles().map((item) => item.relativePath) : []);
+  await Promise.all(
+    files.map(async (file) => {
+      file.savedBy = { ...(await savedByFor(file, { userRecords, teamSaves, welcomeFile, demoPaths, workspaceRoot })) };
+    })
+  );
+}
+
 export async function listWorkspaceFiles(input = {}) {
   await ensureRuntimeStore();
   await ensureWelcomeWorkspaceSeed();
@@ -151,6 +352,7 @@ export async function listWorkspaceFiles(input = {}) {
   const files = [];
   await walkDir("workspace", await rootDir("workspace"), "", 0, files);
   await walkDir("exports", await rootDir("exports"), "", 0, files);
+  await attachSavedBy(files, { demoOn });
   const filtered = files.filter((file) => {
     if (kind && kind !== "all" && file.kind !== kind) return false;
     if (!query) return true;
@@ -168,7 +370,9 @@ export async function listWorkspaceFiles(input = {}) {
     empty: files.length === 0,
     summary: {
       total: files.length,
-      shown: filtered.length
+      shown: filtered.length,
+      // Counted over every file, not only the ones the filters show.
+      savedByAgents: files.filter((file) => file.savedBy.kind === "team-room").length
     }
   };
 }
@@ -359,7 +563,10 @@ export async function readFileNoFollow(file) {
   }
 }
 
-export async function writeWorkspaceText(input = {}, { maxParts = 2 } = {}) {
+// `savedBy: "you"` is passed only by the route a person's own note goes through
+// (POST /api/workspace/files); it is how the file later reads "Saved by You".
+// Every other caller (the Team Room, live chat, briefings) leaves it out.
+export async function writeWorkspaceText(input = {}, { maxParts = 2, savedBy = null } = {}) {
   const content = String(input.content ?? "");
   if (!content.trim()) throw httpError(400, "file content is required");
   if (Buffer.byteLength(content, "utf8") > MAX_TEXT_PREVIEW_BYTES) {
@@ -384,7 +591,14 @@ export async function writeWorkspaceText(input = {}, { maxParts = 2 } = {}) {
   }
   await assertNotALink(candidate);
   await writeFileNoFollow(candidate, content);
-  return getWorkspaceFile(`workspace/${relativePath}`);
+  // Best effort: the note is saved either way. Without a fresh record it reads
+  // "—" or "Changed outside Agent OS" (a record older than the file is never
+  // trusted), so a failure here is logged, not shown.
+  const fileId = `workspace/${relativePath}`;
+  await (savedBy === "you" ? recordUserWrite(fileId) : forgetUserWrite(fileId)).catch((error) => {
+    console.error(`Could not update the "Saved by" record for ${fileId}: ${error?.message || error}`);
+  });
+  return getWorkspaceFile(fileId);
 }
 
 export function streamWorkspaceFile(file, res) {

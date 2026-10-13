@@ -358,9 +358,13 @@ export async function listWorkspaceFiles(input = {}) {
     if (!query) return true;
     return `${file.name} ${file.relativePath} ${file.publicPath}`.toLowerCase().includes(query);
   });
+  // The real folder of each root, so the desktop app can show it in Finder.
+  // publicPath above is display text only. A shared public demo server never
+  // tells a visitor where its files live, so there it is null.
+  const realFolders = runtimePaths();
   const roots = [
-    { id: "workspace", label: "Workspace", publicPath: publicRuntimePath("workspace"), fileCount: filtered.filter((file) => file.root === "workspace").length },
-    { id: "exports", label: "Exports", publicPath: publicRuntimePath("exports"), fileCount: filtered.filter((file) => file.root === "exports").length }
+    { id: "workspace", label: "Workspace", publicPath: publicRuntimePath("workspace"), absolutePath: demoOn ? null : realFolders.workspace, fileCount: filtered.filter((file) => file.root === "workspace").length },
+    { id: "exports", label: "Exports", publicPath: publicRuntimePath("exports"), absolutePath: demoOn ? null : realFolders.exports, fileCount: filtered.filter((file) => file.root === "exports").length }
   ];
   return {
     ok: true,

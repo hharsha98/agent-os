@@ -477,3 +477,22 @@ test("savedBy: a Team Room file that does not hold the save's text is not named,
     assertChangedOutside(await savedByOf(id), "different text from the proposal");
   });
 });
+
+test("workspace listing names the real folder of each root, so the desktop app can reveal it", async () => {
+  await withTempRuntime(async (root) => {
+    const listing = await listWorkspaceFiles({ demoPublic: false });
+    const byId = Object.fromEntries(listing.roots.map((item) => [item.id, item]));
+    assert.equal(byId.workspace.absolutePath, path.join(root, "workspace"));
+    assert.equal(byId.exports.absolutePath, path.join(root, "exports"));
+    assert.ok(path.isAbsolute(byId.workspace.absolutePath));
+    // The display text is unchanged: it is never the real home folder.
+    assert.equal(byId.workspace.publicPath, "~/.hermes-agent-os/workspace");
+  });
+});
+
+test("workspace listing on the public demo never reveals the real folder", async () => {
+  await withTempRuntime(async () => {
+    const listing = await listWorkspaceFiles({ demoPublic: true });
+    for (const item of listing.roots) assert.equal(item.absolutePath, null, item.id);
+  });
+});

@@ -2282,6 +2282,8 @@ export interface WorkspaceListing {
     id: string;
     label: string;
     publicPath: string;
+    // The real folder on this machine (used by Show in Finder). null on the public demo.
+    absolutePath?: string | null;
     fileCount: number;
   }>;
   files: WorkspaceListedFile[];

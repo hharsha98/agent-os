@@ -8,6 +8,7 @@
 // fixed by us (never by an agent); the workspace writer sanitises again and
 // refuses anything outside the sandbox; and Undo only touches the exact file
 // this room recorded, after re-checking that the recorded path is still ours.
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isExecutionEnabled } from "../execution-gate.js";
@@ -36,6 +37,12 @@ const SAFE_FILE_NAME = /^(?!.*--)[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(md|txt|html)$
 
 export function isSafeFileName(name) {
   return typeof name === "string" && SAFE_FILE_NAME.test(name);
+}
+
+// A short fingerprint of a file's text, so Undo can tell whether the file
+// still holds exactly what the room saved.
+function sha256(text) {
+  return crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
 function roomFolder(roomId) {
@@ -112,6 +119,7 @@ export async function applyFileProposal(roomId, proposalId) {
     let backup = null;
     let before = null;
     let written;
+    let contentSha256 = null;
     try {
       const target = await checkedTarget(roomId, name);
       before = await readFileNoFollow(target);
@@ -125,6 +133,8 @@ export async function applyFileProposal(roomId, proposalId) {
         { relativePath: `team/${roomShort(roomId)}/${name}`, content: proposal.file.content },
         { maxParts: 3 }
       );
+      const savedText = await readFileNoFollow(target);
+      contentSha256 = savedText === null ? null : sha256(savedText);
     } catch (error) {
       if (error?.code !== "link_refused") throw error;
       // A link where the file should be: write nothing, keep nothing, and say so.
@@ -157,6 +167,7 @@ export async function applyFileProposal(roomId, proposalId) {
       created: before === null,
       updated: before !== null,
       backup,
+      contentSha256,
       at: new Date().toISOString(),
       undone: false,
       undoneAt: null
@@ -211,6 +222,22 @@ export async function undoAction(roomId, actionId) {
     } catch (error) {
       if (error?.code === "link_refused") throw roomError(409, "link_refused", `${error.message}. Nothing was changed.`);
       throw error;
+    }
+    // Never throw away a change made after the save: if the file is there and
+    // no longer holds exactly what this action wrote, refuse. Actions saved
+    // before contentSha256 existed fall back to the proposal's text, which the
+    // writer saved unchanged; only an action with neither keeps the old behaviour.
+    const expectedSha256 =
+      found.contentSha256 || (typeof proposal?.file?.content === "string" ? sha256(proposal.file.content) : null);
+    if (expectedSha256) {
+      const current = await readFileNoFollow(safeTarget);
+      if (current !== null && sha256(current) !== expectedSha256) {
+        throw roomError(
+          409,
+          "changed_since_save",
+          "The file changed after the agent saved it, so Undo would throw that change away. Nothing was changed."
+        );
+      }
     }
     if (found.created) {
       await fs.rm(safeTarget, { force: true });

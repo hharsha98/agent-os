@@ -40,6 +40,7 @@ import {
   readRoom,
   roomShort,
   subscribeRoom,
+  updateDecision,
   updateRoom
 } from "../server/runtime/team-room/room-store.js";
 
@@ -1550,6 +1551,66 @@ test("buildTurnPrompt(): tells the agents that agreeing on a file asks the user,
   assert.ok(!/only saved when both of you agree/.test(prompt), "the old promise is gone");
   assert.ok(!/for anything beyond saving a small text file/.test(prompt), "the old exception is gone");
 });
+
+test(
+  "undo: refuses with changed_since_save when the person edited the file after the agent saved it, and changes nothing",
+  SKIP_POSIX,
+  async () => {
+    await setScript(PAUSING_SCRIPT);
+    await withTeamEnv(async (home) => {
+      const room = await runRoom("Plan a birthday party", { maxTurns: 6 });
+      assert.equal(room.pausedFor, "P1");
+      await applyFileProposal(room.id, "P1"); // Approve: the agent's file is saved
+      const file = teamFile(home, room.id, "plan.md");
+      const { actions } = await readDecision(room.id);
+      assert.match(actions[0].contentSha256, /^[0-9a-f]{64}$/, "the save records what it wrote");
+
+      // The person edits the file in their own editor.
+      await writeFile(file, "# Party plan\n- cake\n- my own note");
+      await assert.rejects(
+        () => undoAction(room.id, actions[0].id),
+        (e) => e.status === 409 && e.code === "changed_since_save" && /Nothing was changed/.test(e.message)
+      );
+      assert.equal(await readFile(file, "utf8"), "# Party plan\n- cake\n- my own note", "the edit is kept");
+      assert.equal((await readDecision(room.id)).actions[0].undone, false);
+
+      // Put the agent's content back: Undo is allowed again and removes the file the room created.
+      await writeFile(file, "# Party plan\n- cake");
+      await undoAction(room.id, actions[0].id);
+      assert.equal(await exists(file), false);
+    });
+  }
+);
+
+test(
+  "undo: a save from before contentSha256 existed is checked against the proposal's text, so a later edit is still never thrown away",
+  SKIP_POSIX,
+  async () => {
+    await setScript(PAUSING_SCRIPT);
+    await withTeamEnv(async (home) => {
+      const room = await runRoom("Plan a birthday party", { maxTurns: 6 });
+      await applyFileProposal(room.id, "P1");
+      const file = teamFile(home, room.id, "plan.md");
+      // Make the record look like one saved by an older Agent OS: no fingerprint.
+      await updateDecision(room.id, (decision) => {
+        delete decision.actions[0].contentSha256;
+      });
+      const actionId = (await readDecision(room.id)).actions[0].id;
+
+      await writeFile(file, "# Party plan\n- cake\n- my own note");
+      await assert.rejects(
+        () => undoAction(room.id, actionId),
+        (e) => e.status === 409 && e.code === "changed_since_save"
+      );
+      assert.equal(await readFile(file, "utf8"), "# Party plan\n- cake\n- my own note", "the edit is kept");
+
+      // Untouched (the proposal's exact text): Undo works as before.
+      await writeFile(file, "# Party plan\n- cake");
+      await undoAction(room.id, actionId);
+      assert.equal(await exists(file), false);
+    });
+  }
+);
 
 // ===========================================================================
 // 4c. D10: a decision resumes the room; Continue accepts a paused room

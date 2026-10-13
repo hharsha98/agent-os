@@ -1,16 +1,19 @@
-// The banner on a coding agent's run that stopped because its PLAN ran out:
+// The notice on a coding agent's run that stopped because its PLAN ran out:
 // "Claude Code's plan limit was reached (resets 6:50 pm)", with the ways to carry
 // on that Agent OS worked out for this very run (GET /api/runs/:id/continue-options):
-//   Claude Code / Codex   Continue on OpenRouter (~$0.42)
-//   Cursor                Switch to Composer (its own model) · Hand to Claude Code · Hand to Codex
+//   Claude Code / Codex   Keep going on OpenRouter (~$0.42)
+//   Cursor                Keep going with Composer (its own model) · Hand to Claude Code · Hand to Codex
 //   everyone              Wait for reset
+// In a run's console it is a warning Banner; on a Held strip of the Runs board
+// (`compact`) it is a tight block with the first choice, "More choices" and Wait for reset.
 // Every price is an estimate of what it costs to START (reading the old
 // conversation or the summary); the work after that costs extra, and the
 // confirm step says so. Nothing is started, or spent, until the person presses
-// the button and confirms.
+// the button and confirms. "Wait for reset" only changes this page: nothing is
+// saved or scheduled, so nothing carries on by itself.
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle } from "lucide-react";
 import AgentConfirmModal from "./AgentConfirmModal";
+import Banner from "./Banner";
 import StatusMark from "./StatusMark";
 import type { ContinueOption, ContinueOptions } from "../../buildersApi";
 import { continueRun, getContinueOptions } from "../../buildersApi";
@@ -20,18 +23,17 @@ import { AGENT_LABEL } from "../agentsShared";
 import { explain, formatResetTime, isBuilderId, usd } from "../builderShared";
 import "../builders.css";
 
-// "Continue on OpenRouter (~$0.42)" / "Switch to Composer" / "Hand to Claude Code (~$0.01)"
+// "Keep going on OpenRouter (~$0.42)" / "Keep going with Composer" / "Hand to Claude Code (~$0.01)"
 function buttonLabel(run: RunMeta, option: ContinueOption) {
   let text: string;
-  if (option.id === "cursor-composer") text = "Switch to Composer";
-  else if (option.agentId === run.agentId) text = "Continue on OpenRouter";
+  if (option.id === "cursor-composer") text = "Keep going with Composer";
+  else if (option.agentId === run.agentId) text = "Keep going on OpenRouter";
   else text = `Hand to ${AGENT_LABEL[option.agentId]}`;
   return typeof option.estimateUsd === "number" ? `${text} (~${usd(option.estimateUsd)})` : text;
 }
 
 function confirmLabel(run: RunMeta, option: ContinueOption) {
-  if (option.id === "cursor-composer") return "Switch to Composer";
-  return option.agentId === run.agentId ? "Continue" : "Hand over";
+  return option.id === "cursor-composer" || option.agentId === run.agentId ? "Keep going" : "Hand over";
 }
 
 function whatHappens(run: RunMeta, option: ContinueOption) {
@@ -45,7 +47,7 @@ function whatHappens(run: RunMeta, option: ContinueOption) {
   return `${who} starts a new run on OpenRouter${model}, paid per use from your OpenRouter credit, with a short summary of what ${from} did.`;
 }
 
-export default function RunLimitBanner({ run }: { run: RunMeta }) {
+export default function RunLimitBanner({ run, compact = false }: { run: RunMeta; compact?: boolean }) {
   const [info, setInfo] = useState<ContinueOptions | null>(null);
   const [failed, setFailed] = useState(false);
   const [waiting, setWaiting] = useState(false);
@@ -94,127 +96,150 @@ export default function RunLimitBanner({ run }: { run: RunMeta }) {
   const options = info?.options ?? [];
   const usable = options.filter((option) => option.available);
   const blocked = options.filter((option) => !option.available);
+  const shown = compact ? usable.slice(0, 1) : usable;
+  const carriedOn = Boolean(run.continuedBy);
+  const idle = !carriedOn && !waiting;
+  // The promise of a carry-on is only made while one can be picked. Still loading (or the lookup failed):
+  // the usual sentence. Loaded and nothing available: the one honest way left.
+  const advice =
+    info !== null && usable.length === 0
+      ? "Wait for your plan to reset, then press Keep going."
+      : "You can carry on now with a pay-per-use model, or wait for your plan.";
+  const waitingText = `Waiting for your plan to reset${reset ? ` (about ${reset})` : ""}. This run stays Held and nothing carries on by itself. After the reset, press Keep going.`;
 
-  return (
-    <section className="os-bb-banner" role="region" aria-label="Plan limit reached">
-      <div className="os-bb-banner__head">
-        <AlertTriangle size={16} aria-hidden="true" />
-        <div>
-          <p className="os-bb-banner__title">{sentence}</p>
-          {run.continuedBy ? (
-            <p className="os-bb-banner__sub">
-              This task was carried on in another run.{" "}
-              <button type="button" className="os-mp-link" onClick={() => navigateTo("runs", { run: run.continuedBy || "" })}>
-                Open it
-              </button>
-            </p>
-          ) : waiting ? (
-            <p className="os-bb-banner__sub" role="status">
-              {reset ? `Your plan should be back around ${reset}.` : "Your plan will be back when its limit resets."} Start the task again then, or press
-              “Show choices” to carry on now.
-            </p>
-          ) : (
-            <p className="os-bb-banner__sub">Everything it did so far is saved in this run. You can carry on now with a pay-per-use model, or wait for your plan.</p>
-          )}
-        </div>
-      </div>
-
-      {!run.continuedBy && !waiting ? (
-        <>
-          {info === null && !failed ? <p className="os-mp-hint">Working out your options…</p> : null}
-          {failed ? (
-            <p className="os-mp-error" role="alert">
-              <StatusMark kind="error" /> Couldn&apos;t work out the options.{" "}
-              <button type="button" className="os-mp-link" onClick={() => void load()}>
-                Try again
-              </button>
-            </p>
-          ) : null}
-          {info && !info.canContinue ? (
-            <p className="os-mp-hint">
-              <StatusMark kind="unknown" label="note" /> {info.unavailableReason || "This run can't be continued."}
-            </p>
-          ) : null}
-          {info && info.onLimit === "auto" && !info.auto.eligible && info.auto.reason && info.canContinue ? (
-            <p className="os-mp-hint">
-              <StatusMark kind="unknown" label="note" /> Automatic continuing is on, but Agent OS is asking first: {info.auto.reason}
-            </p>
-          ) : null}
-
-          <div className="os-bb-banner__actions">
-            {usable.map((option, index) => (
-              <button
-                key={option.id}
-                type="button"
-                className={`os-btn ${index === 0 ? "os-btn--primary" : "os-btn--secondary"}`}
-                onClick={() => {
-                  setError("");
-                  setAsking(option);
-                }}
-                title={option.label}
-              >
-                {buttonLabel(run, option)}
-              </button>
-            ))}
-            <button type="button" className="os-btn os-btn--ghost" onClick={() => setWaiting(true)}>
-              Wait for reset
-            </button>
-          </div>
-
-          {blocked.length ? (
-            <ul className="os-bb-banner__blocked">
-              {blocked.map((option) => (
-                <li key={option.id}>
-                  <StatusMark kind="unknown" label="not available" />
-                  <span>
-                    <strong>{option.label}:</strong> {option.reason}{" "}
-                    <button type="button" className="os-mp-link" onClick={() => navigateTo("agents", { agent: option.agentId })}>
-                      Set up {AGENT_LABEL[option.agentId]}
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </>
-      ) : null}
-      {waiting && !run.continuedBy ? (
-        <div className="os-bb-banner__actions">
-          <button type="button" className="os-btn os-btn--secondary" onClick={() => setWaiting(false)}>
-            Show choices
-          </button>
-        </div>
-      ) : null}
-
-      {asking ? (
-        <AgentConfirmModal
-          title={`${buttonLabel(run, asking).replace(/ \(~.*\)$/, "")}?`}
-          confirmLabel={confirmLabel(run, asking)}
-          busy={busy}
-          onConfirm={() => void confirm()}
-          onClose={() => (busy ? null : setAsking(null))}
+  const choices = idle ? (
+    <>
+      {shown.map((option, index) => (
+        <button
+          key={option.id}
+          type="button"
+          className={`os-btn ${index === 0 && !compact ? "os-btn--primary" : "os-btn--secondary"}`}
+          title={option.label}
+          onClick={() => {
+            setError("");
+            setAsking(option);
+          }}
         >
-          <p>{whatHappens(run, asking)}</p>
-          {typeof asking.estimateUsd === "number" ? (
-            <p>
-              <strong>About {usd(asking.estimateUsd)} just to get started.</strong> {asking.estimateNote}
-            </p>
-          ) : (
-            <p>
-              <strong>Agent OS couldn&apos;t estimate the cost.</strong> {asking.estimateNote}
-            </p>
-          )}
-          {asking.warnings.length ? (
-            <ul className="os-bb-modal-list">
-              {asking.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          ) : null}
-          <p>Nothing starts, and nothing is spent, until you press “{confirmLabel(run, asking)}”.</p>
-          {error ? <p className="os-launch__error">{error}</p> : null}
-        </AgentConfirmModal>
+          {buttonLabel(run, option)}
+        </button>
+      ))}
+      {compact && usable.length > 1 ? (
+        <button type="button" className="os-btn os-btn--ghost" onClick={() => navigateTo("runs", { run: run.id })}>
+          More choices
+        </button>
       ) : null}
-    </section>
+      <button type="button" className="os-btn os-btn--ghost" onClick={() => setWaiting(true)}>
+        Wait for reset
+      </button>
+    </>
+  ) : waiting && !carriedOn ? (
+    <button type="button" className="os-btn os-btn--secondary" onClick={() => setWaiting(false)}>
+      Keep going
+    </button>
+  ) : null;
+
+  const messages = (
+    <>
+      {idle && info === null && !failed ? <p className="os-mp-hint">Working out your options…</p> : null}
+      {failed ? (
+        <p className="os-mp-error" role="alert">
+          <StatusMark kind="error" /> Couldn&apos;t work out the options.{" "}
+          <button type="button" className="os-mp-link" onClick={() => void load()}>
+            Try again
+          </button>
+        </p>
+      ) : null}
+      {idle && info && !info.canContinue && !blocked.length ? (
+        <p className="os-mp-hint">
+          <StatusMark kind="unknown" label="note" /> {info.unavailableReason || "This run can't be continued."}
+        </p>
+      ) : null}
+      {!compact && idle && info && info.onLimit === "auto" && !info.auto.eligible && info.auto.reason && info.canContinue ? (
+        <p className="os-mp-hint">
+          <StatusMark kind="unknown" label="note" /> Automatic continuing is on, but Agent OS is asking first: {info.auto.reason}
+        </p>
+      ) : null}
+      {idle && blocked.length > 0 && (!compact || usable.length === 0) ? (
+        <ul className="os-runs-limit__blocked">
+          {blocked.map((option) => (
+            <li key={option.id}>
+              <StatusMark kind="unknown" label="not available" />
+              <span>
+                <strong>{option.label}:</strong> {option.reason}{" "}
+                <button type="button" className="os-mp-link" onClick={() => navigateTo("agents", { agent: option.agentId })}>
+                  Set up {AGENT_LABEL[option.agentId]}
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+
+  const modal = asking ? (
+    <AgentConfirmModal
+      title={`${buttonLabel(run, asking).replace(/ \(~.*\)$/, "")}?`}
+      confirmLabel={confirmLabel(run, asking)}
+      busy={busy}
+      onConfirm={() => void confirm()}
+      onClose={() => (busy ? null : setAsking(null))}
+    >
+      <p>{whatHappens(run, asking)}</p>
+      {typeof asking.estimateUsd === "number" ? (
+        <p>
+          <strong>About {usd(asking.estimateUsd)} just to get started.</strong> {asking.estimateNote}
+        </p>
+      ) : (
+        <p>
+          <strong>Agent OS couldn&apos;t estimate the cost.</strong> {asking.estimateNote}
+        </p>
+      )}
+      {asking.warnings.length ? (
+        <ul className="os-bb-modal-list">
+          {asking.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      ) : null}
+      <p>Nothing starts, and nothing is spent, until you press “{confirmLabel(run, asking)}”.</p>
+      {error ? <p className="os-launch__error">{error}</p> : null}
+    </AgentConfirmModal>
+  ) : null;
+
+  // The strip on the Board: the sentence, the choices, and any reason in one tight block.
+  if (compact) {
+    return (
+      <div className="os-runs-held">
+        <p className="os-runs-held__text" role={waiting ? "status" : undefined}>
+          {waiting ? waitingText : `${sentence} ${advice}`}
+        </p>
+        <div className="os-runs-held__actions">{choices}</div>
+        <div className="os-runs-held__messages">{messages}</div>
+        {modal}
+      </div>
+    );
+  }
+
+  // The console: a warning banner over the transcript.
+  return (
+    <>
+      <Banner tone="warn" title={sentence} actions={choices}>
+        {carriedOn ? (
+          <>
+            This task was carried on in another run.{" "}
+            <button type="button" className="os-mp-link" onClick={() => navigateTo("runs", { run: run.continuedBy || "" })}>
+              Open it
+            </button>
+          </>
+        ) : waiting ? (
+          waitingText
+        ) : (
+          `Everything it did so far is saved in this run. ${advice}`
+        )}
+        {messages}
+      </Banner>
+      {modal}
+    </>
   );
 }

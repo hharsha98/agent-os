@@ -16,7 +16,8 @@ export default function AgentConfirmModal({
   onClose,
   confirmDisabled = false,
   busy = false,
-  danger = false
+  danger = false,
+  wide = false
 }: {
   title: string;
   children: ReactNode;
@@ -26,6 +27,7 @@ export default function AgentConfirmModal({
   confirmDisabled?: boolean;
   busy?: boolean;
   danger?: boolean;
+  wide?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<Element | null>(null);
@@ -67,7 +69,7 @@ export default function AgentConfirmModal({
 
   return (
     <div className="os-modal__backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="os-modal" role="dialog" aria-modal="true" aria-labelledby="os-modal-title" ref={dialogRef}>
+      <div className={`os-modal${wide ? " os-modal--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="os-modal-title" ref={dialogRef}>
         <h2 id="os-modal-title" className="os-modal__title">
           {title}
         </h2>

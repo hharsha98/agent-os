@@ -16,7 +16,7 @@ export default function SessionsPage() {
       <EmptyState
         icon={SquareTerminal}
         title="Sessions are coming"
-        body="Soon you will open Claude Code, Codex, Cursor, Hermes and OpenClaw on this page, each in its real terminal with your own settings, and Agent OS will tell you when one is waiting for you. Until then, your background runs are on Runs."
+        body="Soon you will open Claude Code, Codex, Cursor, Hermes and OpenClaw on this page, each in its real terminal with your own settings, and Agent OS will tell you when one is waiting for you. Until then, you can start a background run from Runs."
         action={
           <button type="button" className="os-btn os-btn--secondary" onClick={() => navigateTo("runs")}>
             Open Runs

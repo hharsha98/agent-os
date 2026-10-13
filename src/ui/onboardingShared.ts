@@ -5,8 +5,8 @@ import type { Onboarding, OnboardingFirstRun, OnboardingStepId } from "../onboar
 import { AGENT_LABEL } from "./agentsShared";
 
 // The one prompt the checklist offers as a first task. It only asks an agent to
-// look and describe, and the Launch panel keeps "Allow edits" off unless the
-// person turns it on. The checklist never starts it: the person presses Launch.
+// look and describe (the New run dialog never allows edits). The checklist never
+// starts it: the person presses Start run.
 export const SAFE_EXAMPLE_PROMPT = "List the files in this folder and describe what this project does in 3 sentences.";
 
 export const STEP_TITLE: Record<OnboardingStepId, string> = {
@@ -49,7 +49,7 @@ export function exampleAgentId(facts: Onboarding["facts"]): string | null {
   return facts.signedIn[0] || facts.installed.find((id) => CODING.includes(id)) || facts.installed[0] || null;
 }
 
-// Where a step's button leads. The first-run step opens the Agents launch panel
+// Where a step's button leads. The first-run step opens the New run dialog (on Runs)
 // with the example typed in, and stops there.
 export function openStep(id: OnboardingStepId, facts: Onboarding["facts"]) {
   if (id === "install") navigateTo("setup", { step: "plan" });
@@ -57,7 +57,7 @@ export function openStep(id: OnboardingStepId, facts: Onboarding["facts"]) {
   else if (id === "signin") navigateTo("setup", { step: "signin" });
   else if (id === "first-run") {
     const agentId = exampleAgentId(facts);
-    if (agentId) navigateTo("agents", { agent: agentId, example: "safe" });
+    if (agentId) navigateTo("runs", { agent: agentId, example: "safe" });
   }
 }
 

@@ -39,11 +39,11 @@ import {
   Workflow
 } from "lucide-react";
 import { getExecutionGateStatus } from "../api";
-import { navigateTo } from "../nav";
 import CommandPalette from "./components/CommandPalette";
 import type { PaletteItem } from "./components/CommandPalette";
 import GetStartedPill from "./components/GetStartedPill";
 import HoldToStopAll from "./components/HoldToStopAll";
+import NewRunDialog from "./components/NewRunDialog";
 import StopAllRunsModal from "./components/StopAllRunsModal";
 import Toast from "./components/Toast";
 import UpdateBanner from "./components/UpdateBanner";
@@ -51,6 +51,8 @@ import { useInterval } from "./components/useInterval";
 import { OnboardingProvider, useOnboarding } from "./components/useOnboarding";
 import { setDensity, useDensity } from "./density";
 import Logo from "./Logo";
+import { NEW_RUN_EVENT, openNewRun } from "./newRun";
+import type { NewRunRequest } from "./newRun";
 import { revealGetStarted } from "./onboardingShared";
 import { stopAllMessage } from "./stopAll";
 
@@ -152,6 +154,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const [tip, setTip] = useState<{ label: string; top: number } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
+  // The New run dialog. The Runs page and the palette ask for it through openNewRun() (src/ui/newRun.ts);
+  // the id makes a second request open a fresh dialog.
+  const [newRun, setNewRun] = useState<{ id: number; request: NewRunRequest } | null>(null);
   // The result of "Hold to stop all", shown as a toast at the bottom of the window.
   // Each result gets its own id, so a repeated message shows as new (and an ok or
   // neutral one gets a fresh 8 second timer; warnings and failures stay until closed).
@@ -299,11 +304,19 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    function onNewRun(event: Event) {
+      setNewRun({ id: Date.now(), request: (event as CustomEvent<NewRunRequest>).detail || {} });
+    }
+    window.addEventListener(NEW_RUN_EVENT, onNewRun);
+    return () => window.removeEventListener(NEW_RUN_EVENT, onNewRun);
+  }, []);
+
   const onboardingData = onboarding.data;
   const setOnboardingHidden = onboarding.setHidden;
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [
-      { id: "new-run", label: "New run…", group: "Actions", keywords: "launch start agent task prompt", icon: Play, run: () => navigateTo("agents") },
+      { id: "new-run", label: "New run…", group: "Actions", keywords: "launch start agent task prompt", icon: Play, run: () => openNewRun() },
       {
         id: "stop-all",
         label: "Stop all runs",
@@ -498,6 +511,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
       {toast ? <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
       {stopAllOpen ? <StopAllRunsModal onClose={() => setStopAllOpen(false)} /> : null}
+      {newRun ? <NewRunDialog key={newRun.id} request={newRun.request} onClose={() => setNewRun(null)} /> : null}
     </div>
   );
 }

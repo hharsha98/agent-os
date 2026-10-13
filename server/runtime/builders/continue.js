@@ -22,6 +22,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ADAPTERS } from "../agents/index.js";
 import { isExecutionEnabled } from "../execution-gate.js";
+import { withTaskLine } from "../runs/task-line.js";
 import { openRouterKeyHelper } from "../secrets/keystore.js";
 import { lookupModel } from "../setup/models.js";
 import { runtimePaths } from "../store.js";
@@ -361,6 +362,8 @@ export async function continueRun(runId, target, deps, { auto = false, info = nu
         ...(budget ? { maxBudgetUsd: budget } : {})
       }
     });
+    // A carried-on run keeps the ORIGINAL task's first line, so the Runs board still says what it is for.
+    plan = withTaskLine(plan, task.prompt);
     const started = await deps.manager.startRun(plan);
     await deps.manager.annotateRun(run.id, { continuedBy: started.id });
     return started;

@@ -11,6 +11,7 @@ import { builderErrorResponse, resolveBrainForRun } from "../builders/resolve.js
 import { watchForLimit } from "../builders/continue.js";
 import { isExecutionEnabled } from "../execution-gate.js";
 import { buildCommandPreview, getRunManager } from "../runs/run-manager.js";
+import { withTaskLine } from "../runs/task-line.js";
 import { runtimePaths } from "../store.js";
 import { getAdapter, ADAPTERS } from "./index.js";
 
@@ -279,7 +280,7 @@ export function createAgentsRouter() {
         throw error;
       }
       try {
-        const run = await getRunManager().startRun(plan);
+        const run = await getRunManager().startRun(withTaskLine(plan, prompt));
         // A Claude Code / Codex / Cursor run that ends at a plan limit may be
         // continued by itself, if the person set "continue automatically".
         if (BUILDER_IDS.has(adapter.id)) watchForLimit(run.id, continueDeps());

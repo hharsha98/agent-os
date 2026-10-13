@@ -1,194 +1,413 @@
-/* Runs screen ("the flight recorder"): a master-detail run list + console.
-   Only .os- selectors, tokens only. Same 1100px breakpoint as agents.css so
-   the two screens' master-detail layouts switch at the same width. The
-   confirm-modal rules are intentionally duplicated from agents.css (see
-   AgentConfirmModal.tsx's comment) so this page never depends on that file
-   being imported too. */
-
+/* Runs: the Board (three bays of strips) and one run's console. Only .os- selectors, tokens only.
+   Kit pieces (page head, tabs, banner, empty state, status word) come from kit.css. The strip's coloured
+   tab is a 4 px shape (::before), never a thick border. Nothing animates, so nothing needs a reduced-motion rule. */
 .os-runs {
   max-width: 1360px;
   margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-6);
-  height: calc(100svh - var(--os-bar-h, 48px) - var(--os-sp-7) - var(--os-sp-9));
-  min-height: 560px;
-}
-
-.os-runs__header h1 {
-  margin: var(--os-sp-2) 0 0;
-  font-size: var(--os-fs-44);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--os-text-1);
-}
-
-.os-runs__empty {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--os-sp-3);
-  color: var(--os-text-2);
-  max-width: 60ch;
-}
-
-.os-runs__body {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 340px 1fr;
-  gap: var(--os-sp-5);
-}
-@media (max-width: 1099px) {
-  .os-runs__body {
-    grid-template-columns: 1fr;
-    height: auto;
-  }
-}
-
-.os-runs__list-pane,
-.os-runs__detail-pane {
-  min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
-/* Doubled class: base.css's .os-btn (display:inline-flex) would otherwise win. */
-.os-runs .os-runs__back {
-  display: none;
-  align-self: flex-start;
-  margin-bottom: var(--os-sp-3);
+/* A run's console fills the window under the header, and its transcript scrolls inside it. */
+.os-runs--detail {
+  height: calc(100svh - var(--os-bar-h, 48px) - var(--os-sp-7) - var(--os-sp-9));
+  min-height: 520px;
 }
-@media (max-width: 1099px) {
-  .os-runs__list-pane,
-  .os-runs__detail-pane {
-    display: none;
-  }
-  .os-runs:not(.os-runs--detail) .os-runs__list-pane {
-    display: flex;
-  }
-  .os-runs--detail .os-runs__detail-pane {
-    display: flex;
-  }
-  .os-runs.os-runs--detail .os-runs__back {
-    display: inline-flex;
-  }
-  /* On a phone the console needs every pixel; the page title adds nothing
-     once a run is open, and "Back to list" is the way out. */
-  .os-runs--detail .os-runs__header {
-    display: none;
-  }
-}
-
-/* --- Run list -------------------------------------------------------------- */
-.os-run-list {
+.os-runs__detail {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--os-sp-3);
-  min-height: 0;
-  background: var(--os-surface-1);
-  border-radius: var(--os-r-lg);
-  box-shadow: var(--os-e1);
-  padding: var(--os-sp-3);
 }
-.os-run-list__filters {
+.os-runs .os-runs__back {
+  align-self: flex-start;
+}
+.os-runs__tabbar {
   display: flex;
-  gap: var(--os-sp-1);
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-3) var(--os-sp-4);
+  padding-bottom: var(--os-sp-3);
+  border-bottom: 1px solid var(--os-line-1);
 }
-.os-run-list__filter {
-  display: inline-flex;
+.os-runs__tally {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 var(--os-sp-3);
-  border-radius: var(--os-r-pill);
-  background: transparent;
-  border: 1px solid var(--os-line-1);
+  font-size: var(--os-fs-13);
   color: var(--os-text-2);
+}
+.os-runs__tally .os-mono {
   font-size: var(--os-fs-12);
-  cursor: pointer;
+  color: var(--os-text-1);
 }
-.os-run-list__filter--active {
-  background: var(--os-accent-soft);
-  border-color: var(--os-accent-line);
-  color: var(--os-accent-strong);
+.os-runs__sep {
+  width: 1px;
+  height: 12px;
+  margin: 0 6px;
+  background: var(--os-line-2);
 }
-.os-run-list__rail {
+
+/* --- Board: column titles, bays, strips ------------------------------------ */
+.os-runs-board {
+  --os-runs-cols: 120px minmax(0, 1fr) 112px 64px 56px 88px 104px;
+  --os-runs-aside: 184px;
+  --os-runs-gap: var(--os-sp-8);
+  display: flex;
+  flex-direction: column;
+}
+.os-runs-cols {
+  display: grid;
+  grid-template-columns: var(--os-runs-cols);
+  column-gap: 12px;
+  margin-left: calc(var(--os-runs-aside) + var(--os-runs-gap));
+  padding: var(--os-sp-4) var(--os-sp-3) var(--os-sp-2) var(--os-sp-5);
+  font-size: var(--os-fs-12);
+  font-weight: 560;
+  color: var(--os-text-3);
+}
+.os-runs-cols__end,
+.os-runs-strip__num {
+  text-align: right;
+}
+.os-runs-bay {
+  display: grid;
+  grid-template-columns: var(--os-runs-aside) minmax(0, 1fr);
+  column-gap: var(--os-runs-gap);
+  padding: var(--os-sp-6) 0 var(--os-sp-8);
+  border-top: 1px solid var(--os-line-1);
+}
+.os-runs .os-runs-bay__name {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0;
+  font-size: var(--os-fs-20);
+  font-weight: 600;
+  color: var(--os-text-1);
+}
+.os-runs-bay__name svg {
+  color: var(--os-text-3);
+}
+.os-runs-bay__n {
+  display: block;
+  margin-top: 6px;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+.os-runs-bay__n .os-mono {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-1);
+}
+.os-runs-bay__blurb {
+  max-width: 22ch;
+  margin: 10px 0 0;
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-runs-bay__body {
+  min-width: 0;
+}
+.os-runs-bay__none {
+  margin: 0;
+  padding: var(--os-sp-3) 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-3);
+}
+.os-runs-strips {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
-  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--os-sp-2);
-}
-.os-run-list__empty {
-  color: var(--os-text-3);
-  font-size: var(--os-fs-13);
-  padding: var(--os-sp-3);
-}
-.os-run-list__item {
-  position: relative;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-3);
-  padding: var(--os-sp-2) var(--os-sp-3) var(--os-sp-2) var(--os-sp-4);
-  border-radius: var(--os-r-md);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--os-text-1);
-  text-align: left;
-  cursor: pointer;
-  font-family: var(--os-font-ui);
-}
-.os-run-list__item:hover {
-  background: var(--os-surface-2);
-}
-.os-run-list__item--selected {
-  background: var(--os-surface-2);
-  border-color: var(--os-line-2);
-}
-.os-run-list__accent {
-  position: absolute;
-  left: 0;
-  top: 6px;
-  bottom: 6px;
-  width: 2px;
-  border-radius: var(--os-r-pill);
-  background: transparent;
-}
-.os-run-list__item--selected .os-run-list__accent {
-  background: var(--os-accent);
-}
-.os-run-list__monogram {
-  flex: 0 0 auto;
-  color: var(--os-text-3);
-  font-size: var(--os-fs-11);
-}
-.os-run-list__body {
+  gap: 8px;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
-.os-run-list__row {
+.os-runs-skeleton {
+  height: 62px;
+}
+
+.os-runs-strip {
+  --os-runs-edge: var(--os-line-2);
+  position: relative;
+  min-width: 0;
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: var(--os-runs-cols);
+  column-gap: 12px;
+  align-items: center;
+  padding: 9px 12px 9px 20px;
+  background: var(--os-surface-1);
+  border: 1px solid var(--os-line-1);
+  border-radius: var(--os-r-sm);
+}
+/* The coloured tab: a shape laid over the strip's left edge, not a border. */
+.os-runs-strip::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 4px;
+  border-radius: 6px 0 0 6px;
+  background: var(--os-runs-edge);
+}
+.os-runs-strip[data-edge="live"] {
+  --os-runs-edge: var(--os-accent);
+}
+.os-runs-strip[data-edge="finished"] {
+  --os-runs-edge: var(--os-ok);
+}
+.os-runs-strip[data-edge="failed"] {
+  --os-runs-edge: var(--os-danger);
+}
+.os-runs-strip[data-edge="stopped"] {
+  --os-runs-edge: var(--os-text-3);
+}
+.os-runs-strip[data-edge="idle"] {
+  --os-runs-edge: var(--os-line-3);
+}
+/* Held: a flat warm tint (an inset shadow, not a gradient) and a warm edge. */
+.os-runs-strip[data-edge="held"] {
+  --os-runs-edge: var(--os-warn);
+  border-color: var(--os-warn-line);
+  box-shadow: inset 0 0 0 999px var(--os-warn-wash);
+}
+.os-runs-strip__agent {
+  font-size: var(--os-fs-14);
+  font-weight: 560;
+  line-height: 1.3;
+}
+.os-runs-strip__task {
+  min-width: 0;
+}
+/* Two classes: `.os-shell button` would otherwise set the colour. */
+.os-runs-strip .os-runs-strip__open {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--os-fs-15);
+  font-weight: 560;
+  line-height: 1.3;
+  text-align: left;
+  color: var(--os-text-1);
+  cursor: pointer;
+}
+.os-runs-strip .os-runs-strip__open:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.os-runs-strip__num {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-1);
+}
+.os-runs-strip__num--soft,
+.os-runs-strip__num--soft .os-mono {
+  color: var(--os-text-2);
+}
+.os-runs-strip__act {
+  display: flex;
+  justify-content: flex-end;
+}
+.os-runs-strip__more {
+  grid-column: 2 / -1;
   display: flex;
   align-items: center;
-  gap: var(--os-sp-2);
-  font-size: var(--os-fs-13);
+  gap: var(--os-sp-4);
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--os-line-1);
 }
-.os-run-list__row--meta {
-  color: var(--os-text-3);
+.os-runs-strip__more > p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-runs-strip__more > .os-runs-held {
+  flex: 1;
+  min-width: 0;
+}
+.os-runs .os-runs-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--os-fs-13);
+  color: var(--os-accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* --- Held strip: the sentence and the choices (RunLimitBanner, compact) ----- */
+.os-runs-held {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-3) var(--os-sp-4);
+}
+.os-runs-held__text {
+  flex: 1 1 280px;
+  margin: 0;
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-runs-held__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--os-sp-2);
+}
+.os-runs-held__messages {
+  flex-basis: 100%;
+}
+.os-runs-held__messages:empty {
+  display: none;
+}
+/* The same small notes and reasons, in the strip and inside the console's warning banner. */
+.os-runs-held .os-mp-hint,
+.os-runs-held .os-mp-error,
+.os-banner .os-mp-hint,
+.os-banner .os-mp-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  margin: var(--os-sp-2) 0 0;
   font-size: var(--os-fs-12);
+}
+.os-runs-held .os-mark,
+.os-banner .os-mp-hint .os-mark,
+.os-banner .os-mp-error .os-mark,
+.os-runs-limit__blocked .os-mark {
+  margin-top: 4px;
+}
+.os-runs-limit__blocked {
+  list-style: none;
+  margin: var(--os-sp-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-runs-limit__blocked li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+}
+
+/* --- New run dialog ---------------------------------------------------------- */
+.os-modal.os-modal--wide {
+  width: min(560px, 100%);
+  max-height: calc(100svh - 2 * var(--os-sp-6));
+  overflow-y: auto;
+}
+.os-newrun__lede,
+.os-newrun__note,
+.os-newrun__hint,
+.os-newrun__error {
+  margin: 0;
+}
+.os-newrun__lede {
+  color: var(--os-text-2);
+}
+.os-newrun__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--os-sp-3);
 }
-.os-run-list__title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.os-modal .os-field textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+.os-newrun__note {
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-newrun__note--bad,
+.os-newrun__error {
+  color: var(--os-danger);
+}
+.os-newrun__hint {
+  padding-top: var(--os-sp-3);
+  border-top: 1px solid var(--os-line-1);
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-modal .os-newrun__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+  color: var(--os-accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* --- Narrower content: bays stack, then strips wrap -------------------------- */
+@media (max-width: 1140px) {
+  .os-runs-cols {
+    margin-left: 0;
+  }
+  .os-runs-bay {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--os-sp-3);
+  }
+  .os-runs-bay__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--os-sp-1) var(--os-sp-4);
+  }
+  .os-runs-bay__n {
+    margin-top: 0;
+  }
+  .os-runs-bay__blurb {
+    max-width: none;
+    margin-top: 0;
+  }
+  .os-runs-strip__more {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 760px) {
+  .os-runs-cols {
+    display: none;
+  }
+  .os-runs-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px var(--os-sp-4);
+  }
+  .os-runs-strip__agent,
+  .os-runs-strip__task {
+    flex: 1 1 100%;
+  }
+  .os-runs-strip__act {
+    margin-left: auto;
+  }
+  .os-runs-strip__more {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+  .os-newrun__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* --- Run console ------------------------------------------------------------ */
@@ -200,7 +419,7 @@
   min-height: 0;
   flex: 1;
   background: var(--os-surface-1);
-  border-radius: var(--os-r-lg);
+  border-radius: var(--os-r-md);
   box-shadow: var(--os-e1);
   padding: var(--os-sp-5);
 }
@@ -274,7 +493,7 @@
   display: block;
   margin-top: var(--os-sp-2);
   padding: var(--os-sp-2);
-  background: rgba(5, 7, 11, 0.6);
+  background: var(--os-bg-0);
   border: 1px solid var(--os-line-1);
   border-radius: var(--os-r-sm);
   color: var(--os-text-1);
@@ -284,18 +503,6 @@
 .os-run-console__plan-folder {
   margin: var(--os-sp-1) 0 0;
   color: var(--os-text-3);
-}
-.os-run-console__hint {
-  padding: var(--os-sp-3);
-  border-radius: var(--os-r-md);
-  background: rgba(245, 184, 75, 0.08);
-  border: 1px solid rgba(245, 184, 75, 0.3);
-  color: var(--os-text-1);
-  font-size: var(--os-fs-13);
-}
-.os-run-console__hint code {
-  font-family: var(--os-font-mono);
-  color: var(--os-warn);
 }
 .os-run-console__transcript {
   flex: 1;
@@ -430,7 +637,7 @@
   font-size: var(--os-fs-12);
 }
 .os-transcript__tool {
-  border-left: 2px solid var(--os-line-2);
+  border-left: 1px solid var(--os-line-2);
   padding-left: var(--os-sp-3);
 }
 .os-transcript__tool-head {
@@ -467,7 +674,7 @@
     opacity: 1;
   }
 }
-/* --- Shared confirm modal (duplicated from agents.css; see file header) --- */
+/* --- Shared confirm modal (same as agents.css; `.os-modal--wide` for New run is above) --- */
 .os-modal__backdrop {
   position: fixed;
   inset: 0;

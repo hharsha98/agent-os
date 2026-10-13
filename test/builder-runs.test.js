@@ -480,6 +480,7 @@ test("plan brain end to end: no brain items, no settings file, no Anthropic vari
     assert.deepEqual(claudeRun.brain, { mode: "plan", model: null });
     assert.equal(claudeRun.task.allowEdits, false);
     assert.ok(path.isAbsolute(claudeRun.task.cwd));
+    assert.equal(claudeRun.task.line, "plain plan task", "the run records the first line of its task");
     assert.equal(claudeRun.sessionId, "sess-fake-0001");
     assert.equal(claudeRun.apiKeySource, "none");
     assert.equal(claudeRun.usage.lastInputTokens, 120000, "the size of the conversation at the last answer");

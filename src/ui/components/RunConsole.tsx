@@ -1,13 +1,15 @@
-// The flight recorder's run detail: header, flight plan, stop control and
+// The run detail: header, command and folder, stop control and
 // the live transcript. Reused in `compact` mode as the small inline
 // mini-console for a service/safety action (Agents screen), where there is
-// no Stop button and no flight-plan disclosure — just "is it still going".
+// no Stop button and no command-and-folder disclosure — just "is it still going".
 import { useEffect, useRef, useState } from "react";
 import { getRun, stopRun, useRunStream } from "../../api";
 import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runMarkFor } from "../fleetShared";
 import { collapseHomePath, friendlyError } from "../agentsShared";
-import { codexConfigHint, groupTranscript, statusLabel } from "../runsShared";
+import { codexConfigHint, groupTranscript } from "../runsShared";
+import { stateOf } from "../runsBoard";
 import type { RunMeta } from "../../types";
+import Banner from "./Banner";
 import RelativeTime from "./RelativeTime";
 import StatusMark from "./StatusMark";
 import RunTranscript from "./RunTranscript";
@@ -130,10 +132,17 @@ export default function RunConsole({
   if (metaError && !meta) {
     return (
       <div className="os-run-console os-run-console--error">
-        <p>{metaError}</p>
-        <button type="button" className="os-btn os-btn--secondary" onClick={() => void refreshMeta()}>
-          Retry
-        </button>
+        <Banner
+          tone="danger"
+          title="Couldn't load this run"
+          actions={
+            <button type="button" className="os-btn os-btn--secondary" onClick={() => void refreshMeta()}>
+              Try again
+            </button>
+          }
+        >
+          {metaError}
+        </Banner>
       </div>
     );
   }
@@ -156,7 +165,7 @@ export default function RunConsole({
           <strong>{meta.title || firstLine(meta.commandPreview, 60) || "Run"}</strong>
           <span className="os-run-console__meta">
             <StatusMark key={pulseTick} kind={runMarkFor(meta)} pulse={isActive && pulseTick > 0} />
-            {stopping && isActive ? "Stopping…" : meta.limit && !isActive ? "Plan limit reached" : statusLabel(meta.status)}
+            {stopping && isActive ? "Stopping…" : meta.limit && !isActive ? "Plan limit reached" : stateOf(meta).label || "—"}
             {isBuilderId(meta.agentId) && meta.brain ? (
               <>
                 <BuilderBrainBadge agentId={meta.agentId} brain={meta.brain} />
@@ -193,7 +202,7 @@ export default function RunConsole({
 
       {!compact ? (
         <details className="os-run-console__plan">
-          <summary>Flight plan</summary>
+          <summary>Command and folder</summary>
           <code className="os-mono">{meta.commandPreview}</code>
           <p className="os-mono os-run-console__plan-folder">{collapseHomePath(meta.cwd)}</p>
         </details>
@@ -216,10 +225,9 @@ export default function RunConsole({
       ) : null}
 
       {showCodexHint ? (
-        <div className="os-run-console__hint">
-          Codex refused its own settings. Check the model in ~/.codex/config.toml, or run <code>codex</code> once in a
-          terminal to sign in and pick a supported model.
-        </div>
+        <Banner tone="warn" title="Codex refused its own settings">
+          Check the model in ~/.codex/config.toml, or run <code className="os-mono">codex</code> once in a terminal to sign in and pick a supported model.
+        </Banner>
       ) : null}
 
       <div className={`os-run-console__transcript${compact ? " os-run-console__transcript--compact" : ""}`} ref={scrollRef} onScroll={onScroll}>

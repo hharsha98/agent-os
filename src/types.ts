@@ -2441,6 +2441,8 @@ export interface RunMeta {
   nearLimit?: boolean;
   continuedFrom?: string;
   continuedBy?: string;
+  // What the run was started for. `line` is the task's first line (up to 140 characters); older runs have no `line`.
+  task?: { cwd?: string; allowEdits?: boolean; line?: string };
 }
 
 export interface RunListResponse {

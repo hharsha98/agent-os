@@ -8,7 +8,7 @@
   flex-direction: column;
   gap: var(--os-sp-3);
   padding: var(--os-sp-5);
-  background: linear-gradient(180deg, var(--os-surface-1), var(--os-bg-1));
+  background: var(--os-surface-1);
   border-radius: var(--os-r-lg);
   box-shadow: var(--os-e1);
 }
@@ -26,7 +26,7 @@
   right: 0;
   height: 1px;
   transform-origin: left center;
-  background: linear-gradient(90deg, transparent, var(--os-accent-line), transparent);
+  background: var(--os-accent-line);
 }
 .os-gs--done.is-fresh .os-gs__topline {
   animation: os-gs-done var(--os-dur-base) var(--os-ease-out) 1;

@@ -17,20 +17,10 @@
   }
 
   /* Page titles: one step down from the 44px desk size. */
-  .os-fleet__header h1,
   .os-agents__header h1,
   .os-runs__header h1,
   .os-team__header h1 {
     font-size: var(--os-fs-32);
-  }
-
-  /* Home: two columns of cards (five agents and the Flight log), and the
-     big instrument numerals one size down. */
-  .os-fleet__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .os-readout__value--big {
-    font-size: var(--os-fs-44);
   }
 
   /* The older pages (Labs, Chat, Workspace) pad their sections with 5vw on each

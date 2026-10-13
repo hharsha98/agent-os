@@ -1,28 +1,34 @@
-// Team Room, one room selected: header with real limits, the two-column
-// conversation, and the notebook / proposals / files-saved panels. The room
-// is read from getTeamRoom and kept fresh by the live event stream: every new
-// stream event triggers a (debounced) refetch, and a running room is also
-// polled so a dropped stream can never leave the screen stale.
+// Team Room, one room selected: the page header (Stop or Continue), the task and
+// the status, then the conversation on the left and, on the right, the decision
+// cards, the limits and the notebook. The room is read from getTeamRoom and kept
+// fresh by the live event stream: every new stream event triggers a (debounced)
+// refetch, and a room that is running, paused or out of reach is also polled so
+// a dropped stream can never leave the screen stale.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { TeamRoomError, continueTeamRoom, getTeamRoom, stopTeamRoom, useTeamRoomStream } from "../../api";
 import type { TeamRoomDetail } from "../../types";
 import {
-  clockEnd,
+  decisionKey,
+  deriveTimeline,
   deriveTurns,
+  isPaused,
   mergeEvents,
-  minutesLabel,
-  roomCostText,
+  plural,
   roomEndSentence,
-  roomStatusMark,
-  roomStatusWord
+  roomLede,
+  roomSoFar,
+  roomStatusView
 } from "../teamRoomShared";
 import AgentConfirmModal from "./AgentConfirmModal";
-import SegmentMeter from "./SegmentMeter";
-import StatusMark from "./StatusMark";
-import { ActionsPanel, NotebookPanel, ProposalsPanel } from "./TeamRoomPanels";
+import Banner from "./Banner";
+import PageHeader from "./PageHeader";
+import StatusWord from "./StatusWord";
+import { TeamRoomDecided, TeamRoomNeedsYou, type DecisionMemory } from "./TeamRoomDecision";
+import TeamRoomLimits from "./TeamRoomLimits";
 import TeamRoomProblem, { problemFromError, type TeamProblem } from "./TeamRoomProblem";
-import TeamRoomTurn, { ClampText } from "./TeamRoomTurn";
+import TeamRoomTimeline from "./TeamRoomTimeline";
+import { ClampText } from "./TeamRoomTurn";
 import { useInterval } from "./useInterval";
 
 const CONTINUE_TURNS = 4;
@@ -35,9 +41,20 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
   const [continueOpen, setContinueOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<TeamProblem | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [, forceTick] = useState(0);
+  // What the page knows about each card, keyed by room plus proposal. It lives here
+  // because a decided card moves to another list and remounts (see DecisionMemory).
+  const [cardMemory, setCardMemory] = useState<Record<string, DecisionMemory>>({});
   const roomIdRef = useRef(roomId);
   roomIdRef.current = roomId;
+
+  const remember = useCallback(
+    (proposalId: string, patch: Partial<DecisionMemory>) => {
+      const key = decisionKey(roomId, proposalId);
+      setCardMemory((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
+    },
+    [roomId]
+  );
 
   const { events: liveEvents, status: streamStatus } = useTeamRoomStream(roomId, reconnectKey);
 
@@ -51,7 +68,7 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
     } catch (error) {
       if (asked !== roomIdRef.current) return;
       const notFound = error instanceof TeamRoomError && error.status === 404;
-      setLoadError({ notFound, message: error instanceof Error ? error.message : "Couldn't load this room." });
+      setLoadError({ notFound, message: error instanceof TeamRoomError ? error.message : "Agent OS isn't responding." });
     }
   }, [roomId]);
 
@@ -74,30 +91,53 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
     if (streamStatus === "ended") void refresh();
   }, [streamStatus, refresh]);
 
+  const paused = detail ? isPaused(detail.room) : false;
   const running = detail?.room.status === "running";
-  useInterval(() => void refresh(), running ? 3000 : null);
+  // A paused room is polled too: the decision may be made in another window.
+  useInterval(() => void refresh(), running || paused || loadError !== null ? 3000 : null);
+  // The clock reads Date.now() while the room runs, so a re-render every second
+  // keeps it moving. A paused room does not tick: its clock is stopped.
   useEffect(() => {
     if (!running) return undefined;
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    const id = setInterval(() => forceTick((n) => n + 1), 1000);
     return () => clearInterval(id);
   }, [running]);
 
+  // A room that runs again (Continue here, or a decision made in another window)
+  // needs a fresh event stream: the old one ended when the room paused.
+  const status = detail?.room.status ?? null;
+  const lastStatus = useRef<string | null>(null);
+  useEffect(() => {
+    if (status === "running" && lastStatus.current !== null && lastStatus.current !== "running") setReconnectKey((k) => k + 1);
+    lastStatus.current = status;
+  }, [status]);
+
   const events = useMemo(() => mergeEvents(detail?.events || [], liveEvents), [detail, liveEvents]);
-  const turns = useMemo(() => deriveTurns(events), [events]);
+  const timeline = useMemo(() => deriveTimeline(events, detail?.proposals || [], detail?.actions || []), [events, detail]);
+
+  const backButton = (
+    <button type="button" className="os-btn os-btn--ghost os-team__back" onClick={onBack}>
+      <ArrowLeft size={14} aria-hidden="true" /> All rooms
+    </button>
+  );
 
   if (loadError && !detail) {
     return (
-      <div className="os-team__problem" role="alert">
-        <AlertTriangle size={16} aria-hidden="true" />
-        <p>{loadError.notFound ? "That room doesn't exist (it may have been removed)." : `Couldn't load this room. ${loadError.message}`}</p>
-        {loadError.notFound ? null : (
-          <button type="button" className="os-btn os-btn--secondary" onClick={() => void refresh()}>
-            <RefreshCw size={14} /> Retry
-          </button>
-        )}
-        <button type="button" className="os-btn os-btn--ghost" onClick={onBack}>
-          All rooms
-        </button>
+      <div className="os-team__view">
+        {backButton}
+        <PageHeader title="Team Room" titleId="os-team-title" />
+        <Banner
+          tone={loadError.notFound ? "warn" : "danger"}
+          actions={
+            loadError.notFound ? undefined : (
+              <button type="button" className="os-btn os-btn--secondary" onClick={() => void refresh()}>
+                <RefreshCw size={14} aria-hidden="true" /> Retry
+              </button>
+            )
+          }
+        >
+          {loadError.notFound ? "That room doesn't exist (it may have been removed)." : `Couldn't load this room. ${loadError.message}`}
+        </Banner>
       </div>
     );
   }
@@ -105,31 +145,28 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
   if (!detail) {
     return (
       <div className="os-team__view">
-        <button type="button" className="os-btn os-btn--ghost os-team__back" onClick={onBack}>
-          <ArrowLeft size={14} /> All rooms
-        </button>
-        <div className="os-panel" aria-live="polite">
-          …
-        </div>
+        {backButton}
+        <PageHeader title="Team Room" titleId="os-team-title" />
+        <p className="os-team__hint" aria-live="polite">
+          Loading this room…
+        </p>
       </div>
     );
   }
 
   const { room, proposals, actions, notebook } = detail;
+  const statusView = roomStatusView(room);
   const isRunning = room.status === "running";
   const endSentence = roomEndSentence(room);
-  const elapsedMs = Math.max(0, clockEnd(room, nowMs) - new Date(room.clockStartedAt).getTime());
-  const maxMs = room.limits.maxMinutes * 60_000;
-  const elapsedKnown = Number.isFinite(elapsedMs);
-  const turnSegments = Array.from({ length: Math.max(room.turnsAllowed, 1) }, (_, i) =>
-    i < room.turnsDone ? ("ok" as const) : ("unknown" as const)
-  );
-  const waitingForYou = proposals.filter((p) => p.status === "needs_approval").length;
-  const currentRunId = room.currentTurn?.runId || null;
-  const costCap = room.limits.maxCostUsd;
+  const so = roomSoFar(deriveTurns(events), proposals, actions);
+  const waiting = so.waitingFiles + so.waitingOther;
+  const waitingText =
+    so.waitingOther === 0
+      ? `${plural(so.waitingFiles, "file")} ${so.waitingFiles === 1 ? "waits" : "wait"} for your decision.`
+      : `${plural(waiting, "proposal")} ${waiting === 1 ? "waits" : "wait"} for your decision.`;
   // Plain-English notices from the server (a model that can't follow the reply
-  // format, a cost cap that can't see every turn). Server text, shown as text.
-  const notices = [...(room.hints || []), ...(room.costWarning ? [room.costWarning] : [])];
+  // format). Server text, shown as text. The cost warning lives in the Limits panel.
+  const notices = room.hints || [];
 
   async function doStop() {
     setBusy(true);
@@ -153,8 +190,6 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
     try {
       await continueTeamRoom(room.id, CONTINUE_TURNS);
       setContinueOpen(false);
-      // The old stream ended with needs_you; open a fresh one.
-      setReconnectKey((k) => k + 1);
       void refresh();
     } catch (error) {
       setContinueOpen(false);
@@ -165,137 +200,102 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
     }
   }
 
+  // Scroll to the first card that waits for you and put the keyboard focus on it,
+  // so the next Tab lands on Approve and not back at the top of the page. The scroll
+  // is instant (no animation), so reduced motion needs no special case.
+  function jumpToDecision() {
+    const area = document.getElementById("os-team-decisions");
+    if (!area) return;
+    area.scrollIntoView({ behavior: "auto", block: "start" });
+    area.querySelector<HTMLElement>(".os-team__decision")?.focus({ preventScroll: true });
+  }
+
+  const headerActions = isRunning ? (
+    <button type="button" className="os-btn os-btn--danger" onClick={() => setStopOpen(true)}>
+      <Square size={14} aria-hidden="true" /> Stop room
+    </button>
+  ) : room.status === "needs_you" ? (
+    <button type="button" className={`os-btn ${paused ? "os-btn--secondary" : "os-btn--primary"}`} onClick={() => setContinueOpen(true)}>
+      {paused ? `Continue without deciding (+${CONTINUE_TURNS} turns)` : `Continue (+${CONTINUE_TURNS} turns)`}
+    </button>
+  ) : undefined;
+
   return (
     <div className="os-team__view">
-      <button type="button" className="os-btn os-btn--ghost os-team__back" onClick={onBack}>
-        <ArrowLeft size={14} /> All rooms
-      </button>
+      {backButton}
+      <PageHeader title="Team Room" titleId="os-team-title" lede={roomLede(room)} actions={headerActions} />
 
-      <header className="os-panel os-team__head">
-        <div className="os-team__head-top">
-          <span className={`os-team__status os-team__status--${room.status}`}>
-            <StatusMark kind={roomStatusMark(room.status)} label={roomStatusWord(room.status)} />
-            {roomStatusWord(room.status)}
-          </span>
-          <div className="os-team__head-actions">
-            {isRunning ? (
-              <button type="button" className="os-btn os-btn--danger" onClick={() => setStopOpen(true)}>
-                Stop
-              </button>
-            ) : null}
-            {room.status === "needs_you" ? (
-              <button type="button" className="os-btn os-btn--primary" onClick={() => setContinueOpen(true)}>
-                Continue (+{CONTINUE_TURNS} turns)
-              </button>
-            ) : null}
-          </div>
+      <div className="os-team__bar">
+        <div className="os-team__task">
+          <span className="os-micro">Task</span>
+          <ClampText text={room.task} className="os-team__task-text" />
         </div>
-
-        <ClampText text={room.task} className="os-team__task" />
-
-        {endSentence ? <p className="os-team__end">{endSentence}</p> : null}
-        {waitingForYou > 0 ? (
-          <p className="os-team__end">
-            {waitingForYou} proposal{waitingForYou === 1 ? " is" : "s are"} waiting for your approval.{" "}
-            <button
-              type="button"
-              className="os-team__link"
-              onClick={() =>
-                document.getElementById("os-team-proposals-panel")?.scrollIntoView({ behavior: "auto", block: "start" })
-              }
-            >
-              Jump to proposals
-            </button>
-          </p>
-        ) : null}
-        {problem ? <TeamRoomProblem problem={problem} /> : null}
-
-        <dl className="os-team__limits-bar">
-          <div className="os-team__limit">
-            <dt className="os-micro">Turns</dt>
-            <dd>
-              <SegmentMeter
-                segments={turnSegments}
-                label={`${room.turnsDone} of ${room.turnsAllowed} turns used`}
-              />
-              <span className="os-mono">
-                {room.turnsDone}/{room.turnsAllowed}
-              </span>
-            </dd>
-          </div>
-          <div className="os-team__limit">
-            <dt className="os-micro">Time</dt>
-            <dd>
-              <span className="os-mono">
-                {elapsedKnown ? minutesLabel(elapsedMs) : "—"} of {room.limits.maxMinutes}m
-              </span>
-              <span
-                className="os-team__timebar"
-                role="img"
-                aria-label={`${minutesLabel(elapsedMs)} of ${room.limits.maxMinutes} minutes used`}
-              >
-                <span style={{ width: `${Math.min(100, (elapsedMs / maxMs) * 100)}%` }} />
-              </span>
-            </dd>
-          </div>
-          <div className="os-team__limit">
-            <dt className="os-micro">Cost</dt>
-            <dd>
-              <span
-                className="os-mono"
-                title="Known cost is what the agents reported. A turn that reported none is counted as unknown, never as $0."
-              >
-                {roomCostText(room)}
-              </span>
-              {typeof costCap === "number" ? <span className="os-team__muted">cap ${costCap}</span> : null}
-            </dd>
-          </div>
-        </dl>
-      </header>
-
-      {notices.length > 0 ? (
-        <div className="os-team__notices" role="note" aria-label="Notices about this room">
-          {notices.map((notice) => (
-            <p key={notice} className="os-team__protocol">
-              {notice}
-            </p>
-          ))}
+        <div className="os-team__bar-status" role="status">
+          <StatusWord state={statusView.state} label={statusView.label} />
         </div>
+      </div>
+
+      {endSentence ? <p className="os-team__end">{endSentence}</p> : null}
+      {waiting > 0 ? (
+        <button type="button" className="os-team__link os-team__jump" onClick={jumpToDecision}>
+          Jump to the decision
+        </button>
       ) : null}
+      {problem ? <TeamRoomProblem problem={problem} /> : null}
+      {loadError ? <Banner tone="warn">Lost contact with Agent OS. This page shows the last thing it saw and keeps trying.</Banner> : null}
+      {notices.map((notice) => (
+        <Banner key={notice} tone="info">
+          {notice}
+        </Banner>
+      ))}
 
-      <div className="os-team__grid">
-        <section className="os-team__convo" aria-label="Conversation">
-          <div className="os-team__colheads" aria-hidden="true">
-            <span className="os-micro">Hermes Agent</span>
-            <span className="os-micro">OpenClaw</span>
-          </div>
-          {turns.length === 0 ? (
-            <p className="os-panel os-team__muted" aria-live="polite">
-              {isRunning ? "Waiting for the first turn…" : "No turns were recorded for this room."}
-            </p>
-          ) : (
-            <div className="os-team__turns">
-              {(["hermes", "openclaw"] as const).map((agentId) => (
-                <div key={agentId} className="os-team__col">
-                  {turns
-                    .filter((turn) => turn.agentId === agentId)
-                    .map((turn) => (
-                      <TeamRoomTurn
-                        key={turn.turn}
-                        turn={turn}
-                        live={isRunning && !turn.ended && currentRunId === turn.runId}
-                      />
-                    ))}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+      <div className="os-team__room">
+        <div className="os-team__main">
+          <TeamRoomTimeline items={timeline} running={isRunning} currentRunId={room.currentTurn?.runId || null} turnsAllowed={room.turnsAllowed} />
+          <p className="os-team__sofar">
+            <ShieldCheck size={16} aria-hidden="true" />
+            <span>
+              <b>What Agent OS did so far.</b> Passed <b>{so.messages}</b> {so.messages === 1 ? "message" : "messages"} between the agents and
+              saved <b>{plural(so.saved, "file")}</b>
+              {so.saved > 0 ? (
+                <>
+                  : <code className="os-mono">{so.savedPaths.join(", ")}</code>
+                </>
+              ) : null}
+              .{waiting > 0 ? <span className="os-team__wait"> {waitingText}</span> : null}
+            </span>
+          </p>
+        </div>
 
-        <aside className="os-team__panels">
-          <ProposalsPanel roomId={room.id} proposals={proposals} onChanged={() => void refresh()} />
-          <ActionsPanel roomId={room.id} actions={actions} onChanged={() => void refresh()} />
-          <NotebookPanel notebook={notebook} />
+        <aside className="os-team__side" aria-label="Decisions and limits">
+          <TeamRoomNeedsYou
+            room={room}
+            proposals={proposals}
+            actions={actions}
+            onDecided={refresh}
+            onChanged={refresh}
+            memory={cardMemory}
+            remember={remember}
+          />
+          <TeamRoomLimits room={room} nowMs={Date.now()} />
+          <TeamRoomDecided
+            room={room}
+            proposals={proposals}
+            actions={actions}
+            onDecided={refresh}
+            onChanged={refresh}
+            memory={cardMemory}
+            remember={remember}
+          />
+          {notebook.trim() ? (
+            <section className="os-team__notebook" aria-labelledby="os-team-notebook-h">
+              <h2 id="os-team-notebook-h" className="os-team__h">
+                Notebook
+              </h2>
+              {/* notebook.md is markdown the server writes ("**Hermes Agent** (turn 1, ...)"). It is shown as plain text on purpose (agents wrote it), so the bold markers are dropped. */}
+              <ClampText text={notebook.replace(/\*\*(.+?)\*\*/g, "$1")} className="os-team__notebook-text" />
+            </section>
+          ) : null}
         </aside>
       </div>
 
@@ -308,7 +308,7 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
           onConfirm={() => void doStop()}
           onClose={() => (busy ? null : setStopOpen(false))}
         >
-          <p>This stops the agent that is working right now. What was already said stays in the room.</p>
+          <p>This stops the agent that is working right now. What was already said stays in the room. A file you already saved stays saved, and you can still undo it.</p>
         </AgentConfirmModal>
       ) : null}
       {continueOpen ? (
@@ -319,7 +319,10 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
           onConfirm={() => void doContinue()}
           onClose={() => (busy ? null : setContinueOpen(false))}
         >
-          <p>This starts the real agents again for up to {CONTINUE_TURNS} more turns. Each turn may cost money on their own model accounts.</p>
+          <p>
+            This starts the real agents again for up to {CONTINUE_TURNS} more turns. Each turn may cost money on their own model accounts.
+          </p>
+          {paused ? <p>The file waiting for you stays waiting, and you can still decide on it later.</p> : null}
         </AgentConfirmModal>
       ) : null}
     </div>

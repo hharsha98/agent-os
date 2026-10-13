@@ -2511,6 +2511,13 @@ export interface TeamRoom {
   hints?: string[];
   endReason: string | null;
   folder: string;
+  // Set while the room is paused for one of your decisions (D10): the id of the
+  // file proposal it waits on, for example "P1". null or missing otherwise.
+  pausedFor?: string | null;
+  // Time the room had used when it paused, in milliseconds. A paused room's clock
+  // is stopped at this value, and the server keeps it across a restart. null
+  // (or missing) whenever the room is not paused.
+  clockUsedMs?: number | null;
 }
 
 // What starting a room returns: the room, plus any heads-ups for the start screen.
@@ -2533,6 +2540,8 @@ export interface TeamRoomSummary {
   openProposals: number;
   needsApproval: number;
   actions: number;
+  // Same meaning as on TeamRoom: the proposal a paused room waits on.
+  pausedFor?: string | null;
 }
 
 export interface TeamRoomListResponse {
@@ -2658,4 +2667,6 @@ export interface StartTeamRoomInput {
 export interface TeamProposalDecisionResult {
   proposal: TeamProposal;
   action: TeamAction | null;
+  // true when this decision ended the pause the room was in and the room carried on.
+  resumed?: boolean;
 }

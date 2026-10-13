@@ -1,12 +1,23 @@
-// One turn of the conversation. Agent text is untrusted: it is only ever
-// rendered as plain React text inside a pre-wrap block, never as HTML.
+// One turn of the conversation, drawn as a row of the timeline. Agent text is
+// untrusted: it is only ever rendered as plain React text inside a pre-wrap
+// block, never as HTML.
 import { useState } from "react";
+import { Activity } from "lucide-react";
 import { navigateTo } from "../../nav";
-import { runStatusMark } from "../fleetShared";
-import { statusLabel } from "../runsShared";
-import { agentLabel, tagLabel, turnCostLabel, type TurnView } from "../teamRoomShared";
+import {
+  agentLabel,
+  agentMaker,
+  clockTime,
+  hasTag,
+  tagLabel,
+  turnCostLabel,
+  turnMissingText,
+  turnStatusView,
+  type TurnPhase,
+  type TurnView
+} from "../teamRoomShared";
 import RunConsole from "./RunConsole";
-import StatusMark from "./StatusMark";
+import StatusWord from "./StatusWord";
 
 const COLLAPSE_CHARS = 600;
 const COLLAPSE_LINES = 10;
@@ -27,85 +38,106 @@ export function ClampText({ text, className = "" }: { text: string; className?: 
   );
 }
 
-export default function TeamRoomTurn({ turn, live }: { turn: TurnView; live: boolean }) {
+export default function TeamRoomTurn({
+  turn,
+  phase,
+  roomRunning,
+  turnsAllowed
+}: {
+  turn: TurnView;
+  phase: TurnPhase;
+  roomRunning: boolean;
+  turnsAllowed: number;
+}) {
   const ended = turn.ended;
-  const status = ended?.status || (live ? "running" : "");
-  const parsedTag = tagLabel(ended?.parsed);
-  const noTag = parsedTag === "no tag";
-  const costKnown = typeof ended?.costUsd === "number";
+  const live = phase === "live";
+  // In progress either way: the room names this run (live), or it is the latest turn of a running room (working).
+  const inProgress = phase === "live" || phase === "working";
+  const status = turnStatusView(ended?.status);
+  const failed = status?.state === "failed";
   const model = typeof ended?.model === "string" && ended.model ? ended.model : null;
+  const costKnown = typeof ended?.costUsd === "number";
   const tools = ended?.toolSummary || null;
+  const tagged = hasTag(ended?.parsed);
+  const maker = agentMaker(turn.agentId);
 
   return (
-    <article
-      className={`os-team__turn os-team__turn--${turn.agentId}${live ? " os-team__turn--live" : ""}`}
-      aria-label={`Turn ${turn.turn}, ${agentLabel(turn.agentId)}`}
-      style={{ order: turn.turn }}
-    >
-      <header className="os-team__turn-head">
-        <span className="os-team__turn-agent">{agentLabel(turn.agentId)}</span>
-        <span className="os-mono os-team__turn-num">turn {turn.turn}</span>
-        <span className="os-team__turn-status">
-          <StatusMark
-            kind={status ? runStatusMark(status) : "unknown"}
-            label={status ? statusLabel(status) : "No result recorded"}
-          />
-          {status ? statusLabel(status) : "No result"}
-        </span>
-        {model ? (
-          <span className="os-mono os-team__turn-model" title="the model that answered this turn">
-            {model}
-          </span>
-        ) : null}
-        <span
-          className="os-mono os-team__turn-cost"
-          title={costKnown ? undefined : ended ? "this turn didn't report a cost" : "cost is known when the turn ends"}
-        >
-          {turnCostLabel(ended?.costUsd, model)}
-        </span>
-      </header>
-
-      {ended ? (
-        <>
-          {ended.text ? (
-            <ClampText text={ended.text} />
-          ) : (
-            <p className="os-team__muted">This turn produced no text.</p>
-          )}
-          <div className="os-team__turn-foot">
-            <span className={`os-chip os-team__tag${noTag ? " os-team__tag--none" : ""}`}>{parsedTag}</span>
-            <a
-              className="os-team__link"
-              href={`?page=runs&run=${encodeURIComponent(turn.runId)}`}
-              onClick={(event) => {
-                event.preventDefault();
-                navigateTo("runs", { run: turn.runId });
-              }}
-            >
-              Open this run
-            </a>
-          </div>
-          {tools && tools.calls > 0 ? (
-            <p className="os-team__muted">
-              {tools.failures > 0
-                ? `Tried ${tools.calls} tool call${tools.calls === 1 ? "" : "s"}; ${tools.failures} failed.`
-                : `Used ${tools.calls} tool call${tools.calls === 1 ? "" : "s"}.`}
-            </p>
+    <li className={`os-team__item${inProgress ? " is-live" : ""}${failed ? " is-failed" : ""}`}>
+      <span className="os-team__node os-mono" aria-hidden="true">
+        {turn.turn}
+      </span>
+      <div className="os-team__item-body">
+        <div className="os-team__item-head">
+          <b className="os-team__who-name">{agentLabel(turn.agentId)}</b>
+          {maker ? <span className="os-team__maker">{maker}</span> : null}
+          {status ? <StatusWord state={status.state} label={status.label} /> : null}
+          {phase === "working" ? <StatusWord state="live" label="Working…" /> : null}
+          {ended ? (
+            <time className="os-team__time os-mono" dateTime={ended.t} title="When this turn ended">
+              {clockTime(ended.t)}
+            </time>
           ) : null}
-          {ended.parsed?.problem ? <p className="os-team__protocol">{ended.parsed.problem}</p> : null}
-          {turn.protocolNotes.map((note, index) => (
-            <p key={index} className="os-team__protocol">
-              {note}
-            </p>
-          ))}
-        </>
-      ) : live ? (
-        <div className="os-team__turn-live">
-          <RunConsole runId={turn.runId} compact />
         </div>
-      ) : (
-        <p className="os-team__muted">This turn never reported back (the room stopped first).</p>
-      )}
-    </article>
+
+        {ended ? (
+          <>
+            {ended.text ? <ClampText text={ended.text} className="os-team__msg" /> : <p className="os-team__muted">This turn produced no text.</p>}
+            <div className="os-team__foot">
+              <span className={`os-chip os-team__tag${tagged ? "" : " os-team__tag--none"}`}>{tagLabel(ended.parsed)}</span>
+              {model ? (
+                <span className="os-mono os-team__small" title="The model that answered this turn">
+                  {model}
+                </span>
+              ) : null}
+              <span
+                className="os-mono os-team__small"
+                title={costKnown ? undefined : "This turn didn't report a cost"}
+              >
+                {turnCostLabel(ended.costUsd, model)}
+              </span>
+              <a
+                className="os-team__link"
+                href={`?page=runs&run=${encodeURIComponent(turn.runId)}`}
+                onClick={(event) => {
+                  event.preventDefault();
+                  navigateTo("runs", { run: turn.runId });
+                }}
+              >
+                Open this run
+              </a>
+            </div>
+            {tools && tools.calls > 0 ? (
+              <p className="os-team__muted">
+                {tools.failures > 0
+                  ? `Tried ${tools.calls} tool call${tools.calls === 1 ? "" : "s"}; ${tools.failures} failed.`
+                  : `Used ${tools.calls} tool call${tools.calls === 1 ? "" : "s"}.`}
+              </p>
+            ) : null}
+            {ended.parsed?.problem ? <p className="os-team__protocol">{ended.parsed.problem}</p> : null}
+            {turn.protocolNotes.map((note, index) => (
+              <p key={index} className="os-team__protocol">
+                {note}
+              </p>
+            ))}
+          </>
+        ) : inProgress ? (
+          <>
+            <p className="os-team__typing">
+              <Activity size={16} aria-hidden="true" />
+              <span>
+                <b>{agentLabel(turn.agentId)}</b> is writing turn {turn.turn} of {turnsAllowed}.
+              </span>
+            </p>
+            {live ? (
+              <div className="os-team__turn-live">
+                <RunConsole runId={turn.runId} compact />
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="os-team__muted">{turnMissingText(roomRunning)}</p>
+        )}
+      </div>
+    </li>
   );
 }

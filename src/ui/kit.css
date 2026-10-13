@@ -375,6 +375,27 @@ button.os-table__row {
   text-decoration: none;
   transition: background var(--os-dur-quick) var(--os-ease-out);
 }
+/* A <button class="os-table__row" role="row"> must not keep the browser's button
+   look (grey fill, outset border, centred text, shrink to fit). It is the same
+   row as the div row: full width, same padding, same hairline on top.
+   Specificity: this is (0,1,1), so `.os-table__head + .os-table__row` and
+   `.os-table__group + .os-table__row` (0,2,0) still win and take the first
+   row's top line away. The colour and font go in the `.os-shell` rule below,
+   because `.os-shell button { color }` (0,1,1) would otherwise tie with it. */
+button.os-table__row {
+  width: 100%;
+  margin: 0;
+  padding: var(--os-sp-2) 0;
+  border: 0;
+  border-top: 1px solid var(--os-line-1);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.os-shell button.os-table__row {
+  color: inherit;
+  font: inherit;
+}
 @media (hover: hover) and (pointer: fine) {
   a.os-table__row:hover,
   button.os-table__row:hover {

@@ -26,10 +26,14 @@ export interface StatusWordProps {
 }
 
 export default function StatusWord({ state, label }: StatusWordProps) {
-  const { icon: Icon, word, spoken } = STATUS[state];
+  // A state string that is not one of the nine (for example from live server
+  // JSON) must not throw while rendering: it shows as unknown. The own-property
+  // check also keeps inherited names such as "toString" out.
+  const key: StatusState = Object.prototype.hasOwnProperty.call(STATUS, state) ? state : "unknown";
+  const { icon: Icon, word, spoken } = STATUS[key] ?? STATUS.unknown;
   const custom = typeof label === "string" && label.trim() !== "";
   return (
-    <span className={`os-statusword os-statusword--${state}`}>
+    <span className={`os-statusword os-statusword--${key}`}>
       {Icon ? <Icon size={16} aria-hidden="true" /> : null}
       {Icon || custom ? (
         <span>{custom ? label : word}</span>

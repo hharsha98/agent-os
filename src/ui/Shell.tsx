@@ -53,13 +53,17 @@ import { setDensity, useDensity } from "./density";
 import Logo from "./Logo";
 import { NEW_RUN_EVENT, openNewRun } from "./newRun";
 import type { NewRunRequest } from "./newRun";
+import { withTimeout } from "./homeShared";
 import { revealGetStarted } from "./onboardingShared";
+import { levelOf } from "./safetyShared";
 import { stopAllMessage } from "./stopAll";
 
 const LABS_STORAGE_KEY = "agentos.labsOpen";
 // Same cadence as Home's run polling, so the strip and the page never
 // disagree about how many runs are live for more than a moment.
 const STATUS_POLL_MS = 5000;
+// A server that does not answer must not leave the top bar on "Checking…" for ever.
+const STATUS_TIMEOUT_MS = 10000;
 const MOBILE_BREAKPOINT = 900;
 // At or below this width the sidebar is a 64px icon rail (see shell.css, which
 // uses the same number). Between this and MOBILE_BREAKPOINT it can be expanded
@@ -470,7 +474,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
             aria-label="Labs (experimental)"
             {...tipHandlers("Labs (experimental)")}
           >
-            <FlaskConical size={14} aria-hidden="true" />
+            <FlaskConical size={16} aria-hidden="true" />
             <span className="os-micro os-nav__label">Labs</span>
             <ChevronDown size={14} aria-hidden="true" className={`os-nav__chevron${labsOpen ? " is-open" : ""}`} />
           </button>
@@ -506,7 +510,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         </div>
       ) : null}
 
-      <div className="aos-phase2-content os-content">{children}</div>
+      <div className="aos-phase2-content os-content" role={pageIsInLabs ? undefined : "main"}>
+        {children}
+      </div>
       <UpdateBanner />
       {toast ? <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
@@ -524,12 +530,21 @@ function useStatusStrip() {
 
   async function refresh() {
     try {
-      const gate = await getExecutionGateStatus();
+      const gate = await withTimeout(getExecutionGateStatus(), STATUS_TIMEOUT_MS);
       const remaining = gate.machineControl?.remainingMs ?? null;
       const armed = Boolean(gate.machineControl?.armed ?? gate.machineControl?.enabled);
-      setSafetyLabel(armed ? machineControlLabel(remaining) : gate.enabled ? "Run agents" : "Look only");
+      // The same rule as the Safety page (levelOf): an answer that is not a valid shape is
+      // unknown, never "Look only". The pill then reads "Safety unknown", like a failed read.
+      const known = levelOf(gate, { armed });
+      if (known === null) {
+        setSafetyLabel("Safety unknown");
+        setSafetyHint("Agent OS gave an answer that could not be read.");
+        setLevel(null);
+        setRemainingMs(null);
+        return;
+      }
       setSafetyHint(gate.publicSummary || gate.reason || "");
-      setLevel(typeof gate.level === "number" ? gate.level : armed ? 2 : gate.enabled ? 1 : 0);
+      setLevel(known);
       setRemainingMs(remaining);
     } catch {
       setSafetyLabel("Safety unknown");

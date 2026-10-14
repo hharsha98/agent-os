@@ -1,7 +1,5 @@
-// How the model picker (ModelPicker.tsx) "applies" a model for the coding agents.
-// Two uses:
+// How the model picker (ModelPicker.tsx) "applies" a model for the coding agents:
 //   builderApplier  save it as the agent's OpenRouter brain (PUT /api/builders/brains)
-//   oneRunApplier   only remember it for the one run being launched (nothing is saved)
 // The picker shows the returned lines as its result.
 import { getOpenRouterKeyStatus, saveBuilderBrains } from "../buildersApi";
 import type { BuilderId } from "../buildersApi";
@@ -40,20 +38,5 @@ export function builderApplier(agentId: BuilderId, label: string): ApplyFn {
       };
     }
     return [result];
-  };
-}
-
-export function oneRunApplier(label: string, onPick: (modelId: string) => void): ApplyFn {
-  return async ({ subject }) => {
-    const model = subject.model?.id || "";
-    onPick(model);
-    return [
-      {
-        targetId: "run",
-        ok: true,
-        headline: `${label} will use ${subject.title} for this run`,
-        detail: "Only this run. Your saved brain stays as it is."
-      }
-    ];
   };
 }

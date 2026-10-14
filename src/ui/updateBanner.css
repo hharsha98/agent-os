@@ -8,7 +8,7 @@
   left: var(--os-side-w);
   right: 0;
   bottom: var(--os-sp-5);
-  z-index: 45;
+  z-index: 43;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -38,7 +38,7 @@
 }
 
 .os-update__icon {
-  color: var(--os-accent);
+  color: var(--os-accent-strong);
   flex: 0 0 auto;
 }
 
@@ -50,7 +50,7 @@
   background: none;
   border: 0;
   padding: 0 var(--os-sp-1);
-  color: var(--os-accent);
+  color: var(--os-accent-strong);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -95,7 +95,7 @@
 
 @media (min-width: 901px) and (max-width: 1366px) {
   .os-update {
-    left: 64px;
+    left: var(--os-rail-w, 64px);
   }
 }
 

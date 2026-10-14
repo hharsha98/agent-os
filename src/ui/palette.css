@@ -51,7 +51,7 @@
   outline: none;
 }
 .os-palette__search:focus-within {
-  box-shadow: inset 0 -2px 0 var(--os-accent);
+  box-shadow: inset 0 -2px 0 var(--os-accent-strong);
 }
 
 .os-palette__list {

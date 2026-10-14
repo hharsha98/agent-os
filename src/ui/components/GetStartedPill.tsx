@@ -10,7 +10,6 @@ export default function GetStartedPill() {
   if (!enabled || !data || (data.complete && data.hidden)) return null;
 
   const { counts } = data;
-  const label = data.complete ? "Setup done" : `Get started ${counts.done}/${counts.total}`;
   const spoken = data.complete
     ? "Setup is done. Show the checklist."
     : `Get started: ${counts.done} of ${counts.total} done. ${data.hidden ? "Show" : "Go to"} the checklist.`;
@@ -26,7 +25,7 @@ export default function GetStartedPill() {
       <ListChecks size={14} aria-hidden="true" />
       {/* The words are the UI font; only the count is data, so only the count is mono. */}
       {data.complete ? (
-        <span>{label}</span>
+        <span>Setup done</span>
       ) : (
         <span>
           Get started <span className="os-mono">{counts.done}/{counts.total}</span>

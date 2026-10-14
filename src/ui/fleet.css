@@ -1,6 +1,6 @@
 /* Home (FleetPage). Shared pieces live in kit.css (header, banner, table,
-   empty state, status words). The Segment meter below and the old
-   .os-fleet__banner block stay here because other screens still use them. */
+   empty state, status words). The Segment meter below stays here because
+   other screens still use it. */
 
 /* Segment meter: one filled/hollow segment per real unit. */
 .os-meter {
@@ -17,26 +17,6 @@
 .os-meter__seg--ok {
   background: var(--os-ok);
   border-color: var(--os-ok);
-}
-
-/* Still used by AgentBrainCard, BuilderBrainCard, AgentBay, SetupPage and
-   SafetyPage. Task D3 removes it once nothing does. */
-.os-fleet__banner {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-3);
-  padding: var(--os-sp-4) var(--os-sp-5);
-  border-radius: var(--os-r-lg);
-  background: rgba(245, 184, 75, 0.08);
-  border: 1px solid rgba(245, 184, 75, 0.3);
-  color: var(--os-text-1);
-}
-.os-fleet__banner svg {
-  color: var(--os-warn);
-  flex: 0 0 auto;
-}
-.os-fleet__banner button {
-  margin-left: auto;
 }
 
 /* Home (FleetPage). Shared pieces live in kit.css (header, banner, table,

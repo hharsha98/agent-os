@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentDetail,
   AgentListResponse,
-  AgentRunPreview,
   AgentSafetyActionResult,
   AgentServiceStatus,
   RunListResponse,
@@ -999,18 +998,6 @@ export interface RunBrain {
 export interface AgentRunOptions {
   allowEdits?: boolean;
   brain?: RunBrain;
-}
-
-// Dry preview only: spawns nothing, just returns the exact command/folder
-// the real launch would use.
-export function previewAgentRun(
-  id: string,
-  payload: { prompt: string; folder?: string; options?: AgentRunOptions }
-) {
-  return request<AgentRunPreview>(`/api/agents/${encodeURIComponent(id)}/runs/preview`, {
-    method: "POST",
-    body: JSON.stringify(payload)
-  });
 }
 
 // The only call that actually starts an agent; confirm:true is required by

@@ -17,7 +17,6 @@
   }
 
   /* Page titles: one step down from the 44px desk size. */
-  .os-agents__header h1,
   .os-runs__header h1 {
     font-size: var(--os-fs-32);
   }

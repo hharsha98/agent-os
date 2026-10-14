@@ -23,6 +23,7 @@
 .os-shell {
   --os-bar-h: 48px;
   --os-bar-ctl-h: 32px;
+  --os-rail-w: 64px;
   min-height: 100svh;
 }
 @media (min-width: 1367px) {
@@ -72,20 +73,21 @@
   padding: 0 var(--os-sp-3);
 }
 /* The search trigger is a field: surface-1 with a hairline, its hint in the
-   faint ink the prototype uses for a placeholder. Two classes, so the
-   ghost button's own colours (base.css, loaded before this file) lose. */
-.os-statusbar .os-palette-trigger {
+   faint ink the prototype uses for a placeholder. Written with .os-btn too (three
+   classes), so it beats the ghost button's own colours (.os-btn.os-btn--ghost in
+   base.css) whichever stylesheet loads last. */
+.os-statusbar .os-btn.os-palette-trigger {
   background: var(--os-surface-1);
   border-color: var(--os-line-2);
   color: var(--os-text-3);
   font-weight: 400;
 }
-.os-statusbar .os-palette-trigger:hover {
+.os-statusbar .os-btn.os-palette-trigger:hover {
   background: var(--os-surface-1);
   border-color: var(--os-line-3);
   color: var(--os-text-2);
 }
-.os-statusbar .os-palette-trigger:active {
+.os-statusbar .os-btn.os-palette-trigger:active {
   background: var(--os-surface-2);
 }
 /* The search trigger reads as a field: icon and word on the left, the key hint on the right. */
@@ -97,7 +99,7 @@
   margin-left: auto;
 }
 .os-gs-pill svg {
-  color: var(--os-accent);
+  color: var(--os-text-2);
 }
 
 /* The safety level: a ghost button, the level number in full-strength ink. */
@@ -308,10 +310,6 @@
   color: var(--os-text-1);
 }
 
-.os-logo span {
-  display: block;
-}
-
 /* The menu scrolls when it is taller than the window, and a scroll box clips
    what sticks out of it. The 4px of padding (undone by the matching negative
    margin) is room for the focus ring (2px outline + 2px offset) at every edge. */
@@ -484,6 +482,20 @@
   box-sizing: border-box;
 }
 
+/* The top bar is fixed to the top of the window, so whatever a page scrolls to (scrollIntoView, or
+   keyboard focus moved by code) must stop below it instead of sliding underneath. These are the
+   core-page targets; Workspace and Setup do the same for their own headings in workspace.css and
+   setup.css. Home: the Get started card. Setup and Agents: the OpenRouter card. Team Room: the
+   decisions and their cards. Safety: the level buttons. Workspace: the file rows. */
+.os-shell #os-get-started,
+.os-shell .os-brain-card,
+.os-shell #os-team-decisions,
+.os-shell .os-team__decision,
+.os-shell .os-saf-level,
+.os-shell .os-ws__row {
+  scroll-margin-top: calc(var(--os-bar-h) + var(--os-sp-4));
+}
+
 @media (max-width: 900px) {
   .os-menu-button {
     display: inline-flex;
@@ -578,10 +590,10 @@
 
 @media (min-width: 901px) and (max-width: 1366px) {
   .os-statusbar {
-    left: 64px;
+    left: var(--os-rail-w, 64px);
   }
   .os-sidebar {
-    width: 64px;
+    width: var(--os-rail-w, 64px);
     padding: 0 var(--os-sp-2) var(--os-sp-4);
     overflow-x: hidden;
   }
@@ -592,8 +604,8 @@
     padding: 0 var(--os-sp-3) var(--os-sp-4);
   }
   .os-shell .aos-phase2-content {
-    margin-left: 64px;
-    width: calc(100% - 64px);
+    margin-left: var(--os-rail-w, 64px);
+    width: calc(100% - var(--os-rail-w, 64px));
   }
   .os-rail-backdrop {
     display: block;
@@ -642,8 +654,7 @@
   }
   .os-sidebar:not(.is-expanded) .os-rail-toggle,
   .os-sidebar:not(.is-expanded) .os-nav__item,
-  .os-sidebar:not(.is-expanded) .os-nav__labs-toggle,
-  .os-sidebar:not(.is-expanded) .os-sidebar__footer {
+  .os-sidebar:not(.is-expanded) .os-nav__labs-toggle {
     position: relative;
     justify-content: center;
     padding: 0;
@@ -677,8 +688,10 @@
   /* The footer is just its icon in the rail (the words and version are clipped
      with the other labels), so it can never be wider than the 64px rail. */
   .os-sidebar:not(.is-expanded) .os-sidebar__footer {
+    position: relative;
+    justify-content: center;
+    padding: var(--os-sp-3) 0 0;
     min-height: 32px;
-    padding-top: var(--os-sp-3);
     margin-top: var(--os-sp-3);
   }
 }

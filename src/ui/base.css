@@ -106,10 +106,7 @@
   border-color: var(--os-danger-line);
   color: var(--os-danger);
 }
-.os-btn.os-btn--danger:hover {
-  background: var(--os-danger-wash);
-  border-color: var(--os-danger);
-}
+.os-btn.os-btn--danger:hover,
 .os-btn.os-btn--danger:active {
   background: var(--os-danger-wash);
   border-color: var(--os-danger);
@@ -160,49 +157,6 @@
 .os-panel--raised {
   background: var(--os-surface-2);
   box-shadow: var(--os-e2);
-}
-
-/* Readout */
-.os-readout {
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-1);
-}
-.os-readout__label {
-  font-size: var(--os-fs-12);
-  letter-spacing: 0.01em;
-  color: var(--os-text-3);
-  font-weight: 560;
-}
-.os-readout__value {
-  font-family: var(--os-font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--os-fs-32);
-  line-height: var(--os-lh-display);
-  color: var(--os-text-1);
-}
-.os-readout__value--muted {
-  color: var(--os-text-3);
-}
-/* Instrument-bar readouts: large display numerals, light weight, real size
-   only above 1100px so they never overflow a narrower instrument cell. */
-.os-readout__value--big {
-  font-size: var(--os-fs-44);
-  font-weight: 300;
-}
-@media (min-width: 1100px) {
-  .os-readout__value--big {
-    font-size: var(--os-fs-64);
-  }
-}
-.os-readout__denom {
-  color: var(--os-text-3);
-  font-size: 0.5em;
-  margin-left: 1px;
-}
-.os-readout__hint {
-  font-size: var(--os-fs-12);
-  color: var(--os-text-3);
 }
 
 /* Status marks: shape + colour together (never colour alone) */

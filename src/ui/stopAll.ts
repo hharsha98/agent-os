@@ -1,4 +1,6 @@
 import { listRuns, stopRun } from "../api";
+import { isAgentWork } from "./agentWork";
+import { withTimeout } from "./homeShared";
 
 // What "Hold to stop all" stops (design spec D11, ruling R14): every AGENT run
 // that is queued or running, including Team Room turns. From SP3 it also stops
@@ -8,12 +10,13 @@ import { listRuns, stopRun } from "../api";
 // leave the gateway down, and stopping an install can leave a half-installed tool.
 const ACTIVE = new Set(["queued", "running"]);
 
-// Run kinds (meta.kind on the server) that are Agent OS's own jobs, not agent
-// work: "service" (gateway start, stop, restart), "install", "configure" and
-// "pull" (setup jobs) and "signin". Any other kind, including "agent",
-// "team-turn", a missing kind and a kind we have not heard of, IS stopped: an
-// emergency stop errs toward stopping agent work.
-const NOT_AGENT_WORK = new Set(["service", "install", "configure", "signin", "pull"]);
+// Which kinds are Agent OS's own jobs (and so are not stopped) lives in agentWork.ts.
+// Any other kind, including "agent", "team-turn", a missing kind and a kind we have
+// not heard of, IS stopped: an emergency stop errs toward stopping agent work.
+
+// A hung server must never leave the button on "Stopping…" for ever.
+const LIST_TIMEOUT_MS = 8000;
+const STOP_TIMEOUT_MS = 15000;
 
 // The most runs the server returns for one list (the cap in listRuns in
 // server/runtime/runs/run-manager.js). It lists the newest first and cannot
@@ -37,17 +40,17 @@ export async function stopEverything(): Promise<StopAllResult> {
   let skipped: number;
   let listTruncated: boolean;
   try {
-    const { runs } = await listRuns({ limit: MAX_RUNS });
+    const { runs } = await withTimeout(listRuns({ limit: MAX_RUNS }), LIST_TIMEOUT_MS);
     // A reply that is not a list is treated like no reply: we could not check.
     if (!Array.isArray(runs)) throw new Error("unexpected run list");
     listTruncated = runs.length >= MAX_RUNS;
     const active = runs.filter((run) => ACTIVE.has(run.status));
-    live = active.filter((run) => !NOT_AGENT_WORK.has(run.kind));
+    live = active.filter(isAgentWork);
     skipped = active.length - live.length;
   } catch {
     return { found: 0, stopped: 0, failed: 0, skipped: 0, unreachable: true, listTruncated: false };
   }
-  const results = await Promise.allSettled(live.map((run) => stopRun(run.id)));
+  const results = await Promise.allSettled(live.map((run) => withTimeout(stopRun(run.id), STOP_TIMEOUT_MS)));
   const failed = results.filter((result) => result.status === "rejected").length;
   return { found: live.length, stopped: live.length - failed, failed, skipped, unreachable: false, listTruncated };
 }

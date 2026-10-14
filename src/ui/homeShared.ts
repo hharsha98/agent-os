@@ -72,7 +72,8 @@ export function operatorBrain(lookup: ModelLookup | undefined): OperatorBrain {
 }
 
 const ACTIVE = new Set(["queued", "running"]);
-// Agent OS's own jobs: the same list "Hold to stop all" skips (ruling R14).
+// Agent OS's own jobs: the same list "Hold to stop all" skips (ruling R14). A copy of
+// agentWork.ts: Node cannot follow an extensionless import, so test/agent-work.test.js checks they match.
 const NOT_AGENT_WORK = new Set(["service", "install", "configure", "signin", "pull"]);
 const NAME: Record<string, string> = Object.fromEntries(HOME_AGENTS.map((a) => [a.id, a.name]));
 const isHomeAgent = (id: string | null): id is HomeAgentId => Boolean(id && id in NAME);

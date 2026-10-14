@@ -28,19 +28,8 @@ export const AGENT_MAKER: Record<string, string> = {
   codex: "OpenAI",
   cursor: "Cursor"
 };
-export const AGENT_MONOGRAM: Record<string, string> = {
-  hermes: "H",
-  openclaw: "OC",
-  claude: "CC",
-  codex: "CX",
-  cursor: "CU"
-};
 // Agents with an always-on background gateway (Fleet's "gateways" count).
 export const SERVICE_AGENT_SET = new Set(["hermes", "openclaw"]);
-// Only these adapters' buildRun() reads options.allowEdits at all (see
-// claude.js / codex.js); cursor.js throws allow_edits_not_supported (400)
-// and hermes/openclaw ignore it, so the toggle would lie there.
-export const ALLOW_EDITS_AGENT_SET = new Set(["claude", "codex"]);
 // hermes/openclaw are installed via Agent OS Setup, not a system package
 // manager, so their "not installed" state points at Setup instead of a
 // homepage + "press Re-check" flow.
@@ -86,24 +75,4 @@ export function friendlyError(error: unknown): string {
   // A refusal the server explained in a sentence (a coding agent's brain, for example).
   const detail = error instanceof ApiError ? error.detail : "";
   return detail || code || "Something went wrong.";
-}
-
-// The rail's per-agent status mark + word: the same shape+colour states as
-// FleetPage's cards (see FleetPage.tsx's FleetCard), reused here so a given
-// agent reads the same way on both screens.
-export function agentStatusWord(
-  installed: boolean | undefined,
-  resolved: boolean,
-  timedOut: boolean,
-  failed: boolean,
-  liveCount: number
-): { mark: "unknown" | "ok" | "error" | "live"; word: string } {
-  // A failed fetch leaves `resolved` false too, so check it first or the rail
-  // would say "Checking…" forever instead of the real error.
-  if (failed && !resolved) return { mark: "error", word: "Couldn't check" };
-  if (!resolved) return { mark: "unknown", word: timedOut ? "Timed out" : "Checking…" };
-  if (failed) return { mark: "error", word: "Couldn't check" };
-  if (liveCount > 0) return { mark: "live", word: `Running ×${liveCount}` };
-  if (installed) return { mark: "ok", word: "Ready" };
-  return { mark: "unknown", word: "Not installed" };
 }

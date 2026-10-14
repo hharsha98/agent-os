@@ -9,7 +9,8 @@
 // OpenRouter and Local segments are disabled and the card says why.
 // The agent's own sign-in and config files are never changed by any of this.
 import { useEffect, useState } from "react";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
+import Banner from "./Banner";
 import BuilderBrainBadge from "./BuilderBrainBadge";
 import BuilderBrainCursor from "./BuilderBrainCursor";
 import BuilderBrainLocal from "./BuilderBrainLocal";
@@ -53,13 +54,16 @@ export default function BuilderBrainCard({
           Brain
         </h3>
         {failed ? (
-          <div className="os-fleet__banner">
-            <AlertTriangle size={16} />
-            <span>Couldn&apos;t read {label}&apos;s brain settings.</span>
-            <button type="button" className="os-btn os-btn--secondary" onClick={() => void onChanged()}>
-              <RefreshCw size={14} /> Retry
-            </button>
-          </div>
+          <Banner
+            tone="warn"
+            actions={
+              <button type="button" className="os-btn os-btn--secondary" onClick={() => void onChanged()}>
+                <RefreshCw size={14} aria-hidden="true" /> Retry
+              </button>
+            }
+          >
+            Couldn&apos;t read {label}&apos;s brain settings.
+          </Banner>
         ) : (
           <p className="os-mp-hint">Checking…</p>
         )}

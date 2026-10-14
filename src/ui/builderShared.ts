@@ -3,7 +3,7 @@
 // OpenRouter models are "Recommended" for which agent, and how a reset time or a
 // cost is shown. Pure functions only.
 import { ApiError } from "../api";
-import type { AgentBrain, BrainMode, BuilderId } from "../buildersApi";
+import type { BrainMode, BuilderId } from "../buildersApi";
 import type { CatalogModel } from "../setupApi";
 import { friendlyError as setupFriendlyError } from "../setupApi";
 import type { ModelBadge } from "./modelPickerShared";
@@ -56,16 +56,6 @@ export function describeBrain(agentId: BuilderId, brain: { mode: string; model: 
   if (mode !== "plan" && raw) model = mode === "openrouter" ? shortModel(raw) : raw;
   if (mode === "plan" && agentId === "cursor" && raw) model = CURSOR_MODEL_LABEL[raw] || raw;
   return { mode, modeLabel: MODE_LABEL[mode], model, fullModel: raw };
-}
-
-// "OpenRouter · claude-sonnet-4.6" / "Plan" / "Plan · Composer 2.5"
-export function brainText(agentId: BuilderId, brain: { mode: string; model: string | null } | null | undefined): string {
-  const words = describeBrain(agentId, brain);
-  return words.model ? `${words.modeLabel} · ${words.model}` : words.modeLabel;
-}
-
-export function sameBrain(a: AgentBrain | null | undefined, b: AgentBrain | null | undefined): boolean {
-  return (a?.mode ?? "plan") === (b?.mode ?? "plan") && (a?.model ?? null) === (b?.model ?? null);
 }
 
 // ---- the OpenRouter picker, set up for the coding agents -------------------------------------------

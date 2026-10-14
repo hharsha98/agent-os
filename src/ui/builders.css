@@ -80,24 +80,6 @@
 .os-agent-rail__brain .os-bb-tag__model {
   overflow-wrap: anywhere;
 }
-.os-agent-bay__brain {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  margin: var(--os-sp-2) 0 0;
-}
-.os-fleet-card__brain {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  margin: 0;
-  min-width: 0;
-}
-.os-flightplan__brain {
-  margin: 0;
-  color: var(--os-text-2);
-  font-size: var(--os-fs-12);
-}
 .os-run-list__row--brain {
   gap: var(--os-sp-2);
   min-width: 0;
@@ -557,9 +539,4 @@
   .os-bb-banner .os-btn {
     min-height: 40px;
   }
-}
-
-.os-flightlog__row--brain {
-  margin-top: 2px;
-  min-width: 0;
 }

@@ -5,6 +5,7 @@ import type { AgentSummary, RunMeta } from "../types";
 import type { StatusState } from "./components/StatusWord";
 
 // Agent OS's own jobs, not an agent doing work (the same list Home and "Hold to stop all" skip, R14).
+// A copy of agentWork.ts: Node cannot follow an extensionless import, so test/agent-work.test.js checks they match.
 const NOT_AGENT_WORK = new Set(["service", "install", "configure", "signin", "pull"]);
 
 // How many agent runs are queued or running, per agent. An unknown list claims nothing.

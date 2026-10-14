@@ -11,7 +11,7 @@ import Banner from "./Banner";
 import SetupFooter from "./SetupFooter";
 import SetupStatus from "./SetupStatus";
 import { withTimeout } from "../homeShared";
-import { gotNoAnswer, readyVerdict, type ReadyAgentState } from "../setupGroupShared";
+import { gotNoAnswer, readyVerdict, safeDefaultsWords, type ReadyAgentState } from "../setupGroupShared";
 import type { AgentDetail, BrainOptionsResponse, ReceiptEntry, SystemCheck } from "../../setupApi";
 import { getAgentDetail, getBrainOptions, getReceipt, getSetupCheck } from "../../setupApi";
 
@@ -83,7 +83,7 @@ function buildCards(
       },
       {
         name: "Safe defaults applied",
-        detail: installed ? (detail ? (detail.safety.permissive ? "Permissive mode is on" : "Permissive mode is off") : "—") : "—",
+        detail: safeDefaultsWords(installed, detail),
         state: safeDefaults,
         fixLabel: "Change on the Agents page",
         onFix: () => go.openAgent(agentId)

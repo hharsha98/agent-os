@@ -2339,6 +2339,9 @@ export interface AgentSafetyStatus {
   permissive: boolean;
   summary: string;
   actions: AgentSafetyAction[];
+  // false when Agent OS could not read the setting (the read failed, timed out or printed
+  // nothing): `permissive` is then not a finding and screens show "—". Absent from older servers.
+  known?: boolean;
 }
 
 export interface AgentDetail {

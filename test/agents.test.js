@@ -13,7 +13,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { containsBlockedFlag } from "../server/runtime/agent-flags.js";
 import { ADAPTERS } from "../server/runtime/agents/index.js";
-import { featuresFromHelp, runningFromText, warningsFromText } from "../server/runtime/agents/hermes.js";
+import { approvalsSafety, featuresFromHelp, runningFromText, warningsFromText } from "../server/runtime/agents/hermes.js";
 import { eventsFromDocument, gatewayFeaturesFromHelp } from "../server/runtime/agents/openclaw.js";
 import { clearDetectCaches, resolveBinary } from "../server/runtime/agents/detect.js";
 import { createRunManager } from "../server/runtime/runs/run-manager.js";
@@ -80,6 +80,11 @@ if (args[0] === "doctor") {
 }
 
 if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.mode") {
+  if (process.env.FAKE_HERMES_APPROVALS_FAIL === "1") {
+    process.stderr.write("config store is locked\\n");
+    process.exit(1);
+  }
+  if (process.env.FAKE_HERMES_APPROVALS_EMPTY === "1") process.exit(0);
   print(process.env.FAKE_HERMES_APPROVALS || "on");
   process.exit(0);
 }
@@ -1030,6 +1035,80 @@ test(
     });
   }
 );
+
+test(
+  "hermes.safetyStatus(): a setting it could not read is known: false, never 'approvals are on' (fake CLI)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.20.6", features: {} };
+    const clean = { FAKE_HERMES_APPROVALS: undefined, FAKE_HERMES_APPROVALS_FAIL: undefined, FAKE_HERMES_APPROVALS_EMPTY: undefined };
+    // Read fine: "manual" (a real mode) is on, and the answer is known (true, or the field absent).
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "manual" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.permissive, false);
+      assert.notEqual(status.known, false);
+      assert.match(status.summary, /approvals are on/);
+      assert.deepEqual(status.actions, []);
+    });
+    // "off" stays off, and is a known answer.
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "off" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.permissive, true);
+      assert.notEqual(status.known, false);
+      assert.match(status.summary, /YOLO/);
+    });
+    // The read failed (the CLI exited with an error): not known, and the old fields still hold.
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS_FAIL: "1" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.equal(status.permissive, false);
+      assert.deepEqual(status.actions, []);
+      assert.doesNotMatch(status.summary, /approvals are on/i);
+    });
+    // The CLI printed nothing at all: not known.
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS_EMPTY: "1" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.doesNotMatch(status.summary, /approvals are on/i);
+    });
+    // The program could not even start: not known.
+    const gone = await hermes.safetyStatus({ installed: true, path: path.join(os.tmpdir(), "agent-os-no-such-hermes"), version: "0.20.6", features: {} });
+    assert.equal(gone.known, false);
+    assert.doesNotMatch(gone.summary, /approvals are on/i);
+  }
+);
+
+test("hermes approvalsSafety(): success, off, failure, timeout and empty output (no CLI, so the timeout is instant)", () => {
+  const ok = (stdout) => ({ ok: true, stdout, stderr: "", code: 0, signal: null, aborted: false });
+  const on = approvalsSafety(ok("manual"));
+  assert.equal(on.permissive, false);
+  assert.notEqual(on.known, false);
+  assert.match(on.summary, /approvals are on/);
+  assert.equal(approvalsSafety(ok("MANUAL\n")).permissive, false, "case and spaces do not matter");
+  const off = approvalsSafety(ok(" Off "));
+  assert.equal(off.permissive, true);
+  assert.notEqual(off.known, false);
+  // A timeout is execFile's kill: not ok, no output, a signal (code is reported as 0).
+  const timedOut = approvalsSafety({ ok: false, stdout: "", stderr: "", code: 0, signal: "SIGTERM", aborted: false });
+  // An error exit, a program that would not start, an abort and empty output.
+  const failed = approvalsSafety({ ok: false, stdout: "", stderr: "boom", code: 1, signal: null, aborted: false });
+  const spawnError = approvalsSafety({ ok: false, stdout: "", stderr: "", code: "ENOENT", signal: null, aborted: false });
+  const aborted = approvalsSafety({ ok: false, stdout: "", stderr: "", code: 0, signal: null, aborted: true });
+  const empty = approvalsSafety(ok(""));
+  const blank = approvalsSafety(ok("  \n"));
+  const missing = approvalsSafety(undefined);
+  for (const [name, status] of Object.entries({ timedOut, failed, spawnError, aborted, empty, blank, missing })) {
+    assert.equal(status.known, false, name);
+    assert.equal(status.permissive, false, `${name}: the old field is unchanged`);
+    assert.deepEqual(status.actions, [], name);
+    assert.doesNotMatch(status.summary, /approvals are on/i, name);
+    assert.match(status.summary, /could not read/i, name);
+  }
+  // Partial output from a read that then failed is not trusted as "on".
+  assert.equal(approvalsSafety({ ok: false, stdout: "manual", stderr: "", code: 1, signal: null, aborted: false }).known, false);
+  // But an "off" that was printed is never hidden: a warning that is too loud is safer than a missing one.
+  assert.equal(approvalsSafety({ ok: false, stdout: "off", stderr: "", code: 1, signal: null, aborted: false }).permissive, true);
+});
 
 // =====================================================================
 // 8 + 9. The /api/agents HTTP surface, against the real server

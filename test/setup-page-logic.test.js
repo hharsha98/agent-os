@@ -294,6 +294,27 @@ test("readyVerdict: an installed agent with a row that cannot be read is unknown
   assert.equal(shared.readyVerdict(checkOf(allInstalled()), null, { hermes: null, openclaw: safe }, false).unknown, 3);
 });
 
+test("readyVerdict: an approvals setting Agent OS could not read is unknown ('—'), never 'safe defaults applied'", () => {
+  const unread = { safety: { permissive: false, known: false } };
+  const v = shared.readyVerdict(checkOf(allInstalled()), brainOf(true, true), { hermes: unread, openclaw: safe }, false);
+  assert.equal(v.agents[0].safeDefaults, null);
+  assert.equal(v.unknown, 1);
+  assert.equal(v.problems, 0);
+  assert.equal(v.ready, false, "a dash is not 'in place'");
+  // `known: true`, or no `known` at all (older servers), reads as before.
+  for (const known of [true, undefined]) {
+    const read = shared.readyVerdict(checkOf(allInstalled()), brainOf(true, true), { hermes: { safety: { permissive: false, known } }, openclaw: safe }, false);
+    assert.equal(read.agents[0].safeDefaults, true, `known: ${known}`);
+    assert.equal(read.ready, true);
+  }
+  // The row's words follow the same rule.
+  assert.equal(shared.safeDefaultsWords(true, unread), "—");
+  assert.equal(shared.safeDefaultsWords(true, { safety: { permissive: false, known: true } }), "Permissive mode is off");
+  assert.equal(shared.safeDefaultsWords(true, { safety: { permissive: true } }), "Permissive mode is on");
+  assert.equal(shared.safeDefaultsWords(true, null), "—");
+  assert.equal(shared.safeDefaultsWords(false, safe), "—");
+});
+
 test("readyVerdict: a missing agent is a problem to fix; an agent that could not be told is unknown", () => {
   const missing = shared.readyVerdict(checkOf({ ...allInstalled(), hermes: entry(notFound("hermes")), openclaw: entry(notFound("openclaw")) }), brainOf(false, false), {}, false);
   assert.equal(missing.problems, 2);

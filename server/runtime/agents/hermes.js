@@ -101,11 +101,25 @@ async function safetyStatus(detected) {
   // Never reads ~/.hermes/.env or auth.json: this only asks the CLI for one
   // non-secret config value.
   const result = await runCommand(detected.path, ["config", "get", "approvals.mode"], APPROVALS_TIMEOUT_MS);
-  const value = String(result.stdout || "").trim().toLowerCase();
+  return approvalsSafety(result);
+}
+
+// The answer for one `hermes config get approvals.mode` result (a runCommand result).
+//   - "off" is permissive (YOLO mode), and is never hidden, even if the command then failed.
+//   - A value that was read cleanly is "on" (known: true).
+//   - A read that failed, timed out, could not start or printed nothing is NOT "on": it is
+//     `known: false`, so a screen shows "—" instead of claiming a safeguard it never saw.
+// `permissive`, `summary` and `actions` keep their old shape for callers that ignore `known`
+// (the Team Room check treats an unread setting like before; it only blocks on permissive).
+export function approvalsSafety(result) {
+  const value = String(result?.stdout || "").trim().toLowerCase();
   if (value === "off") {
-    return { permissive: true, summary: "Hermes approvals are off (YOLO mode).", actions: [] };
+    return { permissive: true, summary: "Hermes approvals are off (YOLO mode).", actions: [], known: true };
   }
-  return { permissive: false, summary: "Hermes approvals are on.", actions: [] };
+  if (!result?.ok || !value) {
+    return { permissive: false, summary: "Agent OS could not read Hermes's approvals setting.", actions: [], known: false };
+  }
+  return { permissive: false, summary: "Hermes approvals are on.", actions: [], known: true };
 }
 
 // Hermes v0.20 prints e.g. "✓ Gateway is supervised by launchd (PID 123)"

@@ -57,10 +57,20 @@ export default function AgentSafetyPanel({
   return (
     <section className="os-panel os-agent-safety">
       <h3 className="os-agent-safety__title">Safeguards</h3>
-      <p className="os-agent-safety__finding">
-        <StatusMark kind={safety.permissive ? "warn" : "ok"} />
-        {safety.summary}
-      </p>
+      {safety.known === false ? (
+        // Agent OS could not read this setting (the read failed, timed out or printed nothing), so
+        // the panel shows "—" and an unknown mark instead of a finding it never saw.
+        <p className="os-agent-safety__finding" title={safety.summary}>
+          <StatusMark kind="unknown" label="Not known" />
+          <span aria-hidden="true">—</span>
+          <span className="os-visually-hidden">{safety.summary || "Could not be read right now."}</span>
+        </p>
+      ) : (
+        <p className="os-agent-safety__finding">
+          <StatusMark kind={safety.permissive ? "warn" : "ok"} />
+          {safety.summary}
+        </p>
+      )}
 
       {notes.map((note, index) => (
         <p key={index} className="os-agent-safety__note">

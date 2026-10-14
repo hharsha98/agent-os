@@ -331,6 +331,13 @@ export interface ReadyAgentState {
   unknown: number;
 }
 
+// The words under "Safe defaults applied": "—" when the agent's detail was not read, or when its
+// approvals setting could not be read (known: false), never a claim about a setting nobody saw.
+export function safeDefaultsWords(installed: boolean, detail: { safety?: { permissive?: boolean; known?: boolean } } | null | undefined): string {
+  if (!installed || !detail?.safety || detail.safety.known === false) return "—";
+  return detail.safety.permissive ? "Permissive mode is on" : "Permissive mode is off";
+}
+
 // What the final check knows about each always-on agent, and what it does not. A row
 // whose state is unknown (null) on an agent that IS installed counts as unknown, so
 // the headline never says "ready" over a dash.
@@ -349,7 +356,7 @@ export function readyVerdict(
     const configured = brain?.current?.[agentId]?.configured ?? null;
     const serviceRunning = installed ? Boolean(entry?.service?.running) : null;
     const detail = details[agentId];
-    const safeDefaults = installed ? (detail?.safety ? !detail.safety.permissive : null) : null;
+    const safeDefaults = installed ? (detail?.safety && detail.safety.known !== false ? !detail.safety.permissive : null) : null;
     let problems = 0;
     let unknown = 0;
     if (!unsupported) {

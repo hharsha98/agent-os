@@ -1,74 +1,107 @@
-// "Agent safeguards": a compact read-only list built from each agent's real
-// GET /api/agents/:id safety detail. This screen never offers the fix
-// buttons itself -- the Agents page owns those -- only a link there.
-import StatusMark from "./StatusMark";
+// "Safeguards that are always working": a kit table. The first rows are true at every level (see
+// ALWAYS_ON in safetyShared.ts), then machine control, then the real per-agent checks for Hermes and
+// OpenClaw, read from each agent's own GET /api/agents/:id safety detail. This screen never offers
+// the fix buttons itself (the Agents page owns those), only a way there.
+import type { CSSProperties } from "react";
 import type { AgentDetail } from "../../setupApi";
+import { agentGuardRows, ALWAYS_ON, guardRowLabel, staleWords } from "../safetyShared";
+import type { GuardChecked, GuardState } from "../safetyShared";
+import Banner from "./Banner";
+import StatusWord from "./StatusWord";
 
-function hasAction(detail: AgentDetail | null | undefined, actionId: string) {
-  return Boolean(detail?.safety.actions?.some((a) => a.id === actionId));
+const COLS = { "--os-table-cols": "minmax(0, 1fr) 150px 170px" } as CSSProperties;
+
+function GuardStatus({ state }: { state: GuardState }) {
+  if (state === "on") return <StatusWord state="ready" label="On" />;
+  if (state === "off") return <StatusWord state="waiting" label="Off" />;
+  if (state === "missing") return <StatusWord state="idle" label="Not installed" />;
+  return <StatusWord state={state === "loading" ? "loading" : "unknown"} />;
 }
 
 export default function SafetySafeguards({
   hermes,
   openclaw,
   checked,
+  staleAgents = [],
+  machine,
   onOpenAgent
 }: {
   hermes: AgentDetail | null;
   openclaw: AgentDetail | null;
-  checked: boolean;
+  // Whether each agent's first read has finished (it may have failed).
+  checked: GuardChecked;
+  // The names of the agents whose later read failed, so their rows hold the last good answer.
+  staleAgents?: string[];
+  // `known` is false until the safety level has been read: the row then claims nothing.
+  // `lost` is true while contact with Agent OS is lost: "on" is then the last known state, with no countdown.
+  machine: { on: boolean; countdown: string; known?: boolean; lost?: boolean };
   onOpenAgent: (agentId: string) => void;
 }) {
-  const rows: { key: string; agentId: string; ok: boolean | null; label: string }[] = [];
-  const unknownSuffix = checked ? "couldn't be read right now" : "checking…";
-
-  if (hermes) {
-    const approvalsOn = !hermes.safety.permissive;
-    rows.push({
-      key: "hermes-approvals",
-      agentId: "hermes",
-      ok: approvalsOn,
-      label: `Hermes approvals required before running commands: ${approvalsOn ? "on" : "off"}`
-    });
-  } else {
-    rows.push({ key: "hermes-approvals", agentId: "hermes", ok: null, label: `Hermes approvals: ${unknownSuffix}` });
-  }
-
-  if (openclaw) {
-    const asksBeforeRunning = !hasAction(openclaw, "exec-ask");
-    const cookieImportOn = hasAction(openclaw, "no-browser-cookies");
-    rows.push({
-      key: "openclaw-exec",
-      agentId: "openclaw",
-      ok: asksBeforeRunning,
-      label: `OpenClaw asks before running commands: ${asksBeforeRunning ? "on" : "off"}`
-    });
-    rows.push({
-      key: "openclaw-cookies",
-      agentId: "openclaw",
-      ok: !cookieImportOn,
-      label: `OpenClaw browser cookie import: ${cookieImportOn ? "on" : "off"}`
-    });
-  } else {
-    rows.push({ key: "openclaw-exec", agentId: "openclaw", ok: null, label: `OpenClaw safeguards: ${unknownSuffix}` });
-  }
-
+  const rows = agentGuardRows(hermes, openclaw, checked);
+  const machineKnown = machine.known !== false;
   return (
-    <div className="os-panel os-safety-guards">
-      <header>
-        <span className="os-micro">AGENT SAFEGUARDS</span>
-      </header>
-      <ul>
-        {rows.map((row) => (
-          <li key={row.key} className="os-safety-guards__row">
-            <StatusMark kind={row.ok === null ? "unknown" : row.ok ? "ok" : "warn"} />
-            <span>{row.label}</span>
-            <button type="button" className="os-btn os-btn--ghost" onClick={() => onOpenAgent(row.agentId)}>
-              Change on the Agents page
-            </button>
-          </li>
+    <section className="os-saf-section" aria-labelledby="os-saf-guards-title">
+      <div className="os-saf-section__head">
+        <h2 id="os-saf-guards-title">Safeguards that are always working</h2>
+        <p className="os-saf-section__quiet">Each one shows its status</p>
+      </div>
+      {staleAgents.length > 0 ? <Banner tone="warn">{staleWords(staleAgents)}</Banner> : null}
+      <div className="os-table os-saf-guards" role="table" aria-label="Safeguards" style={COLS}>
+        <div className="os-table__head" role="row">
+          <span className="os-table__cell" role="columnheader">Safeguard</span>
+          <span className="os-table__cell" role="columnheader">Applies to</span>
+          <span className="os-table__cell" role="columnheader">Status</span>
+        </div>
+        {ALWAYS_ON.map((row) => (
+          <div key={row.title} className="os-table__row" role="row">
+            <div className="os-table__cell" role="cell">
+              <span className="os-table__title">{row.title}</span>
+              <span className="os-table__sub">{row.detail}</span>
+            </div>
+            <div className="os-table__cell" role="cell">{row.who}</div>
+            <div className="os-table__cell" role="cell"><StatusWord state="ready" label="Always on" /></div>
+          </div>
         ))}
-      </ul>
-    </div>
+        <div className="os-table__row" role="row">
+          <div className="os-table__cell" role="cell">
+            <span className="os-table__title">Machine control</span>
+            <span className="os-table__sub">
+              {!machineKnown
+                ? "Needs Level 2 and a typed phrase, and turns itself off after 30 minutes."
+                : machine.on
+                  ? "Agent OS can see the screen and use the mouse and keyboard in other apps until the timer runs out."
+                  : "Agent OS cannot see the screen or use the mouse and keyboard in other apps. It needs Level 2 and a typed phrase, and turns itself off after 30 minutes."}
+            </span>
+          </div>
+          <div className="os-table__cell" role="cell">Agent OS</div>
+          <div className="os-table__cell" role="cell">
+            {!machineKnown ? (
+              <StatusWord state="unknown" />
+            ) : machine.on ? (
+              <StatusWord state="waiting" label={machine.lost ? "On when last checked" : `On, ${machine.countdown} left`} />
+            ) : (
+              <StatusWord state="idle" label="Off" />
+            )}
+          </div>
+        </div>
+        {rows.map((row) => (
+          <button
+            key={row.key}
+            type="button"
+            className="os-table__row"
+            role="row"
+            aria-label={guardRowLabel(row)}
+            onClick={() => onOpenAgent(row.agentId)}
+          >
+            <span className="os-table__cell" role="cell">
+              <span className="os-table__title">{row.title}</span>
+              <span className="os-table__sub">{row.sub}</span>
+            </span>
+            <span className="os-table__cell" role="cell">{row.name}</span>
+            <span className="os-table__cell" role="cell"><GuardStatus state={row.state} /></span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }

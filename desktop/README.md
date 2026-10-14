@@ -120,6 +120,14 @@ release workflow then adds the `plugins.updater` block and
 `createUpdaterArtifacts` for you at build time (via a temporary `--config`
 file), so `tauri.conf.json` stays as it is.
 
+## Show in Finder (opener plugin)
+
+The Workspace page's "Show in Finder" button uses `tauri-plugin-opener`
+(registered in `src/main.rs`). `capabilities/default.json` grants only
+`opener:allow-reveal-item-in-dir`, so a page can show a file in the file
+manager but cannot open or run it. The button is hidden in a browser tab
+(`src/ui/desktop.ts`).
+
 ## Releasing
 
 Pushing a tag like `v0.4.0` makes GitHub Actions

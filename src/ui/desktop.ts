@@ -8,12 +8,15 @@ export function isDesktopApp(): boolean {
   return "__TAURI_INTERNALS__" in window;
 }
 
-// OPENER-START (Task B3). Step 9 replaces everything between these two markers
-// when the owner has approved tauri-plugin-opener. Nothing else in the file changes.
-export const OPENER_INSTALLED = false;
+// OPENER-START (Task B3). The owner approved tauri-plugin-opener.
+export const OPENER_INSTALLED = true;
 
-export async function revealInFinder(_absolutePath: string): Promise<void> {
-  throw new Error("Show in Finder is not available in this build.");
+// Shows the file in Finder (Explorer on Windows, the file manager on Linux)
+// with the file selected. Lazy import, like UpdateBanner: a plain browser
+// tab never loads the Tauri packages.
+export async function revealInFinder(absolutePath: string): Promise<void> {
+  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+  await revealItemInDir(absolutePath);
 }
 // OPENER-END
 

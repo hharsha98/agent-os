@@ -357,7 +357,10 @@ fn main() {
         // entry); the custom menu in setup() replaces it.
         .enable_macos_default_menu(false)
         // relaunch() after an update the user approved.
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        // "Show in Finder" on the Workspace page. Only the reveal permission is
+        // granted (capabilities/default.json), so a page cannot open or run files.
+        .plugin(tauri_plugin_opener::init());
     if updater_configured {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }

@@ -22,6 +22,8 @@ getrandom = "0.2"
 tauri-plugin-updater = "2"
 # `relaunch()` after the user approves an update.
 tauri-plugin-process = "2"
+# "Show in Finder" on the Workspace page: reveal one file in the file manager.
+tauri-plugin-opener = "2"
 
 # SIGTERM has no Windows equivalent, so these are unix-only. signal-hook lets
 # a plain `kill <pid>` (which skips the normal window-quit path) still shut

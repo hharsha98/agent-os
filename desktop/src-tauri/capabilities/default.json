@@ -1,10 +1,40 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for Agent OS's main window. The app UI talks to its own Node server over plain HTTP, never through Tauri IPC, so the only permissions granted beyond Tauri's core set are the updater (check/download/install), process (relaunch after an install the user approved) and opener (show one file in Finder, from the Workspace page; see src/ui/desktop.ts); see src/ui/components/UpdateBanner.tsx. The `remote` block is REQUIRED, not decoration: main.rs navigates the window to the local server at http://127.0.0.1:{port}/, so Tauri treats the window's origin as REMOTE, and a capability without a `remote` block only applies to content served from inside the app bundle. Without it every updater call is silently rejected by the permission check and the update banner never appears (Vibespace shipped three releases that way). The port is chosen at runtime, hence the wildcard; 127.0.0.1 is this machine only.",
+  "description": "Permissions for Agent OS's main window. The app UI talks to its own Node server over plain HTTP, never through Tauri IPC, so the only permissions granted beyond Tauri's core set are the updater (check/download/install), process (relaunch after an install the user approved) and opener; see src/ui/desktop.ts and src/ui/components/UpdateBanner.tsx. The opener may do two things only. (1) Show one file in Finder, from the Workspace page (opener:allow-reveal-item-in-dir). (2) Open a link in the person's browser (opener:allow-open-url), but ONLY for the addresses in its `allow` list: the websites and this-Mac pages that Agent OS itself links to from its own fixed data (OpenRouter, the Setup plan's source and terms pages, each agent's homepage and docs, the sign-in pages, the Hermes dashboard on 127.0.0.1:9119, the OpenClaw Control UI on 127.0.0.1:18789, and the one-time OpenRouter sign-in page on this app's own server). Each entry names one exact host and then a slash; there is no wildcard host and no other scheme, and the broad sets that open any address or any path (opener:default, opener:allow-default-urls, opener:allow-open-path) are NOT granted. An address outside the list is refused, and the page then shows it with a Copy button (src/ui/components/OpenAddress.tsx). test/release-config.test.js pins this whole list. The `remote` block is REQUIRED, not decoration: main.rs navigates the window to the local server at http://127.0.0.1:{port}/, so Tauri treats the window's origin as REMOTE, and a capability without a `remote` block only applies to content served from inside the app bundle. Without it every updater call is silently rejected by the permission check and the update banner never appears (Vibespace shipped three releases that way). The port is chosen at runtime, hence the wildcard; 127.0.0.1 is this machine only.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
   },
-  "permissions": ["core:default", "updater:default", "process:allow-restart", "opener:allow-reveal-item-in-dir"]
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "process:allow-restart",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://openrouter.ai/*" },
+        { "url": "https://github.com/*" },
+        { "url": "https://nodejs.org/*" },
+        { "url": "https://code.claude.com/*" },
+        { "url": "https://www.anthropic.com/*" },
+        { "url": "https://hermes-agent.nousresearch.com/*" },
+        { "url": "https://openclaw.ai/*" },
+        { "url": "https://docs.openclaw.ai/*" },
+        { "url": "https://claude.com/*" },
+        { "url": "https://openai.com/*" },
+        { "url": "https://developers.openai.com/*" },
+        { "url": "https://cursor.com/*" },
+        { "url": "https://claude.ai/*" },
+        { "url": "https://anthropic.com/*" },
+        { "url": "https://chatgpt.com/*" },
+        { "url": "https://cursor.sh/*" },
+        { "url": "https://auth.openai.com/*" },
+        { "url": "http://127.0.0.1:9119/*" },
+        { "url": "http://127.0.0.1:18789/*" },
+        { "url": "http://localhost:[0-9][0-9][0-9][0-9][0-9]/oauth/openrouter/start/*" }
+      ]
+    },
+    "opener:allow-reveal-item-in-dir"
+  ]
 }

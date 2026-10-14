@@ -18,6 +18,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
+import { setExecutionGateStatus } from "../server/runtime/execution-gate.js";
 import {
   brainOptions,
   clearBrainCacheForTest,
@@ -438,6 +439,8 @@ async function withTempSetupEnv(fn) {
         clearDetectCaches();
         clearBrainCacheForTest();
         resetSetupJobsForTest();
+        // Running agents is allowed unless a test says otherwise: at Look only the hello check is skipped.
+        await setExecutionGateStatus({ enabled: true, reason: "setup test" });
         await fn({ home, agentOsHome });
       }
     );
@@ -710,6 +713,8 @@ test(
     for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {
       delete env[key];
     }
+    // Running agents is allowed (as if the person had left Look only): at Look only the hello check is skipped.
+    env.HERMES_AGENT_OS_ENABLE_EXEC = "1";
     const child = spawn(process.execPath, ["server/index.js"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
     const logs = collectLogs(child);
     const authed = { "x-agent-os-token": TOKEN };
@@ -840,6 +845,8 @@ test(
     for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT", "AGENT_OS_OAUTH_CALLBACK_HOST"]) {
       delete env[key];
     }
+    // Running agents is allowed (as if the person had left Look only): at Look only the hello check is skipped.
+    env.HERMES_AGENT_OS_ENABLE_EXEC = "1";
     const child = spawn(process.execPath, ["server/index.js"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
     const logs = collectLogs(child);
     const authedJson = { "Content-Type": "application/json", "x-agent-os-token": TOKEN };
@@ -1073,6 +1080,63 @@ test("configure job: a failing test prompt reports promptOk:false without failin
     assert.equal(finished.status, "succeeded");
     assert.equal(finished.health.hermes.promptOk, false);
     assert.ok(finished.health.hermes.error);
+  });
+});
+
+// Safety on Look only starts nothing, and the hello check starts the agent (it asks it to reply "ready"), so it is skipped.
+const HELLO_SKIPPED_AT_LOOK_ONLY = "Skipped the hello check because Safety is on Look only. Allow running agents in Safety, then apply the brain again to check it.";
+
+test("Look only: the hello check is skipped (no chat, no agent run) and the step says so; the brain change itself still happens", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await installFakeOpenclawShim(home);
+    await setExecutionGateStatus({ enabled: false, reason: "look only test" });
+
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k", acceptOpenClawRisk: true });
+    const finished = await waitForJob(job.id);
+    assert.equal(finished.status, "succeeded", "a skipped hello check is not a failure");
+
+    // The rest of the brain change is exactly what it was: the agents were still given the model.
+    const hermes = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+    const openclaw = await recordLines(path.join(home, ".fake-openclaw-record.jsonl"));
+    assert.ok(
+      hermes.some((e) => (e.argv[0] === "config" && e.argv[1] === "set") || (e.argv[0] === "auth" && e.argv[1] === "add" && !e.argv.includes("--help"))),
+      "Hermes was given its brain"
+    );
+    assert.ok(openclaw.some((e) => e.argv[0] === "onboard" && !e.argv.includes("--help")), "OpenClaw was given its brain");
+
+    // ...but the hello check started nothing: no reply-ready turn for either agent.
+    const notHelp = (e) => !e.argv.includes("--help");
+    assert.ok(!hermes.some((e) => e.argv[0] === "chat" && notHelp(e)), "Hermes was not asked to reply");
+    assert.ok(!openclaw.some((e) => e.argv[0] === "agent" && notHelp(e)), "OpenClaw was not asked to reply");
+
+    const health = finished.steps.find((s) => s.id === "health");
+    assert.equal(health.status, "succeeded");
+    assert.deepEqual(health.runIds, [], "no run was made");
+    assert.ok(health.log.some((line) => line.endsWith(` ${HELLO_SKIPPED_AT_LOOK_ONLY}`)), `the step log says so: ${health.log.join(" | ")}`);
+    for (const agentId of ["hermes", "openclaw"]) {
+      const entry = finished.health[agentId];
+      assert.equal(entry.skipped, true, agentId);
+      assert.equal(entry.promptOk, false, `${agentId}: nothing answered, so it is never a tick`);
+      assert.equal(entry.hint, HELLO_SKIPPED_AT_LOOK_ONLY, agentId);
+      assert.ok(!entry.error, `${agentId}: a skipped check is not an error`);
+    }
+  });
+});
+
+test("Look only off again: the same job runs the hello check as before (promptOk, no skipped flag)", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await setExecutionGateStatus({ enabled: false, reason: "look only test" });
+    await setExecutionGateStatus({ enabled: true, reason: "allowed again" });
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k" });
+    const finished = await waitForJob(job.id);
+    assert.equal(finished.status, "succeeded");
+    assert.equal(finished.health.hermes.promptOk, true);
+    assert.ok(!finished.health.hermes.skipped);
+    const hermes = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+    assert.ok(hermes.some((e) => e.argv[0] === "chat" && !e.argv.includes("--help")), "Hermes was asked to reply");
+    assert.ok(!finished.steps.find((s) => s.id === "health").log.some((line) => line.includes("Look only")));
   });
 });
 

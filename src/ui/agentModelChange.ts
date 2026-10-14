@@ -1,7 +1,8 @@
 // Giving Hermes and OpenClaw a model (or an OpenRouter preset) from the
 // model picker: which targets there are, and how one is applied. The server
 // does the work as a job; this polls it and turns the finished job into one
-// honest line per agent -- worked and said hello, did not work, or stopped.
+// honest line per agent -- worked and said hello, worked with the hello check skipped (Safety on Look only
+// starts nothing), did not work, or stopped.
 import type { AgentModelInfo, BrainAgentId, SetupJob } from "../setupApi";
 import { applyAgentModel, applyAgentPreset, cancelSetupJob, friendlyError, getSetupJob } from "../setupApi";
 import type { BrainAgentLine } from "./brainShared";
@@ -118,6 +119,19 @@ function resultFromJob(job: SetupJob, agent: BrainAgentLine, subject: ApplySubje
     };
   }
   const entry = job.health?.[agent.id];
+  if (entry?.skipped) {
+    // Safety is on Look only: the model was set, but the hello check was not run, so there is no tick to show.
+    // `skipped` makes the panel draw a "not checked" mark instead of a tick. The server's own sentence says why.
+    return {
+      targetId,
+      ok: true,
+      skipped: true,
+      changed: true,
+      headline: subject.presetSlug ? `Following your OpenRouter preset ${subject.presetSlug}` : `${agent.label} now uses ${what}`,
+      detail: entry.hint || "Skipped the hello check because Safety is on Look only. Allow running agents in Safety, then apply the brain again to check it.",
+      warnings
+    };
+  }
   if (entry?.promptOk) {
     return {
       targetId,

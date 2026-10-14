@@ -120,13 +120,40 @@ release workflow then adds the `plugins.updater` block and
 `createUpdaterArtifacts` for you at build time (via a temporary `--config`
 file), so `tauri.conf.json` stays as it is.
 
-## Show in Finder (opener plugin)
+## Show in Finder and open links (opener plugin)
 
-The Workspace page's "Show in Finder" button uses `tauri-plugin-opener`
-(registered in `src/main.rs`). `capabilities/default.json` grants only
-`opener:allow-reveal-item-in-dir`, so a page can show a file in the file
-manager but cannot open or run it. The button is hidden in a browser tab
-(`src/ui/desktop.ts`).
+`tauri-plugin-opener` is registered in `src/main.rs`. `capabilities/default.json`
+grants it two things and nothing else:
+
+- **`opener:allow-reveal-item-in-dir`**: the Workspace page's "Show in Finder"
+  button shows one file in the file manager. It cannot open or run the file.
+  The button is hidden in a browser tab (`src/ui/desktop.ts`).
+- **`opener:allow-open-url`, with a list of allowed addresses**: a link in the
+  app (`src/ui/components/OpenAddress.tsx`: Open dashboard, Docs, Homepage,
+  the Setup plan's Source and Terms, sign-in pages, OpenRouter pages) opens in
+  the person's own browser instead of doing nothing. The permission is
+  useless without its list, and the list is the whole point: each entry is one
+  exact website (`https://github.com/*`) or one page on this Mac (the Hermes
+  dashboard on `127.0.0.1:9119`, the OpenClaw Control UI on `127.0.0.1:18789`,
+  and Agent OS's own one-time OpenRouter sign-in page). These are the
+  addresses Agent OS links to from its own fixed data. The list has no wildcard
+  host and no scheme other than `https`/`http`, and the broad sets that open any
+  address or any path (`opener:default`, `opener:allow-default-urls`,
+  `opener:allow-open-path`) are not granted. Text an agent writes can never
+  reach the opener with an arbitrary address: the Workspace preview draws no
+  links, and anything outside the list is refused.
+
+If an address is refused (a sign-in page on a host that is not in the list, for
+example), the app shows the address with a Copy button instead. To allow another
+website, add one `https://<host>/*` entry to `capabilities/default.json` **and**
+to the pinned list in `test/release-config.test.js`; that test fails on any
+other change, on purpose. Never add `*.host` entries: Tauri matches the whole
+address as a glob, so `https://*.example.com/*` would also match
+`https://evil.example/x.example.com/y`.
+
+This can only be tried in a real desktop build (`npm run desktop:dev` or an
+installed app), not in a browser: press Open dashboard on an agent's page or a
+Docs link and your default browser should open.
 
 ## Releasing
 

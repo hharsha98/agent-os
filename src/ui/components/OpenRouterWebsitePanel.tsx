@@ -94,7 +94,7 @@ export default function OpenRouterWebsitePanel({
   const presetSubject: ApplySubject = {
     title: `your OpenRouter preset ${slug}`,
     presetSlug: slug,
-    info: "Beta. A preset can include paid models; those use your OpenRouter credit. Your agent says hello through the preset before it shows a tick.",
+    info: "Beta. A preset can include paid models; those use your OpenRouter credit. A tick appears only after your agent has said hello through the preset. If Safety is on Look only, the check is skipped and no tick is shown.",
     notes: []
   };
 

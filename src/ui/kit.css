@@ -476,7 +476,9 @@ button.os-table__row {
 }
 
 /* ---- An address to copy (OpenAddress.tsx) -------------------------------- */
-/* In the desktop app a link to another website opens nothing, so the address is shown with a Copy button. */
+/* In the desktop app a link to another website opens in the person's browser. Only when opening it fails (an
+   address outside the allowed list, or any other reason) is the address shown here, with a Copy button and a
+   plain sentence, so a link is never left doing nothing. */
 .os-addr {
   display: inline-flex;
   flex-wrap: wrap;

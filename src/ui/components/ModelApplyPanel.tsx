@@ -202,12 +202,15 @@ export default function ModelApplyPanel({
 
   // ---- done: one honest line per target ---------------------------------------------
   if (phase === "done") {
-    const allOk = results.length > 0 && results.every((r) => r.ok === true);
+    // "All set." only when every target worked AND was checked. A skipped hello check (Safety on Look only)
+    // did not fail, but nothing answered either, so it gets its own title and a "not checked" mark, never a tick.
+    const allOk = results.length > 0 && results.every((r) => r.ok === true && !r.skipped);
+    const nothingFailed = results.length > 0 && results.every((r) => r.ok === true);
     const anyStopped = results.some((r) => r.ok === null);
     return (
       <div className="os-mp-apply">
         <p className="os-mp-apply__title" role="status">
-          {allOk ? "All set." : anyStopped ? "Stopped." : "Not everything worked."}
+          {allOk ? "All set." : nothingFailed ? "Model set. The hello check was skipped." : anyStopped ? "Stopped." : "Not everything worked."}
         </p>
         <ul className="os-mp-results">
           {results.map((result) => {
@@ -215,8 +218,8 @@ export default function ModelApplyPanel({
             return (
               <li key={result.targetId} className="os-mp-result">
                 <StatusMark
-                  kind={result.ok === true ? "ok" : result.ok === false ? "error" : "warn"}
-                  label={result.ok === true ? "worked" : result.ok === false ? "did not work" : "stopped"}
+                  kind={result.skipped ? "unknown" : result.ok === true ? "ok" : result.ok === false ? "error" : "warn"}
+                  label={result.skipped ? "not checked" : result.ok === true ? "worked" : result.ok === false ? "did not work" : "stopped"}
                 />
                 <div>
                   <p className="os-mp-result__head">{result.headline}</p>

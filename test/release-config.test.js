@@ -182,17 +182,161 @@ describe("desktop window", () => {
     assert.ok(main.width >= main.minWidth && main.height >= main.minHeight, "the opening size is not below the minimum");
   });
 
-  test("grants exactly these permissions: the opener may only show a file in Finder", async () => {
-    // Widening the opener (for example to opener:default, which can open URLs and paths)
-    // must be a deliberate change to this list, never a quiet one.
+  // The addresses the desktop app may open in the person's browser (owner decision, 2026-10-14: "Allow opening
+  // links"). Tauri matches the WHOLE address against each entry with the Rust `glob` crate: `*` is any run of
+  // characters (a "/" too) and `[0-9]` is one digit. Because of that:
+  //   - every entry names one exact host and then "/", so `https://github.com.evil.example/`,
+  //     `https://github.com@evil.example/` and `https://evil.example/github.com/` do not match;
+  //   - there is no `*.host` entry: `https://*.openai.com/*` would also match `https://evil.example/x.openai.com/y`;
+  //   - the loopback ports are exact (or digits only), so `http://127.0.0.1:1@evil.example/` does not match.
+  // Widening this (a bare `*`, another scheme, `opener:default`, a wildcard host) must be a deliberate change to
+  // this list, never a quiet one.
+  const OPEN_URL_SCOPE = [
+    // OpenRouter's own pages (the website panel, the model picker).
+    { url: "https://openrouter.ai/*" },
+    // Setup plan: the official source and terms links.
+    { url: "https://github.com/*" },
+    { url: "https://nodejs.org/*" },
+    { url: "https://code.claude.com/*" },
+    { url: "https://www.anthropic.com/*" },
+    // Agents page: each agent's homepage and docs.
+    { url: "https://hermes-agent.nousresearch.com/*" },
+    { url: "https://openclaw.ai/*" },
+    { url: "https://docs.openclaw.ai/*" },
+    { url: "https://claude.com/*" },
+    { url: "https://openai.com/*" },
+    { url: "https://developers.openai.com/*" },
+    { url: "https://cursor.com/*" },
+    // Sign-in pages: the hosts server/runtime/setup/signin.js accepts (its apex names only), plus auth.openai.com,
+    // the address Codex's login prints. Any other sign-in host falls back to "Copy the address".
+    { url: "https://claude.ai/*" },
+    { url: "https://anthropic.com/*" },
+    { url: "https://chatgpt.com/*" },
+    { url: "https://cursor.sh/*" },
+    { url: "https://auth.openai.com/*" },
+    // This Mac only: the Hermes dashboard and the OpenClaw Control UI (fixed default ports), and the one-time
+    // OpenRouter sign-in page on Agent OS's own server (it picks a random 5-digit port at launch).
+    { url: "http://127.0.0.1:9119/*" },
+    { url: "http://127.0.0.1:18789/*" },
+    { url: "http://localhost:[0-9][0-9][0-9][0-9][0-9]/oauth/openrouter/start/*" }
+  ];
+
+  // Just enough of the glob crate to check the entries above (and nothing more: any other glob
+  // character in an entry fails the test, so a new kind of pattern has to be thought about here).
+  function scopeMatches(pattern, address) {
+    let source = "";
+    for (let i = 0; i < pattern.length; ) {
+      if (pattern[i] === "*") {
+        source += "[\\s\\S]*";
+        i += 1;
+      } else if (pattern.startsWith("[0-9]", i)) {
+        source += "[0-9]";
+        i += 5;
+      } else {
+        assert.ok(!/[?[\]{}!]/.test(pattern[i]), `unexpected glob character ${pattern[i]} in ${pattern}`);
+        source += pattern[i].replace(/[.+^$|()\\/]/g, "\\$&");
+        i += 1;
+      }
+    }
+    return new RegExp(`^${source}$`).test(address);
+  }
+  // OpenAddress.tsx hands the opener `new URL(href).href`, so a bare origin always ends in "/"; an address
+  // that is not a valid URL is never handed over at all.
+  function allowedByScope(href) {
+    let address;
+    try {
+      address = new URL(href).href;
+    } catch {
+      return false;
+    }
+    return OPEN_URL_SCOPE.some((entry) => scopeMatches(entry.url, address));
+  }
+
+  test("grants exactly these permissions: the opener may show a file in Finder and open the app's known links", async () => {
     const capability = JSON.parse(await read("desktop/src-tauri/capabilities/default.json"));
     assert.deepEqual(capability.permissions, [
       "core:default",
       "updater:default",
       "process:allow-restart",
+      { identifier: "opener:allow-open-url", allow: OPEN_URL_SCOPE },
       "opener:allow-reveal-item-in-dir"
     ]);
     assert.deepEqual(capability.windows, ["main"]);
     assert.deepEqual(capability.remote?.urls, ["http://127.0.0.1:*"]);
+  });
+
+  test("the open-url scope: only https and this Mac's own pages, one exact host per entry, never a bare wildcard", async () => {
+    for (const { url } of OPEN_URL_SCOPE) {
+      assert.match(url, /^(https:\/\/[a-z0-9.-]+\/\*|http:\/\/(127\.0\.0\.1:\d+\/\*|localhost:(\[0-9\]){5}\/oauth\/openrouter\/start\/\*))$/, url);
+      assert.ok(!url.includes("://*") && !url.includes("*."), `no wildcard host: ${url}`);
+    }
+    assert.equal(new Set(OPEN_URL_SCOPE.map((entry) => entry.url)).size, OPEN_URL_SCOPE.length, "no duplicates");
+    // The broad sets (open any address, open any path) are not granted, only open-url with the scope above.
+    const capability = JSON.parse(await read("desktop/src-tauri/capabilities/default.json"));
+    const names = capability.permissions.map((permission) => (typeof permission === "string" ? permission : permission.identifier));
+    for (const widening of ["opener:default", "opener:allow-default-urls", "opener:allow-open-path"]) {
+      assert.ok(!names.includes(widening), `${widening} must not be granted`);
+    }
+    assert.equal(names.filter((name) => name === "opener:allow-open-url").length, 1, "open-url is granted once, with its scope");
+  });
+
+  test("the open-url scope allows every address the app opens from its own data, and nothing that looks like one", async () => {
+    const { ADAPTERS } = await import("../server/runtime/agents/index.js");
+    const { getInstallRecipe, OPERATOR_AGENT_IDS, CODING_AGENT_IDS } = await import("../server/runtime/setup/recipes.js");
+    const known = [
+      // Agents page: dashboards (AgentBay.tsx), and each adapter's homepage and docs.
+      "http://127.0.0.1:9119",
+      "http://127.0.0.1:18789",
+      ...Object.values(ADAPTERS).flatMap((adapter) => [adapter.homepage, adapter.docsUrl]),
+      // Setup plan: source and terms links, and the Node.js source (server/runtime/setup/plan.js).
+      "https://nodejs.org",
+      ...[...OPERATOR_AGENT_IDS, ...CODING_AGENT_IDS].flatMap((id) => {
+        const recipe = getInstallRecipe(id, "darwin", "arm64");
+        return [recipe.sourceUrl, recipe.termsUrl];
+      }),
+      // OpenRouter: the pages the server offers, and the one-time sign-in page on this app's own server.
+      "https://openrouter.ai/models?supported_parameters=tools",
+      "https://openrouter.ai/settings/presets",
+      "https://openrouter.ai/settings/presets/new",
+      "https://openrouter.ai/vendor/some-model",
+      `http://localhost:54321/oauth/openrouter/start/${"a1".repeat(32)}`,
+      // Sign-in pages (the shapes the sign-in tests use).
+      "https://claude.ai/oauth/authorize?code_challenge=abc&state=xyz",
+      "https://auth.openai.com/oauth/authorize?state=xyz",
+      "https://cursor.com/loginDeepControl?uuid=abc"
+    ].filter(Boolean);
+    for (const href of known) assert.ok(allowedByScope(href), `the scope should allow ${href}`);
+
+    const refused = [
+      "file:///etc/hosts",
+      "mailto:someone@example.com",
+      "javascript:alert(1)",
+      "ftp://github.com/x",
+      "http://github.com/x", // plain http to a website host
+      "https://evil.example/",
+      "https://evil.example/github.com/",
+      "https://evil.example/x.openai.com/y",
+      "https://evil.example/?https://github.com/x",
+      "https://github.com.evil.example/",
+      "https://github.com@evil.example/",
+      "https://openrouter.ai@evil.example/",
+      "https://openrouter.ai.evil.example/",
+      "https://sub.openrouter.ai/", // a sub-host that is not listed
+      "https://platform.openai.com/api-keys", // only the hosts above, not their neighbours
+      "http://127.0.0.1:1@evil.example/",
+      "http://127.0.0.1:9119@evil.example/",
+      "http://127.0.0.1:9119.evil.example/",
+      "http://127.0.0.1:9120/", // another port on this Mac
+      "http://127.0.0.1:80/",
+      "http://localhost:9119/", // the dashboard is listed by its 127.0.0.1 address only
+      "http://localhost:54321/", // this server's other pages are not opened this way
+      "http://localhost:54321/oauth/openrouter/callback",
+      "http://localhost:5432/oauth/openrouter/start/abc", // not a 5-digit port
+      "http://localhost:543210/oauth/openrouter/start/abc",
+      "http://localhost:54321@evil.example/oauth/openrouter/start/abc",
+      "http://localhost:5432a/oauth/openrouter/start/abc",
+      "http://[::1]:9119/"
+    ];
+    for (const href of refused) assert.ok(!allowedByScope(href), `the scope must refuse ${href}`);
   });
 });

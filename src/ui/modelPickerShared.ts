@@ -49,14 +49,19 @@ export interface ApplyUpdate {
   startedAt: string;
 }
 
-// What happened to one target. ok: true = worked and said hello, false = did
-// not work, null = stopped by the person.
+// What happened to one target. ok: true = worked (for Hermes and OpenClaw that
+// means the setting changed AND the agent said hello, unless `skipped` below: then
+// the hello check was not run), false = did not work, null = stopped by the person.
 export interface ModelApplyResult {
   targetId: string;
   ok: boolean | null;
   headline: string;
   detail?: string;
   warnings?: string[];
+  // true when the setting was changed but the hello check was skipped (Safety on Look only starts nothing).
+  // `ok` stays true, since nothing failed, but nothing answered either, so there is no tick: the panel shows a
+  // "not checked" mark and does not say "All set.".
+  skipped?: boolean;
   // true when the target's setting really was changed (so the screen should re-read it).
   changed?: boolean;
 }

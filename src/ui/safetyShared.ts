@@ -6,7 +6,10 @@
 // checked against the server:
 //   - the folder rule is resolveRunCwd in server/runtime/agents/routes.js;
 //   - the flag rule is run-manager.js (blockedFlagError) and agent-flags.js;
-//   - the gate is only read when something starts (it stops nothing already going);
+//   - the gate is read when an agent run starts, before every Team Room turn and before Setup's (and the Agents
+//     page's) hello check; it kills nothing already going, so a run keeps going until it ends or is stopped.
+//     Setup's own installers, sign-in, services and config steps are not behind it (they never were), so the
+//     words must not say "nothing can start";
 //   - machine control gates Agent OS's own screen, mouse and keyboard actions
 //     (server/runtime/voice-control.js), and shell commands there stay off unless
 //     HERMES_VOICE_ALLOW_SHELL=1 and each one carries confirmShell.
@@ -16,7 +19,7 @@ import type { AgentDetail, MachineControlStatus } from "../setupApi";
 export const ARM_PHRASE = "ENABLE MACHINE CONTROL";
 
 export const LEVELS: Record<number, { label: string; blurb: string }> = {
-  0: { label: "Look only", blurb: "Agents are found and past runs shown. Agent OS starts no new run or Team Room." },
+  0: { label: "Look only", blurb: "Agents are found and past runs shown. Agent OS starts no new agent run or Team Room." },
   // The second sentence is the New run dialog's own (RISKY_STEP_HINT, owner ruling C3-3):
   // the two pages must say the same thing about a step a level does not allow.
   1: { label: "Run agents", blurb: "Runs start in a folder inside the Workspace (OpenClaw's Gateway uses its own). Anything this safety level does not allow is refused, not run." },
@@ -27,7 +30,7 @@ export const LEVEL_DETAIL: Record<number, { can: string; asks: string; cannot: s
   0: {
     can: "See which agents are installed and look at past runs.",
     asks:
-      "Nothing, because nothing new can start. A run or Team Room that is already going keeps going until it ends or you stop it, and Setup's short brain check (it asks the agent to reply \"ready\") still runs.",
+      "Nothing, because no new agent run or Team Room can start. A Team Room that is already going stops before its next turn. Setup and the Agents page skip their hello check, but Setup's own install, sign-in, service and config steps still run when you press them. A run that is already going keeps going until it ends or you stop it.",
     cannot: "Start a new agent run or Team Room, or use machine control."
   },
   1: {

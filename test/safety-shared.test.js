@@ -60,12 +60,22 @@ test("Level 1 says the same sentence as the New run dialog about what it refuses
 });
 
 test("no level word promises what the server does not do", () => {
-  // Look only stops nothing that is already running (the gate is only read when something starts).
-  assert.match(safety.LEVEL_DETAIL[0].asks, /already going keeps going/);
-  // ...and two things still start at Look only: a Team Room already going takes its next turns, and
-  // Setup's brain check runs a real "reply ready" turn. The words say so instead of "no agent can start".
-  assert.match(safety.LEVEL_DETAIL[0].asks, /Team Room that is already going/);
-  assert.match(safety.LEVEL_DETAIL[0].asks, /brain check/);
+  // Look only kills nothing that is already running: a run keeps going until it ends or the person stops it.
+  assert.match(safety.LEVEL_DETAIL[0].asks, /run that is already going keeps going until it ends or you stop it/);
+  // ...but it starts nothing (owner decision, 2026-10-14): a Team Room already going stops before its next
+  // turn, and Setup and the Agents page skip their hello check (the "reply ready" test). The old words said
+  // both still ran; they must not come back.
+  assert.match(safety.LEVEL_DETAIL[0].asks, /^Nothing, because no new agent run or Team Room can start\./);
+  assert.match(safety.LEVEL_DETAIL[0].asks, /Team Room that is already going stops before its next turn/);
+  assert.match(safety.LEVEL_DETAIL[0].asks, /Setup and the Agents page skip their hello check/);
+  assert.doesNotMatch(safety.LEVEL_DETAIL[0].asks, /brain check|still runs|run or Team Room that is already going keeps going/);
+  // ...but Setup's own steps are NOT gated, and the words must not say "nothing can start" as if they were: the
+  // installers, the sign-in login, the always-on services step and the config steps run when the person presses them.
+  assert.match(safety.LEVEL_DETAIL[0].asks, /Setup's own install, sign-in, service and config steps still run when you press them/);
+  assert.doesNotMatch(safety.LEVEL_DETAIL[0].asks, /nothing new can start/);
+  // The blurb on the card and the cell in the table say the same thing about what starts.
+  assert.match(safety.LEVELS[0].blurb, /starts no new agent run or Team Room/);
+  assert.doesNotMatch(safety.LEVELS[0].blurb, /nothing can start|nothing new/i);
   for (const text of [safety.LEVELS[0].blurb, safety.LEVEL_DETAIL[0].cannot]) {
     assert.doesNotMatch(text, /No agent can start|Start an agent run or a Team Room/, text);
     assert.match(text, /new/i, text);

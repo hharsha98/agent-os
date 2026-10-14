@@ -108,8 +108,8 @@ There are three levels. A fresh install is at level 0, "Look only". If you turn 
 
 | Level | Name | What it means |
 | --- | --- | --- |
-| 0 | Look only | Agents are detected and previews are shown. **Nothing runs.** |
-| 1 | Run agents | You can launch agents you choose. Each run shows its command and folder first. |
+| 0 | Look only | Agents are detected and past runs are shown. **No new agent run or Team Room starts**, and a running room stops before its next turn. Setup's own install and sign-in steps still run when you press them. |
+| 1 | Run agents | You can launch agents you choose, each started in a folder inside the Workspace. Every run shows its command and folder on the Runs page. |
 | 2 | Machine control | Voice, typing, clicking, screen reading and shell commands. **macOS only.** |
 
 Level 2 is hard to turn on on purpose:

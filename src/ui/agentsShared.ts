@@ -35,8 +35,9 @@ export const SERVICE_AGENT_SET = new Set(["hermes", "openclaw"]);
 // homepage + "press Re-check" flow.
 export const SETUP_INSTALLED_AGENT_SET = new Set(["hermes", "openclaw"]);
 // Agent OS Setup can install all five agents (Hermes, OpenClaw and the three coding agents), so every
-// "not installed" message points at Setup. A target=_blank link to a vendor's website does nothing in
-// the desktop app, so Setup is also the only way forward that works there.
+// "not installed" message points at Setup. A link to a vendor's website opens in the person's browser from the
+// desktop app only for the addresses listed in desktop/src-tauri/capabilities/default.json (otherwise it shows
+// the address with a Copy button), so Setup is the way forward that always works there.
 export const SETUP_CAN_INSTALL_AGENT_SET = new Set(["hermes", "openclaw", "claude", "codex", "cursor"]);
 
 // A path returned by the server (e.g. runs/preview's `cwd`) is a raw,

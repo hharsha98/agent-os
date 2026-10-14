@@ -186,12 +186,16 @@ export interface SetupJobStep {
 }
 
 export interface HealthEntry {
-  doctorOk: boolean;
+  // null when the check was skipped (nothing was run).
+  doctorOk: boolean | null;
   promptOk: boolean;
   replyPreview: string;
   error?: string;
-  // A short plain-English next step when the "say hello" check failed.
+  // A short plain-English next step when the "say hello" check failed. When it was skipped
+  // (Safety on Look only starts nothing), the sentence that says so.
   hint?: string;
+  // true when the "say hello" check was not run at all. promptOk is then false, but it is not a failure.
+  skipped?: boolean;
 }
 
 export type BrainMode = "openrouter" | "ollama";

@@ -11,6 +11,7 @@ import { Readable } from "node:stream";
 import { ADAPTERS } from "../agents/index.js";
 import { hermesApprovalsAreOff } from "../agents/hermes.js";
 import { clearDetectCaches } from "../agents/detect.js";
+import { isExecutionEnabled } from "../execution-gate.js";
 import { getRunManager } from "../runs/run-manager.js";
 import { runCommand, which } from "../safety.js";
 import { readJson, runtimePaths, writeJson } from "../store.js";
@@ -1042,8 +1043,28 @@ function healthFixLine(output, target, timedOut) {
   return "The agent didn't reply as expected. Open its run on the Runs page for details, or pick another model.";
 }
 
+// Safety on Look only (the execution gate off) starts nothing. The hello check starts the agent (it asks it to
+// reply "ready", after running its own doctor command), so at Look only it is skipped and the job says so.
+// Writing the model setting is not part of this and keeps its own behaviour. No control runs the check by itself
+// afterwards: the person allows running agents in Safety and applies the brain again, so the sentence says that.
+// src/ui/agentModelChange.ts keeps a copy for a job that comes back without this hint; test/setup-models.test.js
+// checks the two are word for word the same.
+export const HELLO_SKIPPED_AT_LOOK_ONLY =
+  "Skipped the hello check because Safety is on Look only. Allow running agents in Safety, then apply the brain again to check it.";
+
 async function runHealthChecks(job, step, check, manager, ctx) {
   const health = {};
+  if (!(await isExecutionEnabled())) {
+    timestampedLog(step, HELLO_SKIPPED_AT_LOOK_ONLY);
+    for (const agentId of jobScope(job)) {
+      if (!check.agents[agentId].detected?.installed) continue;
+      // Not a failure and never a tick: nothing was asked, so there is no answer to judge. `doctorOk` is
+      // null for the same reason (the doctor command was not run either).
+      health[agentId] = { skipped: true, doctorOk: null, promptOk: false, replyPreview: "", hint: HELLO_SKIPPED_AT_LOOK_ONLY };
+    }
+    job.health = health;
+    return;
+  }
   const workDir = path.join(runtimePaths().root, "setup", "runs-work", "setup-check");
   await fs.mkdir(workDir, { recursive: true });
   // After a model change the "hello" must prove the NEW model works, and must
@@ -1113,7 +1134,7 @@ async function prepareLocalVariants(job, step, ctx) {
 
 // ---- changing ONE agent's model (the model picker and OpenRouter presets) ----------
 // The agent already has its OpenRouter key, so only the model is set; the job
-// then says hello to the agent to prove the new model answers.
+// then says hello to the agent to prove the new model answers (skipped at Look only).
 
 // Runs one `config set` / `models set`. Resolves { ok, why }, where `why` is
 // what the program said, short and plain, when it refused.
@@ -1125,6 +1146,14 @@ async function runModelSetCommand(manager, step, plan) {
   const events = await manager.readEvents(step.runIds[step.runIds.length - 1], 0).catch(() => []);
   const printed = (stream) => events.filter((event) => event.stream === stream).map((event) => event.text || "").join("\n");
   return { ok: false, why: cleanCliText(printed("stderr") || printed("stdout")) };
+}
+
+// How the read-back warnings end. They used to always point at the hello test, but at Look only that test is
+// skipped (see runHealthChecks), so the sentence must not promise it then.
+async function whatItReallyUses() {
+  return (await isExecutionEnabled())
+    ? "The hello test below shows what it really uses."
+    : "Safety is on Look only, so no hello test runs to show what it really uses.";
 }
 
 async function setHermesModel(job, step, check, ctx, manager) {
@@ -1146,11 +1175,11 @@ async function setHermesModel(job, step, check, ctx, manager) {
   // not stick is worth saying out loud.
   const back = await readAgentModel("hermes", detected);
   if (back.known === false) {
-    const warning = "Agent OS could not read Hermes's model back to check it. The hello test below shows what it really uses.";
+    const warning = `Agent OS could not read Hermes's model back to check it. ${await whatItReallyUses()}`;
     step.warnings.push(warning);
     timestampedLog(step, warning);
   } else if (back.model !== target.model) {
-    const warning = `Hermes reports its model as ${back.model || "not set"}, not ${target.model}. The hello test below shows what it really uses.`;
+    const warning = `Hermes reports its model as ${back.model || "not set"}, not ${target.model}. ${await whatItReallyUses()}`;
     step.warnings.push(warning);
     timestampedLog(step, warning);
   }

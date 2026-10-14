@@ -17,8 +17,9 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
+import { setExecutionGateStatus } from "../server/runtime/execution-gate.js";
 import { clearBrainCacheForTest } from "../server/runtime/setup/brain.js";
-import { resetSetupJobsForTest } from "../server/runtime/setup/jobs.js";
+import { HELLO_SKIPPED_AT_LOOK_ONLY, resetSetupJobsForTest } from "../server/runtime/setup/jobs.js";
 import {
   OPENROUTER_BROWSE_URL,
   OPENROUTER_NEW_PRESET_URL,
@@ -94,9 +95,12 @@ if (args[0] === "auth" && args[1] === "add") {
 }
 if (args[0] === "config" && args[1] === "set") {
   if (exists(".fake-hermes-set-fail")) { process.stderr.write("error: the value was refused\\n"); process.exit(1); }
+  if (exists(".fake-hermes-set-ignore")) { print("ok"); process.exit(0); }
   const config = readConfig();
   config[args[2]] = args[3];
   writeFileSync(configFile, JSON.stringify(config));
+  // A store that was readable when the job started and locks up after the value was written.
+  if (exists(".fake-hermes-get-fail-after-set")) writeFileSync(path.join(home, ".fake-hermes-get-fail"), "1");
   print("ok");
   process.exit(0);
 }
@@ -477,6 +481,8 @@ async function withModelEnv(fn, { hermes = true, openclaw = true, hermesConfig, 
           opened.push(url);
           return { opened: true };
         });
+        // Running agents is allowed unless a test says otherwise: at Look only the hello check is skipped.
+        await setExecutionGateStatus({ enabled: true, reason: "setup test" });
         await fn({ home, agentOsHome, base, port, call, waitForJob, connect, opened, bodies });
       }
     );
@@ -1019,6 +1025,103 @@ test("apply to Hermes: provider openrouter, then model.default with NO openroute
   });
 });
 
+test("Look only: changing an agent's model still sets it, but the hello check is skipped (no chat or agent run, no doctor) and the job says so", posixSkip, async () => {
+  const SKIPPED = "Skipped the hello check because Safety is on Look only. Allow running agents in Safety, then apply the brain again to check it.";
+  await withModelEnv(async ({ call, home, waitForJob }) => {
+    await setExecutionGateStatus({ enabled: false, reason: "look only test" });
+    for (const [agentId, model, expectedSets] of [
+      ["hermes", "vendor/big-agent", [["config", "set", "model.provider", "openrouter"], ["config", "set", "model.default", "vendor/big-agent"]]],
+      [
+        "openclaw",
+        "vendor/mid:free",
+        [
+          ["config", "set", "agents.defaults.model.primary", "openrouter/vendor/mid:free", "--dry-run"],
+          ["config", "set", "agents.defaults.model.primary", "openrouter/vendor/mid:free"]
+        ]
+      ]
+    ]) {
+      const started = await call("POST", `/api/setup/agents/${agentId}/model`, { model, confirm: true });
+      assert.equal(started.status, 200, agentId);
+      const job = await waitForJob(started.body.id);
+      assert.equal(job.status, "succeeded", `${agentId}: a skipped hello check is not a failure`);
+
+      // The model setting is written exactly as it is when running agents is allowed.
+      const lines = await recordLines(home, agentId);
+      assert.deepEqual(setCalls(lines), expectedSets, agentId);
+
+      // The hello check started nothing.
+      const notHelp = (l) => !l.argv.includes("--help");
+      assert.ok(!lines.some((l) => ["chat", "agent", "doctor"].includes(l.argv[0]) && notHelp(l)), `${agentId}: nothing was asked to reply`);
+      const health = job.steps.find((s) => s.id === "health");
+      assert.equal(health.status, "succeeded");
+      assert.deepEqual(health.runIds, [], `${agentId}: no run was made`);
+      assert.ok(health.log.some((line) => line.endsWith(` ${SKIPPED}`)), `${agentId}: the step says so: ${health.log.join(" | ")}`);
+      assert.equal(job.health[agentId].skipped, true);
+      assert.equal(job.health[agentId].promptOk, false, "nothing answered, so it is never a tick");
+      assert.equal(job.health[agentId].hint, SKIPPED);
+      assert.ok(!job.health[agentId].error);
+    }
+  });
+});
+
+// The two read-back warnings (Hermes's value cannot be read back, or did not stick) used to end "The hello test
+// below shows what it really uses." At Look only no hello test runs, so that sentence would point at a test that
+// never ran. The ending follows the gate: the hello pointer when it will run, plain words when it is skipped.
+const HELLO_POINTER = "The hello test below shows what it really uses.";
+const LOOK_ONLY_POINTER = "Safety is on Look only, so no hello test runs to show what it really uses.";
+const READ_BACK_CASES = [
+  {
+    why: "the value cannot be read back (config get fails after the set)",
+    flag: ".fake-hermes-get-fail-after-set",
+    warning: (ending) => `Agent OS could not read Hermes's model back to check it. ${ending}`
+  },
+  {
+    why: "the value did not stick (config set is ignored)",
+    flag: ".fake-hermes-set-ignore",
+    warning: (ending) => `Hermes reports its model as vendor/old, not vendor/big-agent. ${ending}`
+  }
+];
+
+test("read-back warnings with running agents allowed still point at the hello test, which then runs", posixSkip, async () => {
+  for (const readBack of READ_BACK_CASES) {
+    await withModelEnv(async ({ call, home, waitForJob }) => {
+      await writeFile(path.join(home, readBack.flag), "1");
+      const started = await call("POST", "/api/setup/agents/hermes/model", { model: "vendor/big-agent", confirm: true });
+      assert.equal(started.status, 200, readBack.why);
+      const job = await waitForJob(started.body.id);
+      assert.equal(job.status, "succeeded", readBack.why);
+      const warnings = job.steps.find((s) => s.id === "hermes-model").warnings;
+      assert.deepEqual(warnings, [readBack.warning(HELLO_POINTER)], readBack.why);
+      assert.equal(job.health.hermes.promptOk, true, `${readBack.why}: the hello it points at really ran`);
+      assert.ok(!job.health.hermes.skipped, readBack.why);
+    });
+  }
+});
+
+test("Look only: the read-back warnings no longer promise a hello test that is skipped, and the job still says the check was skipped", posixSkip, async () => {
+  const SKIPPED = "Skipped the hello check because Safety is on Look only. Allow running agents in Safety, then apply the brain again to check it.";
+  for (const readBack of READ_BACK_CASES) {
+    await withModelEnv(async ({ call, home, waitForJob }) => {
+      await setExecutionGateStatus({ enabled: false, reason: "look only test" });
+      await writeFile(path.join(home, readBack.flag), "1");
+      const started = await call("POST", "/api/setup/agents/hermes/model", { model: "vendor/big-agent", confirm: true });
+      assert.equal(started.status, 200, readBack.why);
+      const job = await waitForJob(started.body.id);
+      assert.equal(job.status, "succeeded", readBack.why);
+
+      const modelStep = job.steps.find((s) => s.id === "hermes-model");
+      assert.deepEqual(modelStep.warnings, [readBack.warning(LOOK_ONLY_POINTER)], readBack.why);
+      assert.ok(modelStep.log.some((line) => line.endsWith(` ${readBack.warning(LOOK_ONLY_POINTER)}`)), `${readBack.why}: the step log says the same`);
+
+      // Nowhere in the job may a sentence promise the hello test while another says it was skipped.
+      const everything = [...job.steps.flatMap((s) => [...(s.warnings || []), ...(s.log || [])]), job.health.hermes.hint].join("\n");
+      assert.ok(!/hello test below/i.test(everything), `${readBack.why}: no hello test is promised: ${everything}`);
+      assert.ok(everything.includes(SKIPPED), `${readBack.why}: and the skipped check is still said plainly`);
+      assert.equal(job.health.hermes.skipped, true, readBack.why);
+    });
+  }
+});
+
 test("apply to OpenClaw: the openrouter/ reference, a --dry-run first, then the same command for real; warns about overrides and pinned chats", posixSkip, async () => {
   await withModelEnv(
     async ({ call, home, waitForJob }) => {
@@ -1085,6 +1188,20 @@ test("apply to OpenClaw: its strict refusal is shown plainly after the dry run, 
     assert.equal(done.health.openclaw.promptOk, true);
     assert.equal(await readFile(path.join(home, ".fake-openclaw-primary"), "utf8"), "openrouter/vendor/mid:free");
   });
+});
+
+test("the skipped-hello sentence says how to run the check, and the Agents page uses the same words as the server", async () => {
+  // Switching Safety to Run agents does not run the check by itself: the person applies the brain again.
+  assert.equal(
+    HELLO_SKIPPED_AT_LOOK_ONLY,
+    "Skipped the hello check because Safety is on Look only. Allow running agents in Safety, then apply the brain again to check it."
+  );
+  assert.doesNotMatch(HELLO_SKIPPED_AT_LOOK_ONLY, /to run it/);
+  // src/ui/agentModelChange.ts has its own copy, for a job that comes back without the server's hint. The two must
+  // not drift apart: read the file and look for the server's exact sentence (a UI file cannot import server code).
+  const ui = await readFile(new URL("../src/ui/agentModelChange.ts", import.meta.url), "utf8");
+  assert.ok(ui.includes(HELLO_SKIPPED_AT_LOOK_ONLY), "agentModelChange.ts says the server's sentence word for word");
+  assert.doesNotMatch(ui, /Allow running agents in Safety to run it/);
 });
 
 test("a failed hello check is reported plainly (the job ran, the model is set, the agent did not answer)", posixSkip, async () => {

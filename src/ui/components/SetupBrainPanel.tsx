@@ -352,6 +352,9 @@ function BrainResult({
   );
   const failedStep = job.steps.find((s) => s.status === "failed");
   const allHello = scope.length > 0 && scope.every((id) => job.health?.[id]?.promptOk);
+  // Safety on Look only starts nothing, so the hello check is skipped: nothing answered, and nothing failed to.
+  const allSkipped = scope.length > 0 && scope.every((id) => job.health?.[id]?.skipped);
+  const skippedNote = scope.map((id) => job.health?.[id]).find((entry) => entry?.skipped)?.hint;
   const finishedOk = job.status === "succeeded";
   const log = job.steps.flatMap((step) => (step.log || []).map((line) => `[${CONFIGURE_STEP_LABEL[step.id] || step.id}] ${line}`));
 
@@ -362,7 +365,9 @@ function BrainResult({
         ? "That didn't finish."
         : allHello
           ? "All set. Each agent answered."
-          : "Set up, but not every agent answered.";
+          : allSkipped
+            ? "Set up. The hello check was skipped."
+            : "Set up, but not every agent answered.";
 
   return (
     <section className="os-panel os-brain-result" aria-labelledby="os-brain-result-title">
@@ -385,8 +390,8 @@ function BrainResult({
           return (
             <li key={id} className="os-brain-result__agent">
               <StatusMark
-                kind={entry ? (entry.promptOk ? "ok" : "error") : "unknown"}
-                label={entry ? (entry.promptOk ? "said hello" : "did not answer") : "not checked"}
+                kind={entry ? (entry.promptOk ? "ok" : entry.skipped ? "unknown" : "error") : "unknown"}
+                label={entry ? (entry.promptOk ? "said hello" : entry.skipped ? "not checked" : "did not answer") : "not checked"}
               />
               <div>
                 <p className="os-brain-result__line">
@@ -404,14 +409,20 @@ function BrainResult({
                   </p>
                 ) : null}
                 <p className="os-brain-result__verdict">
-                  {entry ? (entry.promptOk ? "Said hello ✓" : "Didn't answer ✗") : finishedOk ? "Not checked." : "Not finished."}
+                  {entry ? (entry.promptOk ? "Said hello ✓" : entry.skipped ? "Hello check skipped." : "Didn't answer ✗") : finishedOk ? "Not checked." : "Not finished."}
                 </p>
-                {entry && !entry.promptOk ? <p className="os-brain-result__fix">{entry.hint || "Open its run on the Runs page for details."}</p> : null}
+                {entry && !entry.promptOk && !entry.skipped ? <p className="os-brain-result__fix">{entry.hint || "Open its run on the Runs page for details."}</p> : null}
               </div>
             </li>
           );
         })}
       </ul>
+
+      {skippedNote ? (
+        <p className="os-brain-card__hint os-brain-result__warning">
+          <StatusMark kind="warn" label="note" /> {skippedNote}
+        </p>
+      ) : null}
 
       {job.steps
         .flatMap((step) => step.warnings || [])

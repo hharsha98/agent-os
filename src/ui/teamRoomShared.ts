@@ -110,13 +110,29 @@ export function roomEndSentence(room: TeamRoom): string | null {
   }
 }
 
+// The reason the server writes when a room stops because Safety is on Look only (moderator.js,
+// LOOK_ONLY_STOP_REASON; test/team-room.test.js checks this copy is the same sentence). The page spots that
+// stop by these exact words, so it can tell the person what to do first.
+export const LOOK_ONLY_STOP_REASON =
+  "Safety is on Look only, so the room stopped before its next turn. Allow running agents in Safety, then press Continue.";
+
 // The line under the page title.
-export function roomLede(room: Pick<TeamRoom, "status" | "pausedFor">, proposals?: Array<Pick<TeamProposal, "id" | "status">>): string {
+export function roomLede(
+  room: Pick<TeamRoom, "status" | "pausedFor"> & { endReason?: string | null },
+  proposals?: Array<Pick<TeamProposal, "id" | "status">>
+): string {
   const pause = pauseState(room, proposals);
   if (pause === "carrying_on") return "Your decision is saved. Agent OS is checking the room can carry on.";
   if (pause === "waiting") return "The agents agreed on a file. Nothing is saved until you decide.";
   if (room.status === "running") return "Hermes Agent and OpenClaw are talking it through. You are reading along.";
-  if (room.status === "needs_you") return "The room is waiting for you. Continue to give the agents more turns.";
+  if (room.status === "needs_you") {
+    // Continue is refused while Safety is on Look only, so the generic advice would be wrong for this stop. The
+    // wording stays true if the person has already allowed running agents since (the page may not know yet).
+    if (room.endReason === LOOK_ONLY_STOP_REASON) {
+      return "The room is waiting for you. If Safety is still on Look only, allow running agents there first, then Continue.";
+    }
+    return "The room is waiting for you. Continue to give the agents more turns.";
+  }
   return "This room has ended. What was said stays on this page.";
 }
 

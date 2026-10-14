@@ -126,6 +126,22 @@ test("lede: one sentence per state", () => {
   assert.match(shared.roomLede(room({ status: "stopped" })), /has ended/);
 });
 
+test("lede: a room stopped by Look only sends the person to Safety before Continue; any other waiting room keeps the generic line", () => {
+  const generic = shared.roomLede(room({ status: "needs_you", endReason: "Reached the limit of 8 turns. You can let it continue for a few more." }));
+  assert.match(generic, /Continue to give the agents more turns/);
+  assert.doesNotMatch(generic, /Safety/);
+  // The reason text the server writes when the gate is off at the top of a turn (moderator.js, LOOK_ONLY_STOP_REASON).
+  const lookOnly = shared.roomLede(room({ status: "needs_you", endReason: shared.LOOK_ONLY_STOP_REASON }));
+  assert.match(lookOnly, /Safety is still on Look only/);
+  assert.match(lookOnly, /allow running agents there first, then Continue/);
+  assert.doesNotMatch(lookOnly, /Continue to give the agents more turns/, "no advice that Continue would refuse");
+  // Only the exact reason counts: a similar sentence, or the same reason on a room that is not waiting, changes nothing.
+  assert.doesNotMatch(shared.roomLede(room({ status: "needs_you", endReason: `${shared.LOOK_ONLY_STOP_REASON} Extra.` })), /Safety/);
+  assert.match(shared.roomLede(room({ status: "stopped", endReason: shared.LOOK_ONLY_STOP_REASON })), /has ended/);
+  // A room waiting for a decision still says that first.
+  assert.match(shared.roomLede(room({ status: "needs_you", pausedFor: "P1", endReason: shared.LOOK_ONLY_STOP_REASON })), /Nothing is saved until you decide/);
+});
+
 test("card state: where each proposal belongs", () => {
   const f = (p, a) => shared.decisionCardState(p, a);
   assert.equal(f(proposal(), undefined), "pending");

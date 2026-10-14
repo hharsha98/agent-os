@@ -54,6 +54,13 @@ export const COST_CAP_WARNING =
 // can't follow the room's reply format.
 const NO_TAG_HINT_AFTER = 2;
 
+// Safety on Look only (the execution gate off) starts nothing, so a room checks the gate before every turn and
+// ends as needs_you when it is off. Continue works again once running agents is allowed. The Team Room page
+// recognises this stop by these exact words (src/ui/teamRoomShared.ts keeps a copy; test/team-room.test.js checks
+// the two are the same), so change both together.
+export const LOOK_ONLY_STOP_REASON =
+  "Safety is on Look only, so the room stopped before its next turn. Allow running agents in Safety, then press Continue.";
+
 // Returns the model name to pass to OpenClaw, "" for none, or throws a 400.
 // It is passed as ONE argument (never through a shell), and may not start
 // with "-" so it can never be read as a flag.
@@ -600,6 +607,14 @@ export function createModerator({
         const limit = limitReached(room, state, await readDecision(roomId));
         if (limit) {
           await finish(state, limit.status, limit.reason);
+          return;
+        }
+
+        // Look only starts nothing. The gate is read at the top of every turn, before its run is made. A turn
+        // that is already running is not killed here (Hold to stop all does that); the room just does not
+        // go on to the next one.
+        if (!(await isExecutionEnabled())) {
+          await finish(state, "needs_you", LOOK_ONLY_STOP_REASON);
           return;
         }
 

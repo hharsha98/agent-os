@@ -86,6 +86,41 @@
   color: var(--os-danger);
 }
 
+/* The one-line strip: shown instead of the card once only one step is left. */
+.os-gs--strip {
+  padding: var(--os-sp-3) var(--os-sp-5);
+}
+.os-gs__strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-4);
+  flex-wrap: wrap;
+}
+.os-gs__strip-text {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+.os-gs__strip-text h2 {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-16);
+  font-weight: 600;
+  line-height: var(--os-lh-display);
+  color: var(--os-text-1);
+}
+.os-gs__strip-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--os-sp-1) var(--os-sp-3);
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-gs__strip-detail .os-gs__count {
+  margin: 0;
+}
+
 /* One row per step: mark, what it is and its real state, then its buttons. */
 .os-gs__steps {
   list-style: none;

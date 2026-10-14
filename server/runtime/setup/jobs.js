@@ -1131,7 +1131,11 @@ async function setHermesModel(job, step, check, ctx, manager) {
   // Hermes doesn't check what it is given, so read it back: a value that did
   // not stick is worth saying out loud.
   const back = await readAgentModel("hermes", detected);
-  if (back.model !== target.model) {
+  if (back.known === false) {
+    const warning = "Agent OS could not read Hermes's model back to check it. The hello test below shows what it really uses.";
+    step.warnings.push(warning);
+    timestampedLog(step, warning);
+  } else if (back.model !== target.model) {
     const warning = `Hermes reports its model as ${back.model || "not set"}, not ${target.model}. The hello test below shows what it really uses.`;
     step.warnings.push(warning);
     timestampedLog(step, warning);

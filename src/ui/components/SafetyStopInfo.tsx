@@ -35,7 +35,7 @@ export default function SafetyStopInfo() {
         <div className="os-saf-frames" aria-hidden="true">
           {FRAMES.map((frame) => (
             <div key={frame.time} className="os-saf-frame">
-              <span className="os-saf-frame__btn">
+              <span className={`os-saf-frame__btn${frame.fill > 0 ? " is-filled" : ""}`}>
                 <span className="os-saf-frame__fill" style={{ transform: `scaleX(${frame.fill})` }} />
                 <OctagonX size={15} />
                 <span>{frame.label}</span>

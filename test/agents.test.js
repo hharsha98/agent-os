@@ -1260,6 +1260,33 @@ test(
       assert.equal(gateOffRes.status, 403);
       assert.equal((await gateOffRes.json()).error, "execution_gate_off");
 
+      // The background service: Start and Restart need the gate, but Stop works at
+      // Look only (stopping only reduces what runs, like Hold to stop all).
+      for (const action of ["start", "restart"]) {
+        const serviceOff = await fetch(`${base}/api/agents/hermes/service/${action}`, {
+          method: "POST",
+          headers: authedJson,
+          body: JSON.stringify({ confirm: true })
+        });
+        assert.equal(serviceOff.status, 403, `service ${action} with the gate off`);
+        assert.equal((await serviceOff.json()).error, "execution_gate_off");
+      }
+      const stopNoConfirm = await fetch(`${base}/api/agents/hermes/service/stop`, {
+        method: "POST",
+        headers: authedJson,
+        body: JSON.stringify({})
+      });
+      assert.equal(stopNoConfirm.status, 400, "stop still needs confirm");
+      const stopAtLookOnly = await fetch(`${base}/api/agents/hermes/service/stop`, {
+        method: "POST",
+        headers: authedJson,
+        body: JSON.stringify({ confirm: true })
+      });
+      assert.equal(stopAtLookOnly.status, 200, "service stop works with the gate off");
+      const stopRun = await stopAtLookOnly.json();
+      assert.equal(stopRun.kind, "service");
+      assert.match(stopRun.commandPreview || "", /gateway stop/);
+
       // enable the gate
       const gateOnRes = await fetch(`${base}/api/admin/execution-gate`, {
         method: "POST",

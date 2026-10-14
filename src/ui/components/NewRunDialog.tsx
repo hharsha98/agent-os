@@ -5,11 +5,38 @@ import { useEffect, useRef, useState } from "react";
 import { getExecutionGateStatus, getWorkspaceListing, listAgents, startAgentRun } from "../../api";
 import { navigateTo } from "../../nav";
 import type { AgentSummary, ExecutionGateStatus } from "../../types";
-import { AGENTS_ORDER, AGENT_LABEL, SETUP_INSTALLED_AGENT_SET, friendlyError } from "../agentsShared";
-import { RISKY_STEP_HINT, folderProblem, folderSuggestions, gateBlock, levelWord, pickAgent, startError, taskCount, taskProblem, taskTooLong } from "../newRun";
+import { AGENTS_ORDER, AGENT_LABEL, SETUP_CAN_INSTALL_AGENT_SET, friendlyError } from "../agentsShared";
+import { withTimeout } from "../homeShared";
+import {
+  CHECKING_WORDS,
+  RISKY_STEP_HINT,
+  START_NO_ANSWER,
+  askToFocusNextRun,
+  folderProblem,
+  folderSuggestions,
+  gateBlock,
+  levelWord,
+  noEditsNote,
+  peekDraft,
+  pickAgent,
+  rememberDraft,
+  startError,
+  taskCount,
+  taskProblem,
+  taskTooLong
+} from "../newRun";
 import type { NewRunRequest } from "../newRun";
+import { gotNoAnswer } from "../setupGroupShared";
 import AgentConfirmModal from "./AgentConfirmModal";
 import Banner from "./Banner";
+
+// Every request here has a time limit, so a server that never answers cannot leave the dialog greyed out
+// with no reason, or unable to close. The agents list waits on each agent's own checks (the server gives
+// them about 13 s), so it gets longer than the safety level. Starting a run waits on the agent's own
+// detection as well.
+const AGENTS_TIMEOUT_MS = 15000;
+const GATE_TIMEOUT_MS = 10000;
+const START_TIMEOUT_MS = 30000;
 
 export default function NewRunDialog({ request, onClose }: { request: NewRunRequest; onClose: () => void }) {
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
@@ -17,19 +44,23 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
   const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
   const [gateFailed, setGateFailed] = useState(false);
   const [folders, setFolders] = useState<string[]>([]);
-  const [task, setTask] = useState(request.prompt || "");
+  // A task the person left behind earlier (see rememberDraft) comes back, unless this open brings its own.
+  const [task, setTask] = useState(request.prompt || peekDraft());
   const [picked, setPicked] = useState(request.agentId || "");
   const [folder, setFolder] = useState("");
   // The "write a task" reason appears only after the person tried to start, so a fresh dialog is not shouting.
   const [triedStart, setTriedStart] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rechecking, setRechecking] = useState(false);
-  const [error, setError] = useState<{ text: string; fix?: "safety" | "folder" } | null>(null);
+  const [error, setError] = useState<{ text: string; fix?: "safety" | "folder" | "runs" } | null>(null);
+  // The person pressed Escape or Cancel with a task typed: ask before throwing it away.
+  const [asking, setAsking] = useState(false);
   const taskRef = useRef<HTMLTextAreaElement>(null);
+  const keepRef = useRef<HTMLButtonElement>(null);
 
   async function loadAgents(refresh = false) {
     try {
-      setAgents((await listAgents(refresh)).agents);
+      setAgents((await withTimeout(listAgents(refresh), AGENTS_TIMEOUT_MS)).agents);
       setAgentsFailed(false);
     } catch {
       setAgentsFailed(true);
@@ -37,7 +68,7 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
   }
   async function loadGate() {
     try {
-      setGate(await getExecutionGateStatus());
+      setGate(await withTimeout(getExecutionGateStatus(), GATE_TIMEOUT_MS));
       setGateFailed(false);
     } catch {
       setGateFailed(true);
@@ -73,9 +104,11 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
   const showTaskIssue = taskIssue !== "" && (triedStart || taskTooLong(task));
   const count = taskCount(task);
 
-  function openElsewhere(page: string) {
+  function openElsewhere(page: string, extra: Record<string, string> = {}) {
+    // Going to Safety or Setup to fix what blocks the run must not cost the person what they wrote.
+    rememberDraft(task.trim() !== (request.prompt || "").trim() ? task : "");
     onClose();
-    navigateTo(page);
+    navigateTo(page, extra);
   }
 
   async function recheck() {
@@ -92,18 +125,49 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
     }
     setBusy(true);
     setError(null);
+    setAsking(false);
     try {
-      const run = await startAgentRun(agentId, { prompt: task.trim(), folder: folder.trim() || undefined });
-      // Land on the new run's console (D-C3-3). To land on the Board instead, call navigateTo("runs") here.
+      const run = await withTimeout(startAgentRun(agentId, { prompt: task.trim(), folder: folder.trim() || undefined }), START_TIMEOUT_MS);
+      // Land on the new run's console (D-C3-3), with keyboard focus on its title: the button that was pressed
+      // is gone by then. To land on the Board instead, call navigateTo("runs") here.
+      askToFocusNextRun();
+      rememberDraft("");
       navigateTo("runs", { run: run.id });
       onClose();
     } catch (caught) {
-      const code = caught instanceof Error ? caught.message : "";
-      setError(startError(code) || { text: friendlyError(caught) });
-      if (code === "execution_gate_off") void loadGate();
+      if (gotNoAnswer(caught)) {
+        // No answer is not a refusal: the run may have started. Say so, and give the person the way out.
+        setError({ text: START_NO_ANSWER, fix: "runs" });
+      } else {
+        const code = caught instanceof Error ? caught.message : "";
+        setError(startError(code) || { text: friendlyError(caught) });
+        if (code === "execution_gate_off") void loadGate();
+      }
       setBusy(false);
     }
   }
+
+  // A task the person typed (or changed) is theirs: Escape, Cancel and a press on the dimmed page never throw
+  // it away without asking. A task that came with the dialog (the safe example) and was not touched is not.
+  const dirty = task.trim() !== "" && task.trim() !== (request.prompt || "").trim();
+  function requestClose() {
+    if (busy) return;
+    if (asking) {
+      // Escape while the question is showing means "keep writing".
+      setAsking(false);
+      taskRef.current?.focus();
+      return;
+    }
+    if (dirty) {
+      setAsking(true);
+      return;
+    }
+    onClose();
+  }
+  useEffect(() => {
+    if (asking) keepRef.current?.focus();
+  }, [asking]);
+  const checking = (agents === null && !agentsFailed) || (gate === null && !gateFailed);
 
   const level = levelWord(gate);
 
@@ -114,10 +178,45 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
       confirmDisabled={cannotStart}
       busy={busy}
       wide
+      closeOnBackdrop={false}
       onConfirm={() => void start()}
-      onClose={() => (busy ? null : onClose())}
+      onClose={requestClose}
     >
       <p className="os-newrun__lede">A run is one task an agent does on its own.</p>
+
+      {asking ? (
+        <Banner
+          tone="warn"
+          title="Discard this task?"
+          actions={
+            <>
+              <button
+                ref={keepRef}
+                type="button"
+                className="os-btn os-btn--secondary"
+                onClick={() => {
+                  setAsking(false);
+                  taskRef.current?.focus();
+                }}
+              >
+                Keep writing
+              </button>
+              <button
+                type="button"
+                className="os-btn os-btn--ghost"
+                onClick={() => {
+                  rememberDraft("");
+                  onClose();
+                }}
+              >
+                Discard
+              </button>
+            </>
+          }
+        >
+          What you wrote is lost if you close this.
+        </Banner>
+      ) : null}
 
       {offline ? (
         <Banner
@@ -149,23 +248,19 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
           tone="warn"
           title={`${label} isn't installed`}
           actions={
-            SETUP_INSTALLED_AGENT_SET.has(agentId) ? (
-              <button type="button" className="os-btn os-btn--secondary" onClick={() => openElsewhere("setup")}>
+            <>
+              <button type="button" className="os-btn os-btn--secondary" onClick={() => openElsewhere("setup", { step: "plan" })}>
                 Open Setup
               </button>
-            ) : (
-              <>
-                <a className="os-btn os-btn--secondary" href={agent?.homepage} target="_blank" rel="noreferrer">
-                  Open website
-                </a>
-                <button type="button" className="os-btn os-btn--ghost" onClick={() => void recheck()} disabled={rechecking}>
-                  {rechecking ? "Checking…" : "Re-check"}
-                </button>
-              </>
-            )
+              <button type="button" className="os-btn os-btn--ghost" onClick={() => void recheck()} disabled={rechecking}>
+                {rechecking ? "Checking…" : "Re-check"}
+              </button>
+            </>
           }
         >
-          {SETUP_INSTALLED_AGENT_SET.has(agentId) ? "Install it from Setup, then come back." : `Install ${label} from its website, then press Re-check.`}
+          {SETUP_CAN_INSTALL_AGENT_SET.has(agentId)
+            ? "Install it from Setup, then come back and press Re-check."
+            : `Install ${label}, then press Re-check.`}
         </Banner>
       ) : null}
 
@@ -247,14 +342,21 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
           </datalist>
         </div>
       </div>
+      {noEditsNote(agentId) ? <p className="os-newrun__note">{noEditsNote(agentId)}</p> : null}
       <p id="os-newrun-folder-note" className={`os-newrun__note${folderIssue ? " os-newrun__note--bad" : ""}`} role={folderIssue ? "alert" : undefined}>
-        {folderIssue || `Runs can only work inside the Workspace. Leave this empty to use runs-work/${agentId}.`}
+        {folderIssue || `Pick a folder inside the Workspace: Agent OS refuses a start folder outside it. Leave this empty to use runs-work/${agentId}.`}
       </p>
 
-      <p className="os-newrun__hint">
-        {level ? `Runs follow your safety level (${level}). ` : "Runs follow your safety level. "}
-        {RISKY_STEP_HINT}
-      </p>
+      {checking ? (
+        <p className="os-newrun__hint" role="status">
+          {CHECKING_WORDS}
+        </p>
+      ) : (
+        <p className="os-newrun__hint">
+          {level ? `Runs follow your safety level (${level}). ` : "Runs follow your safety level. "}
+          {RISKY_STEP_HINT}
+        </p>
+      )}
 
       {error ? (
         <p className="os-newrun__error" role="alert">
@@ -262,6 +364,11 @@ export default function NewRunDialog({ request, onClose }: { request: NewRunRequ
           {error.fix === "safety" ? (
             <button type="button" className="os-newrun__link" onClick={() => openElsewhere("safety")}>
               Open Safety
+            </button>
+          ) : null}
+          {error.fix === "runs" ? (
+            <button type="button" className="os-newrun__link" onClick={() => openElsewhere("runs")}>
+              Open Runs
             </button>
           ) : null}
           {error.fix === "folder" ? (

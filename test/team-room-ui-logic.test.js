@@ -261,7 +261,7 @@ test("card copy: the page only promises what it knows (agents told, where the fi
   // The room running or not does not change what the card says: the function does not even take the room.
   assert.equal(shared.decisionCardCopy.length, 4);
   // Approve: where the file is comes only from the action.
-  const saved = proposal({ status: "applied", actionId: "A1" });
+  const saved = proposal({ status: "applied", actionId: "A1", userDecision: "approve" });
   assert.equal(copy("saved", saved, undefined, false).sub, "You approved it.");
   assert.match(copy("saved", saved, action(), false).sub, /saved in the Workspace sandbox/);
   assert.doesNotMatch(copy("saved", saved, undefined, false).sub, /sandbox/);
@@ -310,14 +310,16 @@ test("latest started turn: read from the timeline rows", () => {
   assert.equal(shared.latestStartedTurn([]), null);
 });
 
-test("cost: the note says an em dash until a turn reports a cost; a real zero reads $0.000", () => {
+test("cost: the note says no cost was reported (in words) until a turn reports one; a real zero reads $0.000", () => {
   // Nothing reported yet (the server keeps costUsd null and costKnownTurns 0).
   const none = room({ costUsd: null, costKnownTurns: 0, costUnknownTurns: 4, cost: { knownUsd: 0, unknownTurns: 4 } });
   assert.equal(shared.costNotReported(none), true);
-  assert.equal(shared.roomCostText(none), "— known · 4 turns unknown");
+  assert.equal(shared.roomCostText(none), "No cost reported yet · 4 turns did not report a cost");
+  assert.doesNotMatch(shared.roomCostText(none), /—/);
   // Older rooms without the cost object.
   assert.equal(shared.costNotReported(room({ costUsd: null, costKnownTurns: 0 })), true);
-  assert.equal(shared.roomCostText(room({ costUsd: null, costKnownTurns: 0, costUnknownTurns: 1 })), "— known · 1 turn unknown");
+  assert.equal(shared.roomCostText(room({ costUsd: null, costKnownTurns: 0, costUnknownTurns: 1 })), "No cost reported yet · 1 turn did not report a cost");
+  assert.equal(shared.roomCostText(room({ costUsd: null, costKnownTurns: 0, costUnknownTurns: 0 })), "No cost reported yet");
   // A turn reported exactly zero: that is a fact, not an unknown.
   const zero = room({ costUsd: 0, costKnownTurns: 2, costUnknownTurns: 2, cost: { knownUsd: 0, unknownTurns: 2 } });
   assert.equal(shared.costNotReported(zero), false);
@@ -334,4 +336,64 @@ test("unreachable: Agent OS did not answer, so the page never claims nothing cha
   assert.equal(shared.unreachableMessage(), room_);
   assert.equal(shared.unreachableMessage("rooms"), "Agent OS did not answer, so this may not have gone through. The page re-checks your rooms.");
   assert.doesNotMatch(room_, /Nothing was changed/);
+});
+
+// ---- Final review fixes ------------------------------------------------------
+
+test("pause: after Approve the room is 'carrying on', never 'Paused for your decision' (the gap before the server resumes)", () => {
+  const paused = room({ status: "needs_you", pausedFor: "P1" });
+  const waiting = [proposal({ id: "P1", status: "needs_approval" })];
+  const decided = [proposal({ id: "P1", status: "applied", userDecision: "approve" })];
+  const rejected = [proposal({ id: "P1", status: "rejected", userDecision: "reject" })];
+  assert.equal(shared.pauseState(paused, waiting), "waiting");
+  assert.equal(shared.pauseState(paused, decided), "carrying_on");
+  assert.equal(shared.pauseState(paused, rejected), "carrying_on");
+  // The card is not in the list (not loaded yet): the safe old reading.
+  assert.equal(shared.pauseState(paused, []), "waiting");
+  assert.equal(shared.pauseState(paused), "waiting");
+  // Not paused at all.
+  assert.equal(shared.pauseState(room({ status: "needs_you", pausedFor: null }), decided), "none");
+  assert.equal(shared.pauseState(room({ status: "running", pausedFor: "P1" }), decided), "none");
+
+  assert.deepEqual(shared.roomStatusView(paused, waiting), { state: "waiting", label: "Paused for your decision" });
+  assert.deepEqual(shared.roomStatusView(paused, decided), { state: "loading", label: "Carrying on…" });
+  // The lede never says "Nothing is saved until you decide" once the file is saved.
+  assert.match(shared.roomLede(paused, waiting), /Nothing is saved until you decide/);
+  const carrying = shared.roomLede(paused, decided);
+  assert.equal(carrying, "Your decision is saved. Agent OS is checking the room can carry on.");
+  assert.doesNotMatch(carrying, /Nothing is saved/);
+  assert.doesNotMatch(shared.roomStatusView(paused, decided).label, /Paused/);
+});
+
+test("continue: the dialog says every turn that may run (turns left plus the extra ones)", () => {
+  // 6 turns allowed, 2 done: 4 are left, Continue adds 4, so up to 8 may run.
+  const c = shared.continueTurns(room({ turnsAllowed: 6, turnsDone: 2 }), 4);
+  assert.equal(c.left, 4);
+  assert.equal(c.upTo, 8);
+  assert.equal(c.title, "Continue for up to 8 more turns?");
+  assert.match(c.sentence, /up to 8 more turns \(4 still left, plus 4 more\)/);
+  assert.match(c.sentence, /may cost money/);
+  assert.match(c.sentence, /time limit starts again/);
+  // No turns left: only the extra ones run.
+  const none = shared.continueTurns(room({ turnsAllowed: 8, turnsDone: 8 }), 4);
+  assert.equal(none.upTo, 4);
+  assert.equal(none.title, "Continue for up to 4 more turns?");
+  assert.doesNotMatch(none.sentence, /still left/);
+  // More done than allowed (bad data) never goes below the extra turns.
+  assert.equal(shared.continueTurns(room({ turnsAllowed: 4, turnsDone: 9 }), 4).upTo, 4);
+  assert.equal(shared.continueTurns(room({ turnsAllowed: 4, turnsDone: 3 }), 1).title, "Continue for up to 2 more turns?");
+  assert.equal(shared.continueTurns(room({ turnsAllowed: 4, turnsDone: 4 }), 1).title, "Continue for up to 1 more turn?");
+});
+
+test("saved card: 'You approved it' only when you did; an older room that saved by itself says so", () => {
+  const copy = shared.decisionCardCopy;
+  const byYou = proposal({ status: "applied", actionId: "A1", userDecision: "approve" });
+  assert.match(copy("saved", byYou, action(), false).sub, /^You approved it\./);
+  // A file saved before the D10 pause: applied, with no userDecision and no proposal_decided event.
+  const older = proposal({ status: "applied", actionId: "A1" });
+  const olderSub = copy("saved", older, action(), false).sub;
+  assert.doesNotMatch(olderSub, /You approved/);
+  assert.match(olderSub, /Agent OS saved it by itself/);
+  assert.match(olderSub, /Workspace sandbox/);
+  assert.doesNotMatch(copy("saved", older, undefined, false).sub, /You approved|sandbox/);
 });

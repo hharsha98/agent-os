@@ -5,6 +5,7 @@
 // updated, and the row says so.
 import type { ReactNode } from "react";
 import { ExternalLink, Lock } from "lucide-react";
+import OpenAddress from "./OpenAddress";
 import SetupSegmented from "./SetupSegmented";
 import SetupStatus from "./SetupStatus";
 import { formatMinutes, formatSize, totalsOf, type PlanSelection } from "../setupGroupShared";
@@ -21,14 +22,14 @@ function Links({ license, sourceUrl, termsUrl }: { license?: string; sourceUrl?:
     <span className="os-setup-links">
       {license ? <span>Licence: {license}</span> : null}
       {termsUrl ? (
-        <a href={termsUrl} target="_blank" rel="noreferrer">
+        <OpenAddress href={termsUrl} copyLabel="Copy the terms address">
           Terms <ExternalLink size={12} aria-hidden="true" />
-        </a>
+        </OpenAddress>
       ) : null}
       {sourceUrl ? (
-        <a href={sourceUrl} target="_blank" rel="noreferrer">
+        <OpenAddress href={sourceUrl} copyLabel="Copy the official source address">
           Official source <ExternalLink size={12} aria-hidden="true" />
-        </a>
+        </OpenAddress>
       ) : null}
     </span>
   );
@@ -45,7 +46,8 @@ export default function SetupPlanRow({
   onSelect,
   disabled = false,
   canSkip,
-  consent
+  consent,
+  hasBlockedReason = false
 }: {
   label: string;
   license?: string;
@@ -61,6 +63,8 @@ export default function SetupPlanRow({
   canSkip: boolean;
   // Only on the OpenClaw row.
   consent?: OpenClawConsent;
+  // The plan names a reason for this agent (plan.blocked). The page draws it above the groups, so the row may point there.
+  hasBlockedReason?: boolean;
 }) {
   const installStep = installSteps.find((s) => s.action === "install");
   const nodeStep = installSteps.find((s) => s.action === "prereq-node");
@@ -112,7 +116,10 @@ export default function SetupPlanRow({
     // Not installed and the plan has no step for it (for example its install site cannot be reached).
     control = <SetupStatus tone="warn">Can't install now</SetupStatus>;
     sub = "Not installed";
-    what = "Setup can't install this one right now. The reason is shown above the groups.";
+    // Only point at a reason that is on screen: plan.blocked is what the page draws above the groups.
+    what = hasBlockedReason
+      ? "Setup can't install this one right now. The reason is shown above the groups."
+      : "Setup has no install step for this one right now.";
   } else {
     const own = totalsOf(installSteps);
     control = canSkip ? (

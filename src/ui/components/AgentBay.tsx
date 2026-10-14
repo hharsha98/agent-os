@@ -10,13 +10,14 @@ import type { BuilderBrains } from "../../buildersApi";
 import type { AgentDetail, AgentSummary } from "../../types";
 import Banner from "./Banner";
 import StatusWord from "./StatusWord";
-import { AGENT_LABEL, AGENT_MAKER, AGENT_ROLE, SERVICE_AGENT_SET, SETUP_INSTALLED_AGENT_SET, friendlyError } from "../agentsShared";
+import { AGENT_LABEL, AGENT_MAKER, AGENT_ROLE, SERVICE_AGENT_SET, SETUP_CAN_INSTALL_AGENT_SET, SETUP_INSTALLED_AGENT_SET, friendlyError } from "../agentsShared";
 import { installState } from "../agentsPageShared";
 import { isBuilderId } from "../builderShared";
-import { withTimeout } from "../homeShared";
+import { AGENT_DETAIL_LIMIT_MS, withTimeout } from "../homeShared";
 import { useInterval } from "./useInterval";
 import AgentBrainCard from "./AgentBrainCard";
 import BuilderBrainCard from "./BuilderBrainCard";
+import OpenAddress from "./OpenAddress";
 import PlanLimitSettings from "./PlanLimitSettings";
 import AgentServicePanel from "./AgentServicePanel";
 import AgentSafetyPanel from "./AgentSafetyPanel";
@@ -25,10 +26,10 @@ const DETAIL_POLL_MS = 20000;
 // While the detail is failing the page tries again sooner, so it comes back by itself soon after
 // Agent OS does (the rest of the page polls every 5 s while failing).
 const DETAIL_RETRY_MS = 5000;
-// The detail waits on the agent's own checks (the server gives each one up to 8 s, after a 5 s
-// version check), so the page waits longer than the server does: a slow check must not look like
-// "can't load".
-const DETAIL_TIMEOUT_MS = 25000;
+// The detail waits on the agent's own checks: the version check (5 s) and then the agent's own doctor
+// (Hermes and OpenClaw give it up to 30 s on the server). The page waits longer than the server does
+// (AGENT_DETAIL_LIMIT_MS, homeShared.ts): a slow check must not look like "can't load".
+const DETAIL_TIMEOUT_MS = AGENT_DETAIL_LIMIT_MS;
 
 export default function AgentBay({
   agentId,
@@ -182,16 +183,16 @@ export default function AgentBay({
           </>
         ) : found === "missing" ? (
           <div className="os-agent-version__missing">
-            <StatusWord state="unknown" label="Not installed" />
+            <StatusWord state="idle" label="Not installed" />
             <p>{label} isn&apos;t installed on this Mac.</p>
-            {SETUP_INSTALLED_AGENT_SET.has(agentId) ? (
-              <button type="button" className="os-btn os-btn--secondary" onClick={() => navigateTo("setup")}>
+            {SETUP_CAN_INSTALL_AGENT_SET.has(agentId) ? (
+              <button type="button" className="os-btn os-btn--primary" onClick={() => navigateTo("setup", { step: "plan" })}>
                 Open Setup
               </button>
             ) : agent?.homepage ? (
-              <a className="os-btn os-btn--secondary" href={agent.homepage} target="_blank" rel="noreferrer">
+              <OpenAddress className="os-btn os-btn--secondary" href={agent.homepage} copyLabel="Copy the install page address">
                 How to install it <ExternalLink size={14} aria-hidden="true" />
-              </a>
+              </OpenAddress>
             ) : null}
           </div>
         ) : (
@@ -201,8 +202,8 @@ export default function AgentBay({
           </div>
         )}
         <p className="os-agent-version__links">
-          {agent?.homepage ? <a href={agent.homepage} target="_blank" rel="noreferrer">Homepage</a> : null}
-          {agent?.docsUrl ? <a href={agent.docsUrl} target="_blank" rel="noreferrer">Docs</a> : null}
+          {agent?.homepage ? <OpenAddress href={agent.homepage} copyLabel="Copy the homepage address">Homepage</OpenAddress> : null}
+          {agent?.docsUrl ? <OpenAddress href={agent.docsUrl} copyLabel="Copy the docs address">Docs</OpenAddress> : null}
         </p>
       </section>
 
@@ -218,10 +219,23 @@ export default function AgentBay({
             </>
           ) : null}
 
-          <AgentSafetyPanel agentId={agentId} safety={detail?.safety ?? null} notes={detail?.config.notes ?? []} onFixed={() => void loadDetail()} />
+          <AgentSafetyPanel
+            agentId={agentId}
+            safety={detail?.safety ?? null}
+            notes={detail?.config.notes ?? []}
+            onFixed={() => void loadDetail()}
+            failed={!detail && Boolean(detailError)}
+          />
 
           {operator ? (
-            <AgentServicePanel agentId={agentId} label={label} service={detail?.service ?? null} checked={Boolean(detail)} onRefresh={() => void loadDetail()} />
+            <AgentServicePanel
+              agentId={agentId}
+              label={label}
+              service={detail?.service ?? null}
+              checked={Boolean(detail)}
+              failed={!detail && Boolean(detailError)}
+              onRefresh={() => void loadDetail()}
+            />
           ) : null}
 
           {dashboard ? (
@@ -233,9 +247,15 @@ export default function AgentBay({
                   <p>{dashboard.about} This is its default address, and it opens only while it is running.</p>
                   <span className="os-mono os-agent-dash__addr">{dashboard.url.replace("http://", "")}</span>
                 </div>
-                <a className="os-btn os-btn--secondary" href={dashboard.url} target="_blank" rel="noreferrer">
+                <OpenAddress
+                  className="os-btn os-btn--secondary"
+                  href={dashboard.url}
+                  copyLabel="Copy the dashboard address"
+                  buttonClassName="os-btn os-btn--secondary"
+                  showAddress={false}
+                >
                   {dashboard.button} <ExternalLink size={14} aria-hidden="true" />
-                </a>
+                </OpenAddress>
               </div>
             </section>
           ) : null}

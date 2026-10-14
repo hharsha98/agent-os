@@ -18,14 +18,15 @@ import { useAgentModels } from "./useAgentModels";
 import type { BrainAgentId, BrainOptionsResponse, ReceiptEntry } from "../../setupApi";
 import { friendlyError, getBrainOptions, getReceipt } from "../../setupApi";
 import { BRAIN_AGENT_IDS, BRAIN_AGENT_LABEL, type BrainAgentLine } from "../brainShared";
-import { withTimeout } from "../homeShared";
+import { BRAIN_READ_LIMIT_MS, withTimeout } from "../homeShared";
 import { gotNoAnswer, noAnswerWords } from "../setupGroupShared";
 
 const PROVIDER_NAME: Record<string, string> = { openrouter: "OpenRouter", ollama: "Local (Ollama)" };
 
 // Every request this card makes has a time limit, so a server that never answers cannot leave it on
-// "Checking…" for ever (the same limit as the Setup brain panel).
-const REQUEST_TIMEOUT_MS = 20000;
+// "Checking…" for ever. The brain read re-runs the whole system check and then each agent's own doctor
+// (up to 30 s on the server), so its limit is above that; a shorter one would fail every time, Retry included.
+const RECEIPT_TIMEOUT_MS = 20000;
 const UNREADABLE = "Agent OS gave an answer that could not be read.";
 
 // A refusal Agent OS sent keeps its plain-English reason. A request that got no answer says so in
@@ -58,8 +59,8 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
     const mine = (newest.current += 1);
     try {
       const [options, receipts] = await Promise.all([
-        withTimeout(getBrainOptions(true), REQUEST_TIMEOUT_MS),
-        withTimeout(getReceipt(), REQUEST_TIMEOUT_MS).catch(() => null)
+        withTimeout(getBrainOptions(true), BRAIN_READ_LIMIT_MS),
+        withTimeout(getReceipt(), RECEIPT_TIMEOUT_MS).catch(() => null)
       ]);
       if (!alive.current || mine !== newest.current) return;
       // Both agents' lines are read below, so an answer without them is not an answer.

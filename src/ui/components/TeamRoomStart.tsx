@@ -328,7 +328,8 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
 
           <h2 className="os-team__h os-team__h--spaced">What Agent OS does by itself</h2>
           <p className="os-team__lede-small">
-            In this room the agents only talk. Agent OS passes each message along, and it asks you before it saves anything.
+            Agent OS asks both agents to only talk. Hermes is limited to talking when its version allows it, and OpenClaw must ask before it
+            runs a command. Agent OS passes each message along, and it asks you before it saves anything.
           </p>
           <ul className="os-team__does">
             <li className="yes">

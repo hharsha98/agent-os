@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as shared from "../src/ui/setupGroupShared.ts";
-import { withTimeout } from "../src/ui/homeShared.ts";
+import { HOME_AGENTS, withTimeout } from "../src/ui/homeShared.ts";
 
 const { STEP } = shared;
 
@@ -350,4 +350,14 @@ test("readyVerdict: a failed re-load, or a partial answer from the server, is no
   const noAgents = shared.readyVerdict(checkOf(undefined), brainOf(true, true), {}, false);
   assert.equal(noAgents.ready, false);
   assert.equal(noAgents.partial, true);
+});
+
+// ---- Final review fixes ------------------------------------------------------
+
+test("Setup, Agents and Home call the five agents by the same names", () => {
+  // Home's list is the one the Agents page also shows (the server's own labels).
+  for (const agent of HOME_AGENTS) assert.equal(shared.AGENT_NAMES[agent.id], agent.name, agent.id);
+  assert.deepEqual(Object.keys(shared.AGENT_NAMES).sort(), HOME_AGENTS.map((a) => a.id).sort());
+  assert.equal(shared.AGENT_NAMES.codex, "Codex CLI");
+  assert.equal(shared.AGENT_NAMES.cursor, "Cursor Agent");
 });

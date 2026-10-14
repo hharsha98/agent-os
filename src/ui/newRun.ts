@@ -22,6 +22,41 @@ export const TASK_MAX = 20000;
 // The character count under the Task field shows from here (90% of TASK_MAX), so a normal task has no number to read.
 export const TASK_COUNT_FROM = 18000;
 
+// After Start run, the dialog closes and the run's console opens. The button that was pressed is gone by
+// then, so keyboard focus would fall to the page. The dialog asks (askToFocusNextRun) and the Runs page
+// takes the request (takeFocusNextRun) and puts focus on the console's title. A one-shot flag, because
+// the Runs page may not be mounted yet when the dialog starts the run from another page.
+let focusNextRun = false;
+export function askToFocusNextRun() {
+  focusNextRun = true;
+}
+export function takeFocusNextRun(): boolean {
+  const asked = focusNextRun;
+  focusNextRun = false;
+  return asked;
+}
+
+// A task the person typed and then left without starting (they went to Safety or Setup to fix what
+// blocked the run). It is kept here, in memory for as long as the app stays open, and put back the next
+// time New run opens. Starting the run, or choosing Discard, clears it.
+let draftTask = "";
+export function rememberDraft(task: string) {
+  draftTask = task;
+}
+export function peekDraft(): string {
+  return draftTask;
+}
+
+// The Agent field's note for the three coding agents (decision D-C3-4: the dialog never asks for edit
+// permission). Each is started without permission to change files: Codex with a read-only sandbox,
+// Claude Code in a mode that refuses anything not pre-approved, Cursor Agent in a mode that only
+// proposes changes. An empty string for Hermes and OpenClaw, which the note does not describe.
+export function noEditsNote(agentId: string): string {
+  return agentId === "claude" || agentId === "codex" || agentId === "cursor"
+    ? "Agent OS doesn't give this run permission to change files. It can read them and report back."
+    : "";
+}
+
 type Gate = Pick<ExecutionGateStatus, "enabled" | "level"> | null;
 
 // The same words as the top bar: "Level 1 · Run agents". Empty while the safety level is not known.
@@ -93,9 +128,16 @@ export function folderSuggestions(files: Array<{ root: string; relativePath: str
 
 // Words for the answers the start route can give. null means "not one I know": the caller falls back
 // to friendlyError(). `fix` says which button helps.
-export function startError(code: string): { text: string; fix?: "safety" | "folder" } | null {
+export function startError(code: string): { text: string; fix?: "safety" | "folder" | "runs" } | null {
   if (code === "execution_gate_off") return { text: "Safety is set to Look only. Agents can't run until you allow it.", fix: "safety" };
   if (code === "folder_outside_sandbox") return { text: "That folder is outside the Workspace. Type a folder name inside it, or leave the folder empty.", fix: "folder" };
   if (code === "too_many_runs") return { text: "Too many runs are already working. Wait for one to finish, then press Start run again." };
   return null;
 }
+
+// The start request got no answer in time (or the connection dropped). The run may well have started, so the
+// words never say "nothing was started"; they send the person to Runs to look.
+export const START_NO_ANSWER = "Agent OS hasn't answered. The run may have started: check Runs before you press Start run again.";
+
+// The words while the dialog is still asking Agent OS about the agents and the safety level.
+export const CHECKING_WORDS = "Checking your agents and safety level…";

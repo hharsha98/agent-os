@@ -516,7 +516,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
       <UpdateBanner />
       {toast ? <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
-      {stopAllOpen ? <StopAllRunsModal onClose={() => setStopAllOpen(false)} /> : null}
+      {stopAllOpen ? (
+        <StopAllRunsModal onClose={() => setStopAllOpen(false)} onDone={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />
+      ) : null}
       {newRun ? <NewRunDialog key={newRun.id} request={newRun.request} onClose={() => setNewRun(null)} /> : null}
     </div>
   );

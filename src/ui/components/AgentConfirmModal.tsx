@@ -17,7 +17,8 @@ export default function AgentConfirmModal({
   confirmDisabled = false,
   busy = false,
   danger = false,
-  wide = false
+  wide = false,
+  closeOnBackdrop = true
 }: {
   title: string;
   children: ReactNode;
@@ -28,8 +29,14 @@ export default function AgentConfirmModal({
   busy?: boolean;
   danger?: boolean;
   wide?: boolean;
+  // false for a dialog that holds something the person typed: a press on the dimmed page then does nothing
+  // (Escape and Cancel still ask the dialog to close).
+  closeOnBackdrop?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  // The press must start AND end on the dimmed page to count as a click outside, so a drag that
+  // began inside the dialog (selecting text) and let go outside never closes it.
+  const pressedOnBackdrop = useRef(false);
   const previouslyFocused = useRef<Element | null>(null);
 
   useEffect(() => {
@@ -68,7 +75,17 @@ export default function AgentConfirmModal({
   }, [onClose]);
 
   return (
-    <div className="os-modal__backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="os-modal__backdrop"
+      onMouseDown={(e) => {
+        pressedOnBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        const outside = pressedOnBackdrop.current && e.target === e.currentTarget;
+        pressedOnBackdrop.current = false;
+        if (closeOnBackdrop && outside) onClose();
+      }}
+    >
       <div className={`os-modal${wide ? " os-modal--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="os-modal-title" ref={dialogRef}>
         <h2 id="os-modal-title" className="os-modal__title">
           {title}

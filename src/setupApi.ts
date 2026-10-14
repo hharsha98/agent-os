@@ -548,6 +548,9 @@ export interface AgentModelInfo {
   model: string | null;
   isPreset: boolean;
   presetSlug: string | null;
+  // false = the agent could not be asked (its `config get` failed): the model is unknown, which is not the
+  // same as "no model set". Absent when the answer was read.
+  known?: boolean;
 }
 
 export function getAgentModel(agentId: BrainAgentId) {

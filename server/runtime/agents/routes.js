@@ -317,7 +317,9 @@ export function createAgentsRouter() {
         res.status(404).json({ ok: false, error: "unknown service action" });
         return;
       }
-      if (!(await isExecutionEnabled())) {
+      // Stopping only reduces what runs, the same reasoning as "Hold to stop all",
+      // so Stop works at Look only too. Start and Restart stay behind the gate.
+      if (action !== "stop" && !(await isExecutionEnabled())) {
         res.status(403).json({ error: "execution_gate_off" });
         return;
       }

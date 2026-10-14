@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ExternalLink, Search, X } from "lucide-react";
 import ModelApplyPanel from "./ModelApplyPanel";
 import StatusMark from "./StatusMark";
+import OpenAddress from "./OpenAddress";
 import type { CatalogModel, CatalogSort } from "../../setupApi";
 import { cancelOpenRouterConnect, friendlyError, getModelCatalog, openOpenRouterModels } from "../../setupApi";
 import type { ApplyFn, ApplySubject, ModelBadge, ModelTarget } from "../modelPickerShared";
@@ -273,9 +274,9 @@ export default function ModelPicker({ title = "Change model", targets, initialTa
                 <span>
                   {openNote.text}{" "}
                   {openNote.url ? (
-                    <a href={openNote.url} target="_blank" rel="noopener noreferrer">
+                    <OpenAddress href={openNote.url} showAddress={false} copyLabel="Copy the address">
                       {openNote.url}
-                    </a>
+                    </OpenAddress>
                   ) : null}
                 </span>
               </p>

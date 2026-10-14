@@ -10,23 +10,21 @@ import { ArrowRight, ChevronDown, ChevronUp, CircleCheck, RefreshCw, TriangleAle
 import Banner from "./Banner";
 import SetupFooter from "./SetupFooter";
 import SetupStatus from "./SetupStatus";
-import { withTimeout } from "../homeShared";
-import { gotNoAnswer, readyVerdict, safeDefaultsWords, type ReadyAgentState } from "../setupGroupShared";
+import { AGENT_DETAIL_LIMIT_MS, BRAIN_READ_LIMIT_MS, withTimeout } from "../homeShared";
+import { AGENT_NAMES, gotNoAnswer, readyVerdict, safeDefaultsWords, type ReadyAgentState } from "../setupGroupShared";
 import type { AgentDetail, BrainOptionsResponse, ReceiptEntry, SystemCheck } from "../../setupApi";
 import { getAgentDetail, getBrainOptions, getReceipt, getSetupCheck } from "../../setupApi";
 
 const COLUMNS = "minmax(132px, 240px) minmax(0, 1fr) minmax(176px, auto)";
 
-// The fresh check re-probes every agent, which can take about 13 s on a cold or hung command.
+// The fresh check re-probes every agent, which can take about 13 s on a cold or hung command. The brain and
+// agent-detail reads also run each agent's own doctor (up to 30 s on the server), so their limits are above
+// that (homeShared.ts); shorter ones would fail every time on a slow computer.
 const CHECK_TIMEOUT_MS = 25000;
 const READ_TIMEOUT_MS = 20000;
 
 const AGENT_LABEL: Record<string, string> = {
-  hermes: "Hermes",
-  openclaw: "OpenClaw",
-  claude: "Claude Code",
-  codex: "Codex",
-  cursor: "Cursor CLI",
+  ...AGENT_NAMES,
   "managed-node": "Node 24 (managed by Agent OS)"
 };
 
@@ -78,8 +76,9 @@ function buildCards(
         name: agentId === "openclaw" ? "Gateway running" : "Background service running",
         detail: installed ? (entry?.service ? (entry.service.running ? "Running" : "Stopped") : "—") : "—",
         state: installed ? serviceRunning : null,
-        fixLabel: "Go to AI brain",
-        onFix: () => go.toStep(3)
+        // Starting a stopped service is done on the agent's own page (Start / Restart live there), not in the brain step.
+        fixLabel: `Open ${AGENT_LABEL[agentId]} on Agents`,
+        onFix: () => go.openAgent(agentId)
       },
       {
         name: "Safe defaults applied",
@@ -127,17 +126,20 @@ export default function SetupReadyPanel({
   async function load() {
     setLoading(true);
     try {
+      // The fresh check is the one read the page cannot do without. The others are judged apart: a slow brain
+      // read turns only the "Model provider configured" rows into "—" (readyVerdict counts them as unknown),
+      // a slow receipt only the list of changes, and neither fails the whole final check.
       const [checkRes, brainRes, receiptRes, hermesDetail, openclawDetail] = await Promise.all([
         withTimeout(getSetupCheck(true), CHECK_TIMEOUT_MS),
-        withTimeout(getBrainOptions(true), READ_TIMEOUT_MS),
-        withTimeout(getReceipt(), READ_TIMEOUT_MS),
-        withTimeout(getAgentDetail("hermes"), READ_TIMEOUT_MS).catch(() => null),
-        withTimeout(getAgentDetail("openclaw"), READ_TIMEOUT_MS).catch(() => null)
+        withTimeout(getBrainOptions(true), BRAIN_READ_LIMIT_MS).catch(() => null),
+        withTimeout(getReceipt(), READ_TIMEOUT_MS).catch(() => null),
+        withTimeout(getAgentDetail("hermes"), AGENT_DETAIL_LIMIT_MS).catch(() => null),
+        withTimeout(getAgentDetail("openclaw"), AGENT_DETAIL_LIMIT_MS).catch(() => null)
       ]);
       if (!alive.current) return;
       setCheck(checkRes);
       setBrain(brainRes);
-      setReceipt(receiptRes.receipt);
+      setReceipt(receiptRes ? receiptRes.receipt : null);
       setDetails({ hermes: hermesDetail, openclaw: openclawDetail });
       setProblem("");
     } catch (error) {
@@ -333,7 +335,9 @@ export default function SetupReadyPanel({
           {showReceipt ? (
             <div id={receiptId} className="os-setup-receipt__body">
               <p className="os-setup-receipt__cap">Every change Agent OS made is listed here, with the official way to undo it.</p>
-              {receipt && receipt.length ? (
+              {receipt === null ? (
+                <p className="os-setup-receipt__empty">Agent OS could not read its list of changes this time. Press Check again.</p>
+              ) : receipt.length ? (
                 <ul className="os-setup-receipt__list">
                   {receipt.map((entry, i) => (
                     <li key={i}>

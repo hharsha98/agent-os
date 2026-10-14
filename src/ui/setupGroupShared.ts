@@ -5,12 +5,15 @@ import type { AgentDetail, BrainOptionsResponse, SetupPlan, SetupPlanStep, Syste
 export const OPERATOR_IDS = ["hermes", "openclaw"] as const;
 export const CODING_IDS = ["claude", "codex", "cursor"] as const;
 
+// The names every page uses for the five agents (the same words as the Agents page, which shows the server's
+// own labels, and as Home's HOME_AGENTS in homeShared.ts). test/home-shared.test.js fails if the two lists
+// drift apart: Node cannot follow an extensionless import, so this file keeps its own copy.
 export const AGENT_NAMES: Record<string, string> = {
   hermes: "Hermes Agent",
   openclaw: "OpenClaw",
   claude: "Claude Code",
-  codex: "Codex",
-  cursor: "Cursor CLI"
+  codex: "Codex CLI",
+  cursor: "Cursor Agent"
 };
 
 export function formatSize(mb: number) {

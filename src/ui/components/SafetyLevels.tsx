@@ -5,7 +5,7 @@
 // The current level's button is NOT disabled. A disabled button loses keyboard focus, and the
 // dialogs return focus to the button that opened them, so a level changed from the keyboard would
 // drop the person's place. Pressing the current level does nothing (the page ignores it).
-import { Check, CircleHelp, Lock, ShieldCheck } from "lucide-react";
+import { Check, CircleHelp, Clock, Lock, ShieldCheck } from "lucide-react";
 import { ENV_LOCK_WORDS, LEVEL_DETAIL, LEVEL_UNKNOWN_NOTE, LEVELS, LEVELS_QUIET, levelButtonId, levelFoot, levelHeading } from "../safetyShared";
 
 type Level = 0 | 1 | 2;
@@ -73,7 +73,15 @@ export default function SafetyLevels({
                 <span className="os-saf-level__d">{unsupported ? "Only available on macOS." : locked ? ENV_LOCK_WORDS : LEVELS[n].blurb}</span>
               </span>
               <span className="os-saf-level__f">
-                {on && n !== 2 ? <Check size={13} aria-hidden="true" /> : n === 2 && !on && supported ? <Lock size={13} aria-hidden="true" /> : null}
+                {/* Every line under a level is an icon and a word, never colour alone: a check for the level in use, a clock
+                    for machine control that is on (it turns itself off), a lock for what cannot be reached from here (not on a computer where machine control does not exist at all). */}
+                {on && n !== 2 ? (
+                  <Check size={13} aria-hidden="true" />
+                ) : on && n === 2 ? (
+                  <Clock size={13} aria-hidden="true" />
+                ) : (n === 2 && supported) || locked ? (
+                  <Lock size={13} aria-hidden="true" />
+                ) : null}
                 {levelFoot(n, current, countdown, { supported, envLocked, lastKnown, changing: busy })}
               </span>
             </button>

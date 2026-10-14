@@ -42,7 +42,7 @@ test("rail status: loading is loading, and a failed or timed-out first load is u
 });
 
 test("rail status: not installed only when the list says so; an agent the list does not mention is unknown", () => {
-  assert.deepEqual(shared.railStatus({ resolved: true, gaveUp: false, agent: agent("cursor", false), live: 0 }), { state: "unknown", label: "Not installed" });
+  assert.deepEqual(shared.railStatus({ resolved: true, gaveUp: false, agent: agent("cursor", false), live: 0 }), { state: "idle", label: "Not installed" });
   assert.deepEqual(shared.railStatus({ resolved: true, gaveUp: false, agent: undefined, live: 0 }), { state: "unknown" });
 });
 
@@ -55,7 +55,7 @@ test("rail status: Live (with a count past one) while it works, Installed otherw
 });
 
 test("a missing agent is never reported as a live one", () => {
-  assert.deepEqual(shared.railStatus({ resolved: true, gaveUp: false, agent: agent("cursor", false), live: 2 }), { state: "unknown", label: "Not installed" });
+  assert.deepEqual(shared.railStatus({ resolved: true, gaveUp: false, agent: agent("cursor", false), live: 2 }), { state: "idle", label: "Not installed" });
 });
 
 test("rail version: '…' while loading, '—' when unknown, the version only for an installed agent", () => {

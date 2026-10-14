@@ -70,6 +70,22 @@
 .os-saf-ghost__cmd { font-size: var(--os-fs-13); }
 .os-saf-ghost__acts { display: flex; gap: var(--os-sp-2); }
 
+/* The safeguards table: "Applies to" and "Status" are quiet, small type, so the safeguard's own title is the loudest
+   thing in its row (as in the prototype). A short line height keeps a two-line "Applies to" tight in its 150px column. */
+.os-saf-guards .os-table__row > .os-table__cell:nth-child(2) {
+  font-size: var(--os-fs-13);
+  line-height: 1.4;
+  color: var(--os-text-2);
+}
+.os-saf-guards .os-table__row > .os-table__cell:nth-child(3) {
+  font-size: var(--os-fs-13);
+  line-height: 1.4;
+}
+.os-saf-guards .os-table__row .os-statusword {
+  font-size: var(--os-fs-13);
+  font-weight: 450;
+}
+
 /* Hold to stop all, explained */
 .os-saf-stop { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--os-sp-6); align-items: start; }
 @media (max-width: 1100px) { .os-saf-stop { grid-template-columns: minmax(0, 1fr); } }
@@ -93,6 +109,9 @@
   font-size: var(--os-fs-13);
 }
 .os-saf-frame__btn > :not(.os-saf-frame__fill) { position: relative; }
+/* Once the red fill is under the words, they step up to full ink, as on the real button (shell.css
+   .os-holdstop.is-holding): danger-red words on the filling red measure 3.18:1, full ink 8.5:1. */
+.os-saf-frame__btn.is-filled { color: var(--os-text-1); border-color: var(--os-danger); }
 /* The same tint the real button's fill uses (shell.css .os-holdstop__fill); the 8% wash was too faint to show a fill. */
 .os-saf-frame__fill { position: absolute; inset: 0; transform-origin: left center; background: var(--os-danger-line); }
 .os-saf-frame__t { font-size: var(--os-fs-13); color: var(--os-text-2); }

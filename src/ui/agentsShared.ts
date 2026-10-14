@@ -34,6 +34,10 @@ export const SERVICE_AGENT_SET = new Set(["hermes", "openclaw"]);
 // manager, so their "not installed" state points at Setup instead of a
 // homepage + "press Re-check" flow.
 export const SETUP_INSTALLED_AGENT_SET = new Set(["hermes", "openclaw"]);
+// Agent OS Setup can install all five agents (Hermes, OpenClaw and the three coding agents), so every
+// "not installed" message points at Setup. A target=_blank link to a vendor's website does nothing in
+// the desktop app, so Setup is also the only way forward that works there.
+export const SETUP_CAN_INSTALL_AGENT_SET = new Set(["hermes", "openclaw", "claude", "codex", "cursor"]);
 
 // A path returned by the server (e.g. runs/preview's `cwd`) is a raw,
 // uncollapsed absolute path — unlike commandPreview/versionFull, which the

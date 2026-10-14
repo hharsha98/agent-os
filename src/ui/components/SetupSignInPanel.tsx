@@ -1,4 +1,4 @@
-// The "Sign in" step: one row per coding agent (Claude Code, Codex, Cursor) with
+// The "Sign in" step: one row per coding agent (Claude Code, Codex CLI, Cursor Agent) with
 // a status, one button, and what the sign-in costs. The button runs the
 // agent's OWN login command on the server, which opens the browser; the status
 // comes from asking the agent itself. No password or token ever reaches this
@@ -9,17 +9,18 @@ import { ArrowRight, Lock, RefreshCw } from "lucide-react";
 import RelativeTime from "./RelativeTime";
 import SetupCommand from "./SetupCommand";
 import SetupFooter from "./SetupFooter";
+import OpenAddress from "./OpenAddress";
 import SetupStatus, { type SetupTone } from "./SetupStatus";
 import { useInterval } from "./useInterval";
 import { withTimeout } from "../homeShared";
-import { gotNoAnswer } from "../setupGroupShared";
+import { AGENT_NAMES, gotNoAnswer } from "../setupGroupShared";
 import type { SignInAgentId, SignInInfo, SignInRun } from "../../setupApi";
 import { cancelSignInRun, friendlyError, getSignIn, openSignInTerminal, startSignInRun } from "../../setupApi";
 
 const AGENTS: { id: SignInAgentId; label: string; maker: string }[] = [
-  { id: "claude", label: "Claude Code", maker: "Anthropic" },
-  { id: "codex", label: "Codex", maker: "OpenAI" },
-  { id: "cursor", label: "Cursor CLI", maker: "Cursor" }
+  { id: "claude", label: AGENT_NAMES.claude, maker: "Anthropic" },
+  { id: "codex", label: AGENT_NAMES.codex, maker: "OpenAI" },
+  { id: "cursor", label: AGENT_NAMES.cursor, maker: "Cursor" }
 ];
 
 const COLUMNS = "minmax(132px, 176px) 210px minmax(0, 1fr)";
@@ -331,9 +332,9 @@ export default function SetupSignInPanel({
                           {run?.url ? (
                             <>
                               Nothing opened?{" "}
-                              <a href={run.url} target="_blank" rel="noreferrer">
+                              <OpenAddress href={run.url} copyLabel="Copy the sign-in page address">
                                 Open the sign-in page
-                              </a>
+                              </OpenAddress>
                               .
                             </>
                           ) : (

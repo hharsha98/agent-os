@@ -15,10 +15,13 @@ export default function AgentSafetyPanel({
   agentId,
   safety,
   notes,
-  onFixed
+  onFixed,
+  failed = false
 }: {
   agentId: string;
   safety: AgentSafetyStatus | null;
+  // The detail could not be read (and nothing was read before): the panel says "—", not "…" (still loading).
+  failed?: boolean;
   // Calm advisories from the adapter (e.g. OpenClaw's loopback gateway):
   // informational, so they get no warning mark.
   notes: string[];
@@ -34,7 +37,15 @@ export default function AgentSafetyPanel({
     return (
       <section className="os-panel os-agent-safety">
         <h3 className="os-agent-safety__title">Safeguards</h3>
-        <p>…</p>
+        {failed ? (
+          <p className="os-agent-safety__finding">
+            <StatusMark kind="unknown" label="Not known" />
+            <span aria-hidden="true">—</span>
+            <span className="os-visually-hidden">Could not be read right now.</span>
+          </p>
+        ) : (
+          <p>…</p>
+        )}
       </section>
     );
   }

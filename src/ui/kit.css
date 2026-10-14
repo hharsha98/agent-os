@@ -474,3 +474,29 @@ button.os-table__row {
   border-color: var(--os-line-1);
   cursor: not-allowed;
 }
+
+/* ---- An address to copy (OpenAddress.tsx) -------------------------------- */
+/* In the desktop app a link to another website opens nothing, so the address is shown with a Copy button. */
+.os-addr {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-1) var(--os-sp-2);
+  min-width: 0;
+  max-width: 100%;
+}
+.os-addr__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-shell .os-addr__copy {
+  min-height: 28px;
+  padding: 0 var(--os-sp-2);
+  font-size: var(--os-fs-12);
+}
+.os-addr__fail {
+  font-size: var(--os-fs-12);
+  color: var(--os-warn);
+}

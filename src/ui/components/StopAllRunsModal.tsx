@@ -1,79 +1,134 @@
-// "Stop all runs" from the ⌘K palette. Looks up what is really running first,
-// says how many runs it would stop, and only then asks the existing stop route
-// (POST /api/runs/:id/stop) for each of them, once the person confirms.
-import { useEffect, useState } from "react";
-import { listRuns, stopRun } from "../../api";
-import type { RunMeta } from "../../types";
-import { friendlyError } from "../agentsShared";
-import { MAX_RUNS } from "../stopAll";
+// "Stop all runs" from the ⌘K palette. It is the keyboard way to do what "Hold to stop all" does, so it
+// follows the same rule (ruling R14): agent work only, never the Hermes or OpenClaw background service
+// and never Agent OS's own setup jobs, and the same time limits (src/ui/stopAllShared.ts). It looks at
+// what is really running first, says what it would stop, and only stops once the person confirms.
+import { useEffect, useRef, useState } from "react";
+import type { StopAllResult, StopLook } from "../stopAll";
+import { lookForWhatToStop, stopAllMessage, stopWhatWasLookedAt, thingsWord } from "../stopAll";
 import AgentConfirmModal from "./AgentConfirmModal";
 
-const ACTIVE = new Set(["queued", "running"]);
 const SHOWN_TITLES = 5;
 
-export default function StopAllRunsModal({ onClose }: { onClose: () => void }) {
+export default function StopAllRunsModal({
+  onClose,
+  onDone
+}: {
+  onClose: () => void;
+  // Called with the result when everything was stopped, so the window can say so (the same toast as the hold).
+  onDone?: (result: StopAllResult) => void;
+}) {
   // null = still looking.
-  const [live, setLive] = useState<RunMeta[] | null>(null);
-  const [error, setError] = useState("");
+  const [look, setLook] = useState<StopLook | null>(null);
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const alive = useRef(true);
 
-  async function look() {
-    try {
-      const { runs } = await listRuns({ limit: MAX_RUNS });
-      setLive(runs.filter((run) => ACTIVE.has(run.status)));
-    } catch (caught) {
-      setError(friendlyError(caught));
-      setLive([]);
-    }
+  async function lookAgain() {
+    const next = await lookForWhatToStop();
+    if (alive.current) setLook(next);
+    return next;
   }
 
   useEffect(() => {
-    void look();
+    alive.current = true;
+    void lookAgain();
+    return () => {
+      alive.current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const runs = look?.runs ?? [];
+  const rooms = look?.rooms ?? [];
+  const count = runs.length + rooms.length;
+
   async function confirm() {
-    if (!live || live.length === 0) return;
+    if (!look || count === 0) return;
     setBusy(true);
-    setError("");
-    const results = await Promise.allSettled(live.map((run) => stopRun(run.id)));
-    const failed = results.filter((result) => result.status === "rejected").length;
+    setNotice("");
+    const result = await stopWhatWasLookedAt(look);
+    if (!alive.current) return;
     setBusy(false);
-    if (failed === 0) {
+    const clean = result.failed + result.timedOut + result.roomsFailed + result.roomsTimedOut === 0;
+    if (clean) {
+      if (onDone) onDone(result);
       onClose();
       return;
     }
-    setError(`Couldn't stop ${failed} of ${live.length} run${live.length === 1 ? "" : "s"}. The list below is what is still running.`);
-    await look();
+    // Some did not stop, or did not answer in time. Say which, and look again at what is still going.
+    setNotice(stopAllMessage(result).message);
+    await lookAgain();
   }
 
-  const count = live ? live.length : 0;
+  const unreadAll = look !== null && !look.runsChecked && !look.roomsChecked;
+  const unreadRuns = look !== null && !look.runsChecked && look.roomsChecked;
+  const unreadRooms = look !== null && look.runsChecked && !look.roomsChecked;
+  const titles = [
+    ...rooms.map((room) => ({ key: room.id, text: `Team Room: ${room.task || room.id}` })),
+    ...runs.map((run) => ({ key: run.id, text: run.title || run.id }))
+  ];
 
   return (
     <AgentConfirmModal
       title="Stop all runs?"
-      confirmLabel={count > 0 ? `Stop ${count} run${count === 1 ? "" : "s"}` : "Stop all runs"}
-      confirmDisabled={live === null || count === 0}
+      confirmLabel={count > 0 ? `Stop ${thingsWord(runs.length, rooms.length)}` : "Stop all runs"}
+      confirmDisabled={look === null || count === 0}
       busy={busy}
       danger
       onConfirm={() => void confirm()}
       onClose={() => (busy ? null : onClose())}
     >
-      {live === null ? <p>…</p> : null}
-      {live && count === 0 && !error ? <p>Nothing is running right now.</p> : null}
-      {live && count > 0 ? (
+      {look === null ? <p role="status">Looking at what is running…</p> : null}
+      {unreadAll ? (
+        <p className="os-launch__error" role="alert">
+          Couldn&apos;t read what is running. Agent OS did not answer in time. Close this and try again, or stop each run on Runs.
+        </p>
+      ) : null}
+      {unreadRuns ? (
+        <p className="os-launch__error" role="alert">
+          Couldn&apos;t read the list of runs, so only Team Rooms are listed. Check Runs.
+        </p>
+      ) : null}
+      {unreadRooms ? (
+        <p className="os-launch__error" role="alert">
+          Couldn&apos;t read the list of Team Rooms, so a room that is between two turns is not listed and may still carry on. Check Team Room.
+        </p>
+      ) : null}
+      {look && count === 0 && !unreadAll && !notice ? (
+        <p>
+          {look.skipped > 0
+            ? "No agent work is running right now."
+            : look.listTruncated
+              ? "None of the newest runs are running."
+              : "Nothing is running right now."}
+        </p>
+      ) : null}
+      {look && count > 0 ? (
         <>
           <p>
-            This stops {count} run{count === 1 ? "" : "s"} that {count === 1 ? "is" : "are"} running now. Anything an agent already did stays done.
+            This stops {thingsWord(runs.length, rooms.length)} that {count === 1 ? "is" : "are"} running now. Anything an agent already did stays done.
           </p>
           <ul>
-            {live.slice(0, SHOWN_TITLES).map((run) => (
-              <li key={run.id}>{run.title || run.id}</li>
+            {titles.slice(0, SHOWN_TITLES).map((item) => (
+              <li key={item.key}>{item.text}</li>
             ))}
             {count > SHOWN_TITLES ? <li>and {count - SHOWN_TITLES} more</li> : null}
           </ul>
         </>
       ) : null}
-      {error ? <p className="os-launch__error">{error}</p> : null}
+      {look && look.skipped > 0 ? (
+        <p>
+          {look.skipped === 1
+            ? "1 setup or service job is left running. It is not agent work; manage it in Setup or Agents."
+            : `${look.skipped} setup or service jobs are left running. They are not agent work; manage them in Setup or Agents.`}
+        </p>
+      ) : null}
+      {look && look.listTruncated ? <p>The list was full, so older runs were not checked.</p> : null}
+      {notice ? (
+        <p className="os-launch__error" role="alert">
+          {notice}
+        </p>
+      ) : null}
     </AgentConfirmModal>
   );
 }

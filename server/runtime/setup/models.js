@@ -358,20 +358,33 @@ export async function readAgentModel(agentId, detected) {
   if (!detected?.installed) {
     return { agentId, installed: false, provider: null, providerLabel: null, model: null, isPreset: false, presetSlug: null };
   }
+  // `ok` says the command ran and answered. A command that failed or timed out has NOT said the value
+  // is empty, so it must never read as "no model set" (see `known` below).
   const get = async (args) => {
     const result = await runCommand(detected.path, args, CONFIG_GET_TIMEOUT_MS);
-    return result.ok ? parseConfigText(result.stdout) : null;
+    return result.ok ? { ok: true, value: parseConfigText(result.stdout) } : { ok: false, value: null };
   };
+  // `known: false` is added only when the model could not be read (every `config get` for it failed):
+  // the answer is then "we do not know", which is not the same as "nothing is set". A readable answer
+  // keeps its old shape (no `known` field).
+  const withKnown = (info, known) => (known ? info : { ...info, known: false });
   if (agentId === "hermes") {
     // --json prints a plain JSON value; an older Hermes without it prints the bare value.
-    const read = async (key) => (await get(["config", "get", key, "--json"])) ?? (await get(["config", "get", key]));
+    const read = async (key) => {
+      const first = await get(["config", "get", key, "--json"]);
+      if (first.value !== null) return first;
+      const second = await get(["config", "get", key]);
+      return { ok: first.ok || second.ok, value: second.value };
+    };
     const [provider, model] = await Promise.all([read("model.provider"), read("model.default")]);
-    return describeModel("hermes", provider, model);
+    return withKnown(describeModel("hermes", provider.value, model.value), model.ok);
   }
   // OpenClaw keeps one "provider/model" reference.
-  const primary = await get(["config", "get", OPENCLAW_MODEL_PATH]);
+  const read = await get(["config", "get", OPENCLAW_MODEL_PATH]);
+  const primary = read.value;
   const slash = primary ? primary.indexOf("/") : -1;
-  return slash > 0 ? describeModel("openclaw", primary.slice(0, slash), primary.slice(slash + 1)) : describeModel("openclaw", null, primary);
+  const info = slash > 0 ? describeModel("openclaw", primary.slice(0, slash), primary.slice(slash + 1)) : describeModel("openclaw", null, primary);
+  return withKnown(info, read.ok);
 }
 
 // ---- command builders and plain-English helpers (used by jobs.js) -------------------------

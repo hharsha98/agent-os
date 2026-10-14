@@ -65,7 +65,8 @@ export type OperatorBrain =
 // worked and found neither a provider nor a model; a failed lookup is unknown.
 export function operatorBrain(lookup: ModelLookup | undefined): OperatorBrain {
   if (!lookup) return { kind: "loading" };
-  if (lookup.state === "failed") return { kind: "unknown" };
+  // A lookup the agent could not answer (`known: false`: its `config get` failed) is unknown too.
+  if (lookup.state === "failed" || lookup.info.known === false) return { kind: "unknown" };
   const { providerLabel, model } = lookup.info;
   if (!providerLabel && !model) return { kind: "none" };
   return { kind: "set", label: providerLabel || "Model", model: model || null };
@@ -214,6 +215,17 @@ export function spendToday(runs: RunMeta[], now: number): string {
   const more = listIsFull(runs) && Number.isFinite(oldest) && new Date(oldest).toDateString() === day;
   return `$${total.toFixed(2)}${more ? "+" : ""}`;
 }
+
+// How long a page waits for the reads that wait on an agent's own checks. The server gives each of those
+// checks up to 30 s (`hermes doctor`, `openclaw doctor`) or 10 s per `config get`, so a page that gives up
+// sooner than the server does would fail every time on a slow computer, Retry included. Each limit is above
+// that read's worst case on the server:
+//   BRAIN: GET /api/setup/brain?refresh=1 = a fresh system check (about 15 s at worst), then the doctors (30 s).
+//   AGENT_DETAIL: GET /api/agents/:id = the version check (5 s), then the doctor (30 s).
+//   MODEL: GET /api/setup/agents/:id/model = up to four `config get` calls, two at a time (about 20 s).
+export const BRAIN_READ_LIMIT_MS = 55_000;
+export const AGENT_DETAIL_LIMIT_MS = 40_000;
+export const MODEL_READ_LIMIT_MS = 30_000;
 
 // A request that does not answer in time fails, so the page shows "offline"
 // instead of loading for ever (Review Focus 5).

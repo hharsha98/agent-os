@@ -103,9 +103,9 @@ export default function RunLimitBanner({ run, compact = false }: { run: RunMeta;
   // the usual sentence. Loaded and nothing available: the one honest way left.
   const advice =
     info !== null && usable.length === 0
-      ? "Wait for your plan to reset, then press Keep going."
+      ? "Wait for your plan to reset, then open this run again to see your choices."
       : "You can carry on now with a pay-per-use model, or wait for your plan.";
-  const waitingText = `Waiting for your plan to reset${reset ? ` (about ${reset})` : ""}. This run stays Held and nothing carries on by itself. After the reset, press Keep going.`;
+  const waitingText = `Waiting for your plan to reset${reset ? ` (about ${reset})` : ""}. This run stays Held and nothing carries on by itself. After the reset, open this run again to see your choices.`;
 
   const choices = idle ? (
     <>
@@ -133,8 +133,9 @@ export default function RunLimitBanner({ run, compact = false }: { run: RunMeta;
       </button>
     </>
   ) : waiting && !carriedOn ? (
+    // This only goes back to the list of choices; it does not carry the run on, so it does not say "Keep going".
     <button type="button" className="os-btn os-btn--secondary" onClick={() => setWaiting(false)}>
-      Keep going
+      Show my choices
     </button>
   ) : null;
 

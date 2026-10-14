@@ -24,10 +24,13 @@ const ACTIVE_STATUSES = new Set(["queued", "running"]);
 export default function RunConsole({
   runId,
   compact = false,
+  focusTitle = false,
   onEnded
 }: {
   runId: string;
   compact?: boolean;
+  // Put keyboard focus on the run's title once it has loaded (the Runs page sets it when the person opened the run).
+  focusTitle?: boolean;
   onEnded?: (status: string) => void;
 }) {
   const [meta, setMeta] = useState<RunMeta | null>(null);
@@ -45,6 +48,8 @@ export default function RunConsole({
   const lastPulseRef = useRef(0);
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
+  const titleRef = useRef<HTMLElement>(null);
+  const focusedFor = useRef("");
 
   async function refreshMeta() {
     const asked = runId;
@@ -93,6 +98,14 @@ export default function RunConsole({
     onEnded?.(meta.status);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta?.status]);
+
+  // Opened by a keyboard press (Start run, or Enter on a Board row): the pressed control is gone, so focus would fall
+  // to the page. Once per run, never again on each refresh.
+  useEffect(() => {
+    if (!focusTitle || !meta || focusedFor.current === runId) return;
+    focusedFor.current = runId;
+    titleRef.current?.focus();
+  }, [focusTitle, meta, runId]);
 
   useEffect(() => {
     if (!events.length) return;
@@ -162,7 +175,9 @@ export default function RunConsole({
       <header className="os-run-console__header">
         <span className="os-run-console__mono os-mono">{AGENT_MONOGRAM[meta.agentId || ""] || "—"}</span>
         <div className="os-run-console__headtext">
-          <strong>{meta.title || firstLine(meta.commandPreview, 60) || "Run"}</strong>
+          <strong ref={titleRef} tabIndex={-1}>
+            {meta.title || firstLine(meta.commandPreview, 60) || "Run"}
+          </strong>
           <span className="os-run-console__meta">
             <StatusMark key={pulseTick} kind={runMarkFor(meta)} pulse={isActive && pulseTick > 0} />
             {stopping && isActive ? "Stopping…" : meta.limit && !isActive ? "Plan limit reached" : stateOf(meta).label || "—"}

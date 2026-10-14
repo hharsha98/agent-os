@@ -12,7 +12,7 @@ import RunBoard from "../ui/components/RunBoard";
 import RunConsole from "../ui/components/RunConsole";
 import Tabs, { tabPanelProps } from "../ui/components/Tabs";
 import { useInterval } from "../ui/components/useInterval";
-import { openNewRun } from "../ui/newRun";
+import { openNewRun, takeFocusNextRun } from "../ui/newRun";
 import { SAFE_EXAMPLE_PROMPT } from "../ui/onboardingShared";
 import { splitBays } from "../ui/runsBoard";
 import "../ui/runs.css";
@@ -26,6 +26,9 @@ export default function RunsPage() {
   const [timedOut, setTimedOut] = useState(false); // nothing has loaded for 15 seconds
   const [selectedId, setSelectedId] = useState(() => queryParam("run"));
   const [tab, setTab] = useState<TabId>("board");
+  // True when the run was opened by something the person did (Start run in the dialog, a row on the Board), so the
+  // console takes keyboard focus: the control they used is gone. A page loaded straight on ?run= does not grab focus.
+  const [focusConsole, setFocusConsole] = useState(() => takeFocusNextRun());
 
   async function loadRuns() {
     try {
@@ -55,6 +58,7 @@ export default function RunsPage() {
   useEffect(() => {
     function sync() {
       setSelectedId(queryParam("run"));
+      if (queryParam("run") && takeFocusNextRun()) setFocusConsole(true);
       // The Get started checklist sends ?example=safe: open the dialog with the example typed in, then tidy
       // the address. The timer lets the Shell (the parent, whose listener is added after this page's effects
       // on a first load) be listening before the request is sent.
@@ -70,10 +74,12 @@ export default function RunsPage() {
   }, []);
 
   function open(id: string) {
+    setFocusConsole(true);
     setSelectedId(id);
     navigateTo("runs", { run: id });
   }
   function back() {
+    setFocusConsole(false);
     setSelectedId("");
     navigateTo("runs");
   }
@@ -112,7 +118,7 @@ export default function RunsPage() {
             <ArrowLeft size={15} aria-hidden="true" />
             All runs
           </button>
-          <RunConsole runId={selectedId} onEnded={() => void loadRuns()} />
+          <RunConsole runId={selectedId} focusTitle={focusConsole} onEnded={() => void loadRuns()} />
         </div>
       ) : (
         <>

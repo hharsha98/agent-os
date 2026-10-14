@@ -1,12 +1,14 @@
 // The "Limits" panel of a room: turns, time and cost as three meters, plus the
 // two honest notes. While the room is paused for a decision the Time meter
 // shows the time stored when it paused and does not tick (D10).
-import type { TeamRoom } from "../../types";
-import { costNotReported, isPaused, minutesLabel, roomCostText, roomElapsedMs, usd } from "../teamRoomShared";
+import type { TeamProposal, TeamRoom } from "../../types";
+import { costNotReported, minutesLabel, pauseState, roomCostText, roomElapsedMs, usd } from "../teamRoomShared";
 import Meter from "./Meter";
 
-export default function TeamRoomLimits({ room, nowMs }: { room: TeamRoom; nowMs: number }) {
-  const paused = isPaused(room);
+export default function TeamRoomLimits({ room, proposals, nowMs }: { room: TeamRoom; proposals?: TeamProposal[]; nowMs: number }) {
+  // The note only fits while a card really waits for you; after your decision the
+  // clock is still stopped, but nothing waits for you any more.
+  const paused = pauseState(room, proposals) === "waiting";
   const elapsedMs = roomElapsedMs(room, nowMs);
   const maxMinutes = room.limits.maxMinutes;
   const timeValue = elapsedMs === null ? null : Math.min(1, elapsedMs / (maxMinutes * 60_000));
@@ -20,7 +22,8 @@ export default function TeamRoomLimits({ room, nowMs }: { room: TeamRoom; nowMs:
   // under it show "—", never "0%" or "$0.000" (the data map in the brief, and the
   // "copy must be true" rule). The same rule feeds both (costNotReported).
   const costValue = hasCap && !noCostYet && typeof known === "number" ? Math.min(1, known / (cap as number)) : null;
-  const costDetail = noCostYet ? (hasCap ? `— of $${cap}` : "no cap") : hasCap ? `${usd(known)} of $${cap}` : `${usd(known)} · no cap`;
+  // Unknown cost: the meter's own "—" is the one dash; the line under it names the cap.
+  const costDetail = noCostYet ? (hasCap ? `Cap: $${cap}` : "No cap") : hasCap ? `${usd(known)} of $${cap}` : `${usd(known)} · no cap`;
 
   const turnsValue = Math.min(1, room.turnsDone / Math.max(room.turnsAllowed, 1));
   return (

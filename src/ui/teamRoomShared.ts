@@ -44,8 +44,26 @@ export function isPaused(room: Pick<TeamRoom, "status" | "pausedFor">): boolean 
   return room.status === "needs_you" && typeof room.pausedFor === "string" && room.pausedFor !== "";
 }
 
-export function roomStatusView(room: Pick<TeamRoom, "status" | "pausedFor">): RoomStatusView {
-  if (isPaused(room)) return { state: "waiting", label: "Paused for your decision" };
+// Where a paused room really is. "waiting" = the card it is paused on still needs
+// you. "carrying_on" = you already decided that card (it is saved or rejected) but
+// the server has not yet ended the pause: after Approve it first re-checks both
+// agents and Safety, which can take several seconds, and only then lets the room
+// run again. In that gap nothing waits for you any more, so the page must not say
+// "Paused for your decision" or "Nothing is saved until you decide". "none" = not
+// paused at all.
+export type PauseState = "none" | "waiting" | "carrying_on";
+
+export function pauseState(room: Pick<TeamRoom, "status" | "pausedFor">, proposals?: Array<Pick<TeamProposal, "id" | "status">>): PauseState {
+  if (!isPaused(room)) return "none";
+  const card = proposals?.find((proposal) => proposal.id === room.pausedFor);
+  // A card the page cannot see yet counts as still waiting (the safe, old reading).
+  return card && card.status !== "needs_approval" ? "carrying_on" : "waiting";
+}
+
+export function roomStatusView(room: Pick<TeamRoom, "status" | "pausedFor">, proposals?: Array<Pick<TeamProposal, "id" | "status">>): RoomStatusView {
+  const pause = pauseState(room, proposals);
+  if (pause === "carrying_on") return { state: "loading", label: "Carrying on…" };
+  if (pause === "waiting") return { state: "waiting", label: "Paused for your decision" };
   switch (room.status) {
     case "running":
       return { state: "live", label: "Talking" };
@@ -93,11 +111,33 @@ export function roomEndSentence(room: TeamRoom): string | null {
 }
 
 // The line under the page title.
-export function roomLede(room: Pick<TeamRoom, "status" | "pausedFor">): string {
-  if (isPaused(room)) return "The agents agreed on a file. Nothing is saved until you decide.";
+export function roomLede(room: Pick<TeamRoom, "status" | "pausedFor">, proposals?: Array<Pick<TeamProposal, "id" | "status">>): string {
+  const pause = pauseState(room, proposals);
+  if (pause === "carrying_on") return "Your decision is saved. Agent OS is checking the room can carry on.";
+  if (pause === "waiting") return "The agents agreed on a file. Nothing is saved until you decide.";
   if (room.status === "running") return "Hermes Agent and OpenClaw are talking it through. You are reading along.";
   if (room.status === "needs_you") return "The room is waiting for you. Continue to give the agents more turns.";
   return "This room has ended. What was said stays on this page.";
+}
+
+// What Continue really adds. The server adds `extra` to the turns the room is
+// allowed, and the turns it had left still count, so a room with 2 turns left that
+// is given 4 more may run up to 6. The confirm dialog says that number, never just
+// "4 more" (the person is agreeing to spend money on that many turns). Continue
+// also starts the time limit again.
+export function continueTurns(room: Pick<TeamRoom, "turnsAllowed" | "turnsDone">, extra: number) {
+  const left = Math.max(0, room.turnsAllowed - room.turnsDone);
+  const upTo = left + extra;
+  const turns = `${upTo} more ${upTo === 1 ? "turn" : "turns"}`;
+  return {
+    left,
+    upTo,
+    title: `Continue for up to ${turns}?`,
+    sentence:
+      left > 0
+        ? `This starts the real agents again for up to ${turns} (${left} still left, plus ${extra} more). Each turn may cost money on their own model accounts. The time limit starts again.`
+        : `This starts the real agents again for up to ${turns}. Each turn may cost money on their own model accounts. The time limit starts again.`
+  };
 }
 
 // ---- Tags, proposals, cost -------------------------------------------------
@@ -160,13 +200,18 @@ export function costNotReported(room: Pick<TeamRoom, "cost" | "costUsd" | "costK
   return typeof known !== "number" || (known === 0 && room.costKnownTurns === 0);
 }
 
-// The limits panel's cost note: what was reported ("—" until a turn reports a
+// The limits panel's cost note: what was reported (words until a turn reports a
 // cost, never $0.000), and how many turns reported nothing. Rooms saved by an
 // older version only have costUsd / costUnknownTurns.
 export function roomCostText(room: Pick<TeamRoom, "cost" | "costUsd" | "costKnownTurns" | "costUnknownTurns">) {
-  const known = costNotReported(room) ? "—" : usd(room.cost?.knownUsd ?? room.costUsd);
   const unknown = room.cost?.unknownTurns ?? room.costUnknownTurns ?? 0;
-  return `${known} known · ${unknown} turn${unknown === 1 ? "" : "s"} unknown`;
+  if (costNotReported(room)) {
+    // One unknown, said once in words (the meter above already shows its own "—").
+    return unknown > 0
+      ? `No cost reported yet · ${unknown} turn${unknown === 1 ? "" : "s"} did not report a cost`
+      : "No cost reported yet";
+  }
+  return `${usd(room.cost?.knownUsd ?? room.costUsd)} known · ${unknown} turn${unknown === 1 ? "" : "s"} unknown`;
 }
 
 // The sentence for a failed request that got no answer from Agent OS at all (the
@@ -418,8 +463,19 @@ export function decisionCardCopy(
         sub: `${agentLabel(proposal.by)} proposed it in turn ${proposal.turn}. ${agreed}`
       };
     }
-    case "saved":
+    case "saved": {
+      // Rooms saved before the D10 pause saved an agreed file by themselves: no
+      // userDecision was ever recorded. Only say "You approved it" when you did.
+      if (proposal.userDecision !== "approve") {
+        return {
+          title: "Saved to the Workspace",
+          sub: action
+            ? "Both agents agreed, and Agent OS saved it by itself (rooms did this before they asked first). It is in the Workspace sandbox."
+            : "Both agents agreed, and Agent OS saved it by itself (rooms did this before they asked first)."
+        };
+      }
       return { title: "Saved to the Workspace", sub: action ? "You approved it. It is saved in the Workspace sandbox." : "You approved it." };
+    }
     case "undone":
       return {
         title: "Save undone",

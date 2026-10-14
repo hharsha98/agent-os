@@ -1,6 +1,6 @@
 // The Setup Assistant: six steps (Check, Plan, Install, AI brain, Sign in, Ready)
 // for a non-expert setting up Hermes and OpenClaw (the always-on agents) and
-// Claude Code, Codex and Cursor (the coding agents). A step rail on the left, one
+// Claude Code, Codex CLI and Cursor Agent (the coding agents). A step rail on the left, one
 // panel on the right, a footer that stays in view. One decision per screen;
 // nothing installs or configures without an explicit confirm. All data comes
 // from server/runtime/setup/* through ../setupApi (see that file for the exact
@@ -31,7 +31,7 @@ import SetupSignInPanel from "../ui/components/SetupSignInPanel";
 import SetupStatus from "../ui/components/SetupStatus";
 import SetupStepper, { type SetupStepDef } from "../ui/components/SetupStepper";
 import { useInterval } from "../ui/components/useInterval";
-import { withTimeout } from "../ui/homeShared";
+import { BRAIN_READ_LIMIT_MS, withTimeout } from "../ui/homeShared";
 import type { BrainOptionsResponse, SetupJob, SetupPlan, SetupPlanStep, SystemCheck } from "../setupApi";
 import {
   cancelSetupJob,
@@ -331,7 +331,7 @@ export default function SetupPage() {
     // one that fails must not hide the others.
     const [planRes, brainRes, agentsRes] = await Promise.allSettled([
       withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS),
-      withTimeout(getBrainOptions(refresh), READ_TIMEOUT_MS),
+      withTimeout(getBrainOptions(refresh), BRAIN_READ_LIMIT_MS),
       withTimeout(listAgents(), READ_TIMEOUT_MS)
     ]);
     if (!alive.current) return;
@@ -383,7 +383,7 @@ export default function SetupPage() {
     try {
       const [checkRes, brainRes, planRes] = await Promise.all([
         withTimeout(getSetupCheck(true), CHECK_TIMEOUT_MS),
-        withTimeout(getBrainOptions(true), READ_TIMEOUT_MS),
+        withTimeout(getBrainOptions(true), BRAIN_READ_LIMIT_MS),
         includePlan ? withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS) : Promise.resolve(null)
       ]);
       if (!alive.current) return;
@@ -424,9 +424,13 @@ export default function SetupPage() {
     return () => window.removeEventListener("aos-navigate", onNavigate);
   }, []);
 
+  // Whenever the install job has FINISHED, in any way (it worked, part of it failed, or it was cancelled), what the page knew
+  // before the job is out of date: an agent that installed before a later step failed is installed now. Re-read it, so Check,
+  // Plan and the confirm dialog stop offering to install what the job already installed. refreshServerState keeps the old
+  // data under a note when the re-read gets no answer.
   const installStatus = installJob?.status;
   useEffect(() => {
-    if (installStatus === "succeeded") void refreshServerState(true);
+    if (installStatus && installStatus !== "running") void refreshServerState(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [installStatus]);
 
@@ -818,6 +822,7 @@ export default function SetupPage() {
                   onSelect={(next) => setSelections((prev) => ({ ...prev, [agentId]: next }))}
                   disabled={installBusy}
                   canSkip={false}
+                  hasBlockedReason={plan.blocked.some((b) => b.agentId === agentId)}
                   consent={
                     agentId === "openclaw"
                       ? { accepted: openClawRiskAccepted, onToggle: setOpenClawRiskAccepted }
@@ -830,7 +835,7 @@ export default function SetupPage() {
             <SetupPlanGroup
               id="coding"
               title="Coding agents"
-              sub="Claude Code · Codex · Cursor"
+              sub={`${AGENT_NAMES.claude} · ${AGENT_NAMES.codex} · ${AGENT_NAMES.cursor}`}
               description="Programming helpers you talk to. Each one signs in with its own account in a later step. Anything already installed is kept as it is."
               actionLabel={codingLabel}
               onAction={() => {
@@ -849,6 +854,7 @@ export default function SetupPage() {
                   onSelect={(next) => setSelections((prev) => ({ ...prev, [agentId]: next }))}
                   disabled={installBusy}
                   canSkip
+                  hasBlockedReason={plan.blocked.some((b) => b.agentId === agentId)}
                 />
               ))}
             </SetupPlanGroup>

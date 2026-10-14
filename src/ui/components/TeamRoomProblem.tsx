@@ -26,8 +26,9 @@ export function problemFromError(error: unknown, recheck: "room" | "rooms" = "ro
   return { code: "unreachable", message: unreachableMessage(recheck) };
 }
 
-// "start" = starting, stopping or continuing a room. "decision" = approving a file card.
-export type ProblemWhere = "start" | "decision";
+// "start" = starting or stopping a room. "continue" = pressing Continue on a room that
+// is open. "decision" = approving a file card.
+export type ProblemWhere = "start" | "continue" | "decision";
 
 export default function TeamRoomProblem({
   problem,
@@ -59,7 +60,12 @@ export default function TeamRoomProblem({
     action = { label: "Open Agents", run: () => navigateTo("agents", { agent: problem.agents?.[0] || problem.agent || "" }) };
   } else if (problem.code === "room_already_running") {
     tone = "warn";
-    body = "Another Team Room is still running. Stop it or wait for it to finish before starting a new one.";
+    // Pressing Continue is not "starting a new one". The room that is running can
+    // be a different room, or this very room picking itself up after your decision.
+    body =
+      where === "continue"
+        ? "A Team Room is already running. It may be this one, picking up again after your decision. Wait a moment, or stop it, then press Continue again if it is still needed."
+        : "Another Team Room is still running. Stop it or wait for it to finish before starting a new one.";
     const id = problem.roomId;
     if (id && onOpenRoom) action = { label: "Open the running room", run: () => onOpenRoom(id) };
   } else if (problem.code === "not_pending") {

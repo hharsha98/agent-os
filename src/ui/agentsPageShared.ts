@@ -42,7 +42,8 @@ export function railStatus({ resolved, gaveUp, agent, live }: RailInput): { stat
   if (!resolved) return gaveUp ? { state: "unknown" } : { state: "loading" };
   const found = installState(agent);
   if (found === "unknown") return { state: "unknown" };
-  if (found === "missing") return { state: "unknown", label: "Not installed" };
+  // A dashed circle with the words: "not there yet" is a state with an icon, not bare text.
+  if (found === "missing") return { state: "idle", label: "Not installed" };
   return live > 0 ? { state: "live", label: live > 1 ? `Live ×${live}` : "Live" } : { state: "ready", label: "Installed" };
 }
 

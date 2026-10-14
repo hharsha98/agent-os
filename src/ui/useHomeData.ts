@@ -11,7 +11,7 @@ import type { AgentSummary, RunMeta } from "../types";
 import { friendlyError } from "./agentsShared";
 import { useBuilderBrains } from "./components/useBuilderBrains";
 import { useInterval } from "./components/useInterval";
-import { agentsPollMs, failedLoad, HOME_RUNS_LIMIT, loaded, withTimeout, type ModelLookup, type Source } from "./homeShared";
+import { agentsPollMs, failedLoad, HOME_RUNS_LIMIT, loaded, MODEL_READ_LIMIT_MS, withTimeout, type ModelLookup, type Source } from "./homeShared";
 
 const RUNS_TIMEOUT_MS = 8000;
 // /api/agents (and the model lookups) wait on the agents' own help checks. The
@@ -52,7 +52,9 @@ export function useHomeData(): HomeData {
           const id = a.id as "hermes" | "openclaw";
           let lookup: ModelLookup;
           try {
-            lookup = { state: "ok", info: await withTimeout(getAgentModel(id), AGENTS_TIMEOUT_MS) };
+            const info = await withTimeout(getAgentModel(id), MODEL_READ_LIMIT_MS);
+            // An agent that could not be asked is a failed lookup, not an empty answer.
+            lookup = info.known === false ? { state: "failed" } : { state: "ok", info };
           } catch {
             lookup = { state: "failed" };
           }

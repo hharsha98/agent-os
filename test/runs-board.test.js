@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { bayOf, landedNote, splitBays, stateOf, taskText } from "../src/ui/runsBoard.ts";
 import {
-  NEW_RUN_EVENT, RISKY_STEP_HINT, folderProblem, folderSuggestions, gateBlock, levelWord, openNewRun, pickAgent, startError, taskCount, taskProblem, taskTooLong
+  CHECKING_WORDS, NEW_RUN_EVENT, RISKY_STEP_HINT, START_NO_ANSWER, askToFocusNextRun, folderProblem, folderSuggestions, gateBlock, levelWord, noEditsNote,
+  openNewRun, peekDraft, pickAgent, rememberDraft, startError, takeFocusNextRun, taskCount, taskProblem, taskTooLong
 } from "../src/ui/newRun.ts";
 
 const run = (over = {}) => ({ id: "run_1", agentId: "claude", status: "succeeded", title: "", commandPreview: "", ...over });
@@ -127,4 +128,34 @@ test("openNewRun: sends one event carrying the request; the hint is the spec's w
   assert.deepEqual(seen, [{}, { agentId: "claude", prompt: "Look around" }]);
   assert.equal(RISKY_STEP_HINT, "Anything this safety level does not allow is refused, not run.");
   assert.doesNotMatch(RISKY_STEP_HINT, /Held/, "the server's only Held is a plan limit (D-C3-5)");
+});
+
+// ---- Final review fixes ------------------------------------------------------
+
+test("the dialog says, for the three coding agents only, that a run may not change files (D-C3-4)", () => {
+  for (const id of ["claude", "codex", "cursor"]) assert.match(noEditsNote(id), /doesn't give this run permission to change files.*read them and report back/, id);
+  for (const id of ["hermes", "openclaw", "", "nope"]) assert.equal(noEditsNote(id), "", id);
+});
+
+test("a task left behind is remembered until a run starts or the person discards it", () => {
+  rememberDraft("Fix the typo in README.md");
+  assert.equal(peekDraft(), "Fix the typo in README.md", "reading it does not use it up (React may read twice)");
+  assert.equal(peekDraft(), "Fix the typo in README.md");
+  rememberDraft("");
+  assert.equal(peekDraft(), "");
+});
+
+test("the focus request is one-shot: only the next Runs page that takes it gets it", () => {
+  assert.equal(takeFocusNextRun(), false);
+  askToFocusNextRun();
+  assert.equal(takeFocusNextRun(), true);
+  assert.equal(takeFocusNextRun(), false, "taking it clears it");
+});
+
+test("a start that got no answer says the run may have started and points to Runs", () => {
+  assert.match(START_NO_ANSWER, /may have started/);
+  assert.match(START_NO_ANSWER, /check Runs/);
+  assert.doesNotMatch(START_NO_ANSWER, /nothing was started|not started/i);
+  assert.match(CHECKING_WORDS, /Checking your agents and safety level/);
+  assert.equal(startError("too_many_runs").fix, undefined);
 });

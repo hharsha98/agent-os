@@ -4,10 +4,13 @@ import { describeBrain, isBuilderId, PLAN_OF } from "../builderShared";
 import { agentLine, HOME_AGENTS, lastRunsByAgent, liveRunsByAgent, operatorBrain, type HomeAgentId } from "../homeShared";
 import type { HomeData } from "../useHomeData";
 import StatusWord from "./StatusWord";
+import { useOnboarding } from "./useOnboarding";
 
 const COLS = { "--os-table-cols": "140px minmax(0, 1fr) 170px" } as CSSProperties;
 
 function Brain({ id, data, installed }: { id: HomeAgentId; data: HomeData; installed: boolean }) {
+  const onboarding = useOnboarding();
+  const checklistSaysBrain = Boolean(onboarding.data?.facts?.brains?.includes(id));
   if (!installed) return <span className="os-home-brain__t">—</span>;
   if (isBuilderId(id)) {
     // "…" while the read is under way; "—" once it failed or timed out (Home retries it).
@@ -27,7 +30,18 @@ function Brain({ id, data, installed }: { id: HomeAgentId; data: HomeData; insta
   const brain = operatorBrain(data.models[id as "hermes" | "openclaw"]);
   if (brain.kind === "loading") return <span className="os-home-brain__t">…</span>;
   if (brain.kind === "unknown") return <span className="os-home-brain__t">—</span>;
-  if (brain.kind === "none") return <span className="os-home-brain__t">Not set</span>;
+  if (brain.kind === "none") {
+    // The Get started checklist and this table read the brain from two different places. When the checklist says
+    // this agent has a brain, this table must not say "Not set" next to it: the two disagree, so it is unknown.
+    if (checklistSaysBrain) {
+      return (
+        <span className="os-home-brain__t" title="The setup check says this agent has a brain, but its model could not be read.">
+          —
+        </span>
+      );
+    }
+    return <span className="os-home-brain__t">Not set</span>;
+  }
   return (
     <>
       <span className="os-home-brain__t">{brain.label}</span>

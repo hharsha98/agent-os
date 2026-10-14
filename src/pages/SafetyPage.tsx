@@ -470,7 +470,7 @@ export default function SafetyPage() {
           busy={enableBusy}
           error={enableError}
         >
-          <p>Agents you start will run for real, each inside the Workspace. Every run shows its command and folder on the Runs page.</p>
+          <p>Agents you start will run for real, each started in a folder inside the Workspace. Every run shows its command and folder on the Runs page.</p>
         </SetupModal>
       ) : null}
 

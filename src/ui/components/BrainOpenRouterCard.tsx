@@ -15,6 +15,7 @@ import RelativeTime from "./RelativeTime";
 import RememberKeyTick from "./RememberKeyTick";
 import StatusMark from "./StatusMark";
 import { useInterval } from "./useInterval";
+import OpenAddress from "./OpenAddress";
 import type { BrainAgentId, OpenRouterConnectState, OpenRouterModel } from "../../setupApi";
 import {
   cancelOpenRouterConnect,
@@ -315,9 +316,9 @@ export default function BrainOpenRouterCard({
           </p>
           <p className="os-brain-card__hint">
             {opened ? "Your browser should have opened OpenRouter's sign-in page." : "We couldn't open your browser by ourselves."}{" "}
-            <a href={authUrl} target="_blank" rel="noopener noreferrer">
+            <OpenAddress href={authUrl} copyLabel="Copy the sign-in page address">
               Didn&apos;t open? Open the sign-in page <ExternalLink size={12} aria-hidden="true" />
-            </a>
+            </OpenAddress>
           </p>
           <div className="os-brain-card__row">
             <button type="button" className="os-btn os-btn--ghost" onClick={() => void stopWaiting()}>

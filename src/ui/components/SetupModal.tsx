@@ -3,6 +3,7 @@
 // stays trapped inside, and focus returns to whatever opened it.
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { CircleAlert } from "lucide-react";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
 
@@ -79,7 +80,8 @@ export default function SetupModal({
         <div className="os-setup-modal__body">{children}</div>
         {error ? (
           <p className="os-setup-modal__error" role="alert">
-            {error}
+            <CircleAlert size={16} aria-hidden="true" />
+            <span>{error}</span>
           </p>
         ) : null}
         <div className="os-setup-modal__actions">

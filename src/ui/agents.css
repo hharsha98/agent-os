@@ -27,6 +27,9 @@
 .os-shell button.os-agent-rail__item {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  /* Items in one row are as tall as the tallest (a builder has a brain tag under its status). Keep each item's
+     own lines at the top, so every status word sits at the same height instead of sliding down in the short ones. */
+  align-content: start;
   gap: 4px;
   width: 100%;
   padding: var(--os-sp-2) var(--os-sp-3);
@@ -51,9 +54,10 @@
 .os-agent-rail__brain { font-size: var(--os-fs-12); }
 .os-agent-rail__retry { align-self: flex-start; }
 @media (max-width: 1099px) {
-  /* relative, not static: AgentRail centres the selected item with offsetLeft. */
-  .os-agent-rail { position: relative; top: auto; flex-direction: row; overflow-x: auto; gap: var(--os-sp-3); }
-  .os-agent-rail__group { flex: 0 0 auto; flex-direction: row; align-items: stretch; gap: var(--os-sp-1); }
+  /* relative, not static: AgentRail centres the selected item with offsetLeft. The items wrap onto a second
+     row instead of scrolling sideways, so the last agent is never cut off with no sign that there is more. */
+  .os-agent-rail { position: relative; top: auto; flex-direction: row; flex-wrap: wrap; overflow-x: visible; gap: var(--os-sp-2) var(--os-sp-3); }
+  .os-agent-rail__group { flex: 0 1 auto; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: stretch; gap: var(--os-sp-1); }
   .os-agent-rail__group > .os-table__group { display: none; }
   .os-shell button.os-agent-rail__item { flex: 0 0 auto; width: auto; min-width: 150px; max-width: 260px; }
 }
@@ -104,6 +108,9 @@
 .os-agt-secs > .os-panel > .os-bb-card__head { display: contents; }
 .os-agt-secs > .os-panel > .os-bb-card__head > h3 { grid-column: 1; grid-row: 1; }
 .os-agt-secs > .os-panel > .os-bb-card__head > .os-bb-card__now { grid-column: 2; grid-row: 1; min-width: 0; }
+/* The Plan | OpenRouter | Local control is an inline-flex box, which a grid item turns into a full-width one:
+   its border then ran across the whole row with empty space inside. Make it hug its three segments. */
+.os-agt-secs > .os-panel > .os-bb-seg { justify-self: start; width: fit-content; max-width: 100%; }
 .os-agt-secs > .os-panel > h3,
 .os-agt-secs > .os-panel > .os-bb-card__head > h3 { margin: 0; font-size: var(--os-fs-15); font-weight: 600; color: var(--os-text-1); }
 @media (max-width: 1320px) {

@@ -464,6 +464,22 @@
   gap: var(--os-sp-2);
   margin-top: var(--os-sp-4);
 }
+/* The decision a room is waiting for is the page's main action, so its buttons must be on screen at
+   1280x720 even though the card (heading, summary, file preview, two notes) is taller than the window. While the
+   card is only partly in view its Approve / Reject bar docks at the bottom of the window; once the card's end is
+   in view it sits in place. It spans the card's padding and repeats the card's tint so text scrolling behind it is
+   covered. (Not on a decided card: Undo is not urgent.) */
+.os-team__decision[data-state="pending"] .os-team__acts {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: var(--os-sp-4) calc(-1 * var(--os-sp-5)) calc(-1 * var(--os-sp-5));
+  padding: var(--os-sp-3) var(--os-sp-5) var(--os-sp-4);
+  background-color: var(--os-surface-1);
+  background-image: linear-gradient(var(--os-warn-wash), var(--os-warn-wash));
+  border-top: 1px solid var(--os-warn-line);
+  border-radius: 0 0 var(--os-r-md) var(--os-r-md);
+}
 .os-team__decision [role="alert"],
 .os-team__decision [role="status"] {
   margin-top: var(--os-sp-3);

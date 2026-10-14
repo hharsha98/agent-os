@@ -213,3 +213,23 @@ test("an operator's brain: loading, failed, a model without a provider, and trul
   // the lookup worked and found neither a provider nor a model
   assert.deepEqual(home.operatorBrain({ state: "ok", info: info({}) }), { kind: "none" });
 });
+
+// ---- Final review fixes ------------------------------------------------------
+
+test("an agent that could not be asked (known: false) is an unknown brain, never 'Not set'", () => {
+  const info = (over) => ({ agentId: "hermes", installed: true, provider: null, providerLabel: null, model: null, isPreset: false, presetSlug: null, ...over });
+  // The server's answer when every `config get` failed: all-empty, but flagged unreadable.
+  assert.deepEqual(home.operatorBrain({ state: "ok", info: info({ known: false }) }), { kind: "unknown" });
+  // A readable answer (no `known` field) that is really empty is still "none".
+  assert.deepEqual(home.operatorBrain({ state: "ok", info: info({}) }), { kind: "none" });
+  assert.deepEqual(home.operatorBrain({ state: "ok", info: info({ known: true }) }), { kind: "none" });
+});
+
+test("the read limits sit above what the server itself may take, so Retry can succeed on a slow computer", () => {
+  // Server worst cases (server/runtime/setup, agents): the brain read re-checks the system (about 15 s) and then runs each
+  // agent's doctor (30 s); the agent detail runs the version check (5 s) and the doctor (30 s); the model read makes up to
+  // two rounds of 10 s `config get` calls.
+  assert.ok(home.BRAIN_READ_LIMIT_MS >= 15_000 + 30_000 + 5_000, "brain read");
+  assert.ok(home.AGENT_DETAIL_LIMIT_MS >= 5_000 + 30_000 + 3_000, "agent detail");
+  assert.ok(home.MODEL_READ_LIMIT_MS >= 2 * 10_000 + 5_000, "model read");
+});

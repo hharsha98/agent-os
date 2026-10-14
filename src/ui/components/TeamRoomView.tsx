@@ -9,11 +9,12 @@ import { ArrowLeft, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { TeamRoomError, continueTeamRoom, getTeamRoom, stopTeamRoom, useTeamRoomStream } from "../../api";
 import type { TeamRoomDetail } from "../../types";
 import {
+  continueTurns,
   decisionKey,
   deriveTimeline,
   deriveTurns,
-  isPaused,
   mergeEvents,
+  pauseState,
   plural,
   roomEndSentence,
   roomLede,
@@ -26,7 +27,7 @@ import PageHeader from "./PageHeader";
 import StatusWord from "./StatusWord";
 import { TeamRoomDecided, TeamRoomNeedsYou, type DecisionMemory } from "./TeamRoomDecision";
 import TeamRoomLimits from "./TeamRoomLimits";
-import TeamRoomProblem, { problemFromError, type TeamProblem } from "./TeamRoomProblem";
+import TeamRoomProblem, { problemFromError, type ProblemWhere, type TeamProblem } from "./TeamRoomProblem";
 import TeamRoomTimeline from "./TeamRoomTimeline";
 import { ClampText } from "./TeamRoomTurn";
 import { useInterval } from "./useInterval";
@@ -41,6 +42,8 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
   const [continueOpen, setContinueOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<TeamProblem | null>(null);
+  // Which request the notice is about, so "a room is already running" can be worded for it.
+  const [problemWhere, setProblemWhere] = useState<ProblemWhere>("start");
   const [, forceTick] = useState(0);
   // What the page knows about each card, keyed by room plus proposal. It lives here
   // because a decided card moves to another list and remounts (see DecisionMemory).
@@ -91,7 +94,10 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
     if (streamStatus === "ended") void refresh();
   }, [streamStatus, refresh]);
 
-  const paused = detail ? isPaused(detail.room) : false;
+  // "waiting" = a card still needs you. "carrying_on" = you decided it and the server
+  // is still checking the agents before the room runs again (see pauseState).
+  const pause = detail ? pauseState(detail.room, detail.proposals) : "none";
+  const paused = pause !== "none";
   const running = detail?.room.status === "running";
   // A paused room is polled too: the decision may be made in another window.
   useInterval(() => void refresh(), running || paused || loadError !== null ? 3000 : null);
@@ -155,7 +161,7 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
   }
 
   const { room, proposals, actions, notebook } = detail;
-  const statusView = roomStatusView(room);
+  const statusView = roomStatusView(room, proposals);
   const isRunning = room.status === "running";
   const endSentence = roomEndSentence(room);
   const so = roomSoFar(deriveTurns(events), proposals, actions);
@@ -171,6 +177,7 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
   async function doStop() {
     setBusy(true);
     setProblem(null);
+    setProblemWhere("start");
     try {
       await stopTeamRoom(room.id);
       setStopOpen(false);
@@ -187,6 +194,7 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
   async function doContinue() {
     setBusy(true);
     setProblem(null);
+    setProblemWhere("continue");
     try {
       await continueTeamRoom(room.id, CONTINUE_TURNS);
       setContinueOpen(false);
@@ -214,16 +222,16 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
     <button type="button" className="os-btn os-btn--danger" onClick={() => setStopOpen(true)}>
       <Square size={14} aria-hidden="true" /> Stop room
     </button>
-  ) : room.status === "needs_you" ? (
-    <button type="button" className={`os-btn ${paused ? "os-btn--secondary" : "os-btn--primary"}`} onClick={() => setContinueOpen(true)}>
-      {paused ? `Continue without deciding (+${CONTINUE_TURNS} turns)` : `Continue (+${CONTINUE_TURNS} turns)`}
+  ) : room.status === "needs_you" && pause !== "carrying_on" ? (
+    <button type="button" className={`os-btn ${pause === "waiting" ? "os-btn--secondary" : "os-btn--primary"}`} onClick={() => setContinueOpen(true)}>
+      {pause === "waiting" ? `Continue without deciding (+${CONTINUE_TURNS} turns)` : `Continue (+${CONTINUE_TURNS} turns)`}
     </button>
   ) : undefined;
 
   return (
     <div className="os-team__view">
       {backButton}
-      <PageHeader title="Team Room" titleId="os-team-title" lede={roomLede(room)} actions={headerActions} />
+      <PageHeader title="Team Room" titleId="os-team-title" lede={roomLede(room, proposals)} actions={headerActions} />
 
       <div className="os-team__bar">
         <div className="os-team__task">
@@ -241,7 +249,7 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
           Jump to the decision
         </button>
       ) : null}
-      {problem ? <TeamRoomProblem problem={problem} /> : null}
+      {problem ? <TeamRoomProblem problem={problem} where={problemWhere} /> : null}
       {loadError ? <Banner tone="warn">Lost contact with Agent OS. This page shows the last thing it saw and keeps trying.</Banner> : null}
       {notices.map((notice) => (
         <Banner key={notice} tone="info">
@@ -277,7 +285,7 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
             memory={cardMemory}
             remember={remember}
           />
-          <TeamRoomLimits room={room} nowMs={Date.now()} />
+          <TeamRoomLimits room={room} proposals={proposals} nowMs={Date.now()} />
           <TeamRoomDecided
             room={room}
             proposals={proposals}
@@ -313,16 +321,14 @@ export default function TeamRoomView({ roomId, onBack }: { roomId: string; onBac
       ) : null}
       {continueOpen ? (
         <AgentConfirmModal
-          title={`Continue for ${CONTINUE_TURNS} more turns?`}
+          title={continueTurns(room, CONTINUE_TURNS).title}
           confirmLabel="Continue"
           busy={busy}
           onConfirm={() => void doContinue()}
           onClose={() => (busy ? null : setContinueOpen(false))}
         >
-          <p>
-            This starts the real agents again for up to {CONTINUE_TURNS} more turns. Each turn may cost money on their own model accounts.
-          </p>
-          {paused ? <p>The file waiting for you stays waiting, and you can still decide on it later.</p> : null}
+          <p>{continueTurns(room, CONTINUE_TURNS).sentence}</p>
+          {pause === "waiting" ? <p>The file waiting for you stays waiting, and you can still decide on it later.</p> : null}
         </AgentConfirmModal>
       ) : null}
     </div>

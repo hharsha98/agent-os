@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import ModelApplyPanel from "./ModelApplyPanel";
 import StatusMark from "./StatusMark";
+import OpenAddress from "./OpenAddress";
 import type { AgentModelInfo, BrainAgentId, CatalogModel, OpenPageResult } from "../../setupApi";
 import { cancelOpenRouterConnect, friendlyError, lookupOpenRouterModel, openOpenRouterModels, openOpenRouterPresets } from "../../setupApi";
 import { agentApplier, buildAgentTargets } from "../agentModelChange";
@@ -115,9 +116,9 @@ export default function OpenRouterWebsitePanel({
           <span>
             {openNote.text}{" "}
             {openNote.url ? (
-              <a href={openNote.url} target="_blank" rel="noopener noreferrer">
+              <OpenAddress href={openNote.url} showAddress={false} copyLabel="Copy the address">
                 {openNote.url}
-              </a>
+              </OpenAddress>
             ) : null}
           </span>
         </p>

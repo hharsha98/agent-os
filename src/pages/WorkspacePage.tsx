@@ -338,12 +338,21 @@ export default function WorkspacePage() {
     (rows.find((row) => row.dataset.fileId === wanted) ?? noteHeadingRef.current)?.focus();
   }, [selectedId, listing]);
 
+  // Opening a file brings its pane into view, below the top bar. This runs AFTER the pane has drawn its new state: the New
+  // note form it replaces is far taller than a file's pane, and scrolling before the swap lined the tall form up and then left
+  // the short pane 27px under the bar.
+  const [paneScrollTick, setPaneScrollTick] = useState(0);
+  useEffect(() => {
+    if (paneScrollTick === 0) return;
+    paneRef.current?.scrollIntoView({ block: "nearest" });
+  }, [paneScrollTick]);
+
   function selectFile(id: string) {
     setSelectedId(id);
     setNotice(null);
     setFocusPane(true);
     syncUrl(id, folder);
-    paneRef.current?.scrollIntoView({ block: "nearest" });
+    setPaneScrollTick((n) => n + 1);
   }
 
   function newNote() {
@@ -550,7 +559,7 @@ export default function WorkspacePage() {
           <span className="os-mono">{total}</span> {listing ? filesWord(listing.summary?.total ?? 0) : "files"}
         </span>
         <span>
-          <span className="os-mono">{byAgents}</span> saved by agents
+          <span className="os-mono">{byAgents}</span> {byAgents === "1" ? "Team Room save" : "Team Room saves"}
         </span>
         <span className="os-ws__bar-right">
           <button type="button" className="os-btn os-btn--ghost" onClick={() => void refresh(true)} disabled={refreshing}>
@@ -591,9 +600,15 @@ export default function WorkspacePage() {
                   autoComplete="off"
                 />
               </div>
-              <button type="button" className="os-chip" aria-pressed={onlyAgents} onClick={() => setOnlyAgents((on) => !on)}>
+              <button
+                type="button"
+                className="os-chip"
+                aria-pressed={onlyAgents}
+                title="Files a Team Room saved. Files an agent run wrote show — under Saved by."
+                onClick={() => setOnlyAgents((on) => !on)}
+              >
                 {onlyAgents ? <Check size={14} aria-hidden="true" /> : null}
-                Saved by agents
+                Team Room saves
               </button>
               {folder ? (
                 <button

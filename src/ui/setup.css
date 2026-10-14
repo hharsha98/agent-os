@@ -1131,6 +1131,9 @@
   padding-left: 1.2em;
 }
 .os-setup-modal__error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
   margin: 0;
   padding: var(--os-sp-3);
   border: 1px solid var(--os-danger-line);
@@ -1139,6 +1142,11 @@
   font-size: var(--os-fs-13);
   color: var(--os-text-1);
   overflow-wrap: anywhere;
+}
+.os-setup-modal__error svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--os-danger);
 }
 .os-setup-modal__actions {
   display: flex;

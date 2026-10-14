@@ -102,6 +102,7 @@ if (args[0] === "config" && args[1] === "set") {
 }
 if (args[0] === "config" && args[1] === "get") {
   if (args[2] === "approvals.mode") { print("on"); process.exit(0); }
+  if (exists(".fake-hermes-get-fail")) { process.stderr.write("error: config store is locked\\n"); process.exit(1); }
   const value = readConfig()[args[2]];
   if (value === undefined) { print(""); process.exit(0); }
   print(args.includes("--json") ? JSON.stringify(value) : String(value));
@@ -146,6 +147,7 @@ if (args[0] === "agent" && args.includes("--help")) { print("Usage\\n --session-
 if (args[0] === "doctor") { print(JSON.stringify({ ok: true, findings: [] })); process.exit(0); }
 if (args[0] === "gateway" && args[1] === "status") { print(JSON.stringify({ running: exists(".fake-openclaw-gateway-running") })); process.exit(0); }
 if (args[0] === "config" && args[1] === "get") {
+  if (args[2] === "agents.defaults.model.primary" && exists(".fake-openclaw-get-fail")) reject("config store is locked");
   if (args[2] === "agents.defaults.model.primary") { print(readText(".fake-openclaw-primary")); process.exit(0); }
   if (args[2] === "agents.entries") { print(readText(".fake-openclaw-entries.json")); process.exit(0); }
   if (args[2] === "modelPolicy.allow") { print(readText(".fake-openclaw-allow.json")); process.exit(0); }
@@ -942,6 +944,34 @@ test("GET /agents/:id/model: reads Hermes and OpenClaw through their own config 
     },
     { openclaw: false }
   );
+});
+
+test("GET /agents/:id/model: a config get that fails is `known: false`, never the same answer as 'no model set'", posixSkip, async () => {
+  await withModelEnv(async ({ call, home }) => {
+    // Hermes: every config get exits non-zero (a broken or locked config store).
+    await writeFile(path.join(home, ".fake-hermes-get-fail"), "1");
+    const hermes = (await call("GET", "/api/setup/agents/hermes/model")).body;
+    assert.equal(hermes.known, false, "an unreadable model is not 'no model'");
+    assert.equal(hermes.installed, true);
+    assert.equal(hermes.model, null);
+    assert.equal(hermes.provider, null);
+    // OpenClaw: its one config get fails.
+    await writeFile(path.join(home, ".fake-openclaw-get-fail"), "1");
+    const openclaw = (await call("GET", "/api/setup/agents/openclaw/model")).body;
+    assert.equal(openclaw.known, false);
+    assert.equal(openclaw.model, null);
+    // A model that really is empty answers `ok` and carries no `known: false`.
+    await rm(path.join(home, ".fake-hermes-get-fail"));
+    await rm(path.join(home, ".fake-openclaw-get-fail"));
+    await writeFile(path.join(home, ".fake-hermes-config.json"), JSON.stringify({}));
+    await writeFile(path.join(home, ".fake-openclaw-primary"), "");
+    const emptyHermes = (await call("GET", "/api/setup/agents/hermes/model")).body;
+    const emptyOpenclaw = (await call("GET", "/api/setup/agents/openclaw/model")).body;
+    for (const body of [emptyHermes, emptyOpenclaw]) {
+      assert.equal(body.model, null);
+      assert.equal("known" in body, false, "a real empty answer is a known answer");
+    }
+  });
 });
 
 // =====================================================================

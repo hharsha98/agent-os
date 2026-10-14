@@ -116,6 +116,9 @@ export default function GetStartedCard() {
   // "still to do" to "done" while this card is on screen.
   const wasIncompleteRef = useRef(false);
   const [fresh, setFresh] = useState(false);
+  // Once only one step is left, the card shrinks to a one-line strip so the agents and their brains below it stay on
+  // screen. "Show all steps" opens the full list again, and it stays open for as long as this page is.
+  const [showAllSteps, setShowAllSteps] = useState(false);
 
   const installTodo = data?.steps.find((step) => step.id === "install")?.status === "todo";
   useEffect(() => {
@@ -210,6 +213,44 @@ export default function GetStartedCard() {
   const currentId = steps.find((step) => step.status === "todo")?.id;
   const exampleReady = exampleAgentId(facts) !== null;
   const noteFor = (id: OnboardingStepId) => (id === "install" ? (plan ? installNote(plan) : "") : STEP_NOTE[id] || "");
+
+  // Three of four done and one still to do: a strip, not the whole card.
+  const lastStep = steps.find((step) => step.id === currentId);
+  const strip = !showAllSteps && counts.todo === 1 && counts.done >= 3 && lastStep !== undefined && currentId !== undefined;
+  if (strip && lastStep && currentId) {
+    const blockedFirstRun = currentId === "first-run" && !exampleReady;
+    return (
+      <section id="os-get-started" className="os-panel os-gs os-gs--strip" aria-labelledby="os-gs-title" tabIndex={-1}>
+        <div className="os-gs__topline" aria-hidden="true" />
+        <div className="os-gs__strip">
+          <div className="os-gs__strip-text">
+            <span className="os-micro">Get started</span>
+            <h2 id="os-gs-title">One step left: {STEP_TITLE[currentId]}</h2>
+            <p className="os-gs__strip-detail">
+              <span className="os-gs__count os-mono">{countText}</span>
+              <span>{blockedFirstRun ? "Install an agent first, then try an example." : lastStep.detail}</span>
+            </p>
+          </div>
+          <div className="os-gs__head-actions">
+            <button type="button" className="os-btn os-btn--primary os-gs__primary" onClick={() => openStep(currentId, facts)} disabled={blockedFirstRun}>
+              {STEP_BUTTON[currentId]}
+            </button>
+            <button type="button" className="os-btn os-btn--ghost" onClick={() => setShowAllSteps(true)}>
+              Show all steps
+            </button>
+            <button type="button" className="os-btn os-btn--ghost" onClick={() => void setHidden(true)}>
+              Hide for now
+            </button>
+          </div>
+        </div>
+        {saveError ? (
+          <p className="os-gs__error" role="alert">
+            {saveError}
+          </p>
+        ) : null}
+      </section>
+    );
+  }
 
   return (
     <section id="os-get-started" className="os-panel os-gs" aria-labelledby="os-gs-title" tabIndex={-1}>

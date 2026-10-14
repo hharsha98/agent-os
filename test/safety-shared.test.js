@@ -43,7 +43,7 @@ test("every level says what agents can do, ask about and cannot do, in plain wor
 test("the always-on safeguards are only true-today claims", () => {
   assert.deepEqual(safety.ALWAYS_ON.map((row) => row.title), [
     "No skip-permissions flags, ever",
-    "Runs stay inside the Workspace",
+    "New runs start in a Workspace folder",
     "Updater questions are never answered for you"
   ]);
   assert.ok(safety.ALWAYS_ON.every((row) => !/session|hand-off|worktree/i.test(row.detail)), "no SP3 to SP5 promises");
@@ -62,6 +62,14 @@ test("Level 1 says the same sentence as the New run dialog about what it refuses
 test("no level word promises what the server does not do", () => {
   // Look only stops nothing that is already running (the gate is only read when something starts).
   assert.match(safety.LEVEL_DETAIL[0].asks, /already going keeps going/);
+  // ...and two things still start at Look only: a Team Room already going takes its next turns, and
+  // Setup's brain check runs a real "reply ready" turn. The words say so instead of "no agent can start".
+  assert.match(safety.LEVEL_DETAIL[0].asks, /Team Room that is already going/);
+  assert.match(safety.LEVEL_DETAIL[0].asks, /brain check/);
+  for (const text of [safety.LEVELS[0].blurb, safety.LEVEL_DETAIL[0].cannot]) {
+    assert.doesNotMatch(text, /No agent can start|Start an agent run or a Team Room/, text);
+    assert.match(text, /new/i, text);
+  }
   // Machine control is Agent OS's own screen, mouse and keyboard feature; shell commands stay off
   // unless switched on separately and each one needs a confirmation.
   assert.match(safety.LEVEL_DETAIL[2].asks, /shell command/i);
@@ -250,7 +258,11 @@ test("the always-on rows only claim runs started from Agent OS (the run manager)
   const folder = safety.ALWAYS_ON[1];
   assert.match(flags.who, /start from Agent OS/);
   assert.match(folder.who, /start from Agent OS/);
-  assert.ok(folder.detail.startsWith("Every agent run you start from Agent OS works in a folder inside the Workspace."), folder.detail);
+  // Only the folder check is enforced; where the agent then works is its own (OpenClaw's Gateway, a shell).
+  assert.ok(folder.detail.startsWith("Agent OS refuses a start folder outside the Workspace"), folder.detail);
+  assert.match(folder.detail, /OpenClaw, when its Gateway is running, works in its own folder/);
+  assert.match(folder.detail, /not locked to its folder/);
+  assert.doesNotMatch(folder.title + folder.detail, /stay inside|works in a folder inside|every agent run/i);
   assert.doesNotMatch(safety.LEVELS_QUIET, /all five agents/i);
   assert.match(safety.LEVELS_QUIET, /start from Agent OS/);
 });

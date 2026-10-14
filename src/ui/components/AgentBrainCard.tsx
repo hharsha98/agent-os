@@ -71,9 +71,9 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   return (
     <>
       <section className="os-panel os-agent-brain" aria-labelledby={`os-agent-brain-${agentId}`}>
-        <h2 id={`os-agent-brain-${agentId}`} className="os-agent-brain__title">
+        <h3 id={`os-agent-brain-${agentId}`} className="os-agent-brain__title">
           Brain
-        </h2>
+        </h3>
 
         {failed ? (
           <div className="os-fleet__banner">

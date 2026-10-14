@@ -33,7 +33,7 @@ export default function AgentSafetyPanel({
   if (!safety) {
     return (
       <section className="os-panel os-agent-safety">
-        <h2 className="os-agent-safety__title">Safety</h2>
+        <h3 className="os-agent-safety__title">Safeguards</h3>
         <p>…</p>
       </section>
     );
@@ -56,7 +56,7 @@ export default function AgentSafetyPanel({
 
   return (
     <section className="os-panel os-agent-safety">
-      <h2 className="os-agent-safety__title">Safety</h2>
+      <h3 className="os-agent-safety__title">Safeguards</h3>
       <p className="os-agent-safety__finding">
         <StatusMark kind={safety.permissive ? "warn" : "ok"} />
         {safety.summary}

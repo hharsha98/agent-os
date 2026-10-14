@@ -20,6 +20,14 @@ export const AGENT_ROLE: Record<string, string> = {
   codex: "Coding agent",
   cursor: "Coding agent"
 };
+// Who makes each agent (shown under its name on Agents).
+export const AGENT_MAKER: Record<string, string> = {
+  hermes: "Nous Research",
+  openclaw: "Open source",
+  claude: "Anthropic",
+  codex: "OpenAI",
+  cursor: "Cursor"
+};
 export const AGENT_MONOGRAM: Record<string, string> = {
   hermes: "H",
   openclaw: "OC",

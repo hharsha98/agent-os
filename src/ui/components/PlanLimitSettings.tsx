@@ -64,9 +64,9 @@ export default function PlanLimitSettings({ brains, onChanged }: { brains: Build
 
   return (
     <section className="os-panel os-bb-limit" aria-labelledby="os-bb-limit-title">
-      <h2 id="os-bb-limit-title" className="os-bb-card__title">
+      <h3 id="os-bb-limit-title" className="os-bb-card__title">
         When a plan runs out
-      </h2>
+      </h3>
       <p className="os-bb-card__lead">
         If Claude Code, Codex or Cursor stops because the limit on your plan is used up, what should Agent OS do? This is one setting for all three.
       </p>

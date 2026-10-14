@@ -2,14 +2,15 @@ import { useEffect, useRef } from "react";
 import { RefreshCw } from "lucide-react";
 import type { BuilderBrains } from "../../buildersApi";
 import type { AgentSummary } from "../../types";
-import { AGENT_LABEL, AGENT_MONOGRAM, AGENT_ROLE, AGENTS_ORDER, agentStatusWord } from "../agentsShared";
+import { AGENT_LABEL, AGENTS_ORDER, SERVICE_AGENT_SET } from "../agentsShared";
+import { railStatus, railVersion } from "../agentsPageShared";
 import { isBuilderId } from "../builderShared";
 import BuilderBrainBadge from "./BuilderBrainBadge";
-import StatusMark from "./StatusMark";
+import StatusWord from "./StatusWord";
 
-// The hangar's left rail on desktop (≥1100px, see agents.css); the same
-// markup becomes a horizontal scrollable segmented selector below that
-// breakpoint — one list, two layouts, driven entirely by CSS.
+// The Agents page's rail, grouped Operators and Builders: each agent's name, installed version
+// and a status word. On desktop (≥1100px, see agents.css) it is a column beside the detail; the
+// same markup becomes a horizontal scrollable strip below that, driven entirely by CSS.
 export default function AgentRail({
   agents,
   resolved,
@@ -42,40 +43,57 @@ export default function AgentRail({
     nav.scrollLeft = selected.offsetLeft - (nav.clientWidth - selected.offsetWidth) / 2;
   }, [selectedId]);
 
+  // Nothing has loaded and the first load failed or timed out: say "—", never "not installed".
+  const gaveUp = failed || timedOut;
+  const groups = [
+    { label: "Operators", blurb: "Always-on assistants", ids: AGENTS_ORDER.filter((id) => SERVICE_AGENT_SET.has(id)) },
+    { label: "Builders", blurb: "Coding agents", ids: AGENTS_ORDER.filter((id) => !SERVICE_AGENT_SET.has(id)) }
+  ];
+
   return (
     <nav className="os-agent-rail" aria-label="Agents" ref={navRef}>
-      {AGENTS_ORDER.map((id) => {
-        const agent = agents ? agents.find((a) => a.id === id) : undefined;
-        const { mark, word } = agentStatusWord(agent?.detected.installed, resolved, timedOut, failed, liveCountByAgent[id] || 0);
-        const selected = id === selectedId;
-        return (
-          <button
-            key={id}
-            type="button"
-            className={`os-agent-rail__item${selected ? " os-agent-rail__item--selected" : ""}`}
-            aria-current={selected ? "true" : undefined}
-            onClick={() => onSelect(id)}
-          >
-            <span className="os-agent-rail__accent" aria-hidden="true" />
-            <span className="os-agent-rail__mono os-mono">{AGENT_MONOGRAM[id]}</span>
-            <span className="os-agent-rail__text">
-              <strong>{agent?.label || AGENT_LABEL[id]}</strong>
-              <span className="os-agent-rail__role">{AGENT_ROLE[id]}</span>
-              {brains && isBuilderId(id) ? (
-                <span className="os-agent-rail__brain">
-                  <BuilderBrainBadge agentId={id} brain={brains[id]} />
+      {groups.map((group) => (
+        <div key={group.label} className="os-agent-rail__group">
+          <div className="os-table__group" role="presentation">
+            {group.label}
+            <span>{group.blurb}</span>
+          </div>
+          {group.ids.map((id) => {
+            const agent = agents ? agents.find((a) => a.id === id) : undefined;
+            const selected = id === selectedId;
+            const status = railStatus({ resolved, gaveUp, agent, live: liveCountByAgent[id] || 0 });
+            const version = railVersion({ resolved, gaveUp, agent });
+            const name = agent?.label || AGENT_LABEL[id];
+            return (
+              <button
+                key={id}
+                type="button"
+                className={`os-agent-rail__item${selected ? " os-agent-rail__item--selected" : ""}`}
+                aria-current={selected ? "true" : undefined}
+                onClick={() => onSelect(id)}
+              >
+                <span className="os-agent-rail__name">
+                  <span className="os-agent-rail__label" title={name}>
+                    {name}
+                  </span>
+                  <span className="os-agent-rail__version os-mono" title={agent?.detected?.installed ? version : undefined}>
+                    {version}
+                  </span>
                 </span>
-              ) : null}
-            </span>
-            <span className="os-agent-rail__status">
-              <StatusMark kind={mark} label={word} />
-            </span>
-          </button>
-        );
-      })}
+                <StatusWord state={status.state} label={status.label} />
+                {brains && isBuilderId(id) ? (
+                  <span className="os-agent-rail__brain">
+                    <BuilderBrainBadge agentId={id} brain={brains[id]} />
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ))}
       {timedOut || (failed && !resolved) ? (
         <button type="button" className="os-btn os-btn--ghost os-agent-rail__retry" onClick={onRetry}>
-          <RefreshCw size={12} /> Retry
+          <RefreshCw size={12} aria-hidden="true" /> Retry
         </button>
       ) : null}
     </nav>

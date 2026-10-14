@@ -49,9 +49,9 @@ export default function BuilderBrainCard({
   if (!brains) {
     return (
       <section className="os-panel os-bb-card" aria-labelledby={`os-bb-title-${agentId}`}>
-        <h2 id={`os-bb-title-${agentId}`} className="os-bb-card__title">
+        <h3 id={`os-bb-title-${agentId}`} className="os-bb-card__title">
           Brain
-        </h2>
+        </h3>
         {failed ? (
           <div className="os-fleet__banner">
             <AlertTriangle size={16} />
@@ -95,9 +95,9 @@ export default function BuilderBrainCard({
   return (
     <section className="os-panel os-bb-card" aria-labelledby={`os-bb-title-${agentId}`}>
       <header className="os-bb-card__head">
-        <h2 id={`os-bb-title-${agentId}`} className="os-bb-card__title">
+        <h3 id={`os-bb-title-${agentId}`} className="os-bb-card__title">
           Brain
-        </h2>
+        </h3>
         <span className="os-bb-card__now">
           <span className="os-micro">In use</span>
           <BuilderBrainBadge agentId={agentId} brain={saved} />

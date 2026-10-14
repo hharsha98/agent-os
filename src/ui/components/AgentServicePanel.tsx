@@ -57,7 +57,7 @@ export default function AgentServicePanel({
 
   return (
     <section className="os-panel os-service">
-      <h2 className="os-service__title">Background service</h2>
+      <h3 className="os-service__title">Background service</h3>
       {!checked ? (
         <p className="os-service__status">
           <StatusMark kind="unknown" /> …
@@ -91,7 +91,7 @@ export default function AgentServicePanel({
           </button>
         ))}
       </div>
-      <p className="os-service__note">Keeps running when Agent OS is closed.</p>
+      <p className="os-service__note">Keeps running when Agent OS is closed. Hold to stop all does not stop it: use Stop here.</p>
       {error && !confirming ? <p className="os-launch__error">{error}</p> : null}
 
       {activeRunId ? (

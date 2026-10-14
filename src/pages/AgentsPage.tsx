@@ -1,19 +1,29 @@
-// Agents screen ("the hangar"): a master-detail rail of the five agents and
-// a detail "bay" for whichever one is selected (?agent=<id>, defaulting to
-// the first installed one). See specs/W7c-agents-runs.md.
-import { useEffect, useMemo, useState } from "react";
-import { getExecutionGateStatus, listAgents, listRuns } from "../api";
+// Agents: a rail of the five agents grouped Operators and Builders, and the detail of whichever one
+// is selected (?agent=<id>, defaulting to the first installed one). Runs are started from Runs
+// (New run), not here. Every request has a time limit, so the page says so when Agent OS does not
+// answer and comes back by itself; it keeps the last good answer under a note meanwhile.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { listAgents, listRuns } from "../api";
 import { navigateTo, queryParam } from "../nav";
-import type { AgentSummary, ExecutionGateStatus, RunMeta } from "../types";
+import type { AgentSummary, RunMeta } from "../types";
 import { AGENTS_ORDER } from "../ui/agentsShared";
+import { liveCounts, pickAgentId } from "../ui/agentsPageShared";
 import AgentBay from "../ui/components/AgentBay";
 import AgentRail from "../ui/components/AgentRail";
+import Banner from "../ui/components/Banner";
+import PageHeader from "../ui/components/PageHeader";
 import { useBuilderBrains } from "../ui/components/useBuilderBrains";
 import { useInterval } from "../ui/components/useInterval";
-import { SAFE_EXAMPLE_PROMPT } from "../ui/onboardingShared";
+import { HOME_RUNS_LIMIT, withTimeout } from "../ui/homeShared";
 import "../ui/agents.css";
 
 const AGENTS_WATCHDOG_MS = 15000;
+// /api/agents waits on the agents' own help checks (the server gives each one up to 8 s, after a 5 s
+// version check), so the page waits longer than the server does. The same limits as Home.
+const AGENTS_TIMEOUT_MS = 15000;
+const RUNS_TIMEOUT_MS = 8000;
+const BRAINS_TIMEOUT_MS = 8000;
 
 export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
@@ -21,57 +31,70 @@ export default function AgentsPage() {
   const [agentsTimedOut, setAgentsTimedOut] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [runs, setRuns] = useState<RunMeta[] | null>(null);
-  const [gate, setGate] = useState<ExecutionGateStatus | null>(null);
-  const [gateFailed, setGateFailed] = useState(false);
+  const [runsFailed, setRunsFailed] = useState(false);
   const [selectedId, setSelectedId] = useState(() => queryParam("agent") || "");
-  // ?example=safe (from the Get started checklist) types the safe example prompt
-  // into the Launch panel. It is only typed in; the person still presses Launch.
-  const [exampleAsked, setExampleAsked] = useState(() => queryParam("example") === "safe");
   // Which brain Claude Code, Codex and Cursor use (shown in the rail and the bay).
-  const { brains, failed: brainsFailed, reload: reloadBrains } = useBuilderBrains();
+  const { brains, failed: brainsFailed, reload: reloadBrains } = useBuilderBrains(BRAINS_TIMEOUT_MS);
+  const alive = useRef(true);
+  const agentsNewest = useRef(0);
+  const agentsBusy = useRef(false);
+  const runsBusy = useRef(false);
 
+  // The newest request wins, and nothing lands after the page is gone.
   async function loadAgents(refresh = false) {
+    if (agentsBusy.current && !refresh) return;
+    const mine = ++agentsNewest.current;
+    agentsBusy.current = true;
     try {
-      const { agents: list } = await listAgents(refresh);
+      const { agents: list } = await withTimeout(listAgents(refresh), AGENTS_TIMEOUT_MS);
+      if (!Array.isArray(list)) throw new Error("not a list");
+      if (!alive.current || mine !== agentsNewest.current) return;
       setAgents(list);
       setAgentsFailed(false);
     } catch {
+      if (!alive.current || mine !== agentsNewest.current) return;
       setAgentsFailed(true);
+    } finally {
+      if (mine === agentsNewest.current) agentsBusy.current = false;
     }
   }
 
   async function loadRuns() {
+    if (runsBusy.current) return;
+    runsBusy.current = true;
     try {
-      const { runs: list } = await listRuns({ limit: 50 });
+      const { runs: list } = await withTimeout(listRuns({ limit: HOME_RUNS_LIMIT }), RUNS_TIMEOUT_MS);
+      if (!Array.isArray(list)) throw new Error("not a list");
+      if (!alive.current) return;
       setRuns(list);
+      setRunsFailed(false);
     } catch {
-      // Runs here only drive the rail's "Running ×N" counts; a failure just
-      // leaves those at 0 rather than blocking the whole screen.
-    }
-  }
-
-  async function loadGate() {
-    try {
-      setGate(await getExecutionGateStatus());
-      setGateFailed(false);
-    } catch {
-      // Keep the last known gate (if any) so a blip doesn't flip the Launch
-      // panel to "unknown"; only a never-loaded gate shows the error state.
-      setGateFailed(true);
+      // Runs here only drive the rail's "Live" words. The last good list stays, under the same note
+      // as a failed agents list, and a failure never blocks the rest of the page.
+      if (alive.current) setRunsFailed(true);
+    } finally {
+      runsBusy.current = false;
     }
   }
 
   useEffect(() => {
+    alive.current = true;
     void loadAgents();
     void loadRuns();
-    void loadGate();
+    return () => {
+      alive.current = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useInterval(() => void loadAgents(), 30000);
-  useInterval(() => void loadRuns(), 5000);
-  useInterval(() => void loadGate(), 15000);
+  // Every 30 s, but every 5 s while Agent OS can't be reached (also while only a stale list is
+  // shown), so the page comes back by itself.
+  useInterval(() => void loadAgents(), agentsFailed ? 5000 : 30000);
+  useInterval(() => {
+    void loadRuns();
+    if (brainsFailed) void reloadBrains();
+  }, 5000);
 
-  // Same watchdog pattern as FleetPage: never stay dim/"Checking…" forever.
+  // Same watchdog pattern as Home: never stay dim/"Checking…" forever.
   useEffect(() => {
     if (agents !== null) {
       setAgentsTimedOut(false);
@@ -84,27 +107,13 @@ export default function AgentsPage() {
   useEffect(() => {
     function sync() {
       setSelectedId(queryParam("agent") || "");
-      setExampleAsked(queryParam("example") === "safe");
     }
     window.addEventListener("aos-navigate", sync);
     return () => window.removeEventListener("aos-navigate", sync);
   }, []);
 
-  const defaultAgentId = useMemo(() => {
-    if (!agents) return AGENTS_ORDER[0];
-    return agents.find((a) => a.detected.installed)?.id || AGENTS_ORDER[0];
-  }, [agents]);
-  const effectiveId = selectedId || defaultAgentId;
-
-  const liveCountByAgent = useMemo(() => {
-    const map: Record<string, number> = {};
-    if (runs) {
-      for (const run of runs) {
-        if (run.status === "running" && run.agentId) map[run.agentId] = (map[run.agentId] || 0) + 1;
-      }
-    }
-    return map;
-  }, [runs]);
+  const effectiveId = pickAgentId(selectedId, agents, AGENTS_ORDER);
+  const liveCountByAgent = useMemo(() => liveCounts(runs), [runs]);
 
   function selectAgent(id: string) {
     setSelectedId(id);
@@ -115,17 +124,28 @@ export default function AgentsPage() {
     setLoadAttempt((n) => n + 1);
     void loadAgents(true);
     void loadRuns();
-    void loadGate();
+    if (brainsFailed) void reloadBrains();
   }
 
   const selectedAgent = agents ? agents.find((a) => a.id === effectiveId) : undefined;
 
   return (
-    <div className="os-agents aos-phase-page">
-      <header className="os-agents__header">
-        <span className="os-micro">AGENT OS · HANGAR</span>
-        <h1>Agents</h1>
-      </header>
+    <section className="os-agents" aria-labelledby="os-agents-title">
+      <PageHeader
+        titleId="os-agents-title"
+        title="Agents"
+        lede="Which version each agent runs, which brain it uses, and what keeps it inside the lines."
+        actions={
+          <button type="button" className="os-btn os-btn--secondary" onClick={retryAll}>
+            <RefreshCw size={16} aria-hidden="true" /> Check again
+          </button>
+        }
+      />
+      {(agentsFailed || runsFailed) && agents !== null ? (
+        <Banner tone="warn" title="Can't reach Agent OS">
+          Showing what was last known. This page tries again every few seconds.
+        </Banner>
+      ) : null}
       <div className="os-agents__body">
         <AgentRail
           agents={agents}
@@ -144,18 +164,11 @@ export default function AgentsPage() {
           agentsResolved={agents !== null}
           agentsFailed={agentsFailed}
           onRetryAgents={retryAll}
-          liveCount={liveCountByAgent[effectiveId] || 0}
-          gate={gate}
-          gateFailed={gateFailed}
-          onReloadGate={loadGate}
-          onRecheckAgents={() => loadAgents(true)}
-          onRunLaunched={(run) => navigateTo("runs", { run: run.id })}
-          initialPrompt={exampleAsked ? SAFE_EXAMPLE_PROMPT : undefined}
           brains={brains}
           brainsFailed={brainsFailed}
           onBrainsChanged={reloadBrains}
         />
       </div>
-    </div>
+    </section>
   );
 }

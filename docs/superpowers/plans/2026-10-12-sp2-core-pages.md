@@ -1543,7 +1543,7 @@ Spec: D10 and "Team Room server change (D10)" items 1, 2, 3 and 6. After this ta
   - Test fixtures used again by Task A2: `PAUSING_SCRIPT` (Hermes proposes `plan.md` on turn 1, OpenClaw agrees on turn 2, later turns are plain notes).
 
 **Environment notes for the worker:**
-- Run everything from the worktree root `/Users/harsha/agent-os/.claude/worktrees/epic-vaughan-c2e6ef`.
+- Run everything from the worktree root (the folder that holds `package.json`).
 - The tests use fake `hermes` and `openclaw` programs on a private PATH and a temporary `AGENT_OS_HOME`. They never start a real agent and never touch the real home folder. Do not set `CI=true`. Do not commit.
 - One run of the file takes about 20 to 40 seconds.
 - If a run is interrupted, a sleeping fake agent can be left behind. Check with `ps -axo pid,command | grep agent-os-team-src` and stop only those processes.

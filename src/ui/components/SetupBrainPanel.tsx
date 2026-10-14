@@ -10,7 +10,7 @@
 // No API key is ever held here for the one-click path -- only a flow id. The
 // "use an existing key" path keeps the pasted key in the OpenRouter card's
 // state until it is sent once.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import BrainLocalCard from "./BrainLocalCard";
 import BrainModelActions from "./BrainModelActions";
@@ -22,12 +22,24 @@ import { useInterval } from "./useInterval";
 import type { BrainAgentId, BrainOptionsResponse, BrainTarget, SetupJob } from "../../setupApi";
 import { cancelSetupJob, friendlyError, getSetupJob, postConfigure, recallJobId, rememberJobId } from "../../setupApi";
 import { CONFIGURE_STEP_LABEL, type BrainAgentLine } from "../brainShared";
+import { withTimeout } from "../homeShared";
+import { gotNoAnswer, noAnswerWords } from "../setupGroupShared";
 import "../brain.css";
 
 export type { BrainAgentLine } from "../brainShared";
 
 type Kind = "openrouter" | "local";
 export type BrainPanelStatus = "idle" | "running" | "failed" | "succeeded";
+
+// Every request this panel makes has a time limit, so a server that never answers cannot leave
+// it spinning for ever.
+const REQUEST_TIMEOUT_MS = 20000;
+
+// A refusal Agent OS sent keeps its plain-English reason (friendlyError). A request that got no
+// answer says so in plain words, never the browser's raw "Failed to fetch" / "Load failed".
+function plainError(error: unknown) {
+  return gotNoAnswer(error) ? noAnswerWords(error) : friendlyError(error);
+}
 
 export default function SetupBrainPanel({
   brain,
@@ -74,6 +86,15 @@ export default function SetupBrainPanel({
   const [actionError, setActionError] = useState("");
   // What each agent uses now, from the agents themselves (shown next to each name below).
   const { models, reload: reloadModels } = useAgentModels(agents);
+  // False once the panel is gone: a late answer must not update a screen that is not there.
+  const alive = useRef(true);
+  const pollBusy = useRef(false);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   // A configure job that is still running on the server survives a reload or
   // a trip to another page: pick it up again instead of starting over.
@@ -81,25 +102,34 @@ export default function SetupBrainPanel({
     const id = recallJobId("configure");
     if (!id) return;
     let cancelled = false;
-    getSetupJob(id)
+    withTimeout(getSetupJob(id), REQUEST_TIMEOUT_MS)
       .then((found) => {
         if (cancelled) return;
         if (found.status === "running") setJob(found);
         else rememberJobId("configure", null);
       })
-      .catch(() => rememberJobId("configure", null));
+      // A job Agent OS says it does not know is forgotten; a question that got no answer is not a
+      // reason to forget it, so a reload can still find it later.
+      .catch((error) => {
+        if (!gotNoAnswer(error)) rememberJobId("configure", null);
+      });
     return () => {
       cancelled = true;
     };
   }, []);
 
+  // One poll at a time: a slow answer must not pile up behind the next tick.
   useInterval(
     async () => {
-      if (!job) return;
+      if (!job || pollBusy.current) return;
+      pollBusy.current = true;
       try {
-        setJob(await getSetupJob(job.id));
+        const next = await withTimeout(getSetupJob(job.id), REQUEST_TIMEOUT_MS);
+        if (alive.current) setJob(next);
       } catch {
         // transient poll failure; the next tick tries again
+      } finally {
+        pollBusy.current = false;
       }
     },
     job && job.status === "running" ? 1000 : null
@@ -150,31 +180,42 @@ export default function SetupBrainPanel({
     setErrors({});
     setActionError("");
     try {
-      const started = await postConfigure({
-        targets,
-        keySource: "keySource" in payload ? payload.keySource : undefined,
-        apiKey: "apiKey" in payload ? payload.apiKey : undefined,
-        acceptOpenClawRisk: Boolean(targets.openclaw) && riskAccepted,
-        acceptLocalFit: "acceptLocalFit" in payload && payload.acceptLocalFit === true ? true : undefined
-      });
+      const started = await withTimeout(
+        postConfigure({
+          targets,
+          keySource: "keySource" in payload ? payload.keySource : undefined,
+          apiKey: "apiKey" in payload ? payload.apiKey : undefined,
+          acceptOpenClawRisk: Boolean(targets.openclaw) && riskAccepted,
+          acceptLocalFit: "acceptLocalFit" in payload && payload.acceptLocalFit === true ? true : undefined
+        }),
+        REQUEST_TIMEOUT_MS
+      );
+      // The server has the job whether or not this panel is still on screen, so its id is always kept.
       rememberJobId("configure", started.id);
-      setJob(started);
+      if (alive.current) setJob(started);
     } catch (error) {
+      if (!alive.current) return;
       const code = error instanceof Error ? error.message : "";
-      setErrors({ [kind]: `Couldn't apply that: ${friendlyError(error)}` });
+      setErrors({
+        [kind]: gotNoAnswer(error)
+          ? `${plainError(error)} It may or may not have been applied, so check what the agent uses now before trying again.`
+          : `Couldn't apply that: ${plainError(error)}`
+      });
       // A used-up or refused connection can't be reused: start the card over.
       if (code === "key_unavailable" || code === "connection_not_ready") setResetToken((n) => n + 1);
     } finally {
-      setBusy(null);
+      if (alive.current) setBusy(null);
     }
   }
 
   async function cancelJob() {
     if (!job) return;
     try {
-      setJob(await cancelSetupJob(job.id));
+      const next = await withTimeout(cancelSetupJob(job.id), REQUEST_TIMEOUT_MS);
+      if (alive.current) setJob(next);
     } catch (error) {
-      setActionError(friendlyError(error));
+      if (!alive.current) return;
+      setActionError(gotNoAnswer(error) ? `${plainError(error)} The cancel may not have gone through.` : friendlyError(error));
     }
   }
 

@@ -93,38 +93,6 @@
     margin: var(--os-sp-2) 0 var(--os-sp-2);
     font-size: clamp(32px, 4vw, 44px);
   }
-
-  /* Setup: a lighter title and stepper, so the step's own buttons fit. */
-  .os-setup {
-    gap: var(--os-sp-4);
-  }
-  .os-setup__header h1 {
-    font-size: var(--os-fs-24);
-  }
-  .os-setup-stepper {
-    padding: var(--os-sp-2) 0;
-  }
-  .os-setup-check {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--os-sp-2) var(--os-sp-6);
-  }
-  /* Two columns are narrow, so each row reads the same way: mark and name,
-     with the detail under the name (the phone layout in setup.css). */
-  .os-setup-check__row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    column-gap: var(--os-sp-3);
-    row-gap: 2px;
-  }
-  .os-setup-check__label {
-    min-width: 0;
-  }
-  .os-setup-check__detail {
-    grid-column: 2;
-    overflow-wrap: anywhere;
-  }
 }
 
 /* --- Older list pages (Loop, Journal, Notebook...): the main button first ------- */
@@ -134,22 +102,6 @@
   }
   .os-content .aos-side-list > .aos-primary {
     order: -1;
-  }
-}
-
-/* --- Setup: the step's buttons never scroll away ------------------------------ */
-@media (min-width: 901px) {
-  .os-setup__actions,
-  .os-setup-ready__actions {
-    position: sticky;
-    bottom: 0;
-    z-index: 5;
-    padding: var(--os-sp-4) 0 var(--os-sp-3);
-    background: linear-gradient(to top, var(--os-bg-0) 45%, transparent);
-  }
-  /* Inside a panel the bar fades into the panel's own colour instead. */
-  .os-panel .os-setup__actions {
-    background: linear-gradient(to top, var(--os-surface-1) 45%, transparent);
   }
 }
 

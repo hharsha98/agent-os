@@ -19,7 +19,7 @@ export const LEVELS: Record<number, { label: string; blurb: string }> = {
   0: { label: "Look only", blurb: "Agents are found and past runs shown. Agent OS starts no new run or Team Room." },
   // The second sentence is the New run dialog's own (RISKY_STEP_HINT, owner ruling C3-3):
   // the two pages must say the same thing about a step a level does not allow.
-  1: { label: "Run agents", blurb: "Runs start in a folder inside the Workspace. Anything this safety level does not allow is refused, not run." },
+  1: { label: "Run agents", blurb: "Runs start in a folder inside the Workspace (OpenClaw's Gateway uses its own). Anything this safety level does not allow is refused, not run." },
   2: { label: "Machine control", blurb: "Agent OS can also see the screen and use the mouse and keyboard on this Mac. Off until you turn it on." }
 };
 
@@ -31,7 +31,7 @@ export const LEVEL_DETAIL: Record<number, { can: string; asks: string; cannot: s
     cannot: "Start a new agent run or Team Room, or use machine control."
   },
   1: {
-    can: "Run the agents you choose, each one started in a folder inside the Workspace.",
+    can: "Run the agents you choose, each one started in a folder inside the Workspace (OpenClaw's Gateway uses its own folder).",
     asks: "You choose what runs and where. Anything this safety level does not allow is refused, not run.",
     cannot: "Use machine control, which needs Level 2, or start a run in a folder outside the Workspace."
   },

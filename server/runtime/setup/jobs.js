@@ -459,6 +459,19 @@ async function executeStep(job, step, check) {
     }
   }
 
+  // Hermes is never installed over an existing copy. Retry resumes a stored job,
+  // so look again first. Fail in plain words instead of claiming success: a
+  // half-finished earlier try can leave a copy that only looks installed.
+  if (step.action === "install" && step.agentId === "hermes") {
+    const existing = await adapter.detect({ refresh: true });
+    if (existing.installed) {
+      throw jobError(
+        "install_failed",
+        "Hermes is already installed, so Agent OS did not run its installer again. Nothing was changed. Press Check again to see it."
+      );
+    }
+  }
+
   if (step.action === "update") {
     // A job saved before an agent's update was withdrawn can still hold that
     // step, and Retry resumes the stored steps. Refuse it before anything is

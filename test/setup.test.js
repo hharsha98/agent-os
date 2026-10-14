@@ -468,6 +468,52 @@ test("retrySetupJob(): a stored job with a Hermes update step is refused and nev
   });
 });
 
+test("retrySetupJob(): a stored Hermes install step is refused when Hermes is already installed, and its installer never runs", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home, agentOsHome }) => {
+    const jsPath = path.join(sourceDir, "fake-hermes-cli.mjs");
+    const binDir = path.join(home, ".local", "bin");
+    await mkdir(binDir, { recursive: true });
+    const shim = path.join(binDir, "hermes");
+    await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$HOME/.fake-hermes-calls.log"\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
+    await chmod(shim, 0o755);
+
+    // An earlier install that failed, remembered by the Setup page; Hermes has been installed since.
+    const jobId = "job_legacy_hermes_install";
+    const jobsFolder = path.join(agentOsHome, "setup", "jobs");
+    await mkdir(jobsFolder, { recursive: true });
+    await writeFile(
+      path.join(jobsFolder, `${jobId}.json`),
+      JSON.stringify({
+        id: jobId,
+        kind: "install",
+        status: "failed",
+        steps: [
+          { id: "hermes-install", agentId: "hermes", action: "install", status: "failed", runIds: [], error: "an older failure", log: [] }
+        ],
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+        acceptOpenClawRisk: false,
+        acceptOpenClawRiskAt: null
+      })
+    );
+
+    const check = await systemCheck({ refresh: true });
+    assert.equal(check.agents.hermes.detected.installed, true, "the fake Hermes is detected");
+
+    const retried = await retrySetupJob(jobId);
+    assert.ok(retried, "the stored job was found");
+    const finished = await waitForJob(jobId);
+
+    assert.equal(finished.status, "failed");
+    assert.equal(finished.steps[0].status, "failed");
+    assert.equal(
+      finished.steps[0].error,
+      "Hermes is already installed, so Agent OS did not run its installer again. Nothing was changed. Press Check again to see it."
+    );
+    assert.deepEqual(finished.steps[0].runIds, [], "no installer run was started");
+  });
+});
+
 // =====================================================================
 // 4. Intel Mac simulation
 // =====================================================================

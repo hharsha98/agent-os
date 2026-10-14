@@ -181,4 +181,18 @@ describe("desktop window", () => {
     assert.equal(main.minHeight, 640);
     assert.ok(main.width >= main.minWidth && main.height >= main.minHeight, "the opening size is not below the minimum");
   });
+
+  test("grants exactly these permissions: the opener may only show a file in Finder", async () => {
+    // Widening the opener (for example to opener:default, which can open URLs and paths)
+    // must be a deliberate change to this list, never a quiet one.
+    const capability = JSON.parse(await read("desktop/src-tauri/capabilities/default.json"));
+    assert.deepEqual(capability.permissions, [
+      "core:default",
+      "updater:default",
+      "process:allow-restart",
+      "opener:allow-reveal-item-in-dir"
+    ]);
+    assert.deepEqual(capability.windows, ["main"]);
+    assert.deepEqual(capability.remote?.urls, ["http://127.0.0.1:*"]);
+  });
 });

@@ -282,3 +282,15 @@ test("a Hermes setting Agent OS could not read is unknown, never On", () => {
   const [off] = safety.agentGuardRows(detail({ safety: { permissive: true, summary: "", actions: [], known: true } }), null, CHECKED);
   assert.equal(off.state, "off");
 });
+
+test("Safety waits as long as the server can take for an agent's own checks: the shared Agents-page limit, not its own number", async () => {
+  const { readFileSync } = await import("node:fs");
+  const home = await import("../src/ui/homeShared.ts");
+  // The server's worst case for GET /api/agents/:id is the version check (about 5 s) plus the doctor (30 s).
+  assert.ok(home.AGENT_DETAIL_LIMIT_MS >= 35_000, "the shared limit is above the server's worst case");
+  const page = readFileSync(new URL("../src/pages/SafetyPage.tsx", import.meta.url), "utf8");
+  assert.match(page, /import \{[^}]*\bAGENT_DETAIL_LIMIT_MS\b[^}]*\} from "\.\.\/ui\/homeShared"/, "the limit is imported, not copied");
+  assert.match(page, /withTimeout\(getAgentDetail\(id\), AGENT_DETAIL_LIMIT_MS\)/, "the agent read uses it");
+  assert.doesNotMatch(page, /GUARDS_TIMEOUT_MS/, "no second constant of its own");
+  assert.doesNotMatch(page, /25\s?s\b|25000|25_000/, "no leftover 25 s limit or comment");
+});

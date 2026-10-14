@@ -69,6 +69,30 @@ test("mergeSelections starts from the defaults when there is nothing earlier", (
   assert.deepEqual(shared.mergeSelections({}, plan), shared.defaultSelections(plan));
 });
 
+test("a refresh after a job keeps a choice made meanwhile, and only what the job changed falls back", () => {
+  // Before: Cursor was missing (Install chosen), Claude installed (the person has just picked Update).
+  const before = { hermes: "keep", openclaw: "keep", claude: "update", codex: "unsupported", cursor: "install" };
+  // After a job that installed Cursor (it failed later on another step): Cursor is installed now, Claude still offers Update.
+  const plan = {
+    steps: [
+      step("hermes", "keep"), step("openclaw", "keep"), step("claude", "keep"), step("claude", "update"),
+      step("codex", "skip-unsupported"), step("cursor", "keep"), step("cursor", "update")
+    ]
+  };
+  const after = shared.mergeSelections(before, plan);
+  assert.equal(after.claude, "update", "the person's Update is not reset to Keep by the refresh");
+  assert.equal(after.cursor, "keep", "Install is gone because the job installed it, so it reads Keep");
+  assert.notDeepEqual(after, shared.defaultSelections(plan), "it is not the plain defaults");
+});
+
+test("SetupPage: the refresh after a finished job merges the Plan choices; nothing resets them to the defaults", async () => {
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(new URL("../src/pages/SetupPage.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(page, /setSelections\(defaultSelections\(/, "no place on the page replaces the choices with the defaults");
+  const refresh = page.slice(page.indexOf("async function refreshServerState"), page.indexOf("useEffect(() => {\n    void loadAll();"));
+  assert.match(refresh, /setSelections\(\(prev\) => mergeSelections\(prev, planRes\)\)/, "refreshServerState merges into what the person chose");
+});
+
 // ---- words for a request that got no answer ----------------------------------------
 
 test("gotNoAnswer: only a refusal Agent OS sent itself (an ApiError) is an answer", () => {

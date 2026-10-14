@@ -226,18 +226,24 @@ export async function undoAction(roomId, actionId) {
     // Never throw away a change made after the save: if the file is there and
     // no longer holds exactly what this action wrote, refuse. Actions saved
     // before contentSha256 existed fall back to the proposal's text, which the
-    // writer saved unchanged; only an action with neither keeps the old behaviour.
+    // writer saved unchanged. An action with neither cannot be checked, and
+    // Undo never runs blind, so it refuses too.
     const expectedSha256 =
       found.contentSha256 || (typeof proposal?.file?.content === "string" ? sha256(proposal.file.content) : null);
-    if (expectedSha256) {
-      const current = await readFileNoFollow(safeTarget);
-      if (current !== null && sha256(current) !== expectedSha256) {
-        throw roomError(
-          409,
-          "changed_since_save",
-          "The file changed after the agent saved it, so Undo would throw that change away. Nothing was changed."
-        );
-      }
+    if (!expectedSha256) {
+      throw roomError(
+        409,
+        "changed_since_save",
+        "Agent OS can't tell whether the file changed since the save, so Undo was refused. Nothing was changed."
+      );
+    }
+    const current = await readFileNoFollow(safeTarget);
+    if (current !== null && sha256(current) !== expectedSha256) {
+      throw roomError(
+        409,
+        "changed_since_save",
+        "The file changed after the agent saved it, so Undo would throw that change away. Nothing was changed."
+      );
     }
     if (found.created) {
       await fs.rm(safeTarget, { force: true });

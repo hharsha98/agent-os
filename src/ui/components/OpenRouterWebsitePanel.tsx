@@ -116,7 +116,7 @@ export default function OpenRouterWebsitePanel({
           <span>
             {openNote.text}{" "}
             {openNote.url ? (
-              <OpenAddress href={openNote.url} showAddress={false} copyLabel="Copy the address">
+              <OpenAddress href={openNote.url} copyLabel="Copy the address">
                 {openNote.url}
               </OpenAddress>
             ) : null}

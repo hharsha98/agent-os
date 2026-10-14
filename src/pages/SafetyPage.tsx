@@ -26,7 +26,7 @@ import SafetySafeguards from "../ui/components/SafetySafeguards";
 import SafetyStopInfo from "../ui/components/SafetyStopInfo";
 import SetupModal from "../ui/components/SetupModal";
 import { useInterval } from "../ui/components/useInterval";
-import { withTimeout } from "../ui/homeShared";
+import { AGENT_DETAIL_LIMIT_MS, withTimeout } from "../ui/homeShared";
 import {
   ARM_PHRASE,
   BUSY_WORD,
@@ -48,9 +48,6 @@ import "../ui/safety.css";
 // The gate and machine control are small local reads and writes.
 const READ_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 10000;
-// GET /api/agents/:id runs each agent's own checks (the server gives Hermes' doctor up to 30 s), so
-// the page waits as long as the Agents page does for the same answer.
-const GUARDS_TIMEOUT_MS = 25000;
 
 // A true countdown: it re-reads the clock every second against the server's
 // own expiry timestamp, so it can never drift into a made-up number.
@@ -89,9 +86,12 @@ function usableDetail(value: unknown): value is AgentDetail {
   return Boolean(detail && typeof detail === "object" && detail.detected && typeof detail.detected === "object" && detail.safety && typeof detail.safety === "object");
 }
 
+// GET /api/agents/:id runs each agent's own checks, and the server's worst case is about 35 s (the version
+// check, then a doctor of up to 30 s). So this waits as long as the Agents page does for the same answer:
+// AGENT_DETAIL_LIMIT_MS, shared in homeShared.ts, which sits above that worst case.
 async function readAgent(id: string): Promise<AgentDetail | null> {
   try {
-    const detail = await withTimeout(getAgentDetail(id), GUARDS_TIMEOUT_MS);
+    const detail = await withTimeout(getAgentDetail(id), AGENT_DETAIL_LIMIT_MS);
     return usableDetail(detail) ? detail : null;
   } catch {
     return null;

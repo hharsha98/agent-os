@@ -2263,7 +2263,8 @@ export interface WorkspaceSavedBy {
   // "You", "Agent OS", the agent's name for a Team Room save, or "—" when unknown.
   label: string;
   // When it was saved (ISO time). Absent for "agent-os" and for an "unknown"
-  // file with nothing on record ("—"); present for "Changed outside Agent OS".
+  // file with nothing on record ("—"); present for "Changed outside Agent OS" and
+  // for "Team Room (can't check for later changes)" (a save with nothing to compare the file with).
   at?: string;
   roomId?: string;
   actionId?: string;
@@ -2551,6 +2552,10 @@ export interface TeamRoomSummary {
 
 export interface TeamRoomListResponse {
   rooms: TeamRoomSummary[];
+  // The room the server holds its one active slot for, or null when none. It can read "needs_you" on
+  // disk while the server is about to resume it (a decision was just made), so Hold to stop all stops it
+  // too. Absent on an older server.
+  activeRoomId?: string | null;
 }
 
 export type TeamProposalStatus =

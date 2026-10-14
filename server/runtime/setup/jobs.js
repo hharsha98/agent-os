@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { ADAPTERS } from "../agents/index.js";
+import { hermesApprovalsAreOff } from "../agents/hermes.js";
 import { clearDetectCaches } from "../agents/detect.js";
 import { getRunManager } from "../runs/run-manager.js";
 import { runCommand, which } from "../safety.js";
@@ -962,12 +963,12 @@ async function configureOpenclawSafeDefaults(job, step, check, manager) {
   );
 }
 
-async function checkHermesSafeDefaults(step, check) {
+// Exported for tests. Uses the same off-spellings rule as the Safety screen.
+export async function checkHermesSafeDefaults(step, check) {
   const detected = check.agents.hermes.detected;
   if (!detected?.installed) return;
   const result = await runCommand(detected.path, ["config", "get", "approvals.mode"], CONFIG_GET_TIMEOUT_MS);
-  const value = String(result.stdout || "").trim().toLowerCase();
-  if (value === "off") {
+  if (hermesApprovalsAreOff(result.stdout)) {
     step.warnings.push("Hermes approvals are off");
   }
 }

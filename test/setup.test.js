@@ -25,6 +25,7 @@ import { clearSystemCheckCache, systemCheck } from "../server/runtime/setup/syst
 import { buildSetupPlan } from "../server/runtime/setup/plan.js";
 import {
   cancelSetupJob,
+  checkHermesSafeDefaults,
   getSetupJob,
   resetSetupJobsForTest,
   retrySetupJob,
@@ -980,3 +981,34 @@ test("startSetupJob(): an update that asks a question gets end of input, never a
     );
   });
 });
+
+test(
+  "hermes-safe-defaults: every spelling of approvals off warns, and a real 'manual' does not (the same rule Safety uses)",
+  posixSkip,
+  async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-setup-approvals-"));
+    try {
+      const warningsFor = async (printed) => {
+        const shim = path.join(dir, "hermes");
+        // A shell shim that prints exactly what `hermes config get approvals.mode` would.
+        await writeFile(shim, `#!/bin/sh\ncat <<'AGENT_OS_EOF'\n${printed}\nAGENT_OS_EOF\n`);
+        await chmod(shim, 0o755);
+        const step = { warnings: [] };
+        await checkHermesSafeDefaults(step, { agents: { hermes: { detected: { installed: true, path: shim } } } });
+        return step.warnings;
+      };
+      for (const printed of ["off", "'off'", '"off"', "False", "no", "A notice line\noff", "off\nA notice line printed after the value"]) {
+        assert.deepEqual(await warningsFor(printed), ["Hermes approvals are off"], JSON.stringify(printed));
+      }
+      for (const printed of ["manual", "'manual'", "A notice line\nmanual"]) {
+        assert.deepEqual(await warningsFor(printed), [], JSON.stringify(printed));
+      }
+      // Not installed: nothing to check, nothing said.
+      const step = { warnings: [] };
+      await checkHermesSafeDefaults(step, { agents: { hermes: { detected: { installed: false } } } });
+      assert.deepEqual(step.warnings, []);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+);

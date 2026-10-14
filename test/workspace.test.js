@@ -478,6 +478,47 @@ test("savedBy: a Team Room file that does not hold the save's text is not named,
   });
 });
 
+test("savedBy: a save with neither a fingerprint nor the proposal's text is not offered for Undo, and is not called 'changed' either", async () => {
+  await withPinnedRuntime(async (root) => {
+    const room = await newRoom();
+    const id = teamFileId(room.id, "plan.md");
+    const file = teamFilePath(root, room.id, "plan.md");
+    const logPath = path.join(root, "teams", room.id, "decision.json");
+    const action = await saveInRoom(room.id, { name: "plan.md", content: "agent v1" });
+    const atSaveTime = async () => {
+      const when = new Date(action.at);
+      await fs.utimes(file, when, when);
+    };
+    assert.equal((await savedByOf(id)).actionId, "A1", "with its fingerprint, the agent's save is offered");
+
+    // Strip both the fingerprint and the proposal's text: nothing to compare against.
+    await updateDecision(room.id, (decision) => {
+      delete decision.actions[0].contentSha256;
+      delete decision.proposals[0].file.content;
+    });
+    assert.equal(JSON.parse(await fs.readFile(logPath, "utf8")).actions[0].contentSha256, undefined);
+    await atSaveTime();
+    // The file still holds the agent's text, but Undo would refuse, so it is not offered. The label is true:
+    // it does not claim a change that may never have happened.
+    const unchecked = await savedByOf(id);
+    assert.equal(unchecked.kind, "unknown", "no Undo is offered");
+    assert.equal(unchecked.label, "Team Room (can't check for later changes)");
+    assert.notEqual(unchecked.label, "Changed outside Agent OS", "nothing says the file changed");
+    assert.ok(unchecked.label.length <= 60, "short enough for the page, which keeps the first 60 characters");
+    assert.equal(unchecked.roomId, undefined, "no room, so no Undo to offer");
+    assert.equal(unchecked.actionId, undefined, "no action, so no Undo to offer");
+    assert.equal(unchecked.at, action.at, "it says when the save was made");
+    assert.equal((await listWorkspaceFiles()).summary.savedByAgents, 0, "it does not count as a file an agent's Undo covers");
+    assert.equal(await fs.readFile(file, "utf8"), "agent v1", "listing never touches the file");
+
+    // The same save, but the file was touched long after it: a comparison (the clock) really did show a change.
+    await fs.writeFile(file, "my own edit");
+    const later = new Date(Date.now() + 10_000);
+    await fs.utimes(file, later, later);
+    assertChangedOutside(await savedByOf(id), "modified long after the save, even with nothing to compare the text with");
+  });
+});
+
 test("workspace listing names the real folder of each root, so the desktop app can reveal it", async () => {
   await withTempRuntime(async (root) => {
     const listing = await listWorkspaceFiles({ demoPublic: false });

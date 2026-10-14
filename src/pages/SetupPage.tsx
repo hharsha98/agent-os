@@ -55,7 +55,6 @@ import {
   agentFact,
   brainFooterNote,
   checkFooterNote,
-  defaultSelections,
   formatMinutes,
   formatSize,
   gotNoAnswer,
@@ -395,8 +394,9 @@ export default function SetupPage() {
       if (planRes) {
         setPlan(planRes);
         setPlanError("");
-        // The plan changed under the choices (an agent was just installed or updated): start from the defaults.
-        setSelections(defaultSelections(planRes));
+        // The plan changed under the choices (an agent was just installed or updated). Keep what the person chose
+        // meanwhile while the new plan still offers it; a choice the job just carried out falls back to its default.
+        setSelections((prev) => mergeSelections(prev, planRes));
       }
       setStale(false);
     } catch {

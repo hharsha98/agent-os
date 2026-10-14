@@ -368,6 +368,8 @@ if (AGENT === "hermes") {
     process.exit(0);
   }
   if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.mode") {
+    // hermesApprovalsDelayMs: answer slowly, so the moderator's "are the agents ready" check takes a known time.
+    if (cfg().hermesApprovalsDelayMs) await new Promise((resolve) => setTimeout(resolve, cfg().hermesApprovalsDelayMs));
     out(cfg().hermesApprovals || "on");
     process.exit(0);
   }
@@ -1612,6 +1614,44 @@ test(
   }
 );
 
+test(
+  "undo: an action with neither a fingerprint nor the proposal's text is refused, never run blind, and the file is untouched",
+  SKIP_POSIX,
+  async () => {
+    await setScript(PAUSING_SCRIPT);
+    await withTeamEnv(async (home) => {
+      const room = await runRoom("Plan a birthday party", { maxTurns: 6 });
+      await applyFileProposal(room.id, "P1");
+      const file = teamFile(home, room.id, "plan.md");
+      // Nothing left to compare against: no fingerprint, and the proposal's text is gone.
+      await updateDecision(room.id, (decision) => {
+        delete decision.actions[0].contentSha256;
+        delete decision.proposals[0].file.content;
+      });
+      const actionId = (await readDecision(room.id)).actions[0].id;
+
+      // The file still holds exactly what the agent saved, but Agent OS cannot prove it.
+      await assert.rejects(
+        () => undoAction(room.id, actionId),
+        (e) =>
+          e.status === 409 &&
+          e.code === "changed_since_save" &&
+          e.message === "Agent OS can't tell whether the file changed since the save, so Undo was refused. Nothing was changed."
+      );
+      assert.equal(await readFile(file, "utf8"), "# Party plan\n- cake", "the file is untouched");
+      assert.equal((await readDecision(room.id)).actions[0].undone, false, "the action is still not undone");
+
+      // And with an edit in it, the same: refused, the edit kept.
+      await writeFile(file, "# Party plan\n- cake\n- my own note");
+      await assert.rejects(
+        () => undoAction(room.id, actionId),
+        (e) => e.status === 409 && e.code === "changed_since_save"
+      );
+      assert.equal(await readFile(file, "utf8"), "# Party plan\n- cake\n- my own note", "the edit is kept");
+    });
+  }
+);
+
 // ===========================================================================
 // 4c. D10: a decision resumes the room; Continue accepts a paused room
 // ===========================================================================
@@ -2273,6 +2313,85 @@ test(
         assert.equal(res.status, 400);
         res = await api("POST", `/${roomId}/stop`, {});
         assert.equal(res.status, 409);
+      });
+    });
+  }
+);
+
+test(
+  "routes: the room list names the active room (null when idle, the room while it runs), so Hold to stop all can find it",
+  SKIP_POSIX,
+  async () => {
+    await setScript({ hermes: [{ sleep: true }], openclaw: [{ text: "NOTE: never reached" }] });
+    await withTeamEnv(async () => {
+      await withRouter(async (api) => {
+        let res = await api("GET", "/");
+        assert.equal(res.status, 200);
+        assert.deepEqual(res.body, { rooms: [], activeRoomId: null }, "idle: no room is active");
+
+        const started = await api("POST", "/", { task: "hang forever", confirm: true });
+        assert.equal(started.status, 200);
+        const roomId = started.body.id;
+        try {
+          res = await api("GET", "/");
+          assert.equal(res.body.activeRoomId, roomId, "a running room is the active one");
+          assert.equal(res.body.rooms.find((room) => room.id === roomId).status, "running");
+        } finally {
+          // Never leave the sleeping fake agent behind, even when an assertion fails.
+          await api("POST", `/${roomId}/stop`, {});
+        }
+        res = await api("GET", "/");
+        assert.equal(res.body.activeRoomId, null, "stopped: idle again");
+        assert.equal(res.body.rooms.find((room) => room.id === roomId).status, "stopped");
+      });
+    });
+  }
+);
+
+test(
+  "routes: a room whose card was just decided is the active room while it still reads needs_you (about to resume)",
+  SKIP_POSIX,
+  async () => {
+    // Turn 1 proposes a file, turn 2 agrees: the room pauses at the file with no turns left.
+    await setScript({
+      hermes: [{ text: fileReply("plan.md", "# Party plan\n- cake") }],
+      openclaw: [{ text: "Looks good to me.\nAGREE: P1" }]
+    });
+    await withTeamEnv(async () => {
+      await withRouter(async (api) => {
+        const started = await api("POST", "/", { task: "plan a party", confirm: true, limits: { maxTurns: 2, maxMinutes: 5 } });
+        const roomId = started.body.id;
+        await waitFor(async () => (await readRoom(roomId)).status === "needs_you");
+        assert.equal((await api("GET", "/")).body.activeRoomId, null, "paused at a card: nothing holds the active slot");
+
+        // From now on Hermes takes 1.5 s to answer the "are the agents ready" check, which the resume waits for
+        // while it already holds the active slot (the script is rewritten in place: the turn counters stay).
+        await writeFile(scriptPath, JSON.stringify({ hermes: [{ text: "NOTE: unused" }], openclaw: [{ text: "NOTE: unused" }], hermesApprovalsDelayMs: 1500 }));
+        const deciding = api("POST", `/${roomId}/proposals/P1`, { decision: "approve" });
+        const during = await waitFor(async () => {
+          const list = await api("GET", "/");
+          return list.body.activeRoomId === roomId ? list.body : null;
+        });
+        assert.equal(
+          during.rooms.find((room) => room.id === roomId).status,
+          "needs_you",
+          "the disk still says needs_you while the server holds the slot and checks its agents"
+        );
+        const decided = await deciding;
+        assert.equal(decided.status, 200);
+        assert.equal(decided.body.resumed, true);
+
+        // The resumed room wraps up (no turns are left): an approved file is saved and nothing is open.
+        // finish() frees the active slot FIRST (on purpose) and only then writes the status, so the slot
+        // being free says nothing about the disk yet: wait for the status itself, then for its closing
+        // event, so no write is still in flight when the temporary folder is removed.
+        const wrapped = await waitFor(async () => {
+          const current = await readRoom(roomId);
+          return current.status === "running" ? null : current;
+        });
+        assert.equal(wrapped.status, "agreed");
+        await waitFor(async () => (await readEvents(roomId)).some((e) => e.type === "status" && e.status === "agreed"));
+        assert.equal((await api("GET", "/")).body.activeRoomId, null, "wrapped up: nothing is active");
       });
     });
   }

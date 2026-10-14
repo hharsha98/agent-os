@@ -1,6 +1,6 @@
-import { TeamRoomError, listRuns, listTeamRooms, stopRun, stopTeamRoom } from "../api";
+import { listRuns, listTeamRooms, stopRun, stopTeamRoom } from "../api";
 import { isAgentWork } from "./agentWork";
-import { lookForStoppable, stopEverythingWith, stopWhatWasFound, type StopAllDeps } from "./stopAllShared";
+import { lookForStoppable, stopEverythingWith, stopWhatWasFound, withEndedRooms } from "./stopAllShared";
 
 // What "Hold to stop all" stops (design spec D11, ruling R14): every AGENT run
 // that is queued or running, including Team Room turns, and every Team Room that is
@@ -19,23 +19,15 @@ import { lookForStoppable, stopEverythingWith, stopWhatWasFound, type StopAllDep
 export { MAX_RUNS, stopAllMessage, thingsWord } from "./stopAllShared";
 export type { StopAllResult, StopLook } from "./stopAllShared";
 
-// A room that ended on its own between the look and the stop is not a failure.
-async function stopRoomQuietly(id: string) {
-  try {
-    return await stopTeamRoom(id);
-  } catch (error) {
-    if (error instanceof TeamRoomError && error.code === "room_not_running") return null;
-    throw error;
-  }
-}
-
-export const realStopAllDeps: StopAllDeps = {
+// A room that ended on its own between the look and the stop (the server answers room_not_running)
+// is not a failure, and was not stopped by us either: withEndedRooms (stopAllShared.ts) counts it apart.
+export const realStopAllDeps = withEndedRooms({
   listRuns: (limit) => listRuns({ limit }),
   stopRun: (id) => stopRun(id),
   listRooms: () => listTeamRooms(),
-  stopRoom: stopRoomQuietly,
+  stopRoom: (id) => stopTeamRoom(id),
   isAgentWork
-};
+});
 
 export function stopEverything() {
   return stopEverythingWith(realStopAllDeps);

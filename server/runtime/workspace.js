@@ -155,6 +155,11 @@ async function ensureDemoWorkspaceFiles() {
 //   kind "agent-os"   label "Agent OS"    the one-time welcome note, and the demo files
 //   kind "team-room"  label <agent name>  a Team Room saved it; roomId and actionId name the
 //                                          save, read from the room's own decision.json
+//   kind "unknown"    label "Team Room (can't check for later changes)"
+//                                          a Team Room saved it, but the save recorded nothing to
+//                                          compare the file with (a very old save), so Agent OS
+//                                          can say neither that it is unchanged nor that it changed.
+//                                          No roomId or actionId: Undo would refuse, so none is offered
 //   kind "unknown"    label "—"           nothing on record (dropped in by hand, written by
 //                                          an agent run, or the room's log is gone or damaged)
 // The screen offers "Undo this save" only for kind "team-room", because only
@@ -172,6 +177,15 @@ const NO_ONE = Object.freeze({ kind: "unknown", label: "—" });
 // Agent OS cannot tell who changed it, so it names no one and offers no Undo.
 function changedOutside(file) {
   return { kind: "unknown", label: "Changed outside Agent OS", at: file.updatedAt };
+}
+
+// A Team Room save with nothing recorded to compare the file with, so Agent OS cannot
+// say whether the file changed since. That is not "Changed outside Agent OS": it may
+// not have changed at all. It names the Team Room (the save is on record) and says what
+// it cannot check. No roomId or actionId, so no Undo (Undo itself would refuse).
+const CANNOT_CHECK_LABEL = "Team Room (can't check for later changes)";
+function savedButUnchecked(save) {
+  return { kind: "unknown", label: CANNOT_CHECK_LABEL, at: save.action.at };
 }
 
 // A short fingerprint of a file's text. The same one team-room/actions.js uses
@@ -279,19 +293,23 @@ function currentTeamSave(saves) {
 // cannot say: an Undo that puts a person's edit back, or a copy that keeps its
 // old date, leaves a time that looks like Agent OS's own. So this uses the rule
 // Undo itself uses (actions.js): the fingerprint recorded with the save, or for
-// older saves the proposal's own text. With nothing to compare against, Undo
-// would go ahead, so the file counts as the save's. A file that cannot be read
-// as plain text (a link, too big, unreadable) is not what the room wrote.
-async function holdsTheSavedText(file, save, workspaceRoot) {
+// older saves the proposal's own text. Three answers:
+//   "same"      the file holds the saved text
+//   "different" it does not: a comparison was made and it failed. A file that
+//               cannot be read as plain text (a link, too big, unreadable) is
+//               not what the room wrote either.
+//   "unchecked" nothing was recorded to compare with. Undo refuses then (it
+//               never runs blind), and nothing can be said about the file.
+async function checkSavedText(file, save, workspaceRoot) {
   const expected =
     save.action.contentSha256 || (typeof save.proposal?.file?.content === "string" ? sha256(save.proposal.file.content) : null);
-  if (!expected) return true;
-  if (file.size > MAX_TEXT_PREVIEW_BYTES) return false;
+  if (!expected) return "unchecked";
+  if (file.size > MAX_TEXT_PREVIEW_BYTES) return "different";
   try {
     const current = await readFileNoFollow(path.join(workspaceRoot, ...file.relativePath.split("/")));
-    return current === null || sha256(current) === expected;
+    return current === null || sha256(current) === expected ? "same" : "different";
   } catch {
-    return false;
+    return "different";
   }
 }
 
@@ -310,9 +328,11 @@ async function savedByFor(file, { userRecords, teamSaves, welcomeFile, demoPaths
     // Changed after Agent OS last touched it, or no longer the saved text:
     // someone edited it outside. Undo would throw that edit away (it refuses),
     // so no room and no action are given.
-    if (millis(file.updatedAt) > team.lastTouch + CLOCK_SLACK_MS || !(await holdsTheSavedText(file, team, workspaceRoot))) {
-      return changedOutside(file);
-    }
+    if (millis(file.updatedAt) > team.lastTouch + CLOCK_SLACK_MS) return changedOutside(file);
+    const text = await checkSavedText(file, team, workspaceRoot);
+    if (text === "different") return changedOutside(file);
+    // Nothing to compare with: do not claim a change that may not have happened.
+    if (text === "unchecked") return savedButUnchecked(team);
     return { kind: "team-room", label: agentNameOf(team), at: team.action.at, roomId: team.roomId, actionId: team.action.id };
   }
   const record = userRecords[file.id];

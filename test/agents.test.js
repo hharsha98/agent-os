@@ -13,7 +13,13 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { containsBlockedFlag } from "../server/runtime/agent-flags.js";
 import { ADAPTERS } from "../server/runtime/agents/index.js";
-import { approvalsSafety, featuresFromHelp, runningFromText, warningsFromText } from "../server/runtime/agents/hermes.js";
+import {
+  approvalsSafety,
+  featuresFromHelp,
+  hermesApprovalsAreOff,
+  runningFromText,
+  warningsFromText
+} from "../server/runtime/agents/hermes.js";
 import { eventsFromDocument, gatewayFeaturesFromHelp } from "../server/runtime/agents/openclaw.js";
 import { clearDetectCaches, resolveBinary } from "../server/runtime/agents/detect.js";
 import { createRunManager } from "../server/runtime/runs/run-manager.js";
@@ -1108,6 +1114,57 @@ test("hermes approvalsSafety(): success, off, failure, timeout and empty output 
   assert.equal(approvalsSafety({ ok: false, stdout: "manual", stderr: "", code: 1, signal: null, aborted: false }).known, false);
   // But an "off" that was printed is never hidden: a warning that is too loud is safer than a missing one.
   assert.equal(approvalsSafety({ ok: false, stdout: "off", stderr: "", code: 1, signal: null, aborted: false }).permissive, true);
+});
+
+test("hermes approvalsSafety(): every spelling of off is permissive; a notice line before it does not hide it", () => {
+  const ok = (stdout) => ({ ok: true, stdout, stderr: "", code: 0, signal: null, aborted: false });
+  const offSpellings = [
+    "off",
+    "'off'",
+    '"off"',
+    "False",
+    "no",
+    " NO\n",
+    '"False"\n',
+    "Using config from ~/.hermes/config.yaml\noff\n",
+    "update available: run hermes update\n'off'\n\n",
+    // A notice AFTER the value must not turn off into on (that would hide YOLO mode).
+    "off\nDeprecation: approvals.mode will be renamed in v0.30\n",
+    "'off'\nrun hermes update to get the latest\n\n",
+    "A notice\nno\nAnother notice"
+  ];
+  for (const text of offSpellings) {
+    const status = approvalsSafety(ok(text));
+    assert.equal(status.permissive, true, JSON.stringify(text));
+    assert.equal(status.known, true, JSON.stringify(text));
+    assert.match(status.summary, /approvals are off/i, JSON.stringify(text));
+  }
+  // A clean value that is not an off spelling is on, with or without a notice line before it.
+  for (const text of ["manual", "'manual'", "smart", "Using config from ~/.hermes/config.yaml\nmanual\n", "off-hours", "offline"]) {
+    const status = approvalsSafety(ok(text));
+    assert.equal(status.permissive, false, JSON.stringify(text));
+    assert.equal(status.known, true, JSON.stringify(text));
+    assert.match(status.summary, /approvals are on/i, JSON.stringify(text));
+  }
+  // Only one pair of quotes comes off: a doubled pair is not an off spelling.
+  assert.equal(approvalsSafety(ok("''off''")).permissive, false);
+  // Nothing readable is unknown, not on.
+  for (const text of ["", "  \n", "\n\n"]) assert.equal(approvalsSafety(ok(text)).known, false, JSON.stringify(text));
+  // A failed read that still printed an off spelling is never hidden.
+  assert.equal(approvalsSafety({ ok: false, stdout: "'off'", stderr: "", code: 1, signal: null, aborted: false }).permissive, true);
+  assert.equal(approvalsSafety({ ok: false, stdout: "manual", stderr: "", code: 1, signal: null, aborted: false }).known, false);
+});
+
+test("hermesApprovalsAreOff(): the one helper both the Safety check and the Setup warning use", () => {
+  assert.equal(hermesApprovalsAreOff("off"), true);
+  assert.equal(hermesApprovalsAreOff("'Off'\n"), true);
+  assert.equal(hermesApprovalsAreOff("notice\n\"false\""), true);
+  assert.equal(hermesApprovalsAreOff("off\na notice printed after the value"), true, "a notice after the value does not hide off");
+  assert.equal(hermesApprovalsAreOff("manual"), false);
+  assert.equal(hermesApprovalsAreOff("manual\na notice that says nothing about off"), false);
+  assert.equal(hermesApprovalsAreOff(""), false);
+  assert.equal(hermesApprovalsAreOff(undefined), false);
+  assert.equal(hermesApprovalsAreOff(null), false);
 });
 
 // =====================================================================

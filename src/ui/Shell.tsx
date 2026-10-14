@@ -55,6 +55,7 @@ import { NEW_RUN_EVENT, openNewRun } from "./newRun";
 import type { NewRunRequest } from "./newRun";
 import { withTimeout } from "./homeShared";
 import { revealGetStarted } from "./onboardingShared";
+import { createLatestRead } from "./latestRead";
 import { levelOf } from "./safetyShared";
 import { stopAllMessage } from "./stopAll";
 
@@ -530,37 +531,55 @@ function useStatusStrip() {
   const [level, setLevel] = useState<number | null>(null);
   const [remainingMs, setRemainingMs] = useState<number | null>(null);
 
-  async function refresh() {
-    try {
-      const gate = await withTimeout(getExecutionGateStatus(), STATUS_TIMEOUT_MS);
-      const remaining = gate.machineControl?.remainingMs ?? null;
-      const armed = Boolean(gate.machineControl?.armed ?? gate.machineControl?.enabled);
-      // The same rule as the Safety page (levelOf): an answer that is not a valid shape is
-      // unknown, never "Look only". The pill then reads "Safety unknown", like a failed read.
-      const known = levelOf(gate, { armed });
-      if (known === null) {
-        setSafetyLabel("Safety unknown");
-        setSafetyHint("Agent OS gave an answer that could not be read.");
-        setLevel(null);
-        setRemainingMs(null);
-        return;
-      }
-      setSafetyHint(gate.publicSummary || gate.reason || "");
-      setLevel(known);
-      setRemainingMs(remaining);
-    } catch {
+  // One read at a time, and only the newest read may update the pill: a slow old reply (a read may wait up to
+  // 10 s, and the poll is every 5 s) must never land over a newer one (latestRead.ts).
+  const [reads] = useState(createLatestRead);
+
+  function showGate(gate: Awaited<ReturnType<typeof getExecutionGateStatus>>) {
+    const remaining = gate.machineControl?.remainingMs ?? null;
+    const armed = Boolean(gate.machineControl?.armed ?? gate.machineControl?.enabled);
+    // The same rule as the Safety page (levelOf): an answer that is not a valid shape is
+    // unknown, never "Look only". The pill then reads "Safety unknown", like a failed read.
+    const known = levelOf(gate, { armed });
+    if (known === null) {
       setSafetyLabel("Safety unknown");
-      setSafetyHint("Could not reach Agent OS.");
+      setSafetyHint("Agent OS gave an answer that could not be read.");
       setLevel(null);
       setRemainingMs(null);
+      return;
     }
+    setSafetyHint(gate.publicSummary || gate.reason || "");
+    setLevel(known);
+    setRemainingMs(remaining);
+  }
+
+  function refresh() {
+    void reads.run(
+      () => withTimeout(getExecutionGateStatus(), STATUS_TIMEOUT_MS),
+      (outcome) => {
+        if (outcome.ok) {
+          try {
+            showGate(outcome.value);
+            return;
+          } catch {
+            // An answer that cannot even be looked at is no answer: the pill reads unknown, like a failed read.
+          }
+        }
+        setSafetyLabel("Safety unknown");
+        setSafetyHint("Could not reach Agent OS.");
+        setLevel(null);
+        setRemainingMs(null);
+      }
+    );
   }
 
   useEffect(() => {
-    void refresh();
+    refresh();
+    // A read still waiting when the bar goes away must not update it.
+    return () => reads.cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useInterval(() => void refresh(), STATUS_POLL_MS);
+  useInterval(refresh, STATUS_POLL_MS);
 
   return { safetyLabel, safetyHint, level, remainingMs };
 }

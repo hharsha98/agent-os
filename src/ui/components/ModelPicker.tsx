@@ -274,7 +274,7 @@ export default function ModelPicker({ title = "Change model", targets, initialTa
                 <span>
                   {openNote.text}{" "}
                   {openNote.url ? (
-                    <OpenAddress href={openNote.url} showAddress={false} copyLabel="Copy the address">
+                    <OpenAddress href={openNote.url} copyLabel="Copy the address">
                       {openNote.url}
                     </OpenAddress>
                   ) : null}

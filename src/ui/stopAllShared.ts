@@ -6,7 +6,9 @@
 //
 // What it stops: every AGENT run that is queued or running, and every Team Room that is
 // running (a room between two turns has no active run, so stopping runs alone would miss
-// it and its next turn would start). It never touches the Hermes background service or
+// it and its next turn would start), plus the room the server holds its active slot for even
+// if it still reads "needs you" (a decision was just made and the room is about to resume).
+// It never touches the Hermes background service or
 // the OpenClaw Gateway, and it never interrupts Agent OS's own setup jobs: stopping a
 // gateway restart can leave the gateway down, and stopping an install can leave a
 // half-installed tool.
@@ -17,6 +19,10 @@ const ACTIVE = new Set(["queued", "running"]);
 // A hung server must never leave a button on "Stopping…" for ever.
 export const LIST_TIMEOUT_MS = 8000;
 export const STOP_TIMEOUT_MS = 15000;
+
+// What `stopRoom` hands back when the server said the room was not running: it had ended by
+// itself between the look and the stop. It is counted apart, never as a room we stopped.
+export const ROOM_ALREADY_ENDED = "room_already_ended";
 
 // The most runs the server returns for one list (the cap in listRuns in
 // server/runtime/runs/run-manager.js). It lists the newest first and cannot
@@ -29,9 +35,30 @@ export type StoppableRoom = Pick<TeamRoomSummary, "id" | "status"> & { task?: st
 export interface StopAllDeps {
   listRuns: (limit: number) => Promise<{ runs: StoppableRun[] }>;
   stopRun: (id: string) => Promise<unknown>;
-  listRooms: () => Promise<{ rooms: StoppableRoom[] }>;
+  // `activeRoomId` is the room the server holds its one active slot for (GET /api/team-rooms). Older
+  // servers do not send it.
+  listRooms: () => Promise<{ rooms: StoppableRoom[]; activeRoomId?: string | null }>;
   stopRoom: (id: string) => Promise<unknown>;
   isAgentWork: (run: { kind: string }) => boolean;
+}
+
+// Wraps the real requests so that a stop the server answers with `room_not_running` (the room ended
+// by itself between the look and the stop) hands back ROOM_ALREADY_ENDED instead of failing. That is
+// not a failure, and it is not a stop we made either: the words count it apart. Any other refusal
+// still fails as before. Lives here, not in stopAll.ts, so the logic tests can reach it.
+export function withEndedRooms(deps: StopAllDeps): StopAllDeps {
+  return {
+    ...deps,
+    stopRoom: async (id) => {
+      try {
+        return await deps.stopRoom(id);
+      } catch (error) {
+        const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+        if (code === "room_not_running") return ROOM_ALREADY_ENDED;
+        throw error;
+      }
+    }
+  };
 }
 
 // What a look found. A list that could not be read leaves its part empty and its
@@ -59,6 +86,9 @@ export interface StopAllResult {
   roomsStopped: number;
   roomsFailed: number;
   roomsTimedOut: number;
+  // Rooms among those that had already ended by themselves when the stop reached them.
+  // They are part of `rooms`, but not of `roomsStopped`.
+  roomsAlreadyEnded: number;
   skipped: number;
   runsChecked: boolean;
   roomsChecked: boolean;
@@ -67,7 +97,7 @@ export interface StopAllResult {
   listTruncated: boolean;
 }
 
-type Outcome = "ok" | "timeout" | "error";
+type Outcome = "ok" | "timeout" | "error" | "ended";
 
 // Waits for a promise for at most `ms`. Never rejects: it says how it went. A timeout is not an
 // error: the request may well have been carried out.
@@ -75,9 +105,9 @@ function attempt(promise: Promise<unknown>, ms: number): Promise<Outcome> {
   return new Promise<Outcome>((resolve) => {
     const timer = setTimeout(() => resolve("timeout"), ms);
     promise.then(
-      () => {
+      (value) => {
         clearTimeout(timer);
-        resolve("ok");
+        resolve(value === ROOM_ALREADY_ENDED ? "ended" : "ok");
       },
       () => {
         clearTimeout(timer);
@@ -105,6 +135,11 @@ async function readWithin<T>(promise: Promise<T>, ms: number): Promise<T | null>
 }
 
 // Looks at what is running. Never throws.
+//
+// A room is stoppable when it reads "running", and also when the server names it as its active room
+// whatever it reads: a room whose decision was just made can still read "needs you" on disk while the
+// server already holds its one active slot and is getting ready to resume it. Asking the server which
+// room that is costs nothing extra: it comes with the same room list.
 export async function lookForStoppable(deps: StopAllDeps): Promise<StopLook> {
   const [runsAnswer, roomsAnswer] = await Promise.all([
     readWithin(Promise.resolve().then(() => deps.listRuns(MAX_RUNS)), LIST_TIMEOUT_MS),
@@ -113,11 +148,15 @@ export async function lookForStoppable(deps: StopAllDeps): Promise<StopLook> {
   // A reply that is not a list is treated like no reply: we could not check.
   const runList = runsAnswer && Array.isArray(runsAnswer.runs) ? runsAnswer.runs : null;
   const roomList = roomsAnswer && Array.isArray(roomsAnswer.rooms) ? roomsAnswer.rooms : null;
+  const activeId = roomList && typeof roomsAnswer?.activeRoomId === "string" && roomsAnswer.activeRoomId ? roomsAnswer.activeRoomId : null;
   const active = (runList || []).filter((run) => ACTIVE.has(run.status));
   const runs = active.filter((run) => deps.isAgentWork(run));
+  const rooms = (roomList || []).filter((room) => room.status === "running" || room.id === activeId);
+  // The server holds a room the list did not show (the list is capped): it is still stopped.
+  if (activeId !== null && !rooms.some((room) => room.id === activeId)) rooms.push({ id: activeId, status: "running" });
   return {
     runs,
-    rooms: (roomList || []).filter((room) => room.status === "running"),
+    rooms,
     skipped: active.length - runs.length,
     listTruncated: runList !== null && runList.length >= MAX_RUNS,
     runsChecked: runList !== null,
@@ -129,12 +168,14 @@ function tally(outcomes: Outcome[]) {
   return {
     stopped: outcomes.filter((o) => o === "ok").length,
     failed: outcomes.filter((o) => o === "error").length,
-    timedOut: outcomes.filter((o) => o === "timeout").length
+    timedOut: outcomes.filter((o) => o === "timeout").length,
+    alreadyEnded: outcomes.filter((o) => o === "ended").length
   };
 }
 
 // Stops what the look found. Rooms first: stopping a room sets its "stop" flag as well as
-// stopping its current turn, so no next turn starts when that turn ends.
+// stopping its current turn, so no next turn starts when that turn ends. Nothing is read again
+// afterwards, so a stop never waits on an extra request.
 export async function stopWhatWasFound(deps: StopAllDeps, look: StopLook): Promise<StopAllResult> {
   const roomOutcomes = await Promise.all(
     look.rooms.map((room) => attempt(Promise.resolve().then(() => deps.stopRoom(room.id)), STOP_TIMEOUT_MS))
@@ -153,6 +194,7 @@ export async function stopWhatWasFound(deps: StopAllDeps, look: StopLook): Promi
     roomsStopped: rooms.stopped,
     roomsFailed: rooms.failed,
     roomsTimedOut: rooms.timedOut,
+    roomsAlreadyEnded: rooms.alreadyEnded,
     skipped: look.skipped,
     runsChecked: look.runsChecked,
     roomsChecked: look.roomsChecked,
@@ -218,7 +260,11 @@ export function stopAllMessage(result: StopAllResult): { message: string; tone: 
   const stoppedAny = result.stopped + result.roomsStopped > 0;
   const failedAny = result.failed + result.roomsFailed > 0;
   const timedOutAny = result.timedOut + result.roomsTimedOut > 0;
-  const parts = [stoppedAny ? `Stopped ${thingsWord(result.stopped, result.roomsStopped)}.` : "Nothing was confirmed stopped."];
+  // Rooms that ended by themselves before the stop reached them: said apart, never as "stopped".
+  const ended = result.roomsAlreadyEnded ?? 0;
+  const parts: string[] = [];
+  if (stoppedAny) parts.push(`Stopped ${thingsWord(result.stopped, result.roomsStopped)}.`);
+  else if (failedAny || timedOutAny || ended === 0) parts.push("Nothing was confirmed stopped.");
   if (failedAny) {
     parts.push(`${thingsWord(result.failed, result.roomsFailed)} could not be stopped: ${checkWhere(result.failed, result.roomsFailed)}.`);
   }
@@ -229,9 +275,16 @@ export function stopAllMessage(result: StopAllResult): { message: string; tone: 
       `Agent OS did not answer in time about ${thingsWord(result.timedOut, result.roomsTimedOut)}, so ${n === 1 ? "it" : "they"} may still be running: ${checkWhere(result.timedOut, result.roomsTimedOut)}.`
     );
   }
+  if (ended > 0) {
+    // "So there was nothing to stop" is said only when that is known: nothing else happened and every list
+    // was read in full. With a list that could not be read (or was full), only what was seen is said.
+    const onlyEnded = !stoppedAny && !failedAny && !timedOutAny && !unread && !result.listTruncated;
+    parts.push(onlyEnded ? `${roomWord(ended)} had already ended, so there was nothing to stop.` : `${roomWord(ended)} had already ended.`);
+  }
   const clean = !failedAny && !timedOutAny;
+  const calm = clean && !result.listTruncated && !unread;
   return {
     message: `${parts.join(" ")}${unread}${left}${notChecked}`,
-    tone: clean && !result.listTruncated && !unread ? "ok" : "warn"
+    tone: calm ? (stoppedAny ? "ok" : "neutral") : "warn"
   };
 }

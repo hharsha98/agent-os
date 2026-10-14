@@ -56,7 +56,10 @@ export function createTeamRoomsRouter({ moderator = getModerator() } = {}) {
 
   router.get("/", async (_req, res, next) => {
     try {
-      res.json({ rooms: await listRooms() });
+      // `activeRoomId` is the room the moderator holds its one active slot for (null when idle). A room whose
+      // decision was just made still reads "needs_you" on disk until it has checked its agents and is marked
+      // running, so Hold to stop all needs this to find a room that is about to resume.
+      res.json({ rooms: await listRooms(), activeRoomId: moderator.activeRoomId() ?? null });
     } catch (error) {
       next(error);
     }

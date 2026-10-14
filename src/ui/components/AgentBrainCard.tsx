@@ -48,6 +48,8 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   // answer must not update a screen that is not there, or one showing another agent.
   const alive = useRef(true);
   const newest = useRef(0);
+  // The card's heading stays on screen through every state, so focus can rest there when the button that had it goes.
+  const titleRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -91,6 +93,9 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   function retry() {
     setBrain(null);
     setFailed(null);
+    // Retry sits in the banner, which is replaced while the card reads again. Without this, keyboard focus would
+    // fall to the page body; the card's heading stays, so a keyboard user keeps their place here.
+    titleRef.current?.focus();
     void load();
   }
 
@@ -105,7 +110,7 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
     : [];
 
   // What the agent itself says it uses (both agents, because the picker can give a model to either).
-  const { models, reload: reloadModels } = useAgentModels(lines);
+  const { models, loading: modelsLoading, reload: reloadModels } = useAgentModels(lines);
   const live = models[agentId];
   // Three different things hide behind `live`, and only the first one may say "No model yet":
   //   an object  = the lookup answered (its model may be empty),
@@ -113,8 +118,10 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   //   undefined  = not answered yet (or never asked: an agent the status says is not installed).
   // The status answer (`configured`) comes from the agent's health check, not from the model lookup, so a
   // failed health check plus a failed or unfinished lookup is "unknown", never "no model".
+  // A lookup is also pending while an earlier answer is being read again (after a model change): the old
+  // answer, a failed one included, is not the current one, so the slot shows "…", never "—".
   const lookupAnswered = Boolean(live);
-  const lookupPending = live === undefined && current?.installed !== false;
+  const lookupPending = current?.installed !== false && (live === undefined || modelsLoading);
   const unknownMark = lookupPending ? "…" : "—";
   function onModelChanged() {
     void load();
@@ -124,7 +131,7 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   return (
     <>
       <section className="os-panel os-agent-brain" aria-labelledby={`os-agent-brain-${agentId}`}>
-        <h3 id={`os-agent-brain-${agentId}`} className="os-agent-brain__title">
+        <h3 id={`os-agent-brain-${agentId}`} className="os-agent-brain__title" ref={titleRef} tabIndex={-1}>
           Brain
         </h3>
 

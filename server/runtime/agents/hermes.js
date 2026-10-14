@@ -104,18 +104,44 @@ async function safetyStatus(detected) {
   return approvalsSafety(result);
 }
 
+// The spellings of "approvals off" that Hermes can print for approvals.mode: a
+// config value may be written as a YAML or JSON word, with or without quotes.
+// Anything else that was read cleanly counts as on.
+const APPROVALS_OFF_WORDS = new Set(["off", "false", "no"]);
+
+// What `hermes config get approvals.mode` printed, one entry per non-empty line:
+// trimmed, with one pair of surrounding single or double quotes taken off, in
+// lower case. A notice (an update hint, say) can come before the value or after it.
+function approvalsLines(stdout) {
+  return String(stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => (line.length >= 2 && (line[0] === "'" || line[0] === '"') && line.endsWith(line[0]) ? line.slice(1, -1) : line).toLowerCase());
+}
+
+// Is approvals.mode off? The one place that decides it, so the Safety screen and
+// the Setup warning can never disagree about a spelling. Off wins from ANY line: a
+// notice printed after the value must never turn an "off" into "on". Failing open
+// here would hide YOLO mode.
+export function hermesApprovalsAreOff(stdout) {
+  return approvalsLines(stdout).some((line) => APPROVALS_OFF_WORDS.has(line));
+}
+
 // The answer for one `hermes config get approvals.mode` result (a runCommand result).
-//   - "off" is permissive (YOLO mode), and is never hidden, even if the command then failed.
-//   - A value that was read cleanly is "on" (known: true).
+//   - "off" (or "false" or "no", quoted or not, on any line) is permissive (YOLO mode), and is
+//     never hidden, even if the command then failed.
+//   - A value that was read cleanly is "on" (known: true). With no off line, the last non-empty
+//     line is the value, so a notice printed before it is ignored.
 //   - A read that failed, timed out, could not start or printed nothing is NOT "on": it is
 //     `known: false`, so a screen shows "—" instead of claiming a safeguard it never saw.
 // `permissive`, `summary` and `actions` keep their old shape for callers that ignore `known`
 // (the Team Room check treats an unread setting like before; it only blocks on permissive).
 export function approvalsSafety(result) {
-  const value = String(result?.stdout || "").trim().toLowerCase();
-  if (value === "off") {
+  if (hermesApprovalsAreOff(result?.stdout)) {
     return { permissive: true, summary: "Hermes approvals are off (YOLO mode).", actions: [], known: true };
   }
+  const value = approvalsLines(result?.stdout).pop() || "";
   if (!result?.ok || !value) {
     return { permissive: false, summary: "Agent OS could not read Hermes's approvals setting.", actions: [], known: false };
   }

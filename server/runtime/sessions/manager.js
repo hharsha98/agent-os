@@ -24,6 +24,7 @@ import { BUILDER_AGENT_IDS } from "../builders/brains.js";
 import { resolveBrainForRun } from "../builders/resolve.js";
 import { isExecutionEnabled } from "../execution-gate.js";
 import { killProcessTree } from "../process-tree.js";
+import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
@@ -32,6 +33,7 @@ import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, buildSes
 import { ptyAvailable, spawnPty } from "./pty-host.js";
 import { CAST_FILE, createRecorder, enforceRecordingCap } from "./recorder.js";
 import { readSessionSettings } from "./settings.js";
+import { runSoftStop } from "./soft-stop.js";
 
 // Each shared name has one home: errors.js (the id pattern and the error
 // shape) and profiles.js (the agents' short names). Re-exported here so
@@ -48,6 +50,16 @@ export const CLOSE_LAG_BYTES = 4 * 1024 * 1024;
 export const PAUSED_DROP_MS = 10 * 1000;
 // One `in` frame carries at most 64 KB.
 export const MAX_INPUT_BYTES = 64 * 1024;
+// The Stop sequence (spec "Persistence, quit and Stop"): the kill grace after
+// the soft stop, and the cap on a whole quit. Soft stop at most 2 s, then one
+// `ps` listing (usually tens of milliseconds), the 3 s grace, at most 1 s after
+// the SIGKILL and at most 1 s to see the exit: about 7 s, and a quit never
+// waits longer than SHUTDOWN_GUARD_MS (the same 7 s as shutdown.js's task
+// limit), inside the server's 8 s hard exit and the desktop shell's 10 s
+// QUIT_GRACE.
+export const STOP_GRACE_MS = 3000;
+export const SHUTDOWN_GUARD_MS = 7000;
+const EXIT_WAIT_MS = 1000;
 
 const START_COLS = 120;
 const START_ROWS = 32;
@@ -229,7 +241,8 @@ export function createSessionManager({
   readSettings = readSessionSettings,
   enforceCap = enforceRecordingCap,
   writeJson = writeJsonFile,
-  killTree = killProcessTree
+  killTree = killProcessTree,
+  softStop = runSoftStop
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -1139,6 +1152,122 @@ export function createSessionManager({
     return { recovered };
   }
 
+  // ---- Stop and quit ------------------------------------------------------------------------------------
+
+  function waitForExit(state, ms) {
+    let timer;
+    return Promise.race([
+      state.exited,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, ms);
+      })
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  // The summary after a Stop, built from the state in memory when meta.json
+  // can't be read back (a full disk, or a session folder removed by hand).
+  async function summaryAfterStop(state) {
+    try {
+      return await get(state.meta.id);
+    } catch {
+      const view = viewOfState(state);
+      return toSummary(view, [view], new Map());
+    }
+  }
+
+  // The Stop sequence. It never writes into the PTY:
+  // 1. the agent's own soft stop (soft-stop.js), at most 2 s for the whole step;
+  // 2. the process tree, SIGTERM then SIGKILL after a 3 s grace (process-tree.js
+  //    lists the descendants first, so a grandchild that called setsid dies too).
+  async function runStopSequence(state) {
+    const profile = state.profile || {};
+    let soft = { outcome: "none", note: null };
+    try {
+      soft = await softStop({
+        softStop: profile.softStop ?? null,
+        command: profile.command,
+        env: profile.env,
+        cwd: profile.cwd,
+        agentSessionId: state.meta.agentSessionId ?? null,
+        pid: state.handle?.pid ?? null
+      });
+    } catch {
+      soft = { outcome: "failed", note: null };
+    }
+    state.stopNote = soft?.note ?? null;
+    if (state.status !== "exited" && state.handle?.pid) {
+      try {
+        await killTree(state.handle.pid, { graceMs: STOP_GRACE_MS });
+      } catch {
+        // killProcessTree never rejects; nothing else to do here
+      }
+    }
+    await waitForExit(state, EXIT_WAIT_MS);
+  }
+
+  // Stop (the Stop dialog, Hold to stop all, and quit). Two Stops of the same
+  // session share one sequence while it runs; when it ends, a later Stop runs
+  // the sequence again, so a kill that did not take can be tried once more.
+  // Answers the session's summary plus `note` (the honest OpenClaw sentence,
+  // or null).
+  async function stop(id, { by = "stop" } = {}) {
+    assertSessionId(id);
+    const state = live.get(id);
+    // An ended session that is being resumed or dismissed right now (the busy
+    // set) is about to change: it answers "busy" instead of an ended summary
+    // that would be wrong a moment later. This also holds while the ended
+    // session is still in `live` (its recording is closing).
+    if ((!state || state.status === "exited") && busy.has(id)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+    if (!state) return { ...(await get(id)), note: null };
+    if (state.status !== "exited" && !state.stopping) {
+      if (!state.endedBy) state.endedBy = by === "quit" ? "quit" : "stop";
+      const sequence = runStopSequence(state).finally(() => {
+        if (state.stopping === sequence) state.stopping = null;
+      });
+      state.stopping = sequence;
+    }
+    if (state.stopping) await state.stopping;
+    else await waitForExit(state, EXIT_WAIT_MS);
+    return { ...(await summaryAfterStop(state)), note: state.stopNote ?? null };
+  }
+
+  // Quitting Agent OS: "ended (Agent OS quit)" goes into every live session's
+  // meta.json BEFORE any kill, so a hard exit in the middle still leaves an
+  // honest record with Resume (a session the person is already stopping keeps
+  // "stop"). Then every session (both kinds) stops at the same time. The
+  // SHUTDOWN_GUARD_MS limit starts with the first meta.json write, so the
+  // writes and the stops together never take longer than it. Only meta.json
+  // says "exited" early: the state in memory keeps the real status, so list(),
+  // resume() and dismiss() still treat the session as running until it ends.
+  async function shutdownAll({ reason = "quit" } = {}) {
+    const endedBy = reason === "stop" ? "stop" : "quit";
+    const running = [...live.values()].filter((state) => state.status !== "exited");
+    let timer;
+    const guard = new Promise((resolve) => {
+      timer = setTimeout(resolve, SHUTDOWN_GUARD_MS);
+    });
+    const work = (async () => {
+      const endedAt = iso(now());
+      await Promise.all(
+        running.map((state) => {
+          if (!state.endedBy) state.endedBy = endedBy;
+          state.meta.status = "exited";
+          state.meta.endedAt = endedAt;
+          state.meta.endedBy = state.endedBy;
+          state.meta.lastUsedAt = endedAt;
+          return persist(state).catch(() => {});
+        })
+      );
+      await Promise.allSettled(running.map((state) => stop(state.meta.id, { by: endedBy })));
+    })();
+    try {
+      await Promise.race([work, guard]);
+    } finally {
+      clearTimeout(timer);
+    }
+    return { stopped: running.length };
+  }
+
   return {
     create,
     createUpdateSession,
@@ -1151,6 +1280,8 @@ export function createSessionManager({
     ack,
     resume,
     dismiss,
+    stop,
+    shutdownAll,
     quitCheck,
     isLive,
     recoverStaleSessions
@@ -1160,6 +1291,14 @@ export function createSessionManager({
 let defaultManager = null;
 
 export function getSessionManager() {
-  if (!defaultManager) defaultManager = createSessionManager();
+  if (!defaultManager) {
+    const manager = createSessionManager();
+    // Quitting Agent OS (SIGTERM or SIGINT, the desktop shell's stdin line, or
+    // its Quit) ends every session with the Stop sequence, after writing
+    // "ended (Agent OS quit)" into each meta.json. The task looks the method up
+    // when it runs.
+    registerShutdownTask("sessions", () => manager.shutdownAll({ reason: "quit" }));
+    defaultManager = manager;
+  }
   return defaultManager;
 }

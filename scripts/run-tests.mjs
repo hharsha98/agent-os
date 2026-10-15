@@ -69,6 +69,9 @@ if (process.platform === "win32") {
 // once and quit (the tests that want the stdin quit line set it themselves).
 // So does AGENT_OS_PORT: the server reads it before PORT, so one exported in a
 // developer's shell would move every test server that passes PORT.
+// And AGENT_OS_LAUNCH_PATH (set by the desktop app): the login shell is given
+// that PATH in place of the PATH a test passes (shell-env.js), so a fake
+// session would see the real launch PATH, real agents included.
 const testEnv = { ...process.env };
 for (const key of [
   "ZDOTDIR",
@@ -76,7 +79,8 @@ for (const key of [
   "BASH_ENV",
   "HERMES_AGENT_OS_EXECUTABLE_PATHS",
   "AGENT_OS_STDIN_SHUTDOWN",
-  "AGENT_OS_PORT"
+  "AGENT_OS_PORT",
+  "AGENT_OS_LAUNCH_PATH"
 ]) {
   delete testEnv[key];
 }

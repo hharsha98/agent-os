@@ -14,8 +14,18 @@ export default defineConfig(({ mode }) => {
     define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     server: {
       port: 5173,
+      // The sessions WebSocket trusts exactly the dev origins on :5173
+      // (server/runtime/sessions/ws.js). If another project holds 5173, Vite
+      // must stop with an error, not quietly move to 5174, where every terminal
+      // attach would be refused.
+      strictPort: true,
       proxy: {
-        "/api": `http://127.0.0.1:${apiPort}`
+        // The object form, so the proxy also carries WebSocket upgrades (a
+        // session's terminal, /api/sessions/:id/attach). changeOrigin keeps the
+        // Host the API server checks (127.0.0.1:<apiPort>); the page's Origin
+        // (http://127.0.0.1:5173) reaches the server unchanged, and the server
+        // accepts it only when `npm run dev` set AGENT_OS_DEV_ORIGIN=1.
+        "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true }
       }
     }
   };

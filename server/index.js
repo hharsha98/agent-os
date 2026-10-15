@@ -201,6 +201,7 @@ import { getSessionManager } from "./runtime/sessions/manager.js";
 import { enforceRecordingCap } from "./runtime/sessions/recorder.js";
 import { createRecordingsRouter, createSessionsRouter } from "./runtime/sessions/routes.js";
 import { excludeFromSessionEnv, getLoginShellEnv } from "./runtime/sessions/shell-env.js";
+import { attachSessionsUpgrade } from "./runtime/sessions/ws.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1906,5 +1907,10 @@ const server = app.listen(port, bindHost, () => {
   // local mode, so nothing runs in the public demo or public mode.
   if (isLocalMode()) getLoginShellEnv().catch((error) => console.error(error));
 });
+
+// The sessions WebSocket (/api/sessions/:id/attach). Express middleware never
+// runs for an upgrade request, so ws.js makes its own checks (spec Security 1)
+// and refuses every other upgrade with 403.
+attachSessionsUpgrade(server, { getPort: () => port, manager: sessionManager });
 
 installShutdownHandlers(server);

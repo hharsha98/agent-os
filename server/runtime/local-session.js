@@ -98,7 +98,9 @@ export function securityHeadersMiddleware() {
   };
 }
 
-function parseCookieHeader(header = "") {
+// Exported so the sessions WebSocket (sessions/ws.js) reads the cookie by the
+// very same rule as this gate: the LAST cookie with a name wins.
+export function parseCookieHeader(header = "") {
   return Object.fromEntries(
     String(header)
       .split(";")

@@ -7,7 +7,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "dev": "concurrently \"node --watch server/index.js\" \"vite --host 127.0.0.1\"",
+    "dev": "concurrently \"node --watch scripts/dev-server.mjs\" \"vite --host 127.0.0.1\"",
     "build": "tsc -b && vite build",
     "build:server-bundle": "node scripts/build-server-bundle.mjs",
     "desktop:fetch-node": "node scripts/fetch-node.mjs",

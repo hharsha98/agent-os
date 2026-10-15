@@ -113,6 +113,8 @@ describe("bundled server runs outside the repo", () => {
         AGENT_OS_TOKEN: "t",
         AGENT_OS_PACKAGED: "1",
         HERMES_AGENT_OS_SCHEDULER: "0",
+        // The sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup.
+        SHELL: FAKE_LOGIN_SHELL,
         // Keep agent detection away from the developer's real CLIs (~/.local/bin etc.).
         HOME: tmpHome,
         USERPROFILE: tmpHome,

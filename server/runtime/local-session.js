@@ -124,8 +124,23 @@ function providedSessionToken(req, cookieName) {
   return cookies[cookieName] || req.get("x-agent-os-token") || "";
 }
 
-function isLocalMode() {
+// Local mode: neither the public demo (DEMO_PUBLIC=1) nor the admin-token
+// public mode (HERMES_AGENT_OS_REQUIRE_AUTH=1 or HERMES_AGENT_OS_PUBLIC_MODE=1).
+// Sessions (real agent terminals) exist only here.
+export function isLocalMode() {
   return !isDemoPublic() && !authRequired();
+}
+
+// Every sessions and recordings address answers as if it did not exist
+// outside local mode (spec Security 1). The sessions WebSocket makes the same
+// check itself (server/runtime/sessions/ws.js), because Express middleware
+// never runs for an upgrade request.
+export function requireLocalMode(_req, res, next) {
+  if (!isLocalMode()) {
+    res.status(404).json({ error: "not_available" });
+    return;
+  }
+  next();
 }
 
 // `port` may be a number or a () => number getter. With PORT=0 the real port

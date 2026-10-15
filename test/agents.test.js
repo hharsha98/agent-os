@@ -23,6 +23,7 @@ import {
 import { eventsFromDocument, gatewayFeaturesFromHelp } from "../server/runtime/agents/openclaw.js";
 import { clearDetectCaches, resolveBinary } from "../server/runtime/agents/detect.js";
 import { createRunManager } from "../server/runtime/runs/run-manager.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 // Fakes first, then only the operating system's own folders. The developer's
 // normal PATH (e.g. ~/.local/bin, Homebrew) holds the REAL agent CLIs, which
@@ -1237,6 +1238,7 @@ function baseEnv(home, port, extra = {}) {
     AGENT_OS_HOME: home,
     AGENT_OS_TOKEN: TOKEN,
     HERMES_AGENT_OS_SCHEDULER: "0",
+    SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
     PATH: [shimDir, ...SYSTEM_PATH_DIRS].join(path.delimiter),
     // Detection also looks in folders under HOME (~/.local/bin, ...), where
     // the developer's real agents live. Point HOME at the temp folder.

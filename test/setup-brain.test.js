@@ -37,6 +37,7 @@ import {
 } from "../server/runtime/setup/jobs.js";
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
 import { clearSystemCheckCache, systemCheck } from "../server/runtime/setup/system-check.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -708,6 +709,7 @@ test(
       AGENT_OS_SETUP_MIRROR: `http://127.0.0.1:${mirrorPort}`,
       AGENT_OS_TOKEN: TOKEN,
       HERMES_AGENT_OS_SCHEDULER: "0",
+      SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin"
     };
     for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {
@@ -840,6 +842,7 @@ test(
       AGENT_OS_TOKEN: TOKEN,
       AGENT_OS_NO_BROWSER: "1", // never open a real browser from a test
       HERMES_AGENT_OS_SCHEDULER: "0",
+      SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin"
     };
     for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT", "AGENT_OS_OAUTH_CALLBACK_HOST"]) {

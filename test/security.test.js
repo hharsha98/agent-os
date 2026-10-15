@@ -10,6 +10,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildCliArgs } from "../server/runtime/modules.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TOKEN = "test-token-123";
@@ -121,6 +122,9 @@ function baseEnv(home, port, extra = {}) {
     HOME: home,
     USERPROFILE: home,
     ...(process.platform === "win32" ? {} : { PATH: "/usr/bin:/bin" }),
+    // The server reads the login shell's environment for sessions (SP3): W1's
+    // stand-in login shell (ruling R15), never the developer's own shell setup.
+    SHELL: FAKE_LOGIN_SHELL,
     HERMES_AGENT_OS_SCHEDULER: "0"
   };
   // Clear these unless the caller explicitly set one via `extra` (e.g. the

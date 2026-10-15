@@ -67,8 +67,17 @@ if (process.platform === "win32") {
 // AGENT_OS_STDIN_SHUTDOWN goes too: with it set to 1 in a developer's shell,
 // every test server started with stdin "ignore" would read end-of-input at
 // once and quit (the tests that want the stdin quit line set it themselves).
+// So does AGENT_OS_PORT: the server reads it before PORT, so one exported in a
+// developer's shell would move every test server that passes PORT.
 const testEnv = { ...process.env };
-for (const key of ["ZDOTDIR", "ENV", "BASH_ENV", "HERMES_AGENT_OS_EXECUTABLE_PATHS", "AGENT_OS_STDIN_SHUTDOWN"]) {
+for (const key of [
+  "ZDOTDIR",
+  "ENV",
+  "BASH_ENV",
+  "HERMES_AGENT_OS_EXECUTABLE_PATHS",
+  "AGENT_OS_STDIN_SHUTDOWN",
+  "AGENT_OS_PORT"
+]) {
   delete testEnv[key];
 }
 if (process.platform !== "win32") testEnv.SHELL = FAKE_LOGIN_SHELL;

@@ -1284,7 +1284,11 @@ export function createSessionManager({
     shutdownAll,
     quitCheck,
     isLive,
-    recoverStaleSessions
+    recoverStaleSessions,
+    // The limit this manager was created with (the sessions list reports it).
+    get maxLive() {
+      return maxLive;
+    }
   };
 }
 

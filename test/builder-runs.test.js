@@ -27,6 +27,7 @@ import { createSecretsRouter } from "../server/runtime/secrets/routes.js";
 import { setKeystoreForTest } from "../server/runtime/secrets/keystore.js";
 import { clearBrainCacheForTest, clearLocalModelsCache } from "../server/runtime/setup/brain.js";
 import { clearCatalogCacheForTest } from "../server/runtime/setup/models.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const posixSkip = { skip: isWindows ? "spawns shebang fake CLIs (POSIX-only)" : false };
@@ -1042,6 +1043,7 @@ test("real server: the new /api routes need the session; the key never reaches a
     AGENT_OS_NO_BROWSER: "1",
     HERMES_AGENT_OS_ENABLE_EXEC: "1",
     HERMES_AGENT_OS_SCHEDULER: "0",
+    SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
     PATH: [binDir, ...SYSTEM_PATH_DIRS].join(path.delimiter)
   };
   for (const name of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_REQUIRE_AUTH", "AGENT_OS_LIVE_CHAT"]) delete env[name];

@@ -20,6 +20,7 @@ import {
   setMachineControlStatus
 } from "../server/runtime/execution-gate.js";
 import { runVoiceCommand } from "../server/runtime/voice-control.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const isDarwin = process.platform === "darwin";
@@ -532,6 +533,7 @@ function baseEnv(home, port) {
     AGENT_OS_HOME: home,
     AGENT_OS_TOKEN: TOKEN,
     HERMES_AGENT_OS_SCHEDULER: "0",
+    SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
     FAKE_OPENCLAW_GATEWAY_STATE_FILE: gatewayStateFile,
     // Agent detection looks on PATH and under the user's home. An empty temp
     // HOME and a PATH of only the fake shims + system folders keep the

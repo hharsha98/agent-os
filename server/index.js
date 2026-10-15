@@ -7,10 +7,12 @@ import { assertAdminRequest, authRequired, clearAdminCookie, requireAdminWhenPub
 import {
   claimSessionHandler,
   hostAllowlistMiddleware,
+  isLocalMode,
   localSessionGate,
   localSessionStatusHandler,
   loginLine,
   originCheckMiddleware,
+  requireLocalMode,
   securityHeadersMiddleware
 } from "./runtime/local-session.js";
 import {
@@ -195,6 +197,10 @@ import { createOnboardingRouter } from "./runtime/onboarding.js";
 import { createSecretsRouter } from "./runtime/secrets/routes.js";
 import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
 import { setServerPort } from "./runtime/server-info.js";
+import { getSessionManager } from "./runtime/sessions/manager.js";
+import { enforceRecordingCap } from "./runtime/sessions/recorder.js";
+import { createRecordingsRouter, createSessionsRouter } from "./runtime/sessions/routes.js";
+import { excludeFromSessionEnv, getLoginShellEnv } from "./runtime/sessions/shell-env.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -205,6 +211,11 @@ const dist = process.env.AGENT_OS_STATIC_DIR
   ? path.resolve(process.env.AGENT_OS_STATIC_DIR)
   : path.join(root, "dist");
 const envFile = loadLocalEnv({ root });
+// The keys the local .env file just added to process.env are Agent OS's own
+// configuration, not the person's environment: they are kept out of the login
+// shell sessions read their environment from, and out of its fallback
+// (decision Q11a).
+excludeFromSessionEnv(envFile.applied);
 const app = express();
 // "/API/runs" and "/api/runs" are different addresses. (Express's default
 // treats them as the same, which once let the session gate be skipped by
@@ -221,7 +232,16 @@ function parsePort(raw) {
 }
 // Reassigned once listen() resolves the real port (relevant when PORT=0);
 // every closure below reads this variable live instead of a snapshot.
-let port = parsePort(process.env.PORT);
+// The desktop shell passes AGENT_OS_PORT=0 (Task D1, decision Q11a). An
+// un-prefixed PORT would reach every session through the login shell, and an
+// agent's own dev server would then bind a random port. PORT still works for
+// `npm start`, Docker and the tests.
+// An empty or blank AGENT_OS_PORT (a shell that exports it with no value) counts
+// as not set, so PORT still applies; "??" alone would let "" win over it.
+if (process.env.AGENT_OS_PORT !== undefined && process.env.AGENT_OS_PORT.trim() === "") {
+  delete process.env.AGENT_OS_PORT;
+}
+let port = parsePort(process.env.AGENT_OS_PORT ?? process.env.PORT);
 function bindAddress() {
   // Loopback unless HOST is set. Containers set HOST=0.0.0.0 so a published
   // host port can reach the process; publish that port on 127.0.0.1.
@@ -1042,6 +1062,13 @@ app.use("/api/secrets", requireAdminWhenPublic, createSecretsRouter());
 // local session gate covers it like every other route.
 app.use("/api/onboarding", requireAdminWhenPublic, createOnboardingRouter());
 
+// Sessions (SP3): each agent's own terminal, in a folder the person picks, and
+// their recordings. Local mode only: in the public demo and the admin-token
+// public mode every one of these addresses answers 404 not_available.
+const sessionManager = getSessionManager();
+app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager }));
+app.use("/api/recordings", requireLocalMode, createRecordingsRouter({ manager: sessionManager }));
+
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.json(await getModuleSessions(req.params.id));
@@ -1831,6 +1858,26 @@ app.use((error, _req, res, _next) => {
   });
 });
 
+// Sessions (planning decision Q13): a session still marked live on disk
+// belonged to a server that is gone now. Mark it "ended (Agent OS quit)"
+// BEFORE listening, so no request (and no reopened window) ever sees it as
+// running; then keep the recordings under their 1 GB cap. A failure is logged
+// and the server still starts. Local mode only: sessions do not exist in the
+// public demo or the admin-token public mode, so nothing there rewrites a
+// meta.json or removes a recording.
+if (isLocalMode()) {
+  try {
+    await sessionManager.recoverStaleSessions();
+  } catch (error) {
+    console.error(error);
+  }
+  try {
+    await enforceRecordingCap();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 const server = app.listen(port, bindHost, () => {
   // With PORT=0 the OS just picked a free port; every later reader of
   // `port` (closures above, and this callback) sees this updated value.
@@ -1853,6 +1900,11 @@ const server = app.listen(port, bindHost, () => {
   getRunManager().recoverStaleRuns().catch((error) => console.error(error));
   // Same for Team Rooms that were mid-discussion when the last process died.
   recoverStaleRooms().catch((error) => console.error(error));
+  // Planning decision Q23: start reading the login shell's environment now,
+  // in the background. It never delays AGENT_OS_READY (printed above); the
+  // first new session waits for it (10 s at most). Sessions exist only in
+  // local mode, so nothing runs in the public demo or public mode.
+  if (isLocalMode()) getLoginShellEnv().catch((error) => console.error(error));
 });
 
 installShutdownHandlers(server);

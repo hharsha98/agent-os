@@ -28,6 +28,7 @@ import {
 } from "../server/runtime/onboarding.js";
 import { getRunManager } from "../server/runtime/runs/run-manager.js";
 import { resetSignInForTest } from "../server/runtime/setup/signin.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -404,6 +405,7 @@ test("HTTP: the checklist is behind the session gate, PUT needs confirm and vali
     AGENT_OS_TOKEN: TOKEN,
     AGENT_OS_NO_BROWSER: "1",
     HERMES_AGENT_OS_SCHEDULER: "0",
+    SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
     PATH: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter)
   };
   for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_REQUIRE_AUTH", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {

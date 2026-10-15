@@ -34,13 +34,63 @@ export function runtimePaths() {
     logs: path.join(root, "logs"),
     memory: path.join(root, "memory"),
     exports: path.join(root, "exports"),
-    workspace: path.join(root, "workspace")
+    workspace: path.join(root, "workspace"),
+    // Sessions (spec SP3): one folder per session id (meta.json, recording,
+    // settings file). Worktrees: separate copies of a person's project (SP4).
+    sessions: path.join(root, "sessions"),
+    worktrees: path.join(root, "worktrees")
   };
+}
+
+// Folders below the root that hold private data (session recordings,
+// settings files, copies of a person's projects): only the person's own
+// account may open them (spec Security 5). The root is made private too, in
+// ensureForgivingPrivateDir below.
+const PRIVATE_DIRS = new Set(["sessions", "worktrees"]);
+
+// mkdir -p with mode 0700, then a chmod, because mkdir's mode only applies to
+// folders it creates and an older folder may have been made with 0755.
+// Windows has no such modes, so there it only makes the folder.
+export async function ensurePrivateDir(dir) {
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await fs.chmod(dir, 0o700);
+  return dir;
+}
+
+// Folders already warned about, so each warning shows once, not on every call.
+const warnedFolders = new Set();
+
+// The root, sessions/ and worktrees/ are made private the same forgiving way:
+// a folder another account owns can't be chmodded (EPERM, or EACCES on the way
+// to it). ensureRuntimeStore() is shared by every store-backed feature (runs,
+// workflows, config writes), so throwing here would make all of them fail, and
+// stop the whole app, because of a folder only sessions care about. Only that
+// folder's mode is given up, with a warning once per folder; the files written
+// inside are still created 0600. Any other error still throws.
+async function ensureForgivingPrivateDir(dir) {
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") return dir;
+  try {
+    await fs.chmod(dir, 0o700);
+  } catch (error) {
+    if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
+    if (!warnedFolders.has(dir)) {
+      warnedFolders.add(dir);
+      console.warn("Agent OS could not make its folder private (0700): " + dir);
+    }
+  }
+  return dir;
 }
 
 export async function ensureRuntimeStore() {
   const paths = runtimePaths();
-  await Promise.all(Object.values(paths).map((dir) => fs.mkdir(dir, { recursive: true })));
+  // The root first, so making a subfolder never creates it with the default mode.
+  await ensureForgivingPrivateDir(paths.root);
+  await Promise.all(
+    Object.entries(paths)
+      .filter(([name]) => name !== "root")
+      .map(([name, dir]) => (PRIVATE_DIRS.has(name) ? ensureForgivingPrivateDir(dir) : fs.mkdir(dir, { recursive: true })))
+  );
   return paths;
 }
 

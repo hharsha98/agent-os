@@ -119,7 +119,7 @@ function blockedFlagError() {
 // argument, and only for these two binaries, so nothing else is affected.
 const FORCE_BYPASS_BINARIES = new Set(["agent", "cursor-agent"]);
 
-function hasCursorForceFlag(plan) {
+export function hasCursorForceFlag(plan) {
   if (!FORCE_BYPASS_BINARIES.has(path.basename(String(plan.command || "")))) return false;
   return plan.args.some((arg) => arg === "-f" || arg === "--force");
 }

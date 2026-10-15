@@ -144,8 +144,10 @@ export function brainNotices(agentId, brain) {
 
 // ---- Claude Code: the settings file ----------------------------------------------------------------
 
-function claudeEnv(baseUrl, authToken, model) {
-  return {
+// `scrub` is false only for an interactive session (spec H2): there the
+// person's MCP servers and Bash tool keep their credentials, as in Terminal.
+function claudeEnv(baseUrl, authToken, model, { scrub = true } = {}) {
+  const env = {
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_AUTH_TOKEN: authToken,
     ANTHROPIC_API_KEY: "",
@@ -160,9 +162,10 @@ function claudeEnv(baseUrl, authToken, model) {
     // Claude Code uses its "small" model for titles and quick checks; with one
     // model chosen, that model does them too.
     ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
-    CLAUDE_CODE_SUBAGENT_MODEL: model,
-    CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+    CLAUDE_CODE_SUBAGENT_MODEL: model
   };
+  if (scrub) env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1";
+  return env;
 }
 
 // The hard rule: a custom ANTHROPIC_BASE_URL on its own would make Claude Code
@@ -184,18 +187,21 @@ export function assertSafeClaudeSettings(settings) {
 
 // The settings for one run on `brain`. `helper` is the key's read helper
 // (openRouterKeyHelper()); without it an OpenRouter run is refused.
-export function buildClaudeSettings(brain, helper) {
+// `forSession: true` (an interactive session, planning decision Q9) leaves out
+// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB; headless runs keep it.
+export function buildClaudeSettings(brain, helper, { forSession = false } = {}) {
+  const scrub = !forSession;
   let settings;
   if (brain.mode === "openrouter") {
     if (!helper) throw brainError("openrouter_key_missing", MISSING_KEY_MESSAGE);
     settings = {
       apiKeyHelper: helperCommandLine(helper),
-      env: claudeEnv(OPENROUTER_ANTHROPIC_BASE_URL, "", brain.model)
+      env: claudeEnv(OPENROUTER_ANTHROPIC_BASE_URL, "", brain.model, { scrub })
     };
   } else {
     // "ollama" is a stand-in the local server ignores; it only has to be there
     // so Claude Code doesn't send the claude.ai sign-in.
-    settings = { env: claudeEnv(brain.local.baseUrl, "ollama", brain.local.model) };
+    settings = { env: claudeEnv(brain.local.baseUrl, "ollama", brain.local.model, { scrub }) };
   }
   assertSafeClaudeSettings(settings);
   return settings;
@@ -215,7 +221,12 @@ export async function writeClaudeSettingsFile(runDir, settings) {
 const toml = (value) => JSON.stringify(String(value));
 
 // Each `-c` and each `key=value` is its own command-line item (no shell involved).
-export function codexBrainArgs(brain, helper) {
+// `forSession: true` (an interactive session, planning decision Q9b) leaves out
+// Codex's own environment scrub (shell_environment_policy.ignore_default_excludes=false),
+// so Codex's shell tool sees the person's own variables as in Terminal (H2);
+// headless runs keep it. The key still comes through the auth command, never
+// the environment, so nothing of Agent OS's is exposed either way.
+export function codexBrainArgs(brain, helper, { forSession = false } = {}) {
   if (brain.mode === "openrouter") {
     if (!helper) throw brainError("openrouter_key_missing", MISSING_KEY_MESSAGE);
     return [
@@ -226,7 +237,7 @@ export function codexBrainArgs(brain, helper) {
       // The auth-command form. Never combined with env_key (that is the
       // variable form, which would put the key in the environment).
       "-c", `model_providers.openrouter.auth={command=${toml(helper.command)}, args=[${helper.args.map(toml).join(", ")}]}`,
-      "-c", "shell_environment_policy.ignore_default_excludes=false",
+      ...(forSession ? [] : ["-c", "shell_environment_policy.ignore_default_excludes=false"]),
       "-m", brain.model
     ];
   }

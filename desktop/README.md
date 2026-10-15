@@ -12,16 +12,18 @@ Agent OS.app
   |-- Rust shell (desktop/src-tauri/src/main.rs)
   |     1. picks a random login token (32 bytes, never logged)
   |     2. starts   resources/node/bin/node  resources/server/server.mjs
-  |                   PORT=0                     (the OS picks a free port)
+  |                   AGENT_OS_PORT=0            (the OS picks a free port)
   |                   AGENT_OS_TOKEN=<token>
   |                   AGENT_OS_STATIC_DIR=resources/server/web
   |                   AGENT_OS_PACKAGED=1
+  |                   AGENT_OS_STDIN_SHUTDOWN=1  (stdin stays open: the quit line)
   |                   PATH = your usual tool folders + the inherited PATH
   |     3. waits (max 20 s) for the server to print  AGENT_OS_READY:<port>
   |     4. opens the window at  http://127.0.0.1:<port>/?launch=<token>&desktop=1
   |        (the server turns ?launch= into a secure cookie; you are logged in)
-  |     5. on quit, asks the server to stop (SIGTERM, up to 5 s so it can end
-  |        any agent runs it started), then force-kills it
+  |     5. on quit, asks first when sessions are live (the page shows the
+  |        question), then writes AGENT_OS_SHUTDOWN to the server's stdin and
+  |        waits up to 10 s while it ends every session and run, then forces it
   `-- resources/
         node/    the app's own Node 24 (separate from ~/.agent-os/node, which
                  Setup installs for OpenClaw)
@@ -31,9 +33,31 @@ Agent OS.app
 Your data stays where it always was (`AGENT_OS_HOME` is left unset), so the
 app and `npm start` share the same agents, runs and settings.
 
-The server is stopped on every way of quitting: Cmd+Q, closing the window,
-and a plain `kill <pid>` of the app (a signal thread covers that last one). On
-Windows the whole process tree is ended with `taskkill /T /F`.
+Closing the window does not quit on macOS: the window hides and your sessions
+keep running. Click the Dock icon, or choose Agent OS > Show Agent OS, to bring it
+back. On Windows and Linux there is no tray yet, so closing the window quits.
+
+Quitting (Agent OS > Quit Agent OS, Cmd+Q on a Mac, or closing the window on
+Windows and Linux) asks first when sessions are live. The app shows its window and
+sends the page an event (`agentos://quit-requested`); the page answers
+`agentos://quit-shown` when its question is on screen and `agentos://quit-answer`
+with your choice. While the app is still starting there is no page to ask, so the
+quit goes on at once, and it also goes on when the page has not said within 2
+seconds that its question is on screen. When you quit, the server first records
+every live session as ended by the quit, so you can resume it later, then stops
+the sessions and every run, and exits. The app waits up to 10 seconds, then
+forces it (on Windows with `taskkill /T /F` on the whole tree). The server is
+started with `AGENT_OS_STDIN_SHUTDOWN=1` and asked to stop through its stdin,
+which works on every system.
+
+Some ways of quitting cannot ask: a plain `kill <pid>` of the app, the Dock's
+Quit, the app switcher's Quit, logging out and an update's restart. They run the
+same stop without the question. The update banner's "Install & restart" button
+asks first, in the page.
+
+On Windows and Linux the menu has no keyboard shortcuts, so keys like Ctrl+C,
+Ctrl+R and Ctrl+Z reach the agent's terminal. Copy and paste in text fields are
+left to the web view itself (not yet tried on a Windows or Linux computer).
 
 If something goes wrong at start-up the loading page shows a plain-English
 message (the server crashed, with its last output, or it took longer than 20
@@ -154,6 +178,17 @@ address as a glob, so `https://*.example.com/*` would also match
 This can only be tried in a real desktop build (`npm run desktop:dev` or an
 installed app), not in a browser: press Open dashboard on an agent's page or a
 Docs link and your default browser should open.
+
+## Folder picker (dialog plugin)
+
+`tauri-plugin-dialog` is registered in `src/main.rs`, and `capabilities/default.json`
+grants only **`dialog:allow-open`**: the system's open dialog, which the New
+session dialog uses for "Choose folder…". It hands the page the path you picked
+and nothing else (no file access; the fs plugin is not installed). The message and
+save dialogs are not granted. In a browser tab there is no picker, so you type the
+folder's full path instead. The page's half is `@tauri-apps/plugin-dialog`, pinned
+to an exact version in `package.json`; `test/release-config.test.js` checks that the
+Rust crate in `Cargo.lock` stays on the same 2.8 line.
 
 ## Releasing
 

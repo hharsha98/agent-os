@@ -3,7 +3,7 @@
 // YAML is checked with plain string matching on purpose (no extra dependency).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
@@ -252,17 +252,23 @@ describe("desktop window", () => {
     return OPEN_URL_SCOPE.some((entry) => scopeMatches(entry.url, address));
   }
 
-  test("grants exactly these permissions: the opener may show a file in Finder and open the app's known links", async () => {
+  test("grants exactly these permissions: the opener may show a file in Finder and open the app's known links, and the folder picker may open", async () => {
     const capability = JSON.parse(await read("desktop/src-tauri/capabilities/default.json"));
     assert.deepEqual(capability.permissions, [
       "core:default",
       "updater:default",
       "process:allow-restart",
       { identifier: "opener:allow-open-url", allow: OPEN_URL_SCOPE },
-      "opener:allow-reveal-item-in-dir"
+      "opener:allow-reveal-item-in-dir",
+      // The New session dialog's "Choose folder…": the system's open dialog only (not message, save or dialog:default).
+      "dialog:allow-open"
     ]);
     assert.deepEqual(capability.windows, ["main"]);
     assert.deepEqual(capability.remote?.urls, ["http://127.0.0.1:*"]);
+    // The description says what the page may do through Tauri, including the quit question and the folder picker.
+    assert.match(capability.description, /agentos:\/\/quit-requested/);
+    assert.match(capability.description, /dialog:allow-open/);
+    assert.doesNotMatch(capability.description, /never through Tauri IPC/);
   });
 
   test("the open-url scope: only https and this Mac's own pages, one exact host per entry, never a bare wildcard", async () => {
@@ -338,5 +344,155 @@ describe("desktop window", () => {
       "http://[::1]:9119/"
     ];
     for (const href of refused) assert.ok(!allowedByScope(href), `the scope must refuse ${href}`);
+  });
+});
+
+describe("desktop folder picker (tauri-plugin-dialog)", () => {
+  test("the dialog plugin is on both sides: the Rust crate, its registration, and the page's package on the same 2.8 line", async () => {
+    const cargoToml = await read("desktop/src-tauri/Cargo.toml");
+    assert.match(cargoToml, /^tauri-plugin-dialog = "2"$/m);
+    const main = await read("desktop/src-tauri/src/main.rs");
+    assert.match(main, /\.plugin\(tauri_plugin_dialog::init\(\)\)/);
+    const pkg = JSON.parse(await read("package.json"));
+    assert.equal(pkg.dependencies["@tauri-apps/plugin-dialog"], "2.8.3", "exact pin, no range");
+    // The quit question's events (@tauri-apps/api/event, Task U1), at the version already in package-lock.json (Q6).
+    assert.equal(pkg.dependencies["@tauri-apps/api"], "2.12.1", "exact pin");
+    const lock = await read("desktop/src-tauri/Cargo.lock");
+    const locked = lock.match(/name = "tauri-plugin-dialog"\r?\nversion = "([^"]+)"/);
+    assert.ok(locked, "Cargo.lock has tauri-plugin-dialog: run cargo build in desktop/src-tauri");
+    assert.match(locked[1], /^2\.8\./, "the Rust half stays on the same 2.8 line as the page's package");
+  });
+});
+
+describe("desktop quit plumbing (the page and the shell must agree on these names)", async () => {
+  const main = await read("desktop/src-tauri/src/main.rs");
+
+  test("the quit question travels as three events, with no custom command", () => {
+    assert.match(main, /const QUIT_REQUESTED_EVENT: &str = "agentos:\/\/quit-requested";/);
+    assert.match(main, /const QUIT_SHOWN_EVENT: &str = "agentos:\/\/quit-shown";/);
+    assert.match(main, /const QUIT_ANSWER_EVENT: &str = "agentos:\/\/quit-answer";/);
+    assert.match(main, /const QUIT_SHOWN_WAIT: Duration = Duration::from_secs\(2\);/);
+    assert.doesNotMatch(main, /invoke_handler|#\[tauri::command\]/, "a remote window cannot call a custom command without an AppManifest");
+  });
+
+  test("Quit is a custom menu item (⌘Q on macOS only), and the predefined Quit item is gone", () => {
+    assert.match(main, /const QUIT_MENU_ID: &str = "agentos-quit";/);
+    assert.match(main, /const SHOW_MENU_ID: &str = "agentos-show";/);
+    assert.match(main, /"Quit Agent OS"/);
+    assert.match(main, /"Show Agent OS"/);
+    assert.doesNotMatch(main, /PredefinedMenuItem::quit/, "the predefined Quit ends the app before anything can ask");
+    // Every accelerator is set inside a macOS-only line: Windows and Linux menus take no keys from the terminal.
+    const accelerators = [...main.matchAll(/\.accelerator\(/g)].length;
+    const macOnly = [...main.matchAll(/#\[cfg\(target_os = "macos"\)\]\s*let \w+ = \w+\.accelerator\(/g)].length;
+    assert.ok(accelerators > 0 && accelerators === macOnly, `${accelerators} accelerators, ${macOnly} of them macOS-only`);
+  });
+
+  test("the server gets its port as AGENT_OS_PORT, is asked to quit through its stdin, and gets 10 s before it is forced", () => {
+    const start = main.indexOf("fn spawn_server(");
+    const end = main.indexOf("fn parse_ready_line(");
+    assert.ok(start >= 0 && end > start, "fn spawn_server comes right before fn parse_ready_line");
+    const spawnServer = main.slice(start, end);
+    // The server's environment reaches every session through the login shell minus the AGENT_OS_ names,
+    // so an un-prefixed PORT=0 would make an agent's own dev server bind a random port.
+    assert.match(spawnServer, /\.env\("AGENT_OS_PORT", "0"\)/);
+    assert.doesNotMatch(spawnServer, /\.env\("PORT"/);
+    // The PATH the app was started with, for the login shell (H2): not the one server_path_env extends.
+    assert.match(spawnServer, /\.env\("AGENT_OS_LAUNCH_PATH"/);
+    assert.match(spawnServer, /\.env\("AGENT_OS_STDIN_SHUTDOWN", "1"\)/);
+    assert.match(spawnServer, /\.stdin\(Stdio::piped\(\)\)/);
+    assert.doesNotMatch(spawnServer, /Stdio::null\(\)/, "the server's stdin is never closed at start");
+    assert.match(main, /const SHUTDOWN_LINE: &str = "AGENT_OS_SHUTDOWN\\n";/);
+    assert.match(main, /const QUIT_GRACE: Duration = Duration::from_secs\(10\);/);
+  });
+
+  test("closing the window hides it on macOS and asks to quit elsewhere; Reopen shows it again", () => {
+    assert.match(main, /api\.prevent_close\(\)/);
+    assert.match(main, /RunEvent::Reopen/);
+    assert.match(main, /api\.prevent_exit\(\)/);
+    assert.match(main, /RESTART_EXIT_CODE/, "an approved update restart is let through");
+  });
+
+  test("the close branch really hides the window on macOS and really asks to quit elsewhere", () => {
+    const start = main.indexOf(".on_window_event(");
+    const end = main.indexOf(".build(context)");
+    assert.ok(start >= 0 && end > start, ".on_window_event comes right before .build(context)");
+    const closeBranch = main.slice(start, end);
+    assert.match(closeBranch, /CloseRequested \{ api, \.\. \}/);
+    // macOS: the close only hides the window (sessions keep running); without window.hide() the red button would do nothing.
+    assert.match(closeBranch, /#\[cfg\(target_os = "macos"\)\]\s*\{\s*let _ = window\.hide\(\);\s*\}/);
+    // Windows and Linux: closing the window is a quit request, and it must not hide the window there.
+    assert.match(closeBranch, /#\[cfg\(not\(target_os = "macos"\)\)\]\s*request_quit\(window\.app_handle\(\)\);/);
+  });
+
+  test("a page that starts loading again drops an open quit question", () => {
+    const start = main.indexOf(".on_page_load(");
+    const end = main.indexOf(".on_window_event(");
+    assert.ok(start >= 0 && end > start, ".on_page_load comes right before .on_window_event");
+    const hook = main.slice(start, end);
+    assert.match(hook, /PageLoadEvent::Started/);
+    assert.match(hook, /flow\.page_gone\(\)/);
+  });
+
+  test("a quit request while a question is open or a quit is under way brings the window back", () => {
+    assert.match(main, /ShowAgain,/, "QuitStep has its own step for this");
+    const start = main.indexOf("fn request_quit(");
+    const end = main.indexOf("fn ask_page(");
+    assert.ok(start >= 0 && end > start, "fn request_quit comes right before fn ask_page");
+    assert.match(main.slice(start, end), /QuitStep::ShowAgain => show_main_window\(app\),/);
+  });
+});
+
+describe("page code never opens the browser's own dialogs", () => {
+  // tauri-plugin-dialog's init script replaces window.confirm, window.alert and window.prompt in every page the
+  // desktop window loads. The replacements return a Promise, so `if (!window.confirm(...)) return;` never stops
+  // anything (a Promise is always truthy). The page asks with its own in-page dialogs (AgentConfirmModal, SetupModal).
+  const NAMES = ["confirm", "alert", "prompt"];
+
+  function findDialogCalls(text) {
+    const code = text
+      .split(/\r?\n/)
+      .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+      .join("\n");
+    const found = [];
+    // window.confirm(...), globalThis.alert(...), self?.prompt(...), window["confirm"](...)
+    const qualified = /\b(?:window|globalThis|self)\s*(?:\?\.\s*|\.\s*|\[\s*["'`])(confirm|alert|prompt)\b/g;
+    for (const match of code.matchAll(qualified)) found.push(`window.${match[1]}`);
+    // A bare confirm(...) is the same property of window, unless the file declares its own function of that name.
+    for (const name of NAMES) {
+      const declared = new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`).test(code);
+      const bare = new RegExp(`(?<![\\w$.])${name}\\s*\\(`, "g");
+      if (!declared) for (const match of code.matchAll(bare)) found.push(`${name}()`);
+    }
+    return found;
+  }
+
+  async function sourceFiles(dir) {
+    const files = [];
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) files.push(...(await sourceFiles(full)));
+      else if (/\.(tsx?|jsx?|mjs|html)$/.test(entry.name)) files.push(full);
+    }
+    return files;
+  }
+
+  test("the scan sees window.confirm, window.alert, window.prompt and bare calls, and leaves comments and local functions alone", () => {
+    assert.deepEqual(findDialogCalls("if (!window.confirm(`Delete?`)) return;"), ["window.confirm"]);
+    assert.deepEqual(findDialogCalls("window.alert('x'); globalThis.prompt('y');"), ["window.alert", "window.prompt"]);
+    assert.deepEqual(findDialogCalls("if (!confirm('sure?')) return;"), ["confirm()"]);
+    assert.deepEqual(findDialogCalls("// window.confirm is replaced by the dialog plugin\n * alert(1)"), []);
+    assert.deepEqual(findDialogCalls("async function confirm() {}\nonConfirm={() => void confirm()}"), []);
+    assert.deepEqual(findDialogCalls("onConfirm(); setPrompt(1); const prompt = 1;"), []);
+  });
+
+  test("no file under src/ calls window.confirm, window.alert or window.prompt", async () => {
+    const files = await sourceFiles(path.join(root, "src"));
+    assert.ok(files.length > 20, `the scan found ${files.length} files under src/`);
+    const offenders = [];
+    for (const file of files) {
+      const calls = findDialogCalls(await readFile(file, "utf8"));
+      if (calls.length) offenders.push(`${path.relative(root, file)}: ${calls.join(", ")}`);
+    }
+    assert.deepEqual(offenders, [], "use AgentConfirmModal (in-page) instead: the desktop window's dialog plugin makes these return a Promise");
   });
 });

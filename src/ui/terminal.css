@@ -1,0 +1,79 @@
+/* The browser terminal (SP3, SessionTerminal.tsx). It fills its nearest positioned parent, which draws the
+   frame (the Sessions page's .os-sess-term: hairline, 10 px corners, cobalt edge while it has the keys). Inside,
+   the terminal ground and the prototype's padding (.term-body: 20 px by 24 px). xterm draws the text itself with
+   the --os-term-* and --os-ansi-* colours (terminalShared.ts). The box xterm measures to fit (.os-term__screen)
+   has no padding of its own. */
+.os-term {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: var(--os-sp-5) var(--os-sp-6);
+  background: var(--os-term-bg);
+}
+
+.os-term__screen {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  /* xterm's own layers have positive z-index (its scrollbar sits at 11, search highlights above the text). In
+     their own stacking context they stay under the notice, so a click on Reconnect never hits the scrollbar. */
+  isolation: isolate;
+}
+
+/* "Connecting…" and "Reconnecting…": a quiet pill in the corner. "Lost the connection to this session." with
+   its Reconnect button: the same place, in the brighter ink, because typing does nothing then. */
+.os-term__notice {
+  position: absolute;
+  right: var(--os-sp-3);
+  bottom: var(--os-sp-3);
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  box-sizing: border-box;
+  max-width: calc(100% - 2 * var(--os-sp-3));
+  padding: var(--os-sp-1) var(--os-sp-3);
+  font-family: var(--os-font-ui);
+  font-size: var(--os-fs-12);
+  line-height: 1.4;
+  color: var(--os-text-2);
+  background: var(--os-surface-2);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-pill);
+}
+
+.os-term__notice-text {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.os-term__notice--empty {
+  /* Nothing to say: the status line stays in the page (empty, so a screen reader announces the next text), but
+     no pill is drawn and nothing can be clicked. */
+  padding: 0;
+  border: 0;
+  background: none;
+  pointer-events: none;
+}
+
+.os-term__notice--lost {
+  padding: var(--os-sp-2) var(--os-sp-2) var(--os-sp-2) var(--os-sp-4);
+  color: var(--os-text-1);
+  border-radius: var(--os-r-md);
+}
+
+.os-term__notice .os-btn {
+  flex: none;
+  min-height: 28px;
+  padding: 0 var(--os-sp-3);
+  font-size: var(--os-fs-12);
+}
+
+@media (max-width: 1320px) {
+  .os-term {
+    padding: var(--os-sp-4);
+  }
+}

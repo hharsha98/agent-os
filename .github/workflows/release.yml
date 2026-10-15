@@ -207,10 +207,12 @@ jobs:
       - name: Fetch the bundled Node for this target
         run: node scripts/fetch-node.mjs --platform ${{ matrix.node_platform }} --arch ${{ matrix.node_arch }}
 
-      # Builds the UI + server bundle into resources/. --skip-node so it
-      # cannot replace the target's Node (fetched above) with this runner's.
+      # Builds the UI + server bundle into resources/, with node-pty's prebuilt
+      # binary for the TARGET (--platform/--arch: the Intel Mac app is built on
+      # an Apple-silicon runner). --skip-node so it cannot replace the target's
+      # Node (fetched above) with this runner's.
       - name: Prepare desktop resources
-        run: node scripts/prepare-desktop.mjs --skip-node
+        run: node scripts/prepare-desktop.mjs --skip-node --platform ${{ matrix.node_platform }} --arch ${{ matrix.node_arch }}
 
       # Auto-update is opt-in. Only when BOTH the signing key secret is set
       # AND desktop/updater-pubkey.txt holds a real public key do we turn on

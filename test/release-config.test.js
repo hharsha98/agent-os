@@ -496,3 +496,63 @@ describe("page code never opens the browser's own dialogs", () => {
     assert.deepEqual(offenders, [], "use AgentConfirmModal (in-page) instead: the desktop window's dialog plugin makes these return a Promise");
   });
 });
+
+describe("desktop packaging and the desktop CI job", async () => {
+  const release = await read(".github/workflows/release.yml");
+  const ci = await read(".github/workflows/ci.yml");
+  // The text of one top-level job in a workflow (from "  name:" to the next "  other-name:" or the end).
+  const jobOf = (text, name) => {
+    const match = text.match(new RegExp(`\\n  ${name}:\\r?\\n([\\s\\S]*?)(?=\\r?\\n  [a-z][a-z-]*:\\r?\\n|$)`));
+    assert.ok(match, `job ${name} not found`);
+    return match[1];
+  };
+
+  test("each release installer gets a server bundle with node-pty for its own computer", () => {
+    assert.match(
+      release,
+      /run: node scripts\/prepare-desktop\.mjs --skip-node --platform \$\{\{ matrix\.node_platform \}\} --arch \$\{\{ matrix\.node_arch \}\}/
+    );
+  });
+
+  test("CI builds the desktop shell and runs its unit tests on Linux, macOS and Windows", () => {
+    const desktop = jobOf(ci, "desktop");
+    for (const runner of ["ubuntu-22\\.04", "macos-14", "windows-latest"]) assert.match(desktop, new RegExp(runner));
+    assert.match(desktop, /fail-fast:\s*false/);
+    assert.match(desktop, /libwebkit2gtk-4\.1-dev/);
+    assert.match(desktop, /run:\s*npm ci\s*\n/);
+    assert.match(desktop, /prepare-desktop\.mjs --skip-node/);
+    assert.match(desktop, /mkdir -p desktop\/src-tauri\/resources\/node/);
+    assert.match(desktop, /working-directory:\s*desktop\/src-tauri\s*\n\s*run:\s*cargo build --locked/);
+    assert.match(desktop, /working-directory:\s*desktop\/src-tauri\s*\n\s*run:\s*cargo test --locked/);
+    assert.ok(!/CI:\s*true|CI=true/.test(ci), "ci.yml never sets CI=true");
+    // It runs third-party actions (rust-toolchain, rust-cache): a moved tag must not get a write-capable token.
+    assert.match(desktop, /(^|\n) {4}permissions:\s*\n {6}contents:\s*read\s*(\n|$)/, "the desktop job declares contents: read");
+  });
+
+  // The README checks, written once. A Windows checkout (the CI test job runs on windows-latest and the repo has
+  // no .gitattributes) has CRLF line endings, so the text is put back to LF before the sentence is looked for.
+  const checkReadme = (text) => {
+    const readme = text.replace(/\r\n/g, "\n");
+    const heading = "### Terminals (node-pty)";
+    const terminals = readme.indexOf(heading);
+    const testedOn = readme.indexOf("\n## Tested on");
+    assert.ok(terminals > 0 && testedOn > terminals, "the Terminals part comes before Tested on");
+    const part = readme.slice(terminals + heading.length, testedOn);
+    assert.ok(!/^#/m.test(part), "Terminals is the last part before Tested on");
+    assert.ok(!part.includes("Day-to-day development"), "development steps are not under Terminals");
+    const development = readme.indexOf("Day-to-day development");
+    assert.ok(development > 0 && development < terminals, "development steps stay above Terminals");
+    assert.ok(readme.includes("`cd desktop && npx tauri build --target x86_64-apple-darwin` (not\n`npm run desktop:build`, which prepares for this computer again)."));
+  };
+
+  test("the desktop README ends with the Terminals part, keeps development steps above it, and says how to build after a cross-CPU prepare", async () => {
+    checkReadme(await read("desktop/README.md"));
+  });
+
+  test("the README checks also pass on a Windows (CRLF) checkout of the README", async () => {
+    const lf = (await read("desktop/README.md")).replace(/\r\n/g, "\n");
+    const crlf = lf.replace(/\n/g, "\r\n");
+    assert.ok(crlf.includes("(not\r\n`npm run desktop:build`"), "the copy really has Windows line endings inside the wrapped sentence");
+    checkReadme(crlf);
+  });
+});

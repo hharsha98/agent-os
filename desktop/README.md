@@ -76,7 +76,9 @@ npm run desktop:build
 That runs, in order:
 
 1. `npm run build`, then `npm run build:server-bundle` (UI + single-file server)
-2. copies `build/server` to `desktop/src-tauri/resources/server`
+2. copies `build/server` to `desktop/src-tauri/resources/server`. The bundle
+   carries node-pty's prebuilt terminal binary for the target computer in
+   `build/server/node_modules/node-pty/` (see "Terminals (node-pty)" below)
 3. `npm run desktop:fetch-node` if the bundled Node is missing: downloads Node
    from nodejs.org, **checks its SHA-256 against that release's
    `SHASUMS256.txt`** (aborts on mismatch) and keeps only the `node` binary.
@@ -87,13 +89,30 @@ That runs, in order:
 Output (macOS): `desktop/src-tauri/target/release/bundle/macos/Agent OS.app`
 and `.../bundle/dmg/Agent OS_<version>_<arch>.dmg`.
 
-To build for another machine's CPU, fetch its Node first, for example
-`npm run desktop:fetch-node -- --platform linux --arch x64`, then
-`node scripts/prepare-desktop.mjs --skip-node` so prepare keeps it.
+To build for another machine's CPU (for example the Intel Mac app on an
+Apple-silicon Mac), fetch its Node first:
+`npm run desktop:fetch-node -- --platform darwin --arch x64`, then
+`node scripts/prepare-desktop.mjs --skip-node --platform darwin --arch x64`, so
+prepare keeps that Node and bundles node-pty's binary for that machine. Then
+build with `cd desktop && npx tauri build --target x86_64-apple-darwin` (not
+`npm run desktop:build`, which prepares for this computer again).
 
 Day-to-day development: `npm run desktop:dev`. With no bundled resources it
 falls back to your system `node` and the repo's own `server/index.js` and
 `dist/` (run `npm run build` first).
+
+### Terminals (node-pty)
+
+Sessions run each agent in a real terminal through `node-pty`, a native
+module. esbuild cannot put it inside `server.mjs`, so
+`scripts/build-server-bundle.mjs` copies node-pty's `lib/`, `package.json` and
+the one prebuilt folder for the target (`prebuilds/<platform>-<arch>`, without
+debug symbols) to `build/server/node_modules/node-pty/`, where Node finds it
+from `server.mjs`. The build stops if that prebuilt folder is missing. Every
+copied binary's CPU is checked from its file header (never by running it), and
+macOS's `spawn-helper` gets mode 755. A server without node-pty still starts;
+it only says that sessions cannot start. A future Developer ID notarization
+must sign `node`, `pty.node` and `spawn-helper` under `Contents/Resources`.
 
 ## Tested on
 
@@ -101,6 +120,9 @@ falls back to your system `node` and the repo's own `server/index.js` and
   by hand.
 - Intel Mac, Windows and Linux: built by the release workflow, but **not
   hand-tested** (see Releasing).
+- Every pull request: CI builds the shell (debug, no installer) and runs its
+  unit tests on Linux, macOS and Windows (`.github/workflows/ci.yml`, job
+  `desktop`).
 
 ## Unsigned builds
 
@@ -205,8 +227,9 @@ installers to a **draft** GitHub Release:
 
 Each leg downloads the Node for its own target with
 `node scripts/fetch-node.mjs --platform <p> --arch <a>` (SHA-256 checked), then
-runs `node scripts/prepare-desktop.mjs --skip-node` so the runner's own Node is
-never bundled by mistake. The release notes shown on the Release come from
+runs `node scripts/prepare-desktop.mjs --skip-node --platform <p> --arch <a>` so
+the runner's own Node is never bundled by mistake and the server bundle carries
+node-pty's binary for that computer. The release notes shown on the Release come from
 `.github/release-notes.md`; edit that file to change them.
 
 The workflow runs in three stages so there is exactly one draft and one

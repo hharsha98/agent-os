@@ -64,8 +64,13 @@ if (process.platform === "win32") {
 // (HERMES_AGENT_OS_EXECUTABLE_PATHS), which are searched before PATH: set to
 // the owner's real agent folders, they would put a real agent ahead of a
 // test's fake folder (server/runtime/safety.js executableSearchDirs).
+// AGENT_OS_STDIN_SHUTDOWN goes too: with it set to 1 in a developer's shell,
+// every test server started with stdin "ignore" would read end-of-input at
+// once and quit (the tests that want the stdin quit line set it themselves).
 const testEnv = { ...process.env };
-for (const key of ["ZDOTDIR", "ENV", "BASH_ENV", "HERMES_AGENT_OS_EXECUTABLE_PATHS"]) delete testEnv[key];
+for (const key of ["ZDOTDIR", "ENV", "BASH_ENV", "HERMES_AGENT_OS_EXECUTABLE_PATHS", "AGENT_OS_STDIN_SHUTDOWN"]) {
+  delete testEnv[key];
+}
 if (process.platform !== "win32") testEnv.SHELL = FAKE_LOGIN_SHELL;
 
 const child = spawn(process.execPath, ["--test", "--test-timeout=180000", ...flags, ...files], {

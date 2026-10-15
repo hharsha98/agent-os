@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { before, describe, test } from "node:test";
@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { killProcessTree, spawnTracked } from "../server/runtime/process-tree.js";
 import { runCommand, which, withSiblingNodePath } from "../server/runtime/safety.js";
 import { shutdown } from "../server/runtime/shutdown.js";
+import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWindows = process.platform === "win32";
@@ -255,8 +256,12 @@ test(
 );
 
 describe("graceful shutdown", () => {
-  test("SIGTERM to the real server exits within 3 seconds", async () => {
-    const homeDir = await mkdtemp(path.join(os.tmpdir(), "agent-os-shutdown-"));
+  test("SIGTERM to the real server exits well inside the 8 second hard exit", async () => {
+    // Real path: on macOS os.tmpdir() sits behind a symlink (Global Constraints).
+    const homeDir = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-shutdown-")));
+    // The six fake agents, first on PATH (R16); the shims are POSIX only.
+    const fakeBin = path.join(homeDir, "fake-bin");
+    if (!isWindows) await makeFakeAgentBin(fakeBin);
     const child = spawn(process.execPath, ["server/index.js"], {
       cwd: root,
       env: {
@@ -268,7 +273,15 @@ describe("graceful shutdown", () => {
         // Keep agent detection away from the developer's real CLIs (~/.local/bin etc.).
         HOME: homeDir,
         USERPROFILE: homeDir,
-        PATH: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter)
+        // The sessions' login-shell lookup (SP3) runs W1's stand-in login shell (R15):
+        // never the developer's own shell setup, never a real login sh.
+        SHELL: FAKE_LOGIN_SHELL,
+        // The fakes first, then the system folders only: detection finds a fake
+        // before it searches /opt/homebrew/bin and /usr/local/bin.
+        PATH: [...(isWindows ? [] : [fakeBin]), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter),
+        // stdin is "ignore" here: a developer's AGENT_OS_STDIN_SHUTDOWN=1 would
+        // read end-of-input at once and quit the server before SIGTERM is sent.
+        AGENT_OS_STDIN_SHUTDOWN: undefined
       },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -278,13 +291,15 @@ describe("graceful shutdown", () => {
       const start = Date.now();
       child.kill("SIGTERM");
       await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("server did not exit within 3s of SIGTERM")), 3000);
+        const timer = setTimeout(() => reject(new Error("server did not exit within 8s of SIGTERM (the hard exit)")), 8000);
         child.once("exit", () => {
           clearTimeout(timer);
           resolve();
         });
       });
-      assert.ok(Date.now() - start <= 3500);
+      // An idle server has nothing to stop, so it never needs the hard exit.
+      const elapsed = Date.now() - start;
+      assert.ok(elapsed <= 3500, `an idle server took ${elapsed} ms to exit after SIGTERM`);
     } finally {
       await killChild(child);
       await rm(homeDir, { recursive: true, force: true });

@@ -49,6 +49,29 @@ function runProbe(file, args, env, timeout = 5000) {
   });
 }
 
+// Like runProbe, for a fake that is meant to keep running: instead of a fixed
+// window it polls the fake's log (every 50 ms, up to 5 s) until the fake has
+// logged its "run" event, lets it run a moment longer to prove it does not
+// exit, then stops it. A fixed 800 ms window failed on a loaded Mac, where a
+// fake needs 400 to 1100 ms from spawn to its first log line.
+async function runUntilLogged(file, args, env, log, name) {
+  let child;
+  const finished = new Promise((resolve) => {
+    child = execFile(file, args, { env, timeout: 30000 }, (error, stdout) => {
+      resolve({ code: error ? (error.code ?? null) : 0, killed: Boolean(error?.killed), stdout: String(stdout) });
+    });
+  });
+  child.stdin?.end();
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if ((await readLog(log)).some((entry) => entry.event === "run" && entry.name === name)) break;
+    await delay(50);
+  }
+  await delay(200);
+  child.kill();
+  return finished;
+}
+
 async function readLog(file) {
   if (!existsSync(file)) return [];
   return (await readFile(file, "utf8"))
@@ -218,8 +241,8 @@ test("a headless run (-p, --print or exec) prints nothing and keeps running unti
       ["codex", ["exec", "--json", "-"]],
       ["openclaw", ["agent", "exec", "--message-file", "-", "--json"]]
     ]) {
-      const run = await runProbe(bin.paths[name], args, env, 800);
-      assert.equal(run.killed, true, `${name} ${args.join(" ")} must still be running after 0.8 s`);
+      const run = await runUntilLogged(bin.paths[name], args, env, log, name);
+      assert.equal(run.killed, true, `${name} ${args.join(" ")} must still be running once it has logged its run`);
       assert.equal(run.stdout, "");
     }
     assert.deepEqual(

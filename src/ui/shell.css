@@ -731,9 +731,20 @@
   .os-gs-pill span {
     display: none;
   }
+  /* "Hold to stop all" drops its word, like the pill and the level button: with the Get started pill showing,
+     the word no longer fits at 320px and the safety control would be cut off. The words stay in the page for
+     screen readers (clipped, not removed), so the button keeps its name; the fill still shows the hold. */
   .os-statusbar .os-holdstop {
     min-width: 0;
     padding: 0 10px;
+  }
+  .os-statusbar .os-holdstop .os-holdstop__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 }
 

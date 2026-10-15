@@ -3,7 +3,7 @@
 // fix, stopping a run): Escape closes it, Tab stays trapped inside, and
 // focus returns to whatever opened it. Deliberately not shared with the
 // Setup screen's own modal (a separate worker owns that file).
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
@@ -18,7 +18,8 @@ export default function AgentConfirmModal({
   busy = false,
   danger = false,
   wide = false,
-  closeOnBackdrop = true
+  closeOnBackdrop = true,
+  cancelLabel = "Cancel"
 }: {
   title: string;
   children: ReactNode;
@@ -32,8 +33,13 @@ export default function AgentConfirmModal({
   // false for a dialog that holds something the person typed: a press on the dimmed page then does nothing
   // (Escape and Cancel still ask the dialog to close).
   closeOnBackdrop?: boolean;
+  // The words on the button that closes without acting ("Keep running", "Keep it running").
+  cancelLabel?: string;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  // Its own title id, so two of these dialogs open at once (the update banner's quit question and the
+  // shell's) each point at their own title.
+  const titleId = useId();
   // The press must start AND end on the dimmed page to count as a click outside, so a drag that
   // began inside the dialog (selecting text) and let go outside never closes it.
   const pressedOnBackdrop = useRef(false);
@@ -86,14 +92,14 @@ export default function AgentConfirmModal({
         if (closeOnBackdrop && outside) onClose();
       }}
     >
-      <div className={`os-modal${wide ? " os-modal--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="os-modal-title" ref={dialogRef}>
-        <h2 id="os-modal-title" className="os-modal__title">
+      <div className={`os-modal${wide ? " os-modal--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={dialogRef}>
+        <h2 id={titleId} className="os-modal__title">
           {title}
         </h2>
         <div className="os-modal__body">{children}</div>
         <div className="os-modal__actions">
           <button type="button" className="os-btn os-btn--ghost" onClick={onClose} disabled={busy}>
-            Cancel
+            {cancelLabel}
           </button>
           <button
             type="button"

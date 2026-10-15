@@ -2680,3 +2680,150 @@ export interface TeamProposalDecisionResult {
   // true when this decision ended the pause the room was in and the room carried on.
   resumed?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Sessions (SP3): an agent's own terminal, kept by server/runtime/sessions/. These mirror manager.js's
+// SessionSummary, routes.js's answers and ws.js's frames (spec "SP3 Sessions engine and page"; the SP3
+// contract). Frames are read defensively by src/ui/sessionsShared.ts (parseServerFrame).
+// ---------------------------------------------------------------------------
+
+export type SessionKind = "agent" | "update";
+
+// "waiting" and "held" are never produced in SP3; they arrive with SP4's signals.
+export type SessionStatus = "starting" | "live" | "waiting" | "idle" | "held" | "exited";
+
+// "stop" or "quit" when Agent OS ended the session, otherwise null.
+export type SessionEndedBy = "stop" | "quit" | null;
+
+export interface SessionSummary {
+  id: string;
+  kind: SessionKind;
+  agentId: string;
+  // The short name: "Claude Code", "Codex", "Cursor", "Hermes", "OpenClaw".
+  agentLabel: string;
+  folder: string;
+  folderName: string;
+  // false for OpenClaw until spike S5: it picks its own folder, so none is shown or claimed.
+  folderShown: boolean;
+  branch: string | null;
+  status: SessionStatus;
+  // When the current status began (ISO time), for "Idle for <time>".
+  stateSince: string;
+  startedAt: string;
+  endedAt: string | null;
+  // null when a signal ended the process.
+  exitCode: number | null;
+  signal: string | null;
+  endedBy: SessionEndedBy;
+  dismissed: boolean;
+  brain: { kind: "plan" | "openrouter" | "local"; label: string } | null;
+  resume: { available: boolean; reason: string | null; fallback: boolean };
+  // Every session's alerts are "basic" in SP3 (the 20 s rule).
+  alerts: "basic";
+  recordingBytes: number;
+}
+
+export interface SessionListResponse {
+  sessions: SessionSummary[];
+  // The quiet one-line notice when the login-shell environment could not be read (H2), else null.
+  environmentNotice: string | null;
+  pty: { ok: boolean; reason: string | null };
+  maxLive: number;
+}
+
+// POST /api/sessions/:id/stop: the session (unchanged when it had already ended), plus Stop's note: OpenClaw's
+// honest "Stopped the terminal. OpenClaw may still be finishing its last step." when only its terminal could be
+// stopped, otherwise null.
+export interface StopSessionResult extends SessionSummary {
+  note: string | null;
+}
+
+export interface SessionSettings {
+  claudeFullscreen: boolean;
+}
+
+export interface SessionFolder {
+  path: string;
+  name: string;
+  lastUsedAt: string;
+}
+
+export interface SessionFolderList {
+  folders: SessionFolder[];
+}
+
+export interface QuitCheckItem {
+  id: string;
+  title: string;
+  // An update session is never resumed, so the quit question promises a resume only when none is listed.
+  kind: SessionKind;
+}
+
+export interface QuitCheckResponse {
+  live: QuitCheckItem[];
+}
+
+export interface RecordingSummary {
+  sessionId: string;
+  // Update rows read "<agent> update" (spec, Session kinds).
+  kind: SessionKind;
+  agentId: string;
+  agentLabel: string;
+  folder: string;
+  folderName: string;
+  // false for OpenClaw until spike S5: its row reads "OpenClaw · Set by OpenClaw", never a folder it may not use.
+  folderShown: boolean;
+  startedAt: string;
+  endedAt: string | null;
+  bytes: number;
+  live: boolean;
+}
+
+export interface RecordingListResponse {
+  recordings: RecordingSummary[];
+  // How many recordings were removed to stay under 1 GB since the server started (Q38).
+  removedByCap: number;
+}
+
+// The terminal modes a snapshot carries (mirror.js), put back on reattach (spec, Browser terminal).
+export type MouseTrackingMode = "none" | "x10" | "vt200" | "drag" | "any";
+export type MouseEncodingMode = "default" | "sgr" | "sgr-pixels";
+
+export interface SessionModes {
+  altScreen: boolean;
+  bracketedPaste: boolean;
+  mouseTracking: MouseTrackingMode;
+  mouseEncoding: MouseEncodingMode;
+  focusReporting: boolean;
+  cursorKeysApp: boolean;
+  kittyFlags: number;
+}
+
+export interface SessionSnapshot {
+  data: string;
+  cols: number;
+  rows: number;
+  modes: SessionModes;
+}
+
+export interface SessionStateFrame {
+  status: SessionStatus;
+  exitCode: number | null;
+  signal: string | null;
+  endedBy: SessionEndedBy;
+  resetAt: string | null;
+}
+
+// Server to client, one JSON message per frame (ws.js).
+export type SessionServerFrame =
+  | ({ t: "snapshot" } & SessionSnapshot)
+  | { t: "out"; seq: number; d: string }
+  | ({ t: "state" } & SessionStateFrame)
+  | { t: "alert"; raw: string };
+
+// Client to server.
+export type SessionClientFrame =
+  | { t: "focus" }
+  | { t: "in"; d: string }
+  | { t: "resize"; cols: number; rows: number }
+  | { t: "ack"; seq: number };

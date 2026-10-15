@@ -58,6 +58,10 @@ import { revealGetStarted } from "./onboardingShared";
 import { createLatestRead } from "./latestRead";
 import { levelOf } from "./safetyShared";
 import { stopAllMessage } from "./stopAll";
+import QuitQuestion, { useDesktopQuit } from "./components/QuitQuestion";
+import { SessionsListProvider, useLiveSessionCount } from "./useSessionsList";
+import { PALETTE_EVENT } from "./palette";
+import { isMacPlatform, isPaletteKey } from "./sessionsShared";
 
 const LABS_STORAGE_KEY = "agentos.labsOpen";
 // Same cadence as Home's run polling, so the strip and the page never
@@ -71,11 +75,13 @@ const MOBILE_BREAKPOINT = 900;
 // over the page; below MOBILE_BREAKPOINT it is the off-canvas menu as before.
 const RAIL_BREAKPOINT = 1366;
 const RAIL_QUERY = `(min-width: ${MOBILE_BREAKPOINT + 1}px) and (max-width: ${RAIL_BREAKPOINT}px)`;
-// What the palette shortcut is called on this computer.
-const SHORTCUT_LABEL = typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "") ? "⌘K" : "Ctrl K";
-// What to call this computer in the menu footer.
+// What computer this is: the palette key is ⌘K on a Mac and Ctrl+K elsewhere, never both (spec, App shortcuts).
 const PLATFORM = typeof navigator !== "undefined" ? navigator.platform || navigator.userAgent || "" : "";
-const MACHINE_LABEL = /mac/i.test(PLATFORM) ? "On this Mac" : /win/i.test(PLATFORM) ? "On this PC" : "On this computer";
+const IS_MAC = isMacPlatform(PLATFORM);
+// What the palette shortcut is called on this computer.
+const SHORTCUT_LABEL = IS_MAC ? "⌘K" : "Ctrl K";
+// What to call this computer in the menu footer.
+const MACHINE_LABEL = IS_MAC ? "On this Mac" : /win/i.test(PLATFORM) ? "On this PC" : "On this computer";
 
 // True while the window is in the rail range; follows resizes.
 function useIsRail() {
@@ -145,7 +151,9 @@ interface ShellProps {
 export default function Shell(props: ShellProps) {
   return (
     <OnboardingProvider enabled={!props.demoPublic}>
-      <ShellFrame {...props} />
+      <SessionsListProvider enabled={!props.demoPublic}>
+        <ShellFrame {...props} />
+      </SessionsListProvider>
     </OnboardingProvider>
   );
 }
@@ -171,6 +179,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const railToggleRef = useRef<HTMLButtonElement>(null);
   const firstNavRef = useRef<HTMLButtonElement>(null);
+  // Running agent sessions, for the menu (null while not known: then no number is shown).
+  const liveSessions = useLiveSessionCount();
+  const quitQuestion = useDesktopQuit();
 
   const onboardingCounts = onboarding.data?.counts;
   // The same rule as the Get started pill: the server counts a skipped step as
@@ -179,7 +190,13 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const coreItems: NavItem[] = useMemo(
     () => [
       { id: "fleet", label: "Home", icon: Home },
-      { id: "sessions", label: "Sessions", icon: SquareTerminal },
+      {
+        id: "sessions",
+        label: "Sessions",
+        icon: SquareTerminal,
+        meta: liveSessions ? String(liveSessions) : undefined,
+        metaLabel: liveSessions ? `${liveSessions} running` : undefined
+      },
       { id: "agents", label: "Agents", icon: Bot },
       { id: "runs", label: "Runs", icon: Activity },
       { id: "team", label: "Team Room", icon: Users },
@@ -195,7 +212,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
       },
       { id: "safety", label: "Safety", icon: ShieldCheck }
     ],
-    [onboardingCounts, setupComplete]
+    [onboardingCounts, setupComplete, liveSessions]
   );
 
   const labsItems: NavItem[] = useMemo(
@@ -297,16 +314,26 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
     }
   }, [isRail]);
 
-  // ⌘K on a Mac, Ctrl+K elsewhere: open the palette (or close it again).
+  // ⌘K on a Mac, Ctrl+K elsewhere: open the palette (or close it again). Never from inside a terminal
+  // (.xterm): there Ctrl+K belongs to the agent, and the terminal asks for the palette itself (⌘K, or
+  // Ctrl+Shift+K off a Mac) through the "aos-palette" event (src/ui/palette.ts).
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+      if (event.target instanceof Element && event.target.closest(".xterm")) return;
+      if (isPaletteKey(event, { isMac: IS_MAC })) {
         event.preventDefault();
         setPaletteOpen((open) => !open);
       }
     }
+    function onPaletteEvent() {
+      setPaletteOpen((open) => !open);
+    }
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener(PALETTE_EVENT, onPaletteEvent);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener(PALETTE_EVENT, onPaletteEvent);
+    };
   }, []);
 
   useEffect(() => {
@@ -521,6 +548,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         <StopAllRunsModal onClose={() => setStopAllOpen(false)} onDone={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />
       ) : null}
       {newRun ? <NewRunDialog key={newRun.id} request={newRun.request} onClose={() => setNewRun(null)} /> : null}
+      {quitQuestion.view ? (
+        <QuitQuestion view={quitQuestion.view} onKeepRunning={quitQuestion.keepRunning} onQuit={quitQuestion.quit} />
+      ) : null}
     </div>
   );
 }

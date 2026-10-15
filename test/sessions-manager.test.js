@@ -1044,6 +1044,57 @@ test("update kind: not gated, not counted, one at a time, hidden from the defaul
   });
 });
 
+// ---- the live-only list (Task S10, fix round 1) ------------------------------------------------------
+
+test("list({ liveOnly }): only the sessions that are running, from memory: no ended session is read and no agent is detected", async () => {
+  await withSessionEnv(async ({ agentOsHome, project, other }) => {
+    const detected = [];
+    const world = fakeWorld({
+      detect: async (agentId) => {
+        detected.push(agentId);
+        return { installed: true, path: `/fake/bin/${agentId}` };
+      }
+    });
+    world.gate = true;
+    const running = await world.manager.create({ agentId: "claude", folder: project });
+    const finished = await world.manager.create({ agentId: "codex", folder: other });
+    const update = await world.manager.createUpdateSession({ agentId: "hermes", folder: project });
+    world.ptys[1].exit(0);
+    await ended(world, finished.id);
+    // An ended session on disk that this manager never held (a session from before a restart).
+    const old = crypto.randomUUID();
+    await mkdir(path.join(agentOsHome, "sessions", old), { recursive: true });
+    await writeFile(
+      path.join(agentOsHome, "sessions", old, "meta.json"),
+      JSON.stringify({ id: old, kind: "agent", agentId: "cursor", agentLabel: "Cursor", folder: other, folderName: "other", status: "exited", startedAt: "2026-10-13T09:00:00.000Z" })
+    );
+    detected.length = 0;
+
+    const agents = await world.manager.list({ liveOnly: true });
+    assert.deepEqual(agents.map((summary) => summary.id), [running.id], "the agent kind unless includeUpdate; the ended ones are left out");
+    const both = await world.manager.list({ includeUpdate: true, liveOnly: true });
+    assert.deepEqual(both.map((summary) => [summary.id, summary.kind, summary.status !== "exited"]), [
+      [running.id, "agent", true],
+      [update.id, "update", true]
+    ]);
+    for (const summary of both) {
+      assert.deepEqual(Object.keys(summary), SUMMARY_KEYS, "the same summary as every other list");
+      assert.equal(summary.resume.available, false);
+    }
+    assert.deepEqual(detected, [], "no agent CLI was asked anything: a slow one cannot delay the emergency stop's list");
+
+    // The ordinary list still reads the ended sessions and detects their agents for Resume.
+    const everything = await world.manager.list({ includeUpdate: true });
+    assert.equal(everything.length, 4);
+    assert.deepEqual([...detected].sort(), ["codex", "cursor"]);
+
+    // A session that has ended while its process is still being cleared away is not running either.
+    world.ptys[0].exit(0);
+    await ended(world, running.id);
+    assert.deepEqual((await world.manager.list({ includeUpdate: true, liveOnly: true })).map((summary) => summary.id), [update.id]);
+  });
+});
+
 // ---- dismiss, recovery, resume --------------------------------------------------------------------
 
 test("dismiss: refused while live; an ended session is hidden and stays hidden after a restart", async () => {

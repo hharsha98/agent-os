@@ -778,7 +778,15 @@ export function createSessionManager({
     return Promise.all(wanted.map((view) => toSummary(view, views, installed)));
   }
 
-  async function list({ includeUpdate = false } = {}) {
+  // `liveOnly` lists only the sessions running now, straight from memory: no ended session's meta.json is
+  // read and no agent is detected for Resume (summaries() detects only for ended sessions). It is the list
+  // the hold to stop all uses, which must not wait on a slow agent CLI or a big sessions folder.
+  async function list({ includeUpdate = false, liveOnly = false } = {}) {
+    if (liveOnly) {
+      const running = [...live.values()].filter((state) => state.status !== "exited").map(viewOfState);
+      const wantedNow = running.filter((view) => includeUpdate || view.kind === "agent").sort(byCreated);
+      return summaries(running, wantedNow);
+    }
     const views = await collectViews();
     const wanted = views.filter((view) => includeUpdate || view.kind === "agent").sort(byCreated);
     return summaries(views, wanted);

@@ -1,10 +1,11 @@
-// "Stop all runs" from the ⌘K palette. It is the keyboard way to do what "Hold to stop all" does, so it
-// follows the same rule (ruling R14): agent work only, never the Hermes or OpenClaw background service
-// and never Agent OS's own setup jobs, and the same time limits (src/ui/stopAllShared.ts). It looks at
-// what is really running first, says what it would stop, and only stops once the person confirms.
+// "Stop all agent work" from the ⌘K palette. It is the keyboard way to do what "Hold to stop all" does, so it
+// follows the same rule (SP2 ruling R14, SP3 ruling R22, planning decision Q16): sessions of both kinds and
+// agent work only, never the Hermes or OpenClaw background service and never Agent OS's own setup jobs, and
+// the same time limits (src/ui/stopAllShared.ts). It looks at what is really running first, says what it
+// would stop, and only stops once the person confirms.
 import { useEffect, useRef, useState } from "react";
 import type { StopAllResult, StopLook } from "../stopAll";
-import { lookForWhatToStop, stopAllMessage, stopWhatWasLookedAt, thingsWord } from "../stopAll";
+import { lookForWhatToStop, sessionStopTitle, stopAllMessage, stopWhatWasLookedAt, thingsWord } from "../stopAll";
 import AgentConfirmModal from "./AgentConfirmModal";
 
 const SHOWN_TITLES = 5;
@@ -40,7 +41,8 @@ export default function StopAllRunsModal({
 
   const runs = look?.runs ?? [];
   const rooms = look?.rooms ?? [];
-  const count = runs.length + rooms.length;
+  const sessions = look?.sessions ?? [];
+  const count = runs.length + rooms.length + sessions.length;
 
   async function confirm() {
     if (!look || count === 0) return;
@@ -49,29 +51,42 @@ export default function StopAllRunsModal({
     const result = await stopWhatWasLookedAt(look);
     if (!alive.current) return;
     setBusy(false);
-    const clean = result.failed + result.timedOut + result.roomsFailed + result.roomsTimedOut === 0;
+    const clean =
+      result.failed +
+        result.timedOut +
+        result.roomsFailed +
+        result.roomsTimedOut +
+        result.sessionsFailed +
+        result.sessionsTimedOut +
+        result.sessionsStillRunning ===
+      0;
     if (clean) {
       if (onDone) onDone(result);
       onClose();
       return;
     }
-    // Some did not stop, or did not answer in time. Say which, and look again at what is still going.
+    // Some did not stop, did not answer in time, or are still running after their Stop. Say which, and look
+    // again at what is still going.
     setNotice(stopAllMessage(result).message);
     await lookAgain();
   }
 
-  const unreadAll = look !== null && !look.runsChecked && !look.roomsChecked;
-  const unreadRuns = look !== null && !look.runsChecked && look.roomsChecked;
-  const unreadRooms = look !== null && look.runsChecked && !look.roomsChecked;
+  const unreadAll = look !== null && !look.runsChecked && !look.roomsChecked && !look.sessionsChecked;
+  const readAll = look !== null && look.runsChecked && look.roomsChecked && look.sessionsChecked;
+  const unreadSessions = look !== null && !unreadAll && !look.sessionsChecked;
+  const unreadRuns = look !== null && !unreadAll && !look.runsChecked;
+  const unreadRooms = look !== null && !unreadAll && !look.roomsChecked;
   const titles = [
-    ...rooms.map((room) => ({ key: room.id, text: `Team Room: ${room.task || room.id}` })),
-    ...runs.map((run) => ({ key: run.id, text: run.title || run.id }))
+    ...sessions.map((session) => ({ key: `session-${session.id}`, text: `Session: ${sessionStopTitle(session)}` })),
+    ...rooms.map((room) => ({ key: `room-${room.id}`, text: `Team Room: ${room.task || room.id}` })),
+    ...runs.map((run) => ({ key: `run-${run.id}`, text: run.title || run.id }))
   ];
+  const openClawListed = sessions.some((session) => session.agentId === "openclaw");
 
   return (
     <AgentConfirmModal
-      title="Stop all runs?"
-      confirmLabel={count > 0 ? `Stop ${thingsWord(runs.length, rooms.length)}` : "Stop all runs"}
+      title="Stop all agent work?"
+      confirmLabel={count > 0 ? `Stop ${thingsWord(runs.length, rooms.length, sessions.length)}` : "Stop all agent work"}
       confirmDisabled={look === null || count === 0}
       busy={busy}
       danger
@@ -81,12 +96,18 @@ export default function StopAllRunsModal({
       {look === null ? <p role="status">Looking at what is running…</p> : null}
       {unreadAll ? (
         <p className="os-launch__error" role="alert">
-          Couldn&apos;t read what is running. Agent OS did not answer in time. Close this and try again, or stop each run on Runs.
+          Couldn&apos;t read what is running. Agent OS did not answer in time. Close this and try again, or stop each session on Sessions and each
+          run on Runs.
+        </p>
+      ) : null}
+      {unreadSessions ? (
+        <p className="os-launch__error" role="alert">
+          Couldn&apos;t read the list of sessions, so sessions are not listed. Check Sessions.
         </p>
       ) : null}
       {unreadRuns ? (
         <p className="os-launch__error" role="alert">
-          Couldn&apos;t read the list of runs, so only Team Rooms are listed. Check Runs.
+          Couldn&apos;t read the list of runs, so runs are not listed. Check Runs.
         </p>
       ) : null}
       {unreadRooms ? (
@@ -96,24 +117,28 @@ export default function StopAllRunsModal({
       ) : null}
       {look && count === 0 && !unreadAll && !notice ? (
         <p>
-          {look.skipped > 0
-            ? "No agent work is running right now."
-            : look.listTruncated
-              ? "None of the newest runs are running."
-              : "Nothing is running right now."}
+          {!readAll
+            ? "Nothing is running in the lists Agent OS could read."
+            : look.skipped > 0
+              ? "No agent work is running right now."
+              : look.listTruncated
+                ? "None of the newest runs are running."
+                : "Nothing is running right now."}
         </p>
       ) : null}
       {look && count > 0 ? (
         <>
           <p>
-            This stops {thingsWord(runs.length, rooms.length)} that {count === 1 ? "is" : "are"} running now. Anything an agent already did stays done.
+            This stops {thingsWord(runs.length, rooms.length, sessions.length)} that {count === 1 ? "is" : "are"} running now. Anything an agent
+            already did stays done.
           </p>
-          <ul>
+          <ul className="os-stopall__list">
             {titles.slice(0, SHOWN_TITLES).map((item) => (
               <li key={item.key}>{item.text}</li>
             ))}
             {count > SHOWN_TITLES ? <li>and {count - SHOWN_TITLES} more</li> : null}
           </ul>
+          {openClawListed ? <p>OpenClaw may still finish its last step after the terminal closes.</p> : null}
         </>
       ) : null}
       {look && look.skipped > 0 ? (

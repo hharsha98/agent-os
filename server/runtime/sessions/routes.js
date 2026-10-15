@@ -203,7 +203,10 @@ export function createSessionsRouter({ manager = getSessionManager() } = {}) {
     handle(async (req, res) => {
       followLoginShellEnv();
       const includeUpdate = req.query.kind === "all";
-      const [sessions, pty] = await Promise.all([manager.list({ includeUpdate }), ptyAvailable()]);
+      // live=1: only the sessions running now, without reading the ended ones or detecting agents (the hold
+      // to stop all's list). Any other value of `live` is ignored.
+      const options = req.query.live === "1" ? { includeUpdate, liveOnly: true } : { includeUpdate };
+      const [sessions, pty] = await Promise.all([manager.list(options), ptyAvailable()]);
       const ptyOk = pty?.ok === true;
       res.json({
         sessions,

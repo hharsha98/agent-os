@@ -324,10 +324,10 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
       { id: "new-run", label: "New run…", group: "Actions", keywords: "launch start agent task prompt", icon: Play, run: () => openNewRun() },
       {
         id: "stop-all",
-        label: "Stop all runs",
+        label: "Stop all agent work",
         group: "Actions",
         hint: "Asks first",
-        keywords: "halt kill cancel stop running",
+        keywords: "halt kill cancel stop running runs sessions terminals team rooms",
         icon: OctagonX,
         run: () => setStopAllOpen(true)
       },

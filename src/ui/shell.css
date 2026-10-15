@@ -188,6 +188,12 @@
   position: relative;
 }
 
+/* The list in the palette's "Stop all agent work?" dialog (laptop.css rule: long text wraps or ends in "…").
+   A session titled after a folder with one very long name wraps inside the 440px dialog instead of running out of it. */
+.os-stopall__list li {
+  overflow-wrap: anywhere;
+}
+
 /* The result of "Hold to stop all": a short message at the bottom of the window. */
 .os-toast {
   position: fixed;

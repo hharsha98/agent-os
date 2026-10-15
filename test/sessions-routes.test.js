@@ -411,6 +411,17 @@ test("GET /api/sessions: agent sessions unless kind=all, with the login-shell no
         await api("GET", "/api/sessions?kind=update");
         assert.deepEqual(calls.at(-1), ["list", { includeUpdate: false }]);
 
+        // live=1 asks for the sessions that are running now (the hold to stop all's list, Task S10); any other value is ignored.
+        await api("GET", "/api/sessions?kind=all&live=1");
+        assert.deepEqual(calls.at(-1), ["list", { includeUpdate: true, liveOnly: true }]);
+        await api("GET", "/api/sessions?live=1");
+        assert.deepEqual(calls.at(-1), ["list", { includeUpdate: false, liveOnly: true }]);
+        for (const odd of ["live=0", "live=true", "live=", "live=yes", "live=1&live=0", "live[]=1", "Live=1"]) {
+          const answered = await api("GET", `/api/sessions?kind=all&${odd}`);
+          assert.equal(answered.status, 200, odd);
+          assert.deepEqual(calls.at(-1), ["list", { includeUpdate: true }], odd);
+        }
+
         if (!isWindows) {
           await waitFor(
             async () => (await api("GET", "/api/sessions")).json.environmentNotice === FALLBACK_NOTICE,
@@ -439,6 +450,11 @@ test("GET /api/sessions reports the manager's own limit, not a constant copied i
       assert.equal(list.status, 200);
       assert.deepEqual(list.json.sessions, []);
       assert.equal(list.json.maxLive, 3);
+      // The live-only list works against the real manager too, and carries the same envelope.
+      const liveList = await api("GET", "/api/sessions?kind=all&live=1");
+      assert.equal(liveList.status, 200);
+      assert.deepEqual(liveList.json.sessions, []);
+      assert.equal(liveList.json.maxLive, 3);
     });
   });
 });

@@ -48,6 +48,7 @@ import {
   TYPED_MODEL_LABEL,
   UNREADABLE_WORDS,
   chatgptPlanState,
+  chatgptReadinessWords,
   claudePlanState,
   offersSignInAgain,
   planApplyModel,
@@ -642,8 +643,7 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
   }
 
   function chatgptBody(state: ChatgptPlanState): ReactNode {
-    const readiness = info?.chatgpt.readiness;
-    const readinessWords = readiness === "expiring" ? CHATGPT_PLAN_WORDS.expiring : readiness === "not_ready" ? CHATGPT_PLAN_WORDS.not_ready : null;
+    const readinessWords = chatgptReadinessWords(info?.chatgpt.readiness);
     return (
       <>
         {state === "too_old" || state === "version_unknown" ? note(CHATGPT_PLAN_WORDS[state]) : null}

@@ -129,6 +129,12 @@ export function claudePlanState(claude: OpenclawPlansInfo["claude"]): ClaudePlan
   return "ready";
 }
 
+// The sentence under the ChatGPT section for the readiness the server read, or null. "ready" and "unknown" (the check
+// couldn't be read in time: Agent OS doesn't know, so it says nothing and offers no Sign in) have none; so has null.
+export function chatgptReadinessWords(readiness: OpenclawPlansInfo["chatgpt"]["readiness"] | undefined): string | null {
+  return readiness === "expiring" ? CHATGPT_PLAN_WORDS.expiring : readiness === "not_ready" ? CHATGPT_PLAN_WORDS.not_ready : null;
+}
+
 // The version comes first: an OpenClaw too old for the sign-in (or whose version can't be read) offers no Sign in at
 // all, which is what the server's sign-in route says too. A sign-in Agent OS could not read counts as signed out.
 export function chatgptPlanState(plans: OpenclawPlansInfo): ChatgptPlanState {

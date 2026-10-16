@@ -147,7 +147,13 @@ test("the Safety helpers: argvProblems and sourceProblems name every forbidden w
     ["setup-token", "paste-token", "--token", "--method oauth", "--device-code", "--dangerously-skip-permissions", "--yolo", "--probe"]
   );
   assert.deepEqual(
-    argvProblems([SIGNIN_ARGS, ["models", "set", "openai/gpt-6-sol"], ["config", "set", "tools.exec.mode", "ask"], ["models", "status", "--check", "--plain"]]),
+    argvProblems([
+      SIGNIN_ARGS,
+      ["models", "set", "openai/gpt-6-sol"],
+      ["config", "set", "tools.exec.mode", "ask"],
+      ["models", "status", "--json"],
+      ["models", "status", "--check", "--plain"]
+    ]),
     []
   );
   const forbidden = [
@@ -160,7 +166,8 @@ test("the Safety helpers: argvProblems and sourceProblems name every forbidden w
     ["models", "auth", "login", "--provider", "openai", "--device-code"],
     ["--dangerously-skip-permissions"],
     ["chat", "--yolo"],
-    ["models", "status", "--check", "--plain", "--probe"]
+    ["models", "status", "--check", "--plain", "--probe"],
+    ["models", "status", "--json", "--probe"]
   ];
   for (const argv of forbidden) assert.equal(argvProblems([argv]).length, 1, argv.join(" "));
   const onboard = ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "anthropic-cli"];
@@ -356,7 +363,8 @@ NEW_SERVER_MODULES.push(...planModules);
 // One run of every B1b flow, shared by the three checks below: plan status,
 // both model lists, a Claude plan Apply without the risk tick (refused) and one
 // with it, the model answer, a ChatGPT plan Apply stopped at readiness (the
-// earlier model put back) and one that succeeds, and plan status again (its
+// earlier model put back), one on an older OpenClaw (no auth block, so it is asked
+// `--check --plain` as well) and one that succeeds, and plan status again (its
 // readiness read). The file-access spy is on for all of it.
 let planFlowsRun = null;
 function planFlows() {
@@ -380,10 +388,14 @@ async function planRunFlows() {
         const claude = await planApply("claude", "claude-opus-5-5", true);
         planAssert.equal((await planWaitForJob(claude.body.id)).status, "succeeded");
         planAssert.equal((await call("GET", "/api/setup/agents/openclaw/model")).body.plan, "claude");
-        await knob("FAKE_OPENCLAW_STATUS_EXIT", "1");
+        await knob("FAKE_OPENCLAW_STATUS_JSON", "openai-missing");
         const stopped = await planApply("chatgpt", "gpt-6.1-sol", true);
         planAssert.equal((await planWaitForJob(stopped.body.id)).status, "failed");
-        await knob("FAKE_OPENCLAW_STATUS_EXIT", "0");
+        // An older OpenClaw (no auth block) is asked `--check --plain` as well, so that command is part of this run too.
+        await knob("FAKE_OPENCLAW_STATUS_JSON", "no-auth");
+        const older = await planApply("chatgpt", "gpt-6.1-sol", true);
+        planAssert.equal((await planWaitForJob(older.body.id)).status, "succeeded");
+        await knob("FAKE_OPENCLAW_STATUS_JSON", null);
         const chatgpt = await planApply("chatgpt", "gpt-6.1-sol", true);
         planAssert.equal((await planWaitForJob(chatgpt.body.id)).status, "succeeded");
         planAssert.equal((await call("GET", "/api/setup/openclaw/plans")).body.chatgpt.readiness, "ready");
@@ -411,10 +423,12 @@ planTest("B1b, Safety 3: every command of these flows is allowed, --accept-risk 
   planAssert.deepEqual(planSafety.argvProblems(argvLists, { riskTicked: true }), []);
   const withRisk = openclaw.filter((line) => line.argv.includes("--accept-risk"));
   planAssert.deepEqual(withRisk.map((line) => line.argv[0]), ["onboard"], "one onboard, from the one ticked Claude plan Apply");
+  const statusRuns = openclaw.filter((line) => line.argv[0] === "models" && line.argv[1] === "status").map((line) => line.argv.join(" "));
   planAssert.ok(
-    openclaw.filter((line) => line.argv[0] === "models" && line.argv[1] === "status").every((line) => line.argv.join(" ") === "models status --check --plain"),
-    "models status only ever as --check --plain"
+    statusRuns.every((line) => line === "models status --json" || line === "models status --check --plain"),
+    `models status only ever as --json or --check --plain: ${statusRuns.join(" | ")}`
   );
+  planAssert.ok(statusRuns.includes("models status --json") && statusRuns.includes("models status --check --plain"), "both fixed commands were really run in these flows");
   // The scan itself is B1a's Safety 3 test; this only proves the push above reached it.
   for (const file of planModules) planAssert.ok(NEW_SERVER_MODULES.includes(file), `${file} is in B1a's source scan`);
 });

@@ -8,7 +8,8 @@
 // status`), never their files, and through runCommand only (output kept in
 // memory, never written to a run log). `models auth list` leaves as each row's
 // method and token sharing only (readChatgptAuth, in models.js); `models status
-// --check` as its exit code only. Nothing here changes OpenClaw: jobs.js does that.
+// --json` as one answer word only (readChatgptReadiness), and `models status --check`
+// (an older OpenClaw only) as its exit code only. Nothing here changes OpenClaw: jobs.js does that.
 import { ADAPTERS } from "../agents/index.js";
 import { runCommand } from "../safety.js";
 import { OPENCLAW_MODEL_PATH, parseConfigText, parseJsonOutput, readChatgptAuth, readOpenclawModelsConfig } from "./models.js";
@@ -23,6 +24,7 @@ import {
   PLAN_PROVIDER,
   PLAN_READ_TIMEOUT_MS,
   TYPED_MODEL_RE,
+  chatgptReadinessOfStatus,
   claudeCliPinned,
   hasClaudeCliPin,
   isFableModel,
@@ -58,13 +60,38 @@ async function openclawNow(detected) {
 // function). They are re-exported here under the same names.
 export { readChatgptAuth, readOpenclawModelsConfig };
 
-// Can OpenClaw use the ChatGPT plan right now? `models status --check --plain`
-// makes no model call (it never gets the probe option); only its exit code is
-// read, and its output is dropped here.
-export async function readChatgptReadiness(detected) {
+// Less than this of the budget left: the older `--check` read is not started (it could not finish).
+export const OLDER_CHECK_MIN_MS = 1000;
+
+// Can OpenClaw use the ChatGPT plan right now? "ready", "not_ready" or "unknown".
+// It reads `models status --json` (live check S-B3, 2026-10-16: OpenClaw 2026.10.4's
+// `--check` judges the whole model setup, so a Claude-plan setup made it exit 1 although
+// the ChatGPT sign-in was fine). That read makes no model call (it never gets the probe
+// option); the rule is chatgptReadinessOfStatus and looks at the openai provider alone.
+// The output is parsed here in memory and only the answer word leaves this function:
+// it is never logged, saved, returned or put in an error.
+//   - the read timed out, couldn't run, exited non-zero, or printed no usable auth
+//     block: "unknown". The job then goes on to the hello check, which shows whether
+//     the plan works; the card shows no readiness sentence.
+//   - JSON with no auth block at all (an older OpenClaw): `models status --check
+//     --plain`, exit code only, with its three answers (readinessOf: "ready",
+//     "expiring", "not_ready").
+// The two reads share ONE PLAN_READ_TIMEOUT_MS budget, so the whole check never outlasts it:
+// Cancel on a plan job waits for the step in progress for just over that long
+// (PLAN_CANCEL_SETTLE_MS in jobs.js), and the card's request has a limit of its own. When
+// too little of the budget is left for the second read to finish, the answer is "unknown".
+// `timeoutMs` and `run` are for tests only; the real reads all use PLAN_READ_TIMEOUT_MS and runCommand.
+export async function readChatgptReadiness(detected, { timeoutMs = PLAN_READ_TIMEOUT_MS, run = runCommand } = {}) {
   if (!detected?.installed) return "not_ready";
-  const result = await runCommand(detected.path, ["models", "status", "--check", "--plain"], PLAN_READ_TIMEOUT_MS);
-  return readinessOf({ ok: result.ok, code: result.code, signal: result.signal });
+  const deadline = Date.now() + timeoutMs;
+  const status = await run(detected.path, ["models", "status", "--json"], timeoutMs);
+  if (!status.ok) return "unknown";
+  const answer = chatgptReadinessOfStatus(parseJsonOutput(status.stdout));
+  if (answer !== null) return answer;
+  const left = deadline - Date.now();
+  if (left < OLDER_CHECK_MIN_MS) return "unknown";
+  const older = await run(detected.path, ["models", "status", "--check", "--plain"], left);
+  return readinessOf({ ok: older.ok, code: older.code, signal: older.signal });
 }
 
 async function readPrimary(detected) {
@@ -83,7 +110,8 @@ export async function readOpenclawPlans() {
   if (!detected?.installed) return answer;
   const [auth, primary] = await Promise.all([readChatgptAuth(detected), readPrimary(detected)]);
   // The readiness check runs only while OpenClaw is on the ChatGPT plan, so the
-  // card can say "expires soon" later.
+  // card can say it can't use the plan later. "unknown" (the read timed out or was
+  // unreadable) shows nothing on the card; "expiring" comes only from an older OpenClaw.
   const readiness = planOfPrimary(primary, null, auth.signedIn) === "chatgpt" ? await readChatgptReadiness(detected) : null;
   answer.chatgpt = { signedIn: auth.signedIn, sharing: auth.sharing, readiness };
   return answer;

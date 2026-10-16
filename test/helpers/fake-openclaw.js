@@ -16,7 +16,32 @@
 //     unset: the 2026.10.4 answer, { agentDir, agentId, authStatePath, provider: "openai", profiles },
 //     where profiles are the state's authRows ([] when signed out)
 //   FAKE_OPENCLAW_AUTH_SHAPE    "legacy": with AUTH_JSON unset, answers the older bare array of the authRows instead
-//   FAKE_OPENCLAW_STATUS_EXIT   the exit code of `models status --check --plain` (0, 1 or 2; unset 0)
+//   FAKE_OPENCLAW_STATUS_EXIT   the exit code of `models status --check --plain` (0, 1 or 2; unset 0, except 1 while
+//     FAKE_OPENCLAW_STATUS_JSON is "claude-cli-indeterminate": the real `--check` judges the whole setup, so the
+//     Claude plan's utility model makes it exit 1 although the ChatGPT sign-in is fine). That is the older path:
+//     Agent OS asks it only when `models status --json` has no auth block ("no-auth" below)
+//   FAKE_OPENCLAW_STATUS_JSON   what `models status --json` prints, in the OpenClaw 2026.10.4 shape (live check S-B3,
+//     2026-10-16): an object with configPath, agentDir, defaultModel, resolvedDefault, fallbacks, imageModel,
+//     imageFallbacks, utilityModel, aliases, allowed and auth. auth holds storePath, shellEnvFallback,
+//     providersWithOAuth, missingProvidersInUse, modelRouteIssues, runtimeAuthRoutes, providers, unusableProfiles and
+//     oauth { warnAfterMs, profiles, providers }. Built from the state: each signed-in authRow is one oauth profile
+//     { profileId, provider "openai", type "oauth", source, label, status, expiresAt, remainingMs } and one oauth
+//     provider entry; a sign-in without token sharing (tokenSharing false) gets a profileId that is not a token-sharing
+//     one. Unset: the signed-in openai profile is "expiring" (as the real one is: its access token lives about an hour
+//     and OpenClaw renews it by itself). The output also holds FAKE_SECRET and the e-mail (the real one has neither),
+//     so a test can prove it never leaves Agent OS. One word per knob:
+//       claude-cli-indeterminate  adds an anthropic modelRouteIssue "indeterminate" and an anthropic/claude-cli
+//                                 runtime route "indeterminate" (the Claude plan's utility model); must NOT change
+//                                 the openai answer
+//       codex-unavailable         adds an openai/codex runtime route "unavailable"; must NOT change it
+//       openai-expired            the openai profile's status is "expired" (as the real one reads an hour after the
+//                                 last use; OpenClaw renews it on the next use, so this is still READY)
+//       openai-missing            the openai token-sharing profile's status is "missing" (not ready)
+//       openai-incompatible       adds an openai modelRouteIssue "incompatible"
+//       no-auth                   JSON without an auth block (an older OpenClaw): the --check --plain path decides
+//       garbage                   exit 0 and text that is not JSON
+//       slow                      waits 8 s before it answers, so a short test timeout ends it
+//       fail                      exit 1, with FAKE_SECRET on its error line
 //   FAKE_OPENCLAW_GET_PRIMARY         makes `config get agents.defaults.model.primary` misbehave
 //   FAKE_OPENCLAW_GET_MODEL_SETTINGS  makes `config get agents.defaults.models` misbehave
 //     both take "timeout" (the program ends killed by SIGTERM, which is the answer
@@ -160,9 +185,81 @@ if (args[0] === "models" && args[1] === "auth" && args[2] === "list") {
   print(JSON.stringify({ agentDir, agentId: "main", authStatePath: path.join(agentDir, "auth-state.json"), provider: "openai", profiles }));
   process.exit(0);
 }
+if (args[0] === "models" && args[1] === "status" && args.includes("--json")) {
+  const shaped = knob("FAKE_OPENCLAW_STATUS_JSON") ?? "";
+  if (shaped === "fail") { process.stderr.write("simulated models status failure " + SECRET + "\\n"); process.exit(1); }
+  if (shaped === "garbage") { print("this is not json " + SECRET + " {"); process.exit(0); }
+  if (shaped === "slow") await new Promise((resolve) => setTimeout(resolve, 8000));
+  const agentDir = path.join(openclawDir, "agents", "main", "agent");
+  const state = readState();
+  const profiles = [];
+  for (const row of state.authRows) {
+    if (!row || typeof row !== "object" || (row.provider !== undefined && row.provider !== "openai")) continue;
+    if (!(row.type === "oauth" || row.type === "siwc" || row.method === "siwc")) continue;
+    const sharing = row.tokenSharing !== false;
+    const profileId = !sharing ? "openai:oauth:agentos-test" : typeof row.id === "string" ? row.id : "openai:token-sharing:agentos-test";
+    const expired = shaped === "openai-expired";
+    const missing = shaped === "openai-missing";
+    profiles.push({
+      profileId,
+      provider: "openai",
+      type: "oauth",
+      source: "store",
+      label: profileId + " (" + (row.email || "someone@example.com") + ")",
+      status: missing ? "missing" : expired ? "expired" : "expiring",
+      expiresAt: new Date(Date.now() + (expired ? -60000 : 55 * 60000)).toISOString(),
+      remainingMs: expired ? -60000 : 55 * 60000,
+      accessToken: SECRET
+    });
+  }
+  const providers = profiles.length
+    ? [{ provider: "openai", status: profiles[0].status, profiles: profiles.length, effectiveProfiles: profiles.length, expiresAt: profiles[0].expiresAt, remainingMs: profiles[0].remainingMs }]
+    : [];
+  const modelRouteIssues = [];
+  const runtimeAuthRoutes = [];
+  if (shaped === "claude-cli-indeterminate") {
+    modelRouteIssues.push({ kind: "indeterminate", provider: "anthropic", model: "claude-haiku-5-5", evidence: "claude-cli runtime", message: "anthropic/claude-haiku-5-5 runs on the claude-cli runtime and can't be checked without a call." });
+    runtimeAuthRoutes.push({ provider: "anthropic", runtime: "claude-cli", authProvider: "claude-cli", status: "indeterminate", effective: false });
+  }
+  if (shaped === "codex-unavailable") {
+    runtimeAuthRoutes.push({ provider: "openai", runtime: "codex", authProvider: "openai", status: "unavailable", effective: false });
+  }
+  if (shaped === "openai-incompatible") {
+    modelRouteIssues.push({ kind: "incompatible", provider: "openai", model: "gpt-6.1-sol", evidence: "route", message: "openai/gpt-6.1-sol can't use this sign-in." });
+  }
+  const out = {
+    configPath: configFile,
+    agentDir,
+    defaultModel: state.primary,
+    resolvedDefault: state.primary,
+    fallbacks: [],
+    imageModel: null,
+    imageFallbacks: [],
+    utilityModel: shaped === "claude-cli-indeterminate" ? "anthropic/claude-haiku-5-5" : null,
+    aliases: {},
+    allowed: [],
+    auth: {
+      storePath: path.join(agentDir, "auth-profiles.json"),
+      shellEnvFallback: { enabled: false, appliedKeys: [] },
+      providersWithOAuth: profiles.length ? ["openai"] : [],
+      missingProvidersInUse: [],
+      modelRouteIssues,
+      runtimeAuthRoutes,
+      providers: profiles.length ? [{ provider: "openai", effective: { kind: "profiles" }, profiles: { count: profiles.length } }] : [],
+      unusableProfiles: [],
+      oauth: { warnAfterMs: 24 * 60 * 60 * 1000, profiles, providers }
+    }
+  };
+  if (shaped === "no-auth") delete out.auth;
+  print(JSON.stringify(out));
+  process.exit(0);
+}
 if (args[0] === "models" && args[1] === "status") {
   print("openai:default token " + SECRET + " checked");
-  const code = Number(knob("FAKE_OPENCLAW_STATUS_EXIT") ?? "0");
+  // The real 2026.10.4 judges the WHOLE setup here, not the ChatGPT sign-in: with the Claude plan's utility model
+  // (anthropic on the claude-cli runtime, "indeterminate") it exits 1 although the ChatGPT sign-in is fine (live
+  // check S-B3). An explicit FAKE_OPENCLAW_STATUS_EXIT still wins.
+  const code = Number(knob("FAKE_OPENCLAW_STATUS_EXIT") ?? (knob("FAKE_OPENCLAW_STATUS_JSON") === "claude-cli-indeterminate" ? "1" : "0"));
   process.exit(code === 1 || code === 2 ? code : 0);
 }
 

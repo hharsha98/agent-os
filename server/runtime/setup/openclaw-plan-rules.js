@@ -167,10 +167,65 @@ export function chatgptSignIn(rows) {
 
 // `models status --check --plain`, from runCommand's answer: the exit code only.
 // A timeout is { ok: false, code: 0, signal: "SIGTERM" }, so it is not ready.
+// Since live check S-B3 (2026-10-16) this is only the answer for an OpenClaw whose
+// `models status --json` has no auth block (readChatgptReadiness): 2026.10.4's
+// `--check` judges the WHOLE model setup (default, fallbacks, image and utility
+// model), not the ChatGPT sign-in alone. After the Claude plan's onboard its utility
+// model is an anthropic one on the claude-cli runtime, which OpenClaw rates
+// "indeterminate" without a call, so `--check` exits 1 although the ChatGPT sign-in
+// is fine.
 export function readinessOf(result) {
   if (result?.ok === true) return "ready";
   if (result && result.ok === false && result.code === 2 && !result.signal) return "expiring";
   return "not_ready";
+}
+
+// `models status --json` (OpenClaw 2026.10.4; it makes no model call), already
+// parsed: can OpenClaw use the ChatGPT plan, judged on the openai provider alone?
+//   "ready" / "not_ready"  the answer;
+//   "unknown"              the output has an auth block but no oauth profile list
+//                          (or is not an object at all): nothing can be judged;
+//   null                   no auth block at all, an older OpenClaw: the caller falls
+//                          back to `--check --plain` (readinessOf).
+// Not ready: no oauth profile of provider "openai" whose id is a token-sharing one;
+// or EVERY such profile is "missing"; or "openai" in missingProvidersInUse; or a model
+// route issue of provider "openai" that is "incompatible" or "indeterminate".
+// Everything else is IGNORED: other providers' issues, routes and profiles (anthropic
+// on claude-cli reads "indeterminate"), unusableProfiles, and auth.runtimeAuthRoutes
+// entirely (live check S-B3 saw openai/codex "unavailable" while the ChatGPT hello
+// worked). A token-sharing profile "expiring" OR "expired" counts as ready: the access
+// token lives about an hour and OpenClaw renews it from its refresh token on the next
+// use (its token-sharing OAuth runtime exports refreshTokenSharingCredential, a
+// refresh_token grant, and the auth-profile owner persists the rotation), so the
+// status says "expired" an hour after every use; that renewal is from OpenClaw's
+// code (no hello ran after the read below to show it live). Live run
+// 2026-10-16, 23:30: OpenClaw on the ChatGPT plan, its hello answered an hour earlier,
+// nothing used it since; `models status --json` gave the openai token-sharing profile
+// "expired" (about -57 minutes) and the openai oauth provider "expired", openai NOT in
+// missingProvidersInUse, no openai route issue. Calling that not ready would be a false
+// alarm after every use; the Apply's hello check is the real proof. One usable profile
+// is enough: "expired" plus "missing" is ready, only all "missing" is not. A sign-in
+// without token sharing ("Sign in with ChatGPT (Beta, identity only)") has no
+// token-sharing profile id, so it is "not signed in with sharing" and stays not ready.
+export function chatgptReadinessOfStatus(value) {
+  if (!plainObject(value)) return "unknown";
+  const auth = value.auth;
+  if (!plainObject(auth)) return null;
+  const oauth = auth.oauth;
+  if (!plainObject(oauth) || !Array.isArray(oauth.profiles)) return "unknown";
+  const sharing = oauth.profiles.filter(
+    (profile) => plainObject(profile) && profile.provider === "openai" && isTokenSharingId(profile.profileId)
+  );
+  if (!sharing.length) return "not_ready";
+  if (sharing.every((profile) => profile.status === "missing")) return "not_ready";
+  if (Array.isArray(auth.missingProvidersInUse) && auth.missingProvidersInUse.includes("openai")) return "not_ready";
+  if (
+    Array.isArray(auth.modelRouteIssues) &&
+    auth.modelRouteIssues.some((issue) => plainObject(issue) && issue.provider === "openai" && (issue.kind === "incompatible" || issue.kind === "indeterminate"))
+  ) {
+    return "not_ready";
+  }
+  return "ready";
 }
 
 // Which plan OpenClaw's primary model runs on (spec section 5), or null.
@@ -227,6 +282,20 @@ export const CURRENT_MODEL_NOT_RESTORABLE =
   "OpenClaw's current model has a name Agent OS can't put back, so it changed nothing. Switch OpenClaw to another model first, then try again.";
 export const CHATGPT_EXPIRING = "Your ChatGPT sign-in expires soon. Sign in again.";
 export const CHATGPT_NOT_READY = "OpenClaw can't use your ChatGPT plan yet. Sign in again, and allow token sharing when ChatGPT asks.";
+// The readiness read gave no answer (timed out, couldn't run, or unreadable): the job goes on
+// to the hello check, which does show whether the plan works (live check S-B3, 2026-10-16).
+// Two sentences, so each is true where the person reads it: a step's warnings are drawn after
+// the agents' hello lines (not "below" them), the read may have failed without timing out
+// (so no "in time"), and at Look only no hello check runs at all.
+export const CHATGPT_READINESS_UNKNOWN = "Agent OS couldn't check your ChatGPT sign-in. The hello check shows whether OpenClaw can use it.";
+export const CHATGPT_READINESS_UNKNOWN_LOOK_ONLY =
+  "Agent OS couldn't check your ChatGPT sign-in, and Safety is on Look only, so no hello check runs to show whether OpenClaw can use it.";
+// The hello check did not answer after a readiness that gave no answer: the job ends failed on
+// the health step, like a readiness that says not ready (CHATGPT_NOT_READY), with the earlier
+// model put back (the first sentence) or, when it could not be (none before, or `models set`
+// failed; the step's warning says which), without that claim (the second).
+export const CHATGPT_HELLO_FAILED_PUT_BACK = "OpenClaw didn't answer on your ChatGPT plan, so Agent OS put its earlier model back.";
+export const CHATGPT_HELLO_FAILED = "OpenClaw didn't answer on your ChatGPT plan.";
 export const INVALID_PLAN_MODEL = "That doesn't look like a model name.";
 export const PLAN_JOB_INTERRUPTED = "Agent OS quit before this finished. Apply the plan again.";
 export function noEarlierPrimary(ref) {

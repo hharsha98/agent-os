@@ -45,7 +45,11 @@ import {
 } from "./models.js";
 import {
   CHATGPT_EXPIRING,
+  CHATGPT_HELLO_FAILED,
+  CHATGPT_HELLO_FAILED_PUT_BACK,
   CHATGPT_NOT_READY,
+  CHATGPT_READINESS_UNKNOWN,
+  CHATGPT_READINESS_UNKNOWN_LOOK_ONLY,
   CURRENT_MODEL_NOT_RESTORABLE,
   CURRENT_MODEL_UNREADABLE,
   MODEL_SETTINGS_UNREADABLE,
@@ -812,7 +816,8 @@ const HERMES_AUTH_HELP_TIMEOUT_MS = 15 * 1000;
 const CONFIG_GET_TIMEOUT_MS = 10 * 1000;
 // How long Cancel on a plan job waits for the step in progress to settle: a
 // little more than the longest read that can't be stopped (the readiness
-// check, PLAN_READ_TIMEOUT_MS), and under the card's 20 s limit for the answer.
+// check, PLAN_READ_TIMEOUT_MS; its two reads share that one budget), and under
+// the card's 20 s limit for the answer.
 const PLAN_CANCEL_SETTLE_MS = PLAN_READ_TIMEOUT_MS + 2 * 1000;
 const HEALTH_PROMPT = "Reply with exactly: ready";
 // The "hello" after a model change may take at most this long (a busy free
@@ -1403,6 +1408,7 @@ async function executeConfigureStep(job, step, check, ctx, manager) {
       break;
     case "health":
       await runHealthChecks(job, step, check, manager, ctx);
+      await putBackAfterFailedHello(job, step, check, manager);
       break;
     case "openclaw-plan-onboard":
       await onboardOpenclawForClaudePlan(job, step, check, manager);
@@ -1981,10 +1987,14 @@ async function setOpenclawPlanModel(job, step, check, manager) {
   );
 }
 
-// ChatGPT plan, step 3: can OpenClaw use the plan? Exit code only
-// (readChatgptReadiness). Expiring soon: a warning, and the job goes on. Not
-// ready: the earlier model is put back (or, when there was none, the job's last
-// line says OpenClaw keeps the new one) and the job stops.
+// ChatGPT plan, step 3: can OpenClaw use the plan? One answer word from
+// readChatgptReadiness (job.readiness records it). Ready: nothing to say. Expiring
+// (only an older OpenClaw's `--check` says it): a warning, and the job goes on.
+// Unknown (the read timed out or was unreadable; live check S-B3, 2026-10-16): a
+// warning, and the job goes on to the hello check, which shows whether the plan
+// works (putBackAfterFailedHello puts the earlier model back and fails the job if
+// it doesn't). Not ready: the earlier model is put back (or, when there was none,
+// the job's last line says OpenClaw keeps the new one) and the job stops.
 async function checkChatgptPlanReadiness(job, step, check, manager) {
   const detected = planOpenclaw(check);
   const readiness = await readChatgptReadiness(detected);
@@ -1994,26 +2004,62 @@ async function checkChatgptPlanReadiness(job, step, check, manager) {
     step.warnings.push(CHATGPT_EXPIRING);
     return;
   }
-  if (job.previousPrimary) {
-    const back = await runConfigureCommand(
-      manager,
-      {
-        agentId: "openclaw",
-        kind: "configure",
-        title: "openclaw models set",
-        command: detected.path,
-        args: ["models", "set", job.previousPrimary],
-        cwd: os.tmpdir(),
-        timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
-      },
-      step,
-      { optional: true }
-    );
-    if (back.run.status !== "succeeded") step.warnings.push("openclaw models set failed; see the run log.");
-  } else {
-    step.warnings.push(noEarlierPrimary(`openai/${job.model}`));
+  if (readiness === "unknown") {
+    // At Look only no hello check runs (runHealthChecks), so the sentence must not promise one
+    // (whatItReallyUses does the same for the model-change warnings).
+    step.warnings.push((await isExecutionEnabled()) ? CHATGPT_READINESS_UNKNOWN : CHATGPT_READINESS_UNKNOWN_LOOK_ONLY);
+    return;
   }
+  await putPreviousPrimaryBack(job, step, detected, manager);
   throw jobError("configure_failed", CHATGPT_NOT_READY);
+}
+
+// OpenClaw is never left on a ChatGPT model it can't use: `models set <the earlier
+// model>`, a run of its own on `step`; when there was no earlier model, the step
+// says OpenClaw keeps the new one. Shared by the two ways a ChatGPT plan job ends
+// up here: a readiness check that says not ready, and a hello that failed after an
+// unknown readiness. true only when the earlier model really was put back.
+async function putPreviousPrimaryBack(job, step, detected, manager) {
+  if (!job.previousPrimary) {
+    step.warnings.push(noEarlierPrimary(`openai/${job.model}`));
+    return false;
+  }
+  const back = await runConfigureCommand(
+    manager,
+    {
+      agentId: "openclaw",
+      kind: "configure",
+      title: "openclaw models set",
+      command: detected.path,
+      args: ["models", "set", job.previousPrimary],
+      cwd: os.tmpdir(),
+      timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+    },
+    step,
+    { optional: true }
+  );
+  if (back.run.status === "succeeded") return true;
+  step.warnings.push("openclaw models set failed; see the run log.");
+  return false;
+}
+
+// ChatGPT plan, after the hello: when the readiness check gave no answer ("unknown"),
+// the hello was the only proof that OpenClaw can use the plan. If it did not answer,
+// the job ends the way a readiness check that said not ready does: the earlier model
+// is put back, and the job fails on this step with a sentence that says so, so the
+// result never reads "set up" for a plan OpenClaw is no longer on. The put-back
+// helper's own warning covers the case where it could not be done (none before, or
+// `models set` failed), and the sentence then makes no claim about it. A failed job
+// writes no receipt, as for a readiness that says not ready.
+// Not when the hello was skipped (Safety on Look only: nothing was asked, so nothing
+// failed), and not when the person cancelled (the hello ended because of that, not
+// because of the plan, and a cancelled job leaves everything finished as it is).
+async function putBackAfterFailedHello(job, step, check, manager) {
+  if (job.plan !== "chatgpt" || job.readiness !== "unknown" || job.cancelRequested) return;
+  const hello = job.health?.openclaw;
+  if (!hello || hello.promptOk || hello.skipped) return;
+  const back = await putPreviousPrimaryBack(job, step, planOpenclaw(check), manager);
+  throw jobError("configure_failed", back ? CHATGPT_HELLO_FAILED_PUT_BACK : CHATGPT_HELLO_FAILED);
 }
 
 // =========================================================================

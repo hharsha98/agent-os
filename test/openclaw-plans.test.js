@@ -2,7 +2,9 @@
 // docs/superpowers/specs/2026-10-15-plan-brains-design.md sections 2, 3, 5 and 7,
 // Safety 6): the pure rules, the readers with every fake shape, the three plan
 // routes, both Applies (step order, the risk tick, the runtime check before
-// `models set`, readiness 0/1/2, the put-back of the earlier model, and the
+// `models set`, readiness (`models status --json` judged on the openai provider alone; the older
+// `--check --plain` exit codes 0/1/2 only for an OpenClaw with no auth block; "unknown" when the read
+// can't be used), the put-back of the earlier model, and the
 // hello skipped at Look only), the plan and label of OpenClaw's model answer,
 // healthFixLine's plan lines, signInStatus's method, POST /api/setup/configure
 // still refusing the plan modes, and a plan job that Agent OS quit during.
@@ -36,7 +38,11 @@ import {
 } from "../server/runtime/setup/jobs.js";
 import {
   CHATGPT_EXPIRING,
+  CHATGPT_HELLO_FAILED,
+  CHATGPT_HELLO_FAILED_PUT_BACK,
   CHATGPT_NOT_READY,
+  CHATGPT_READINESS_UNKNOWN,
+  CHATGPT_READINESS_UNKNOWN_LOOK_ONLY,
   CLAUDE_API_METHODS,
   CLAUDE_PLAN_METHODS,
   CURRENT_MODEL_NOT_RESTORABLE,
@@ -56,6 +62,7 @@ import {
   PLAN_READ_TIMEOUT_MS,
   RUNTIME_CHECK_FAILED,
   TYPED_MODEL_RE,
+  chatgptReadinessOfStatus,
   chatgptSignIn,
   claudeCliPinned,
   claudePlanReadiness,
@@ -69,7 +76,13 @@ import {
   readDidNotFinish,
   readinessOf
 } from "../server/runtime/setup/openclaw-plan-rules.js";
-import { readChatgptAuth, readOpenclawModelsConfig, resolvePlanModel } from "../server/runtime/setup/openclaw-plans.js";
+import {
+  OLDER_CHECK_MIN_MS,
+  readChatgptAuth,
+  readChatgptReadiness,
+  readOpenclawModelsConfig,
+  resolvePlanModel
+} from "../server/runtime/setup/openclaw-plans.js";
 import { readChatgptAuth as readChatgptAuthInModels, readOpenclawModelsConfig as readOpenclawModelsConfigInModels } from "../server/runtime/setup/models.js";
 import { readReceipt } from "../server/runtime/setup/receipt.js";
 import { signInStatus } from "../server/runtime/setup/signin.js";
@@ -335,6 +348,89 @@ test("readinessOf: exit 0 is ready, exit 2 is expiring, anything else (exit 1, a
   assert.equal(readinessOf(null), "not_ready");
 });
 
+// What `models status --json` prints for the openai part (live check S-B3, OpenClaw 2026.10.4); every value is made up.
+const OAUTH = (extra = {}) => ({
+  profileId: "openai:token-sharing:made-up",
+  provider: "openai",
+  type: "oauth",
+  source: "store",
+  label: "made up",
+  status: "expiring",
+  ...extra
+});
+const statusJson = ({ profiles = [OAUTH()], auth = {} } = {}) => ({
+  defaultModel: "openai/gpt-6.1-sol",
+  auth: {
+    missingProvidersInUse: [],
+    modelRouteIssues: [],
+    runtimeAuthRoutes: [],
+    unusableProfiles: [],
+    oauth: { warnAfterMs: 86400000, profiles, providers: [] },
+    ...auth
+  }
+});
+
+test("chatgptReadinessOfStatus: only the openai token-sharing sign-in, the openai issues and the openai missing mark decide; every other provider and the runtime routes are ignored", () => {
+  const rule = chatgptReadinessOfStatus;
+  // Ready: "expiring" (a token-sharing login always is; OpenClaw renews it by itself), "ok" and "expired" (live run
+  // 2026-10-16, 23:30: "expired" an hour after the last use while the plan works; OpenClaw renews it on the next use).
+  assert.equal(rule(statusJson()), "ready", "expiring");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "ok" })] })), "ready", "ok");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: undefined })] })), "ready", "a profile with no status word is not an expired one");
+  // The profile: none, another provider's, or one that is not a token-sharing one.
+  assert.equal(rule(statusJson({ profiles: [] })), "not_ready", "signed out");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ provider: "anthropic", profileId: "anthropic:token-sharing:made-up" })] })), "not_ready", "another provider's profile");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ profileId: "openai:oauth:made-up" })] })), "not_ready", "an openai oauth profile without token sharing");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ profileId: "openai:default" })] })), "not_ready");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ profileId: "token-sharing" })] })), "not_ready", "the kind is the second segment");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ profileId: undefined })] })), "not_ready");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ provider: "openrouter" })] })), "not_ready", "the provider field counts, not the id alone");
+  assert.equal(rule(statusJson({ profiles: ["x", null, 7] })), "not_ready", "rows that are not objects are skipped");
+  // Expired counts like expiring (ready: OpenClaw renews it from its refresh token on the next use). Missing is the one
+  // status that is not ready, and only when EVERY token-sharing profile is missing; one usable profile is enough.
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "expired" })] })), "ready", "expired");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "missing" })] })), "not_ready", "missing");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "expired" }), OAUTH({ profileId: "openai:token-sharing:b", status: "missing" })] })), "ready", "expired + missing: one usable is enough");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "missing" }), OAUTH({ profileId: "openai:token-sharing:b", status: "missing" })] })), "not_ready", "all missing");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "expired" }), OAUTH({ profileId: "openai:token-sharing:b", status: "expired" })] })), "ready", "all expired");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "missing" }), OAUTH({ profileId: "openai:token-sharing:b" })] })), "ready", "missing + expiring");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "missing" }), OAUTH({ profileId: "openai:oauth:other" })] })), "not_ready", "missing + a profile that is not a token-sharing one");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "expired" })], auth: { missingProvidersInUse: ["openai"] } })), "not_ready", "expired, but openai is missing in use");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "expired" })], auth: { modelRouteIssues: [{ kind: "incompatible", provider: "openai", model: "x" }] } })), "not_ready", "expired, but an openai route is incompatible");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "expired", profileId: "openai:oauth:other" })] })), "not_ready", "an expired sign-in without token sharing (identity only) is not a token-sharing one");
+  assert.equal(rule(statusJson({ profiles: [OAUTH({ status: "expired", profileId: "openai:oauth:other" }), OAUTH()] })), "ready", "an expired profile of another kind does not count");
+  // openai in missingProvidersInUse, and openai route issues of the two stopping kinds.
+  assert.equal(rule(statusJson({ auth: { missingProvidersInUse: ["openai"] } })), "not_ready");
+  assert.equal(rule(statusJson({ auth: { missingProvidersInUse: ["anthropic", "openrouter"] } })), "ready", "another provider missing is none of our business");
+  for (const kind of ["incompatible", "indeterminate"]) {
+    assert.equal(rule(statusJson({ auth: { modelRouteIssues: [{ kind, provider: "openai", model: "gpt-6.1-sol", evidence: "x", message: "x" }] } })), "not_ready", `openai ${kind}`);
+    assert.equal(rule(statusJson({ auth: { modelRouteIssues: [{ kind, provider: "anthropic", model: "claude-haiku-5-5", evidence: "x", message: "x" }] } })), "ready", `anthropic ${kind} is ignored`);
+    assert.equal(rule(statusJson({ auth: { modelRouteIssues: [{ kind, provider: "claude-cli", model: "x" }, { kind, provider: "openrouter", model: "x" }, { kind, provider: "ollama", model: "x" }] } })), "ready", `${kind} of the other providers`);
+  }
+  assert.equal(rule(statusJson({ auth: { modelRouteIssues: [{ kind: "something-new", provider: "openai", model: "x" }] } })), "ready", "an openai issue of a kind that does not stop it");
+  // The runtime routes are ignored entirely (the codex runtime read "unavailable" while the ChatGPT hello worked).
+  const routes = [
+    { provider: "openai", runtime: "codex", authProvider: "openai", status: "unavailable", effective: false },
+    { provider: "anthropic", runtime: "claude-cli", authProvider: "claude-cli", status: "indeterminate", effective: false },
+    { provider: "openai", runtime: "codex", status: "incompatible" }
+  ];
+  assert.equal(rule(statusJson({ auth: { runtimeAuthRoutes: routes } })), "ready");
+  assert.equal(rule(statusJson({ auth: { unusableProfiles: [{ profileId: "openai:token-sharing:made-up" }] } })), "ready", "unusableProfiles is not read either");
+  // Every field at once, as the live check saw it after the Claude plan's onboard: ready.
+  assert.equal(
+    rule(statusJson({ auth: { modelRouteIssues: [{ kind: "indeterminate", provider: "anthropic", model: "claude-haiku-5-5" }], runtimeAuthRoutes: routes, missingProvidersInUse: ["anthropic"] } })),
+    "ready"
+  );
+  // A block that cannot be judged: unknown. Not an object at all: unknown. No auth block: the caller uses the older check (null).
+  for (const unreadable of [null, undefined, [], "text", 5, true]) assert.equal(rule(unreadable), "unknown", JSON.stringify(unreadable));
+  for (const noOauth of [{ auth: {} }, { auth: { oauth: null } }, { auth: { oauth: {} } }, { auth: { oauth: [] } }, { auth: { oauth: { profiles: "x" } } }, { auth: { oauth: { profiles: null } } }]) {
+    assert.equal(rule(noOauth), "unknown", JSON.stringify(noOauth));
+  }
+  for (const older of [{}, { defaultModel: "x" }, { auth: null }, { auth: "x" }, { auth: [] }, { auth: 5 }]) assert.equal(rule(older), null, JSON.stringify(older));
+  // The answer is one word, never a piece of the output.
+  assert.ok(["ready", "not_ready", "unknown", null].includes(rule(statusJson({ profiles: [OAUTH({ label: "SECRET-in-label", status: "ok" })] }))));
+});
+
 test("planOfPrimary and openclawProviderLabel: a plan label only when the runtime check or the sign-in confirms it", () => {
   const pinned = { "anthropic/claude-opus-5-5": CLI };
   assert.equal(planOfPrimary("anthropic/claude-opus-5-5", pinned, false), "claude");
@@ -421,6 +517,18 @@ test("the plan rules' values and sentences are the spec's and the contract's, wo
   assert.notEqual(CURRENT_MODEL_NOT_RESTORABLE, CURRENT_MODEL_UNREADABLE);
   assert.equal(CHATGPT_EXPIRING, "Your ChatGPT sign-in expires soon. Sign in again.");
   assert.equal(CHATGPT_NOT_READY, "OpenClaw can't use your ChatGPT plan yet. Sign in again, and allow token sharing when ChatGPT asks.");
+  // Unlike the ruling's first wording, none of these says "below" (a step's warnings are drawn after the agents'
+  // hello lines) or "in time" (the read may have failed without timing out), and at Look only none promises a hello.
+  assert.equal(CHATGPT_READINESS_UNKNOWN, "Agent OS couldn't check your ChatGPT sign-in. The hello check shows whether OpenClaw can use it.");
+  assert.equal(
+    CHATGPT_READINESS_UNKNOWN_LOOK_ONLY,
+    "Agent OS couldn't check your ChatGPT sign-in, and Safety is on Look only, so no hello check runs to show whether OpenClaw can use it."
+  );
+  assert.equal(CHATGPT_HELLO_FAILED_PUT_BACK, "OpenClaw didn't answer on your ChatGPT plan, so Agent OS put its earlier model back.");
+  assert.equal(CHATGPT_HELLO_FAILED, "OpenClaw didn't answer on your ChatGPT plan.");
+  for (const sentence of [CHATGPT_READINESS_UNKNOWN, CHATGPT_READINESS_UNKNOWN_LOOK_ONLY, CHATGPT_HELLO_FAILED_PUT_BACK, CHATGPT_HELLO_FAILED]) {
+    assert.ok(!sentence.includes("—") && !sentence.includes("below") && !sentence.includes("in time"), sentence);
+  }
   assert.equal(INVALID_PLAN_MODEL, "That doesn't look like a model name.");
   assert.equal(PLAN_JOB_INTERRUPTED, "Agent OS quit before this finished. Apply the plan again.");
   assert.equal(noEarlierPrimary("openai/gpt-6.1-sol"), "OpenClaw had no model set before, so it keeps openai/gpt-6.1-sol.");
@@ -633,18 +741,44 @@ test("GET /api/setup/openclaw/plans: every sign-in list state, and readiness onl
     }
     await knob("FAKE_OPENCLAW_AUTH_JSON", null);
 
-    // On the ChatGPT plan: the readiness check runs, and only its exit code is used.
+    // On the ChatGPT plan: the readiness check runs. It reads `models status --json` (the openai provider alone), and only
+    // an answer word leaves; "unknown" when that can't be read.
     await setState([siwcRow()], "openai/gpt-6.1-sol");
+    const readinessNow = async () => {
+      const answer = await call("GET", "/api/setup/openclaw/plans");
+      assert.ok(!answer.text.includes(FAKE_SECRET) && !answer.text.includes("someone@example.com"), "nothing of the status output comes back");
+      return answer.body.chatgpt;
+    };
+    assert.deepEqual(await readinessNow(), { signedIn: true, sharing: true, readiness: "ready" }, "the fake's openai sign-in is expiring, which renews itself");
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "claude-cli-indeterminate");
+    assert.deepEqual(await readinessNow(), { signedIn: true, sharing: true, readiness: "ready" }, "the Claude plan's anthropic issues don't change the ChatGPT answer");
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "openai-expired");
+    assert.deepEqual(await readinessNow(), { signedIn: true, sharing: true, readiness: "ready" }, "expired an hour after the last use: OpenClaw renews it on the next use");
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "openai-missing");
+    assert.deepEqual(await readinessNow(), { signedIn: true, sharing: true, readiness: "not_ready" });
+    for (const unreadable of ["garbage", "fail"]) {
+      await knob("FAKE_OPENCLAW_STATUS_JSON", unreadable);
+      assert.deepEqual(await readinessNow(), { signedIn: true, sharing: true, readiness: "unknown" }, `${unreadable}: the card gets "unknown" and says nothing`);
+    }
+    // An older OpenClaw (no auth block) keeps the exit-code rule.
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "no-auth");
     for (const [exit, readiness] of [["0", "ready"], ["2", "expiring"], ["1", "not_ready"]]) {
       await knob("FAKE_OPENCLAW_STATUS_EXIT", exit);
-      const answer = await call("GET", "/api/setup/openclaw/plans");
-      assert.deepEqual(answer.body.chatgpt, { signedIn: true, sharing: true, readiness }, `models status exit ${exit}`);
-      assert.ok(!answer.text.includes(FAKE_SECRET) && !answer.text.includes("someone@example.com"));
+      assert.deepEqual(await readinessNow(), { signedIn: true, sharing: true, readiness }, `older OpenClaw, models status --check exit ${exit}`);
     }
+    await knob("FAKE_OPENCLAW_STATUS_JSON", null);
+    await knob("FAKE_OPENCLAW_STATUS_EXIT", null);
     await setState([siwcRow()], "anthropic/claude-opus-5-5");
     assert.equal((await chatgpt()).readiness, null, "on another provider: no readiness read");
     const statusRuns = (await argvLines(home)).filter((line) => line.startsWith("models status"));
-    assert.deepEqual(statusRuns, ["models status --check --plain", "models status --check --plain", "models status --check --plain"]);
+    assert.deepEqual(
+      statusRuns,
+      [
+        ...Array(6).fill("models status --json"),
+        ...Array(3).fill(["models status --json", "models status --check --plain"]).flat()
+      ],
+      "only these two fixed commands, and the older one only after an answer with no auth block"
+    );
   });
 });
 
@@ -687,6 +821,194 @@ test("the fake OpenClaw answers `models auth list --provider openai --json` in t
     await knob("FAKE_OPENCLAW_AUTH_JSON", JSON.stringify({ profiles: [] }));
     assert.deepEqual(await answer(), { profiles: [] });
   });
+});
+
+test("the fake OpenClaw answers `models status --json` in the 2026.10.4 shape, built from its state, with a knob for each thing the live check S-B3 saw", posixSkip, async () => {
+  await withPlanEnv(async ({ home, knob }) => {
+    const shim = path.join(home, ".npm-global", "bin", "openclaw");
+    const run = async () => runCommand(shim, ["models", "status", "--json"], 10000);
+    const answer = async () => {
+      const result = await run();
+      assert.equal(result.ok, true, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const TOP = ["agentDir", "aliases", "allowed", "auth", "configPath", "defaultModel", "fallbacks", "imageFallbacks", "imageModel", "resolvedDefault", "utilityModel"];
+    const AUTH = ["modelRouteIssues", "missingProvidersInUse", "oauth", "providers", "providersWithOAuth", "runtimeAuthRoutes", "shellEnvFallback", "storePath", "unusableProfiles"];
+
+    // Signed out: the same keys, no oauth profile, no provider entry.
+    const out = await answer();
+    assert.deepEqual(Object.keys(out).sort(), TOP);
+    assert.deepEqual(Object.keys(out.auth).sort(), [...AUTH].sort());
+    assert.deepEqual(Object.keys(out.auth.oauth).sort(), ["profiles", "providers", "warnAfterMs"]);
+    assert.deepEqual([out.auth.oauth.profiles, out.auth.oauth.providers], [[], []]);
+
+    // Signed in: one made-up token-sharing profile, "expiring" as the real one is, and one oauth provider entry.
+    await writeFakeAgentState(home, { primary: "openai/gpt-6.1-sol", models: null, authRows: [siwcRow()] });
+    const signedIn = await answer();
+    assert.equal(signedIn.defaultModel, "openai/gpt-6.1-sol");
+    const [profile] = signedIn.auth.oauth.profiles;
+    assert.equal(signedIn.auth.oauth.profiles.length, 1);
+    for (const key of ["profileId", "provider", "type", "source", "label", "status", "expiresAt", "remainingMs"]) assert.ok(Object.hasOwn(profile, key), key);
+    assert.deepEqual([profile.provider, profile.type, profile.status], ["openai", "oauth", "expiring"]);
+    assert.deepEqual(profile.profileId.split(":").slice(0, 2), ["openai", "token-sharing"]);
+    assert.ok(profile.remainingMs > 0 && profile.remainingMs < signedIn.auth.oauth.warnAfterMs, "inside the 24 h warning window, as every token-sharing login is");
+    assert.deepEqual(signedIn.auth.oauth.providers.map((entry) => [entry.provider, entry.status, entry.profiles]), [["openai", "expiring", 1]]);
+    assert.equal(chatgptReadinessOfStatus(signedIn), "ready");
+    assert.ok((await run()).stdout.includes(FAKE_SECRET), "the fake over-prints on purpose, so a test can prove the output never leaves");
+
+    // A sign-in without token sharing is an oauth profile of another kind.
+    await writeFakeAgentState(home, { primary: null, models: null, authRows: [siwcRow({ tokenSharing: false })] });
+    assert.equal((await answer()).auth.oauth.profiles[0].profileId.split(":")[1], "oauth");
+    await writeFakeAgentState(home, { primary: null, models: null, authRows: [siwcRow()] });
+
+    // The knobs.
+    const withKnob = async (value) => {
+      await knob("FAKE_OPENCLAW_STATUS_JSON", value);
+      return answer();
+    };
+    const indeterminate = await withKnob("claude-cli-indeterminate");
+    assert.deepEqual(indeterminate.auth.modelRouteIssues.map((issue) => [issue.kind, issue.provider]), [["indeterminate", "anthropic"]]);
+    assert.deepEqual(indeterminate.auth.runtimeAuthRoutes.map((route) => [route.provider, route.runtime, route.status]), [["anthropic", "claude-cli", "indeterminate"]]);
+    assert.equal(indeterminate.utilityModel, "anthropic/claude-haiku-5-5");
+    const codex = await withKnob("codex-unavailable");
+    assert.deepEqual(codex.auth.runtimeAuthRoutes.map((route) => [route.provider, route.runtime, route.status]), [["openai", "codex", "unavailable"]]);
+    assert.deepEqual(codex.auth.modelRouteIssues, []);
+    assert.equal((await withKnob("openai-expired")).auth.oauth.profiles[0].status, "expired");
+    const missing = await withKnob("openai-missing");
+    assert.deepEqual([missing.auth.oauth.profiles[0].status, missing.auth.oauth.profiles[0].profileId.split(":")[1]], ["missing", "token-sharing"]);
+    const incompatible = await withKnob("openai-incompatible");
+    assert.deepEqual(incompatible.auth.modelRouteIssues.map((issue) => [issue.kind, issue.provider]), [["incompatible", "openai"]]);
+    const noAuth = await withKnob("no-auth");
+    assert.deepEqual(Object.keys(noAuth).sort(), TOP.filter((key) => key !== "auth"));
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "garbage");
+    const garbage = await run();
+    assert.deepEqual([garbage.ok, garbage.stdout.startsWith("{")], [true, false], "exit 0 and text that isn't JSON");
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "fail");
+    assert.deepEqual([(await run()).ok, (await run()).code], [false, 1]);
+    await knob("FAKE_OPENCLAW_STATUS_JSON", null);
+
+    // The older `--check --plain` path keeps its exit code knob, and prints its own line.
+    await knob("FAKE_OPENCLAW_STATUS_EXIT", "2");
+    const older = await runCommand(shim, ["models", "status", "--check", "--plain"], 10000);
+    assert.deepEqual([older.ok, older.code, older.stdout.includes(FAKE_SECRET)], [false, 2, true]);
+    await knob("FAKE_OPENCLAW_STATUS_EXIT", null);
+
+    // Live check S-B3: the real `--check` judges the whole setup, so the Claude plan's utility model makes it exit 1
+    // although the ChatGPT sign-in is fine. The fake does the same, so a read that went back to `--check` would be caught.
+    const checkExit = async () => readinessOf(await runCommand(shim, ["models", "status", "--check", "--plain"], 10000));
+    assert.equal(await checkExit(), "ready", "signed in, nothing else going on");
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "claude-cli-indeterminate");
+    assert.equal(await checkExit(), "not_ready", "the anthropic utility model fails the whole-setup check");
+    await knob("FAKE_OPENCLAW_STATUS_EXIT", "0");
+    assert.equal(await checkExit(), "ready", "an explicit exit knob still wins");
+    await knob("FAKE_OPENCLAW_STATUS_EXIT", null);
+    await knob("FAKE_OPENCLAW_STATUS_JSON", "codex-unavailable");
+    assert.equal(await checkExit(), "ready", "only the knob the live check saw failing is modelled as failing");
+  });
+});
+
+test("readChatgptReadiness: ready, not_ready or unknown from `models status --json` (the openai provider alone), the older --check exit code only when there is no auth block", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ home, knob }) => {
+      const detected = { installed: true, path: path.join(home, ".npm-global", "bin", "openclaw") };
+      const statusRuns = async () => (await argvLines(home)).filter((line) => line.startsWith("models status"));
+      const JSON_RUN = "models status --json";
+      const CHECK_RUN = "models status --check --plain";
+      const table = [
+        // [what it is, STATUS_JSON, STATUS_EXIT, the answer, the runs]
+        ["signed in, expiring (as every token-sharing login is)", null, null, "ready", [JSON_RUN]],
+        ["the Claude plan's utility model reads indeterminate on the claude-cli runtime", "claude-cli-indeterminate", null, "ready", [JSON_RUN]],
+        ["the codex runtime reads unavailable", "codex-unavailable", null, "ready", [JSON_RUN]],
+        ["the openai profile is expired (an hour after the last use; OpenClaw renews it on the next use)", "openai-expired", null, "ready", [JSON_RUN]],
+        ["the openai profile is missing", "openai-missing", null, "not_ready", [JSON_RUN]],
+        ["an openai route is incompatible", "openai-incompatible", null, "not_ready", [JSON_RUN]],
+        ["not JSON", "garbage", null, "unknown", [JSON_RUN]],
+        ["the read exits 1", "fail", null, "unknown", [JSON_RUN]],
+        ["an older OpenClaw, --check exit 0", "no-auth", "0", "ready", [JSON_RUN, CHECK_RUN]],
+        ["an older OpenClaw, --check exit 2", "no-auth", "2", "expiring", [JSON_RUN, CHECK_RUN]],
+        ["an older OpenClaw, --check exit 1", "no-auth", "1", "not_ready", [JSON_RUN, CHECK_RUN]]
+      ];
+      for (const [why, json, exit, answer, runs] of table) {
+        await knob("FAKE_OPENCLAW_STATUS_JSON", json);
+        await knob("FAKE_OPENCLAW_STATUS_EXIT", exit);
+        await rm(path.join(home, ".fake-openclaw-record.jsonl"), { force: true });
+        assert.equal(await readChatgptReadiness(detected), answer, why);
+        assert.deepEqual(await statusRuns(), runs, `${why}: the runs`);
+      }
+      await knob("FAKE_OPENCLAW_STATUS_JSON", null);
+      await knob("FAKE_OPENCLAW_STATUS_EXIT", null);
+
+      // Anthropic's issues never change the openai answer, whatever else is going on.
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "claude-cli-indeterminate");
+      await writeFakeAgentState(home, { primary: "openai/gpt-6.1-sol", models: null, authRows: [] });
+      assert.equal(await readChatgptReadiness(detected), "not_ready", "signed out is still not ready with the anthropic issues beside it");
+      await knob("FAKE_OPENCLAW_STATUS_JSON", null);
+      // Signed out, and a sign-in without token sharing: not ready.
+      assert.equal(await readChatgptReadiness(detected), "not_ready", "signed out");
+      await writeFakeAgentState(home, { primary: "openai/gpt-6.1-sol", models: null, authRows: [siwcRow({ tokenSharing: false })] });
+      assert.equal(await readChatgptReadiness(detected), "not_ready", "signed in without token sharing");
+      await writeFakeAgentState(home, { primary: "openai/gpt-6.1-sol", models: null, authRows: [siwcRow()] });
+      assert.equal(await readChatgptReadiness(detected), "ready");
+
+      // A read that takes too long is unknown, and asks nothing else.
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "slow");
+      await rm(path.join(home, ".fake-openclaw-record.jsonl"), { force: true });
+      const started = Date.now();
+      assert.equal(await readChatgptReadiness(detected, { timeoutMs: 400 }), "unknown", "timed out");
+      assert.ok(Date.now() - started < 6000, "it did not wait for the fake's whole sleep");
+      assert.deepEqual(await statusRuns(), [JSON_RUN], "a timeout does not fall back to --check");
+      await knob("FAKE_OPENCLAW_STATUS_JSON", null);
+
+      // Not installed: nothing is run. A program that can't run at all: unknown.
+      await rm(path.join(home, ".fake-openclaw-record.jsonl"), { force: true });
+      assert.equal(await readChatgptReadiness({ installed: false, path: detected.path }), "not_ready");
+      assert.equal(await readChatgptReadiness(null), "not_ready");
+      assert.deepEqual(await argvLines(home), []);
+      assert.equal(await readChatgptReadiness({ installed: true, path: path.join(home, "no-such-program") }), "unknown", "could not run");
+      assert.equal(PLAN_READ_TIMEOUT_MS, 15000, "the real read keeps the plan read limit");
+    },
+    { state: { primary: "openai/gpt-6.1-sol", authRows: [siwcRow()] } }
+  );
+});
+
+test("readChatgptReadiness: the older --check read shares the one read budget, so the check never outlasts PLAN_READ_TIMEOUT_MS (Cancel waits for just over that)", async () => {
+  const detected = { installed: true, path: "/not/run/openclaw" };
+  const noAuth = { ok: true, code: 0, signal: null, stdout: JSON.stringify({ configPath: "x" }) };
+  const calls = [];
+  const slowThenCheck = (firstMs, check) => async (_command, args, timeout) => {
+    calls.push({ args: args.join(" "), timeout });
+    if (args.includes("--json")) {
+      await new Promise((resolve) => setTimeout(resolve, firstMs));
+      return noAuth;
+    }
+    return check;
+  };
+
+  // The first read used some of the budget: the second gets only what is left, never a full budget of its own.
+  calls.length = 0;
+  const answer = await readChatgptReadiness(detected, { timeoutMs: 5000, run: slowThenCheck(300, { ok: false, code: 2, signal: null }) });
+  assert.equal(answer, "expiring", "the older path still answers with its exit code");
+  assert.deepEqual(calls.map((call) => call.args), ["models status --json", "models status --check --plain"]);
+  assert.equal(calls[0].timeout, 5000);
+  assert.ok(calls[1].timeout <= 5000 - 300 + 50 && calls[1].timeout >= OLDER_CHECK_MIN_MS, `the second read got ${calls[1].timeout} ms`);
+
+  // Almost nothing left: the second read is not started, and the answer is unknown (not a timeout read as not ready).
+  calls.length = 0;
+  const spent = await readChatgptReadiness(detected, { timeoutMs: OLDER_CHECK_MIN_MS + 200, run: slowThenCheck(400, { ok: true, code: 0, signal: null }) });
+  assert.equal(spent, "unknown");
+  assert.deepEqual(calls.map((call) => call.args), ["models status --json"], "no second read");
+
+  // A JSON answer with an auth block never asks for the second read at all.
+  calls.length = 0;
+  const answered = await readChatgptReadiness(detected, {
+    timeoutMs: 5000,
+    run: async (_command, args, timeout) => {
+      calls.push({ args: args.join(" "), timeout });
+      return { ok: true, code: 0, signal: null, stdout: JSON.stringify({ auth: { oauth: { profiles: [] } } }) };
+    }
+  });
+  assert.equal(answered, "not_ready");
+  assert.equal(calls.length, 1);
 });
 
 test("GET /api/setup/openclaw/plans: OpenClaw not installed", posixSkip, async () => {
@@ -1174,10 +1496,18 @@ test("Claude plan Apply: when OpenClaw's model settings can't be read (timed out
   }
 });
 
-test("ChatGPT plan Apply: models set, safe defaults, readiness (exit 0 ready, exit 2 expiring with its warning), the hello", posixSkip, async () => {
-  for (const [exit, readiness] of [["0", "ready"], ["2", "expiring"]]) {
+test("ChatGPT plan Apply: models set, safe defaults, readiness (models status --json says ready; an older OpenClaw's --check exit 0 ready, exit 2 expiring with its warning), the hello", posixSkip, async () => {
+  const JSON_RUN = "models status --json";
+  const CHECK_RUN = "models status --check --plain";
+  for (const [why, json, exit, readiness, runs] of [
+    ["models status --json (the sign-in renews itself)", null, null, "ready", [JSON_RUN]],
+    ["models status --json, the sign-in expired an hour after its last use (OpenClaw renews it on use; no false alarm)", "openai-expired", null, "ready", [JSON_RUN]],
+    ["an older OpenClaw, --check exit 0", "no-auth", "0", "ready", [JSON_RUN, CHECK_RUN]],
+    ["an older OpenClaw, --check exit 2", "no-auth", "2", "expiring", [JSON_RUN, CHECK_RUN]]
+  ]) {
     await withPlanEnv(
       async ({ call, home, knob }) => {
+        await knob("FAKE_OPENCLAW_STATUS_JSON", json);
         await knob("FAKE_OPENCLAW_STATUS_EXIT", exit);
         const started = await apply(call, "chatgpt", "gpt-6.1-sol");
         assert.equal(started.status, 200);
@@ -1188,15 +1518,15 @@ test("ChatGPT plan Apply: models set, safe defaults, readiness (exit 0 ready, ex
           ["health", null]
         ]);
         const done = await waitForPlanJob(started.body.id);
-        assert.equal(done.status, "succeeded", `exit ${exit}`);
-        assert.deepEqual([done.readiness, done.previousPrimary], [readiness, "openrouter/vendor/old"]);
-        assert.deepEqual(stepOf(done, "openclaw-plan-readiness").warnings, readiness === "expiring" ? [CHATGPT_EXPIRING] : []);
+        assert.equal(done.status, "succeeded", why);
+        assert.deepEqual([done.readiness, done.previousPrimary], [readiness, "openrouter/vendor/old"], why);
+        assert.deepEqual(stepOf(done, "openclaw-plan-readiness").warnings, readiness === "expiring" ? [CHATGPT_EXPIRING] : [], why);
         const lines = await argvLines(home);
-        const order = ["config get agents.defaults.model.primary", "models set openai/gpt-6.1-sol", "config set tools.exec.mode ask", "models status --check --plain"];
+        const order = ["config get agents.defaults.model.primary", "models set openai/gpt-6.1-sol", "config set tools.exec.mode ask", JSON_RUN];
         const positions = order.map((line) => lines.indexOf(line));
-        assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])), JSON.stringify(positions));
+        assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])), `${why}: ${JSON.stringify(positions)}`);
         assert.ok(positions[3] < lines.lastIndexOf("doctor --json"), "the hello after readiness");
-        assert.deepEqual(lines.filter((line) => line.startsWith("models status")), ["models status --check --plain"]);
+        assert.deepEqual(lines.filter((line) => line.startsWith("models status")), runs, why);
         const model = (await call("GET", "/api/setup/agents/openclaw/model")).body;
         assert.deepEqual([model.model, model.plan, model.providerLabel], ["gpt-6.1-sol", "chatgpt", "ChatGPT plan"]);
         const receipt = await readReceipt();
@@ -1210,12 +1540,33 @@ test("ChatGPT plan Apply: models set, safe defaults, readiness (exit 0 ready, ex
   }
 });
 
+// Live check S-B3 (2026-10-16): after the Claude plan's onboard, `models status --check` exited 1 because OpenClaw's
+// utility model was an anthropic one on the claude-cli runtime ("indeterminate"), although the ChatGPT sign-in was fine.
+// The readiness now looks at the openai provider alone, so that setup, and a codex route reading "unavailable", go on.
+test("ChatGPT plan Apply: another provider's trouble (the Claude plan's utility model, the codex runtime route) does not stop it", posixSkip, async () => {
+  for (const json of ["claude-cli-indeterminate", "codex-unavailable"]) {
+    await withPlanEnv(
+      async ({ call, home, knob }) => {
+        await knob("FAKE_OPENCLAW_STATUS_JSON", json);
+        const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
+        assert.equal(done.status, "succeeded", json);
+        assert.deepEqual([done.readiness, stepOf(done, "openclaw-plan-readiness").warnings], ["ready", []], json);
+        assert.deepEqual((await argvLines(home)).filter((line) => line.startsWith("models set")), ["models set openai/gpt-6.1-sol"], `${json}: nothing put back`);
+        assert.equal((await readFakeAgentState(home)).primary, "openai/gpt-6.1-sol");
+        // The fake's whole-setup `--check` exits 1 for the first of these (as the real 2026.10.4 did in live check S-B3),
+        // so this test fails if the readiness read ever goes back to it.
+        assert.deepEqual((await argvLines(home)).filter((line) => line.startsWith("models status")), ["models status --json"], `${json}: never --check`);
+      },
+      { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+    );
+  }
+});
+
 test("ChatGPT plan Apply stopped at readiness puts the earlier model back; with no earlier model, OpenClaw keeps the new one and the job says so", posixSkip, async () => {
   await withPlanEnv(
     async ({ call, home, knob }) => {
-      await knob("FAKE_OPENCLAW_STATUS_EXIT", "1");
       const started = await apply(call, "chatgpt", "gpt-6-luna");
-      assert.equal(started.status, 200, "signed in without token sharing is still a sign-in; readiness catches it");
+      assert.equal(started.status, 200, "signed in without token sharing is still a sign-in; readiness catches it (the fake shows it as an oauth profile of another kind)");
       const done = await waitForPlanJob(started.body.id);
       const step = stepOf(done, "openclaw-plan-readiness");
       assert.deepEqual([done.status, done.readiness, step.status, step.error, step.warnings], ["failed", "not_ready", "failed", CHATGPT_NOT_READY, []]);
@@ -1229,7 +1580,7 @@ test("ChatGPT plan Apply stopped at readiness puts the earlier model back; with 
   );
   await withPlanEnv(
     async ({ call, home, knob }) => {
-      await knob("FAKE_OPENCLAW_STATUS_EXIT", "1");
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "openai-missing");
       const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
       const step = stepOf(done, "openclaw-plan-readiness");
       assert.deepEqual(
@@ -1240,6 +1591,122 @@ test("ChatGPT plan Apply stopped at readiness puts the earlier model back; with 
       assert.equal((await readFakeAgentState(home)).primary, "openai/gpt-6.1-sol");
     },
     { state: { primary: null, authRows: [siwcRow()] } }
+  );
+});
+
+test("ChatGPT plan Apply stopped at readiness on an older OpenClaw (no auth block, --check exit 1) puts the earlier model back too", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ call, home, knob }) => {
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "no-auth");
+      await knob("FAKE_OPENCLAW_STATUS_EXIT", "1");
+      const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6-luna")).body.id);
+      const step = stepOf(done, "openclaw-plan-readiness");
+      assert.deepEqual([done.status, done.readiness, step.error, step.warnings], ["failed", "not_ready", CHATGPT_NOT_READY, []]);
+      assert.deepEqual((await argvLines(home)).filter((line) => line.startsWith("models set")), ["models set openai/gpt-6-luna", "models set openrouter/vendor/old"]);
+      assert.equal((await readFakeAgentState(home)).primary, "openrouter/vendor/old");
+      assert.equal(stepOf(done, "health").status, "pending", "no hello");
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+  );
+});
+
+// Live check S-B3 (2026-10-16): `--check` once took longer than the 15 s read limit, and an internet drop made a token-sharing
+// refresh fail. A read that gives no usable answer stops nothing: the hello check shows whether the plan works.
+test("ChatGPT plan Apply, readiness unknown (the status read is unreadable or fails): its warning, the model stays, and the job goes on to the hello", posixSkip, async () => {
+  for (const json of ["garbage", "fail"]) {
+    await withPlanEnv(
+      async ({ call, home, knob }) => {
+        await knob("FAKE_OPENCLAW_STATUS_JSON", json);
+        const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
+        assert.equal(done.status, "succeeded", json);
+        assert.deepEqual([done.readiness, done.previousPrimary], ["unknown", "openrouter/vendor/old"], json);
+        const readiness = stepOf(done, "openclaw-plan-readiness");
+        assert.deepEqual([readiness.status, readiness.error, readiness.warnings, readiness.runIds], ["succeeded", null, [CHATGPT_READINESS_UNKNOWN], []], json);
+        assert.equal(done.health.openclaw.promptOk, true, `${json}: the hello ran and answered`);
+        const lines = await argvLines(home);
+        assert.deepEqual(lines.filter((line) => line.startsWith("models set")), ["models set openai/gpt-6.1-sol"], `${json}: nothing put back`);
+        assert.deepEqual(lines.filter((line) => line.startsWith("models status")), ["models status --json"], `${json}: no fallback to --check after an unreadable answer`);
+        assert.ok(lines.indexOf("models status --json") < lines.lastIndexOf("doctor --json"), `${json}: the hello came after`);
+        assert.equal((await readFakeAgentState(home)).primary, "openai/gpt-6.1-sol");
+        assert.deepEqual(stepOf(done, "health").warnings, []);
+        const receipt = await readReceipt();
+        assert.deepEqual(receipt.map((entry) => [entry.provider, entry.model]), [["chatgpt-plan", "gpt-6.1-sol"]], `${json}: the model stays, so the receipt says so`);
+      },
+      { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+    );
+  }
+});
+
+// The job must not end "set up" for a plan OpenClaw is no longer on (BrainResult would say "Set up, but not every agent
+// answered" beside a ChatGPT line while OpenClaw is back on the earlier model): it ends failed, like a readiness that says
+// not ready, with a sentence that says what happened.
+test("ChatGPT plan Apply, readiness unknown and then the hello fails: the earlier model is put back and the job fails on the hello step saying so; with none, the job says OpenClaw keeps the new one", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ call, home, knob }) => {
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "garbage");
+      await writeFile(path.join(home, ".fake-openclaw-agent-fail"), "");
+      const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
+      assert.deepEqual([done.status, done.readiness, done.health.openclaw.promptOk], ["failed", "unknown", false]);
+      assert.deepEqual(stepOf(done, "openclaw-plan-readiness").warnings, [CHATGPT_READINESS_UNKNOWN]);
+      const health = stepOf(done, "health");
+      assert.deepEqual([health.status, health.error], ["failed", CHATGPT_HELLO_FAILED_PUT_BACK], "the result's alert says the earlier model is back");
+      assert.equal(health.runIds.length, 2, "the hello, then the put-back as a run of its own");
+      assert.deepEqual(health.warnings, []);
+      assert.deepEqual((await argvLines(home)).filter((line) => line.startsWith("models set")), ["models set openai/gpt-6.1-sol", "models set openrouter/vendor/old"]);
+      assert.equal((await readFakeAgentState(home)).primary, "openrouter/vendor/old", "OpenClaw is not left on a ChatGPT model it can't use");
+      assert.deepEqual(await readReceipt(), [], "a failed job writes no receipt, as for a readiness that says not ready");
+      const model = (await call("GET", "/api/setup/agents/openclaw/model")).body;
+      assert.notEqual(model.plan, "chatgpt");
+      // What the person reads is saved with the job.
+      const saved = await getSetupJob(done.id);
+      assert.deepEqual([saved.status, stepOf(saved, "health").error], ["failed", CHATGPT_HELLO_FAILED_PUT_BACK]);
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+  );
+  await withPlanEnv(
+    async ({ call, home, knob }) => {
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "fail");
+      await writeFile(path.join(home, ".fake-openclaw-agent-fail"), "");
+      const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
+      assert.deepEqual([done.status, done.readiness, done.previousPrimary, done.health.openclaw.promptOk], ["failed", "unknown", null, false]);
+      const health = stepOf(done, "health");
+      assert.deepEqual(
+        [health.status, health.error, health.warnings],
+        ["failed", CHATGPT_HELLO_FAILED, [noEarlierPrimary("openai/gpt-6.1-sol")]],
+        "no claim that a model was put back, and the job's last line says OpenClaw keeps the new one"
+      );
+      assert.deepEqual((await argvLines(home)).filter((line) => line.startsWith("models set")), ["models set openai/gpt-6.1-sol"]);
+      assert.equal((await readFakeAgentState(home)).primary, "openai/gpt-6.1-sol");
+      assert.deepEqual(await readReceipt(), []);
+    },
+    { state: { primary: null, authRows: [siwcRow()] } }
+  );
+  // The hello failing after a readiness that DID answer is today's behaviour: nothing is put back, and the job is a result.
+  await withPlanEnv(
+    async ({ call, home }) => {
+      await writeFile(path.join(home, ".fake-openclaw-agent-fail"), "");
+      const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
+      assert.deepEqual([done.status, done.readiness, done.health.openclaw.promptOk], ["succeeded", "ready", false]);
+      assert.deepEqual((await argvLines(home)).filter((line) => line.startsWith("models set")), ["models set openai/gpt-6.1-sol"]);
+      assert.equal((await readFakeAgentState(home)).primary, "openai/gpt-6.1-sol");
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+  );
+});
+
+test("ChatGPT plan Apply, readiness unknown at Look only: the hello is skipped, nothing failed, so nothing is put back, and the warning does not promise a hello check", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ call, home, knob }) => {
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "garbage");
+      await setExecutionGateStatus({ enabled: false, reason: "look only" });
+      const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
+      assert.deepEqual([done.status, done.readiness, done.health.openclaw.skipped], ["succeeded", "unknown", true]);
+      assert.deepEqual(stepOf(done, "openclaw-plan-readiness").warnings, [CHATGPT_READINESS_UNKNOWN_LOOK_ONLY]);
+      assert.notEqual(CHATGPT_READINESS_UNKNOWN_LOOK_ONLY, CHATGPT_READINESS_UNKNOWN);
+      assert.deepEqual((await argvLines(home)).filter((line) => line.startsWith("models set")), ["models set openai/gpt-6.1-sol"]);
+      assert.equal((await readFakeAgentState(home)).primary, "openai/gpt-6.1-sol");
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
   );
 });
 
@@ -1393,7 +1860,7 @@ test("ChatGPT plan Apply: a current model that can't be read (timed out, can't r
   await withPlanEnv(
     async ({ call, home, knob }) => {
       await knob("FAKE_OPENCLAW_GET_PRIMARY", "fail");
-      await knob("FAKE_OPENCLAW_STATUS_EXIT", "1");
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "openai-missing");
       const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
       const step = stepOf(done, "openclaw-plan-readiness");
       assert.deepEqual(
@@ -1492,7 +1959,7 @@ test("Look only: both plans are still applied, but the hello is skipped with tod
   );
 });
 
-test("The output of models auth list and models status is never logged, saved or returned", posixSkip, async () => {
+test("The output of models auth list and models status (--json and the older --check) is never logged, saved or returned", posixSkip, async () => {
   await withPlanEnv(
     async ({ call, agentOsHome, knob }) => {
       const printed = [];
@@ -1503,24 +1970,31 @@ test("The output of models auth list and models status is never logged, saved or
         };
       }
       const answers = [];
-      let job;
+      const jobs = [];
       try {
         answers.push((await call("GET", "/api/setup/openclaw/plans")).text);
         answers.push((await call("GET", "/api/setup/agents/openclaw/model")).text);
-        await knob("FAKE_OPENCLAW_STATUS_EXIT", "2");
-        const started = await apply(call, "chatgpt", "gpt-6.1-sol");
-        answers.push(started.text);
-        job = await waitForPlanJob(started.body.id);
-        answers.push((await call("GET", `/api/setup/jobs/${job.id}`)).text);
-        answers.push((await call("GET", "/api/setup/openclaw/plans")).text);
-        answers.push((await call("GET", "/api/setup/agents/openclaw/model")).text);
+        // Four Applies, one per way the readiness is read: the older `--check --plain` (exit 2, expiring), a status
+        // answer that is not JSON, one that fails, and the normal `--json` read. Every one of them prints FAKE_SECRET
+        // and the e-mail (the fake does that on purpose; the real output has neither).
+        for (const [json, exit] of [["no-auth", "2"], ["garbage", null], ["fail", null], [null, null]]) {
+          await knob("FAKE_OPENCLAW_STATUS_JSON", json);
+          await knob("FAKE_OPENCLAW_STATUS_EXIT", exit);
+          const started = await apply(call, "chatgpt", "gpt-6.1-sol");
+          answers.push(started.text);
+          const job = await waitForPlanJob(started.body.id);
+          jobs.push(job);
+          answers.push((await call("GET", `/api/setup/jobs/${job.id}`)).text);
+          answers.push((await call("GET", "/api/setup/openclaw/plans")).text);
+          answers.push((await call("GET", "/api/setup/agents/openclaw/model")).text);
+        }
       } finally {
         Object.assign(console, originals);
       }
-      assert.equal(job.status, "succeeded");
+      assert.deepEqual(jobs.map((job) => [job.status, job.readiness]), [["succeeded", "expiring"], ["succeeded", "unknown"], ["succeeded", "unknown"], ["succeeded", "ready"]]);
       const files = await listFiles(agentOsHome);
       assert.ok(files.length > 0);
-      for (const secret of [FAKE_SECRET, "someone@example.com", "accessToken"]) {
+      for (const secret of [FAKE_SECRET, "someone@example.com", "accessToken", "this is not json"]) {
         for (const answer of answers) assert.ok(!answer.includes(secret), `${secret} in an answer`);
         assert.ok(!printed.some((line) => line.includes(secret)), `${secret} in the server's log`);
         for (const file of files) {
@@ -1706,7 +2180,7 @@ test("A plan job whose runner fails outside a step (the receipt can't be saved) 
 test("ChatGPT plan Apply after an interrupted or failed Apply: the half-applied openai model is never recorded as the earlier model, and the earlier Apply's own earlier model is put back", posixSkip, async () => {
   await withPlanEnv(
     async ({ call, home, agentOsHome, knob }) => {
-      await knob("FAKE_OPENCLAW_STATUS_EXIT", "1"); // readiness fails, so the earlier model is put back
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "openai-missing"); // readiness fails, so the earlier model is put back
       const HALF = "openai/gpt-6.1-sol";
       // Runs one Apply of gpt-6-luna with these jobs stored and this primary; answers what it recorded and put back.
       const applyWith = async (why, jobs, { primary = HALF } = {}) => {

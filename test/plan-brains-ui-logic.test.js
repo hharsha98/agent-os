@@ -132,6 +132,7 @@ test("chatgptPlanState: the version first, then the sign-in, then token sharing"
   assert.equal(shared.chatgptPlanState(plansOf({ chatgpt: { signedIn: true, sharing: false } })), "no_sharing");
   assert.equal(shared.chatgptPlanState(plansOf({ chatgpt: { signedIn: true, sharing: null } })), "ready", "no sharing field: the Apply's readiness check still catches it");
   assert.equal(shared.chatgptPlanState(plansOf({ chatgpt: { signedIn: true, sharing: true, readiness: "expiring" } })), "ready");
+  assert.equal(shared.chatgptPlanState(plansOf({ chatgpt: { signedIn: true, sharing: true, readiness: "unknown" } })), "ready", "a readiness that couldn't be read changes nothing about the state");
 });
 
 test("typedModelProblem: the server's rule, with the plan's own prefix allowed and nothing else", () => {
@@ -583,6 +584,34 @@ test("offersSignInAgain: only a failed ChatGPT plan job whose failed step is the
   // The step name is the server's own (the ChatGPT plan job's steps) and has a label.
   assert.match(read("server/runtime/setup/jobs.js"), /chatgpt: Object\.freeze\(\[[^\]]*"openclaw-plan-readiness"/);
   assert.equal(brain.CONFIGURE_STEP_LABEL[READINESS_STEP], "Check your ChatGPT sign-in");
+});
+
+// Live check S-B3 (2026-10-16): the server's readiness read can now answer "unknown" (it timed out, couldn't run or was
+// unreadable). The card then knows nothing, so it says nothing and offers no Sign in; the plan job did not stop either.
+test("readiness 'unknown': no sentence, no Sign in with ChatGPT button and no Sign in again; only 'expiring' and 'not_ready' speak", () => {
+  const words = shared.chatgptReadinessWords;
+  assert.equal(words("expiring"), rules.CHATGPT_EXPIRING);
+  assert.equal(words("not_ready"), rules.CHATGPT_NOT_READY);
+  assert.equal(words("expiring"), shared.CHATGPT_PLAN_WORDS.expiring);
+  assert.equal(words("not_ready"), shared.CHATGPT_PLAN_WORDS.not_ready);
+  for (const quiet of ["ready", "unknown", null, undefined]) assert.equal(words(quiet), null, String(quiet));
+  // No new sentence for it: every word the card has is still the spec's (the spec test above pins the count at 22).
+  assert.deepEqual(Object.keys(shared.CHATGPT_PLAN_WORDS), ["too_old", "version_unknown", "no_sharing", "expiring", "not_ready"]);
+  // The card takes both its sentence and its Sign in with ChatGPT button from that one answer.
+  const card = read("src/ui/components/BrainPlanCard.tsx");
+  assert.match(card, /const readinessWords = chatgptReadinessWords\(info\?\.chatgpt\.readiness\);/);
+  assert.equal(card.match(/chatgptReadinessWords\(/g)?.length, 1, "one use");
+  assert.match(card, /\{state === "ready" && readinessWords \? note\(readinessWords\) : null\}/);
+  assert.match(card, /\) : state !== "ready" \|\| readinessWords \? \(/, "the sign-in button shows only when not ready or the sentence shows");
+  assert.doesNotMatch(card, /=== "unknown"/, "the card has no branch of its own for it");
+  // Sign in again is for a job that stopped at the check, and a job that went on after "unknown" did not stop there.
+  const wentOn = { ...planJob({ status: "succeeded", failed: "nothing" }), readiness: "unknown" };
+  assert.equal(shared.offersSignInAgain(wentOn), false);
+  assert.equal(shared.offersSignInAgain({ ...wentOn, status: "failed", steps: wentOn.steps.map((step) => (step.id === "health" ? { ...step, status: "failed", error: rules.CHATGPT_HELLO_FAILED_PUT_BACK } : step)) }), false, "even a hello that failed after the check could not be read: that job did not stop at the check");
+  // The client types know the word, on the plans answer and on the job.
+  const api = read("src/setupApi.ts");
+  assert.equal(api.match(/"ready" \| "expiring" \| "not_ready" \| "unknown" \| null/g)?.length, 2, "plans answer and job");
+  assert.doesNotMatch(api, /"ready" \| "expiring" \| "not_ready" \| null/);
 });
 
 test("wiring: 'Sign in again' is drawn only through offersSignInAgain and starts the card's one sign-in (startSignIn), then leaves the result like Back", () => {

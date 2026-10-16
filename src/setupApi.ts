@@ -241,10 +241,11 @@ export interface SetupJob {
   preset?: string | null;
   previous?: { provider: string | null; model: string | null } | null;
   // plan jobs (OpenClaw's Claude plan or ChatGPT plan): which plan, the model OpenClaw had before (put back when
-  // the ChatGPT readiness check stops the job), and that check's answer.
+  // the ChatGPT readiness check stops the job), and that check's answer ("unknown": it couldn't be read in time,
+  // and the job went on to the hello check).
   plan?: OpenclawPlan;
   previousPrimary?: string | null;
-  readiness?: "ready" | "expiring" | "not_ready" | null;
+  readiness?: "ready" | "expiring" | "not_ready" | "unknown" | null;
 }
 
 export function startInstallJob(payload: { steps: string[]; acceptOpenClawRisk?: boolean }) {
@@ -610,8 +611,9 @@ export interface OpenclawPlansInfo {
   version: { have: string | null; need: "2026.9.7"; newEnough: boolean | null };
   // Claude Code, from its own `claude auth status`. `method` is how it is signed in, or null when it can't say.
   claude: { installed: boolean; status: "signed_in" | "not_signed_in" | "unknown"; method: string | null; note: string };
-  // OpenClaw's saved ChatGPT sign-in. `readiness` is set only while OpenClaw is on the ChatGPT plan; null when unknown.
-  chatgpt: { signedIn: boolean | null; sharing: boolean | null; readiness: "ready" | "expiring" | "not_ready" | null };
+  // OpenClaw's saved ChatGPT sign-in. `readiness` is set only while OpenClaw is on the ChatGPT plan, and is null
+  // otherwise; "unknown" means the check couldn't be read in time (the card says nothing then).
+  chatgpt: { signedIn: boolean | null; sharing: boolean | null; readiness: "ready" | "expiring" | "not_ready" | "unknown" | null };
 }
 
 export interface PlanModel {

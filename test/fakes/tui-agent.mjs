@@ -14,7 +14,8 @@
 //
 // Quick answers (no terminal needed): --version, --help, auth status, login
 // status, status, doctor, config get (approvals.mode prints "manual"),
-// gateway ..., claude agents ..., claude stop <id>. A headless run (-p,
+// gateway ..., claude agents ..., claude stop <id>, and under the Cursor names
+// (agent, cursor-agent) create-chat. A headless run (-p,
 // --print or exec anywhere in argv, as the Runs page starts one; never a
 // session argv) prints nothing and keeps running until it is stopped, like
 // the UI audit harness's earlier fake-agent, whose probes stop live runs.
@@ -42,6 +43,14 @@
 //                                        process's AGENT_OS_SESSION_ID (the quit test knows
 //                                        the id only after the session starts)
 //   FAKE_CLAUDE_AGENTS_JSON              what `claude agents --json` prints (default "[]")
+//   FAKE_CURSOR_CREATE_CHAT              what `agent create-chat` does (spike S6): unset prints a fresh
+//                                        crypto.randomUUID() and exits 0; "fail" prints nothing and exits 1;
+//                                        "garbage" prints "not-a-uuid" and exits 0; "uuid-exit1" prints a fresh
+//                                        uuid and still exits 1 (a good id must not count when the exit is bad);
+//                                        "slow" waits 30 s before it answers like the default (a timeout test
+//                                        must not wait for it).
+//                                        Read like the knobs below. Every call is logged as a "create-chat"
+//                                        record (the id it printed, or null) with the fields of a start record.
 //   FAKE_AGENT_VERSION                   openclaw only: the whole line `--version` prints, verbatim
 //                                        (unset: "openclaw 9.9.9-fake", which reads as older than 2026.9.7)
 //
@@ -62,6 +71,7 @@
 // ... } with the fields of a start record, so the Safety 3 and 4 tests also see the argv and the
 // environment of the commands agent detection runs. Other names log nothing for a quick answer.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -129,6 +139,7 @@ function clampInt(text, min, max, fallback) {
 // Names only for anything secret-looking: values never reach the screen,
 // the recording or the log.
 const SECRET_KEY = /TOKEN|SECRET|PASSWORD|_KEY$/i;
+const HOST_KEY = /^(?:CLAUDE|CURSOR_|__CURSOR_)|^(?:AGENT_TRANSCRIPTS|GLOBAL_AGENT_ENVIRONMENT_VARIABLE_NAMESPACE)$/;
 const SHOWN_ENV = [
   "TERM",
   "COLORTERM",
@@ -175,8 +186,33 @@ function argvRecord() {
     agentOsKeys: keys.filter((key) => key.startsWith("AGENT_OS_") || key.startsWith("HERMES_AGENT_OS_")),
     // Names only: every OPENCLAW_* variable this program was given (plan brains, Safety 4).
     openclawKeys: keys.filter((key) => key.startsWith("OPENCLAW_")),
+    // Names only (several hold secrets): every variable of a host agent, Claude
+    // Code's CLAUDE* or Cursor's CURSOR_* and its three unprefixed names, that
+    // reached this program. A session started from a server that runs inside a
+    // host agent must show none of them (F-S7a).
+    hostKeys: keys.filter((key) => HOST_KEY.test(key)),
     secretKeys: keys.filter((key) => SECRET_KEY.test(key))
   };
+}
+
+// Cursor's `agent create-chat` (spike S6): prints the id of a new, empty chat and exits, so a
+// session can open Cursor straight on it with `--resume <id>` (no chat picker). FAKE_CURSOR_CREATE_CHAT
+// picks the behaviour (see the header); the call is logged with the argv, folder and environment names
+// it was given, which the profile tests read.
+const SLOW_CREATE_CHAT_MS = 30 * 1000;
+
+function createChat() {
+  const behaviour = knob("FAKE_CURSOR_CREATE_CHAT") || "ok";
+  const id = behaviour === "fail" || behaviour === "garbage" ? null : randomUUID();
+  log({ event: "create-chat", behaviour, id, ...argvRecord() });
+  if (behaviour === "fail") process.exit(1);
+  if (behaviour === "garbage") return answer("not-a-uuid");
+  if (behaviour === "uuid-exit1") return answer(id, 1);
+  if (behaviour === "slow") {
+    setTimeout(() => answer(id), SLOW_CREATE_CHAT_MS);
+    return true;
+  }
+  return answer(id);
 }
 
 // The quick, non-interactive questions that agent detection and the Stop
@@ -184,6 +220,7 @@ function argvRecord() {
 // Returns true when it handled the command line.
 function oneShot() {
   const joined = args.join(" ");
+  if ((name === "agent" || name === "cursor-agent") && joined === "create-chat") return createChat();
   if (args.includes("--version") || joined === "-v") {
     // Only `openclaw` takes FAKE_AGENT_VERSION (plan brains: its ChatGPT sign-in needs 2026.9.7 or newer).
     const version = name === "openclaw" ? knob("FAKE_AGENT_VERSION") : undefined;

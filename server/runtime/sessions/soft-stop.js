@@ -62,7 +62,9 @@ export function findBackgroundAgent(text, { agentSessionId = null, pid = null } 
 // collected so far, after a short tick for the last bytes to arrive), not only
 // when its output closes: a helper the program left behind can hold the output
 // open long after the program itself is gone. `spawn` is injectable for tests.
-export function runCli(command, args, { env, cwd, signal, onSpawn, spawn = spawnTracked } = {}) {
+// `maxChars` stops collecting output once that many characters have arrived
+// (the last chunk may run over), for a caller that only wants a short answer.
+export function runCli(command, args, { env, cwd, signal, onSpawn, spawn = spawnTracked, maxChars = MAX_CLI_OUTPUT_CHARS } = {}) {
   return new Promise((resolve) => {
     if (signal?.aborted) {
       resolve({ ok: false, code: null, aborted: true, stdout: "" });
@@ -105,7 +107,7 @@ export function runCli(command, args, { env, cwd, signal, onSpawn, spawn = spawn
     signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
-      if (stdout.length < MAX_CLI_OUTPUT_CHARS) stdout += chunk;
+      if (stdout.length < maxChars) stdout += chunk;
     });
     child.once("exit", (code) => {
       exited = true;

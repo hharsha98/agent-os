@@ -77,14 +77,16 @@ export function sessionDuration(fromIso: string | null | undefined, now: number)
   return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")} m`;
 }
 
-type EndFields = Pick<SessionSummary, "exitCode" | "signal" | "endedBy">;
+// `nothingToResume` is optional here: a summary from a server that doesn't send it counts as false.
+type EndFields = Pick<SessionSummary, "exitCode" | "signal" | "endedBy"> & { nothingToResume?: boolean };
 
 // How a session ended, in words (spec, the side panel's exited lines). Agent OS's own Stop and quit come
-// first, because both end the program with a signal; then a signal, which says more than an exit code
-// that comes with it.
+// first, because both end the program with a signal; then Claude Code's "nothing saved" (its exit code 1
+// would say nothing useful), then a signal, which says more than an exit code that comes with it.
 export function endedLine(s: EndFields): string {
   if (s.endedBy === "stop") return "Stopped by you.";
   if (s.endedBy === "quit") return "Ended when Agent OS quit.";
+  if (s.nothingToResume === true) return "Claude Code found nothing saved for this conversation, so it couldn't be resumed.";
   if (typeof s.signal === "string" && s.signal.trim()) return `Ended by signal ${s.signal.trim()}.`;
   if (s.exitCode === 0) return "Ended normally.";
   if (typeof s.exitCode === "number" && Number.isFinite(s.exitCode)) return `Ended with exit code ${s.exitCode}.`;

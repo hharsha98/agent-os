@@ -30,7 +30,7 @@ import { isLocalMode, requireLocalMode } from "../server/runtime/local-session.j
 import { SESSION_ID_RE, sessionError } from "../server/runtime/sessions/errors.js";
 import { createSessionManager } from "../server/runtime/sessions/manager.js";
 import { createRecordingsRouter, createSessionsRouter } from "../server/runtime/sessions/routes.js";
-import { FALLBACK_NOTICE, resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
+import { FALLBACK_NOTICE, NESTED_MARKERS, resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -862,8 +862,10 @@ const CLEARED_KEYS = [
   "AGENT_OS_PORT",
   "AGENT_OS_STDIN_SHUTDOWN",
   "NODE_ENV",
-  "CLAUDECODE",
-  "CLAUDE_CODE_ENTRYPOINT"
+  // The markers a host agent (Claude Code, Cursor) sets for its children: a
+  // developer running these tests inside one must not make the test server
+  // look nested (F-S7a).
+  ...NESTED_MARKERS
 ];
 
 function serverEnv(home, port, extra = {}) {
@@ -1460,6 +1462,48 @@ describe("the real server with the fake agents", { skip: SKIP_POSIX }, () => {
         "the fallback notice"
       );
     } finally {
+      await stopServer(server);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  // F-S7a, end to end through the real server: Agent OS started from inside
+  // Claude Code's terminal (the test plants the host's variables in the
+  // server's environment). The agent in the session must see none of them, not
+  // the host's messaging token and socket and not its other CLAUDE_ settings:
+  // only a startup file of the person could set one, and the stand-in login
+  // shell reads none. The fake lists the names (never the values) it was given.
+  test("a server started inside Claude Code: its sessions get none of the host's variables", async () => {
+    const home = await makeHome("agent-os-sessions-nested-");
+    const fakeLog = path.join(home, "fake.log");
+    const server = await startServer(home, {
+      CLAUDECODE: "1",
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_MESSAGING_SOCKET: "/made/up.sock",
+      CLAUDE_CODE_MESSAGING_TOKEN: "made-up-host-token",
+      CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1",
+      FAKE_AGENT_LOG: fakeLog
+    });
+    let id = null;
+    try {
+      assert.equal((await api(server.port, "POST", "/api/admin/execution-gate", { enabled: true, confirm: true })).status, 200);
+      const created = await api(server.port, "POST", "/api/sessions", { agentId: "claude", folder: path.join(home, "project") });
+      assert.equal(created.status, 201, created.text);
+      id = created.json.id;
+      const started = await waitFor(
+        async () => (await readFakeLog(fakeLog)).find((entry) => entry.event === "start"),
+        15000,
+        "the fake's start entry"
+      );
+      // Claude Code's names and every host-only name, not CURSOR_*: this server
+      // is nested in Claude Code, not Cursor, so a CURSOR_ name of the
+      // developer's own terminal (CURSOR_RIPGREP_PATH) is kept on purpose.
+      const leaked = started.hostKeys.filter((key) => key.startsWith("CLAUDE") || NESTED_MARKERS.includes(key));
+      assert.deepEqual(leaked, [], "no variable of the host agent reached the session");
+      assert.equal(started.env.CLAUDECODE, undefined);
+      assert.equal(started.env.TERM_PROGRAM, "AgentOS", "the session's own variables are there");
+    } finally {
+      if (id) await api(server.port, "POST", `/api/sessions/${id}/stop`, {}).catch(() => {});
       await stopServer(server);
       await rm(home, { recursive: true, force: true });
     }

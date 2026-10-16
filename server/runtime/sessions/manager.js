@@ -86,6 +86,23 @@ const UNKNOWN_KIND_MESSAGE = "Agent OS can't start that kind of session.";
 const QUITTING_MESSAGE = "Agent OS is quitting, so no new session can start.";
 // The answer to a second sign-in start (plan-brains contract, 409 setup_running).
 const SETUP_RUNNING_MESSAGE = "A ChatGPT sign-in is already open in Agent OS.";
+// A Claude Code session in which nothing was ever sent saves no conversation (and
+// Claude deletes old transcripts itself): `claude --resume <uuid>` then prints "No conversation found with session ID: <uuid>"
+// and exits 1 at once. Without this, the tab would offer Resume again, forever
+// (spike S7, 2026-10-16). Only the last 4 KB of text is kept to look for it, and
+// only the first 16 KB of the resumed run is watched: Claude prints the line right
+// at startup, so a real conversation that quotes that text much later (a chat about
+// this very message, a file that contains it) must never cost the person Resume.
+const NO_CONVERSATION_PREFIX = "No conversation found with session ID: ";
+const NO_CONVERSATION_TAIL_CHARS = 4096;
+const NO_CONVERSATION_WATCH_CHARS = 16384;
+// Also true when Claude itself deleted an old transcript (its cleanupPeriodDays).
+const NOTHING_TO_RESUME_MESSAGE =
+  "Claude Code has nothing saved for this conversation, so there is nothing to resume. Start a new session in this folder.";
+// Colour codes, cursor moves and window-title strings, which can sit between
+// the words of a line the agent prints: CSI, OSC (ended by BEL or ESC \),
+// charset picks and the two-byte escapes.
+const TERMINAL_ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-~]|\x1b[@-Z\\-_=>]/g;
 // A setup session never records (plan-brains spec §1, Safety 5). This stands in
 // for its recorder, so the output, resize and exit paths need no special case
 // and nothing is ever written to disk for it.
@@ -386,6 +403,8 @@ export function createSessionManager({
       cols: START_COLS,
       rows: START_ROWS,
       endedBy: null,
+      // Set only for a resume of a Claude Code conversation (watchForNothingToResume).
+      noConversation: null,
       exitSeen: false,
       exited,
       resolveExited
@@ -519,9 +538,40 @@ export function createSessionManager({
     if (attachment.sent - attachment.acked > CLOSE_LAG_BYTES) dropAttachment(state, attachment.id, "too_far_behind");
   }
 
+  // Starts watching the output of a RESUME of a Claude Code conversation for the
+  // line Claude prints when it saved nothing. Any other session is not watched.
+  function watchForNothingToResume(state) {
+    const agentSessionId = state.meta.agentSessionId;
+    if (state.meta.kind !== "agent" || state.meta.agentId !== "claude" || typeof agentSessionId !== "string" || !agentSessionId) return;
+    state.noConversation = { line: `${NO_CONVERSATION_PREFIX}${agentSessionId}`, tail: "", scanned: 0, seen: false };
+  }
+
+  // The raw tail is kept (not each chunk cleaned on its own) so an escape code
+  // split between two chunks can't hide the line. The search runs on the tail plus
+  // the new chunk BEFORE the tail is cut back, so a line followed by a lot of other
+  // output in the same chunk is still found. Only that tail is ever kept, and after
+  // NO_CONVERSATION_WATCH_CHARS of output the watch is dropped for good; a chunk
+  // that crosses that mark is searched only up to it.
+  function scanForNoConversation(state, chunk) {
+    const watch = state.noConversation;
+    const combined = watch.tail + chunk.slice(0, NO_CONVERSATION_WATCH_CHARS - watch.scanned);
+    if (combined.replace(TERMINAL_ESCAPES, "").includes(watch.line)) {
+      watch.seen = true;
+      watch.tail = "";
+      return;
+    }
+    watch.scanned += chunk.length;
+    if (watch.scanned >= NO_CONVERSATION_WATCH_CHARS) {
+      state.noConversation = null;
+      return;
+    }
+    watch.tail = combined.slice(-NO_CONVERSATION_TAIL_CHARS);
+  }
+
   function onOutput(state, data) {
     const chunk = typeof data === "string" ? data : String(data ?? "");
     if (!chunk) return;
+    if (state.noConversation && !state.noConversation.seen) scanForNoConversation(state, chunk);
     try {
       state.recorder.output(chunk);
     } catch {
@@ -561,6 +611,15 @@ export function createSessionManager({
     state.meta.exitCode = signal ? null : Number.isInteger(event.exitCode) ? event.exitCode : null;
     state.meta.signal = signal;
     state.meta.endedBy = state.endedBy || null;
+    // Claude printed "No conversation found ..." for this resume and then failed
+    // by itself: no Stop, no quit, no signal. A Stop or a quit is the person's
+    // doing, and a zero exit is a normal end, so neither says "nothing saved".
+    state.meta.nothingToResume =
+      state.noConversation?.seen === true &&
+      !state.meta.endedBy &&
+      Number.isInteger(state.meta.exitCode) &&
+      state.meta.exitCode !== 0;
+    state.noConversation = null;
     state.meta.lastUsedAt = endedAt;
     state.status = "exited";
     state.stateSince = endedAt;
@@ -758,6 +817,8 @@ export function createSessionManager({
   function resumeOf(view, views, installed) {
     const fallback = view.kind === "agent" && view.resumeMode === "fallback";
     if (view.kind !== "agent" || view.status !== "exited") return { available: false, reason: null, fallback };
+    // Claude Code saved nothing: a Resume would fail the same way every time.
+    if (view.nothingToResume === true) return { available: false, reason: NOTHING_TO_RESUME_MESSAGE, fallback };
     const label = view.agentLabel;
     if (installed.get(view.agentId) === false) {
       return { available: false, reason: `${label} isn't installed anymore.`, fallback };
@@ -805,6 +866,7 @@ export function createSessionManager({
       dismissed: view.dismissed === true,
       brain: view.brain ?? null,
       resume: resumeOf(view, views, installed),
+      nothingToResume: view.nothingToResume === true,
       alerts: "basic",
       recordingBytes: await recordingBytes(view.id)
     };
@@ -912,6 +974,7 @@ export function createSessionManager({
         endedBy: null,
         dismissed: false,
         brain: kind === "agent" ? brainSummary(agentId, brain) : null,
+        nothingToResume: false,
         agentSessionId: profile.agentSessionId ?? null,
         resumeMode: kind === "agent" ? profile.resumeMode ?? null : null,
         resumes: 0,
@@ -1109,11 +1172,14 @@ export function createSessionManager({
           endedBy: null,
           dismissed: false,
           brain: brainSummary(meta.agentId, brain),
+          // A new run starts clean; this one sets it again only if it too finds nothing saved.
+          nothingToResume: false,
           agentSessionId: profile.agentSessionId ?? meta.agentSessionId ?? null,
           resumeMode: profile.resumeMode ?? meta.resumeMode ?? null,
           resumes: (Number(meta.resumes) || 0) + 1,
           lastUsedAt: at
         });
+        watchForNothingToResume(state);
         // The recorder writes the "--- resumed ---" marker itself (append: true).
         // startProcess puts the session into `live` and gives the slot back.
         await startProcess(state, profile, { append: true, releaseSlot: slot.release });

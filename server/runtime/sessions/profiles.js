@@ -27,6 +27,7 @@ import { SESSION_ID_RE, isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
 import { readSessionSettings } from "./settings.js";
 import { getLoginShellEnv, sessionEnv } from "./shell-env.js";
+import { runCli } from "./soft-stop.js";
 
 export const SESSION_AGENTS = Object.freeze(["claude", "codex", "cursor", "hermes", "openclaw"]);
 // The short names every session message, tab and dialog uses ("Codex", not
@@ -67,6 +68,12 @@ const CODEX_TUI_OPTIONS = [
   "-c", 'tui.notifications=["agent-turn-complete","approval-requested"]',
   "-c", "tui.notification_condition=always"
 ];
+
+// Spike S6: `agent create-chat` prints the id of a new, empty Cursor chat. It
+// is a quick call, so it gets a short limit, and its answer is one id, so
+// there is no reason to keep more than a few KB of it.
+const CURSOR_CREATE_CHAT_TIMEOUT_MS = 10_000;
+const CURSOR_CREATE_CHAT_OUTPUT_CHARS = 4096;
 
 // Every per-agent lookup goes through this (ruling R6): a plain `map[id]`
 // would take "constructor", "__proto__" or "toString" from Object.prototype.
@@ -143,6 +150,27 @@ async function writeSessionClaudeSettings({ settings, file }) {
   } catch (error) {
     await fs.rm(temp, { force: true });
     throw error;
+  }
+}
+
+// Spike S6: asks Cursor for a new chat (`<command> create-chat`, argv only,
+// never a shell) and answers its id, or null on ANY failure (a non-zero exit,
+// the time limit, a program that can't start, an answer that isn't exactly one
+// uuid), because the caller then falls back to the chat picker as before and
+// the person is never blocked. It runs in the session's folder with the
+// session's own environment (H1, H2), like the session itself, and never
+// rejects. `timeoutMs` is only for tests. On Windows a Cursor launcher that is a
+// .cmd file cannot start without a shell, so create-chat fails there and the
+// session falls back to the chat picker (a known limit; no shell is used on purpose).
+export async function cursorCreateChat(command, { cwd, env, timeoutMs = CURSOR_CREATE_CHAT_TIMEOUT_MS } = {}) {
+  const limit = new AbortController();
+  const timer = setTimeout(() => limit.abort(), timeoutMs);
+  try {
+    const result = await runCli(command, ["create-chat"], { cwd, env, signal: limit.signal, maxChars: CURSOR_CREATE_CHAT_OUTPUT_CHARS });
+    const id = result.stdout.trim();
+    return result.ok && UUID.test(id) ? id : null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -240,8 +268,22 @@ export async function buildSessionProfile({
     resumeMode = "fallback";
   } else if (agentId === "cursor") {
     // No model option (H3): the person picks models inside Cursor, as in Terminal.
-    args = resuming ? ["--resume", "--workspace", cwd] : ["--workspace", cwd];
-    resumeMode = "fallback";
+    // Spike S6: a bare `--resume` opens Cursor's chat PICKER, which lists the
+    // person's chats from every project. `create-chat` gives an exact id and
+    // `--resume <id>` opens the TUI straight on that chat, so a new session
+    // asks for one first and keeps it (the same way Claude Code's --session-id
+    // is kept). When that call fails, or for a session saved before this
+    // change, there is no id: the picker and the folder rules of a fallback
+    // resume stay as they were. No new option is added, so H3 holds.
+    if (resuming) agentSessionId = isSessionId(resume.agentSessionId) ? resume.agentSessionId : null;
+    else agentSessionId = await cursorCreateChat(command, { cwd, env });
+    if (agentSessionId) {
+      args = ["--resume", agentSessionId, "--workspace", cwd];
+      resumeMode = "id";
+    } else {
+      args = resuming ? ["--resume", "--workspace", cwd] : ["--workspace", cwd];
+      resumeMode = "fallback";
+    }
   } else if (agentId === "hermes") {
     // The person's configured interface (H4): never a forced --tui.
     args = resuming ? ["--resume", "latest", "--in", cwd] : ["--in", cwd];
@@ -323,7 +365,8 @@ const SHAPES = {
     return true;
   },
   cursor(args) {
-    const rest = args[0] === "--resume" ? args.slice(1) : args;
+    // `--resume <chat id>` (spike S6), the bare `--resume` of an older session, or neither.
+    const rest = args[0] !== "--resume" ? args : UUID.test(args[1]) ? args.slice(2) : args.slice(1);
     return rest.length === 2 && rest[0] === "--workspace" && isFolderValue(rest[1]);
   },
   hermes(args) {

@@ -211,6 +211,14 @@ test("runCli: the CLI gets only the environment it is handed, its output is coll
   }
 });
 
+test("runCli: maxChars stops collecting output once that much has arrived (a caller that wants a short answer)", SKIP_POSIX, async () => {
+  // Two writes a moment apart, so the second arrives after the limit was reached.
+  const program = "process.stdout.write('a'.repeat(100), () => setTimeout(() => process.stdout.write('b'.repeat(100)), 100))";
+  const run = (options) => runCli(process.execPath, ["-e", program], { env: { PATH: "/usr/bin:/bin" }, cwd: os.tmpdir(), ...options });
+  assert.equal((await run({ maxChars: 50 })).stdout, "a".repeat(100), "it stops taking more once past the limit (the chunk that crossed it stays)");
+  assert.equal((await run({})).stdout, "a".repeat(100) + "b".repeat(100), "without a limit of its own it keeps what a normal answer holds");
+});
+
 // A program that prints its answer and exits while a helper it started keeps
 // the output pipe open (a background child that inherited stdout).
 const EXITS_WHILE_HELPER_HOLDS_OUTPUT = `

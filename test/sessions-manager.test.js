@@ -58,6 +58,7 @@ const SUMMARY_KEYS = [
   "dismissed",
   "brain",
   "resume",
+  "nothingToResume",
   "alerts",
   "recordingBytes"
 ];
@@ -1352,6 +1353,70 @@ test("resume rules: Hermes, Codex and Cursor refuse with a written reason when t
   });
 });
 
+test("resume rules: a Cursor session with an exact chat id resumes by it whatever else is open in its folder; one without an id keeps the fallback rules (spike S6)", async () => {
+  await withSessionEnv(async ({ agentOsHome, project, other }) => {
+    // What buildSessionProfile answers for Cursor: a new session gets a chat id from `create-chat`
+    // (when the call works), a resume gets the id kept in meta.json.
+    let chatIds = true;
+    const world = fakeWorld({
+      buildProfile: async (input) => {
+        world.profileInputs.push(input);
+        const profile = fakeProfile(input);
+        if (input.agentId !== "cursor") return profile;
+        const id = input.resume ? input.resume.agentSessionId : chatIds ? crypto.randomUUID() : null;
+        return { ...profile, agentSessionId: id, resumeMode: id ? "id" : "fallback" };
+      }
+    });
+    const finish = async (index, id) => {
+      world.ptys[index].exit(0);
+      await ended(world, id);
+    };
+
+    const a = await world.manager.create({ agentId: "cursor", folder: project });
+    const b = await world.manager.create({ agentId: "cursor", folder: project });
+    const chatA = (await metaOnDisk(agentOsHome, a.id)).agentSessionId;
+    const chatB = (await metaOnDisk(agentOsHome, b.id)).agentSessionId;
+    assert.match(chatA, SESSION_ID_RE);
+    assert.notEqual(chatA, chatB);
+    assert.equal((await metaOnDisk(agentOsHome, a.id)).resumeMode, "id");
+    // The other Cursor session in the folder is still open: an id resume does not care.
+    await finish(0, a.id);
+    const idResume = { available: true, reason: null, fallback: false };
+    assert.deepEqual((await world.manager.get(a.id)).resume, idResume);
+    await finish(1, b.id);
+    assert.deepEqual((await world.manager.get(a.id)).resume, idResume, "two ended sessions in one folder are not ambiguous");
+    assert.deepEqual((await world.manager.get(b.id)).resume, idResume);
+
+    // Each opens its own chat.
+    await world.manager.resume(b.id);
+    assert.deepEqual(world.profileInputs.at(-1).resume, { agentSessionId: chatB });
+    const resumedB = await metaOnDisk(agentOsHome, b.id);
+    assert.deepEqual([resumedB.agentSessionId, resumedB.resumeMode], [chatB, "id"]);
+    await world.manager.resume(a.id); // while B is running in the same folder
+    assert.deepEqual(world.profileInputs.at(-1).resume, { agentSessionId: chatA });
+    assert.equal((await metaOnDisk(agentOsHome, a.id)).agentSessionId, chatA);
+
+    // Sessions with no id (create-chat failed, or saved before it existed) keep the picker and its rules.
+    chatIds = false;
+    const c = await world.manager.create({ agentId: "cursor", folder: other });
+    const d = await world.manager.create({ agentId: "cursor", folder: other });
+    assert.deepEqual([(await metaOnDisk(agentOsHome, c.id)).agentSessionId, (await metaOnDisk(agentOsHome, c.id)).resumeMode], [null, "fallback"]);
+    await finish(4, c.id);
+    assert.deepEqual((await world.manager.get(c.id)).resume, {
+      available: false,
+      reason: "Another Cursor session is open in this folder. Stop it first.",
+      fallback: true
+    });
+    await finish(5, d.id);
+    const shared = "More than one ended Cursor session used this folder, so Agent OS can't tell which conversation to resume.";
+    assert.deepEqual((await world.manager.get(c.id)).resume, { available: false, reason: shared, fallback: true });
+    await assert.rejects(
+      world.manager.resume(c.id),
+      (error) => error.status === 409 && error.code === "not_resumable" && error.message === shared
+    );
+  });
+});
+
 test("resume rules: a New session still starting in the same folder counts as open, so a fallback resume refuses instead of resuming the wrong conversation", async () => {
   await withSessionEnv(async ({ other }) => {
     const world = fakeWorld();
@@ -1395,6 +1460,254 @@ test("resume rules: a New session still starting in the same folder counts as op
     assert.deepEqual((await world.manager.get(first.id)).resume, available);
     hold();
     assert.equal((await resuming).status, "starting");
+  });
+});
+
+// ---- a Claude resume with nothing saved (spike S7) ------------------------------------------------
+
+const NOTHING_TO_RESUME =
+  "Claude Code has nothing saved for this conversation, so there is nothing to resume. Start a new session in this folder.";
+const NO_CONVERSATION_PREFIX = "No conversation found with session ID: ";
+const noConversationLine = (uuid = CLAUDE_UUID) => `${NO_CONVERSATION_PREFIX}${uuid}`;
+
+// A Claude session that ended by itself and was then resumed: the next fake PTY is the resumed run.
+async function resumedClaude(world, project) {
+  const first = await world.manager.create({ agentId: "claude", folder: project });
+  world.ptys[0].exit(0);
+  await ended(world, first.id);
+  await world.manager.resume(first.id);
+  return { id: first.id, run: world.ptys[1] };
+}
+
+test("nothing to resume: a Claude resume that prints 'No conversation found' for its own id and fails by itself is remembered, shown plainly, survives a restart, and is never offered again", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const world = fakeWorld();
+    const first = await world.manager.create({ agentId: "claude", folder: project });
+    assert.equal((await metaOnDisk(agentOsHome, first.id)).nothingToResume, false, "a fresh run starts clean");
+    assert.equal(first.nothingToResume, false);
+    world.ptys[0].exit(0);
+    await ended(world, first.id);
+    await world.manager.resume(first.id);
+
+    // The line arrives wrapped in colour codes, then Claude exits 1 at once.
+    world.ptys[1].emit(`\x1b[31m${noConversationLine()}\x1b[39m\r\n`);
+    world.ptys[1].exit(1);
+    const done = await ended(world, first.id);
+    assert.equal(done.exitCode, 1);
+    assert.equal(done.endedBy, null);
+    assert.equal(done.nothingToResume, true);
+    assert.deepEqual(done.resume, { available: false, reason: NOTHING_TO_RESUME, fallback: false });
+    await waitFor(async () => (await metaOnDisk(agentOsHome, first.id))?.nothingToResume === true);
+    assert.equal((await metaOnDisk(agentOsHome, first.id)).exitCode, 1);
+
+    // Resume now refuses with that reason, and starts nothing.
+    const spawnsBefore = world.spawnCalls;
+    await assert.rejects(
+      world.manager.resume(first.id),
+      (error) => error.status === 409 && error.code === "not_resumable" && error.message === NOTHING_TO_RESUME
+    );
+    assert.equal(world.spawnCalls, spawnsBefore, "no process started: no Resume loop");
+
+    // It is a saved fact: a new manager (a restart) reads it from meta.json.
+    const restarted = createSessionManager(world.deps);
+    const again = await restarted.get(first.id);
+    assert.equal(again.nothingToResume, true);
+    assert.deepEqual(again.resume, { available: false, reason: NOTHING_TO_RESUME, fallback: false });
+    assert.equal((await restarted.list()).find((row) => row.id === first.id).nothingToResume, true);
+  });
+});
+
+test("nothing to resume: the line is found when colour codes or the words are split between chunks, after other output inside the first 16 KB, and even when more output follows it", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const { id, run } = await resumedClaude(world, project);
+    run.emit("x".repeat(10 * 1024));
+    run.emit("\x1b[1;3"); // an escape code cut in two
+    run.emit(`1mNo conversation found wi`);
+    run.emit(`th session ID: ${CLAUDE_UUID}\x1b[0m`);
+    run.emit("y".repeat(20 * 1024)); // more output after the line does not undo it
+    run.exit(1);
+    const done = await ended(world, id);
+    assert.equal(done.nothingToResume, true);
+    assert.equal(done.resume.available, false);
+  });
+});
+
+test("nothing to resume: the line is found even when more than 4 KB of other output follows it in the same chunk", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const { id, run } = await resumedClaude(world, project);
+    // One chunk: the line, then 5000 more characters. The search must run before the 4 KB tail is cut.
+    run.emit(`${noConversationLine()}\r\n${"z".repeat(5000)}`);
+    run.exit(1);
+    const done = await ended(world, id);
+    assert.equal(done.nothingToResume, true);
+    assert.equal(done.resume.available, false);
+  });
+});
+
+test("nothing to resume: only the start of the run is watched, so the text printed after more than 16 KB of other output (a real conversation quoting it) is ignored", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const { id, run } = await resumedClaude(world, project);
+    for (let i = 0; i < 5; i += 1) run.emit("q".repeat(4096)); // 20 KB, past the 16 KB window
+    run.emit(`${noConversationLine()}\r\n`);
+    run.exit(1);
+    const done = await ended(world, id);
+    assert.equal(done.exitCode, 1);
+    assert.equal(done.nothingToResume, false);
+    assert.equal(done.resume.available, true);
+  });
+});
+
+test("nothing to resume: only the last 4 KB of raw output is kept, so a line whose two halves are more than 4 KB apart (escape codes between them) is not found", async () => {
+  await withSessionEnv(async ({ project }) => {
+    // Control: the same split, with only a few escape codes between the halves, is found.
+    let world = fakeWorld();
+    let { id, run } = await resumedClaude(world, project);
+    run.emit(NO_CONVERSATION_PREFIX);
+    run.emit("\x1b[0m".repeat(10));
+    run.emit(CLAUDE_UUID);
+    run.exit(1);
+    let done = await ended(world, id);
+    assert.equal(done.nothingToResume, true);
+
+    // 1100 x 4 = 4400 characters of escape codes (they strip away to nothing) push the first half
+    // out of the kept tail, still well inside the 16 KB window.
+    world = fakeWorld();
+    ({ id, run } = await resumedClaude(world, project));
+    run.emit(NO_CONVERSATION_PREFIX);
+    run.emit("\x1b[0m".repeat(1100));
+    run.emit(CLAUDE_UUID);
+    run.exit(1);
+    done = await ended(world, id);
+    assert.equal(done.exitCode, 1);
+    assert.equal(done.nothingToResume, false);
+    assert.equal(done.resume.available, true);
+  });
+});
+
+test("nothing to resume: not set when the run exits 0, is ended by a signal, or is stopped or quit by Agent OS (even with exit code 1)", async () => {
+  await withSessionEnv(async ({ project }) => {
+    // Exit code 0: a normal end.
+    let world = fakeWorld();
+    let { id, run } = await resumedClaude(world, project);
+    run.emit(`${noConversationLine()}\r\n`);
+    run.exit(0);
+    let done = await ended(world, id);
+    assert.equal(done.nothingToResume, false);
+    assert.deepEqual(done.resume, { available: true, reason: null, fallback: false });
+
+    // Ended by a signal: no exit code at all.
+    world = fakeWorld();
+    ({ id, run } = await resumedClaude(world, project));
+    run.emit(`${noConversationLine()}\r\n`);
+    run.exit(0, 15);
+    done = await ended(world, id);
+    assert.equal(done.signal, "SIGTERM");
+    assert.equal(done.nothingToResume, false);
+
+    // A Stop during the run: the person ended it.
+    world = fakeWorld({ softStop: async () => ({ outcome: "none", note: null }) });
+    ({ id, run } = await resumedClaude(world, project));
+    run.emit(`${noConversationLine()}\r\n`);
+    const stopping = world.manager.stop(id);
+    run.exit(1);
+    await stopping;
+    done = await ended(world, id);
+    assert.equal(done.endedBy, "stop");
+    assert.equal(done.exitCode, 1);
+    assert.equal(done.nothingToResume, false);
+    assert.equal(done.resume.available, true);
+
+    // A quit during the run.
+    world = fakeWorld({ softStop: async () => ({ outcome: "none", note: null }) });
+    ({ id, run } = await resumedClaude(world, project));
+    run.emit(`${noConversationLine()}\r\n`);
+    const quitting = world.manager.shutdownAll({ reason: "quit" });
+    run.exit(1);
+    await quitting;
+    done = await ended(world, id);
+    assert.equal(done.endedBy, "quit");
+    assert.equal(done.nothingToResume, false);
+  });
+});
+
+test("nothing to resume: not set for a different conversation id, for a fresh session that prints the line, for text that only looks like it, or for another agent's resume", async () => {
+  await withSessionEnv(async ({ project, other }) => {
+    // The line names another conversation.
+    let world = fakeWorld();
+    let { id, run } = await resumedClaude(world, project);
+    run.emit(`${noConversationLine(crypto.randomUUID())}\r\n`);
+    run.exit(1);
+    let done = await ended(world, id);
+    assert.equal(done.exitCode, 1);
+    assert.equal(done.nothingToResume, false);
+    assert.equal(done.resume.available, true);
+
+    // Only the start of the line, or the words without the id.
+    world = fakeWorld();
+    ({ id, run } = await resumedClaude(world, project));
+    run.emit("No conversation found with session ID: \r\nno conversation found\r\n");
+    run.exit(1);
+    done = await ended(world, id);
+    assert.equal(done.nothingToResume, false);
+
+    // A fresh session (not a resume) that prints the very line and fails.
+    world = fakeWorld();
+    const fresh = await world.manager.create({ agentId: "claude", folder: project });
+    world.ptys[0].emit(`${noConversationLine()}\r\n`);
+    world.ptys[0].exit(1);
+    done = await ended(world, fresh.id);
+    assert.equal(done.exitCode, 1);
+    assert.equal(done.nothingToResume, false);
+    assert.equal(done.resume.available, true);
+
+    // Another agent's resume is never watched, even one that has an agent session id (Hermes's
+    // is its own `agentos-<id>`) and prints the very same sentence for it.
+    const HERMES_ID = "agentos-test-conversation";
+    world = fakeWorld({ buildProfile: async (input) => ({ ...fakeProfile(input), agentSessionId: HERMES_ID }) });
+    const hermes = await world.manager.create({ agentId: "hermes", folder: other });
+    world.ptys[0].exit(0);
+    await ended(world, hermes.id);
+    await world.manager.resume(hermes.id);
+    world.ptys[1].emit(`${noConversationLine(HERMES_ID)}\r\n`);
+    world.ptys[1].exit(1);
+    done = await ended(world, hermes.id);
+    assert.equal(done.exitCode, 1);
+    assert.equal(done.nothingToResume, false);
+    assert.equal(done.resume.available, true);
+  });
+});
+
+test("nothing to resume: an older meta.json without the field reads as false and can be resumed, a true written by hand refuses Resume, and the new run writes the field false", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const world = fakeWorld();
+    const { id, run } = await resumedClaude(world, project);
+    run.emit(`${noConversationLine()}\r\n`);
+    run.exit(1);
+    await ended(world, id);
+    await waitFor(async () => (await metaOnDisk(agentOsHome, id))?.nothingToResume === true);
+
+    // An older meta.json (before this field) has no key at all.
+    const metaPath = path.join(agentOsHome, "sessions", id, "meta.json");
+    const meta = JSON.parse(await readFile(metaPath, "utf8"));
+    delete meta.nothingToResume;
+    await writeFile(metaPath, `${JSON.stringify(meta)}\n`);
+    const reader = createSessionManager(world.deps);
+    const old = await reader.get(id);
+    assert.equal(old.nothingToResume, false);
+    assert.equal(old.resume.available, true);
+
+    // Resuming it works and writes the field false into the new run's meta.json.
+    meta.nothingToResume = true; // as if set by hand: Resume is refused while it says true
+    await writeFile(metaPath, `${JSON.stringify(meta)}\n`);
+    await assert.rejects(reader.resume(id), (error) => error.code === "not_resumable");
+    delete meta.nothingToResume;
+    await writeFile(metaPath, `${JSON.stringify(meta)}\n`);
+    const resumedAgain = await reader.resume(id);
+    assert.equal(resumedAgain.nothingToResume, false);
+    assert.equal((await metaOnDisk(agentOsHome, id)).nothingToResume, false);
   });
 });
 

@@ -48,7 +48,8 @@ async function withEnv(vars, fn) {
 // A temp HOME, a system-only PATH, no launch PATH from a desktop shell, no
 // excluded names, and a folder for the fake shells. `npm test` is itself an
 // npm script, so npm_lifecycle_event is cleared: every test here sees a server
-// that no npm script started, unless it says otherwise.
+// that no npm script started, unless it says otherwise. The same goes for the
+// markers that say a host agent (Claude Code, Cursor) started the server.
 async function withShellWorld(fn) {
   const base = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-shell-env-")));
   const home = path.join(base, "home");
@@ -63,6 +64,11 @@ async function withShellWorld(fn) {
         PATH: SYSTEM_PATH_DIRS.join(path.delimiter),
         AGENT_OS_LAUNCH_PATH: undefined,
         npm_lifecycle_event: undefined,
+        // `npm test` may itself run inside Claude Code or Cursor. Every test
+        // here sees a server that no host agent started, unless it says otherwise.
+        CLAUDECODE: undefined,
+        CLAUDE_CODE_CHILD_SESSION: undefined,
+        CURSOR_AGENT: undefined,
         AGENT_OS_TOKEN: "secret-session-token",
         HERMES_AGENT_OS_ADMIN_TOKEN: "secret-admin-token",
         SESSIONS_TEST_PLANTED: "planted by the test"
@@ -621,6 +627,241 @@ test("login shell: when no npm script started Agent OS, the same names are the p
   });
 });
 
+// Agent OS started from inside Claude Code's or Cursor's terminal (spikes S6 and
+// S7, 2026-10-16): the host's variables are in the server's environment. The
+// login shell must not receive them, so only the person's own startup files can
+// put such a name back (F-S7a, spec H2).
+test("login shell (F-S7a): a server started inside Claude Code hands none of that host's CLAUDE_ names to the login shell; the person's own startup file can put one back", posixSkip, async () => {
+  await withShellWorld(async ({ base }) => {
+    await withEnv(
+      {
+        CLAUDECODE: "1",
+        CLAUDE_CODE_MESSAGING_TOKEN: "made-up-host-token",
+        CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1",
+        CLAUDE_CONFIG_DIR: "/the/hosts/config",
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: "32000",
+        CURSOR_RIPGREP_PATH: "/some/where/rg",
+        AGENT_TRANSCRIPTS: "/some/transcripts",
+        SESSIONS_TEST_KEPT: "the person's own"
+      },
+      async () => {
+        const seen = path.join(base, "host-seen");
+        const plain = await fakeShell(
+          base,
+          "plain-shell",
+          [
+            `printf '%s|%s|%s|%s' "\${CLAUDECODE-unset}" "\${CLAUDE_CODE_MESSAGING_TOKEN-unset}" "\${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-unset}" "\${CLAUDE_CONFIG_DIR-unset}" > "${seen}"`,
+            '/bin/sh -c "$last"'
+          ].join("\n")
+        );
+        const without = await resolveLoginShellEnv({ shell: plain.file });
+        assert.equal(without.source, "login-shell");
+        assert.equal(await readFile(seen, "utf8"), "unset|unset|unset|unset", "the person's startup files never receive the host's names");
+        assert.deepEqual(Object.keys(without.env).filter((key) => key.startsWith("CLAUDE")), [], "no CLAUDE name comes back");
+        assert.equal(without.env.CURSOR_RIPGREP_PATH, "/some/where/rg", "a Claude Code host removes Claude's names only");
+        assert.equal(without.env.AGENT_TRANSCRIPTS, "/some/transcripts", "Cursor's host-only names are Cursor's to remove, not a Claude Code host's (sessions drop them anyway)");
+        assert.equal(without.env.SESSIONS_TEST_KEPT, "the person's own");
+        assert.equal(without.env.SESSIONS_TEST_PLANTED, "planted by the test");
+
+        // The person set it in a startup file: it is theirs, so it comes back.
+        // Their CLAUDE_CONFIG_DIR too (H1: their own folder, passed through as today).
+        const own = await fakeShell(
+          base,
+          "own-shell",
+          ["export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1", 'export CLAUDE_CONFIG_DIR="/the/persons/config"', '/bin/sh -c "$last"'].join("\n")
+        );
+        const withOwn = await resolveLoginShellEnv({ shell: own.file });
+        assert.equal(withOwn.source, "login-shell");
+        assert.equal(withOwn.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE, "1");
+        assert.equal(withOwn.env.CLAUDE_CONFIG_DIR, "/the/persons/config");
+        assert.equal(withOwn.env.CLAUDE_CODE_MESSAGING_TOKEN, undefined, "the host's token stays gone");
+        assert.equal(withOwn.env.CLAUDECODE, undefined);
+        const sessionOwn = sessionEnv(withOwn.env, { sessionId: "s", agentId: "claude" });
+        assert.equal(sessionOwn.CLAUDE_CODE_DISABLE_TERMINAL_TITLE, "1");
+        assert.equal(sessionOwn.CLAUDE_CODE_MESSAGING_TOKEN, undefined);
+
+        // A host-only name a startup file sets is still removed from the session.
+        const marker = await fakeShell(base, "marker-shell", ["export CLAUDE_CODE_SESSION_ID=set-by-a-startup-file", '/bin/sh -c "$last"'].join("\n"));
+        const withMarker = await resolveLoginShellEnv({ shell: marker.file });
+        assert.equal(withMarker.env.CLAUDE_CODE_SESSION_ID, "set-by-a-startup-file");
+        assert.equal(sessionEnv(withMarker.env, { sessionId: "s", agentId: "claude" }).CLAUDE_CODE_SESSION_ID, undefined);
+      }
+    );
+  });
+});
+
+test("login shell (F-S7a): CLAUDE_CODE_CHILD_SESSION alone also marks a Claude Code host", posixSkip, async () => {
+  await withShellWorld(async () => {
+    await withEnv({ CLAUDE_CODE_CHILD_SESSION: "1", CLAUDE_CODE_SIMPLE: "1", CLAUDE_EFFORT: "high" }, async () => {
+      const result = await resolveLoginShellEnv({ shell: FAKE_LOGIN_SHELL });
+      assert.equal(result.source, "login-shell");
+      assert.deepEqual(Object.keys(result.env).filter((key) => key.startsWith("CLAUDE")), []);
+    });
+  });
+});
+
+test("login shell (F-S7a): a server started inside Cursor hands none of Cursor's names to the login shell, and keeps Claude's", posixSkip, async () => {
+  await withShellWorld(async ({ base }) => {
+    await withEnv(
+      {
+        CURSOR_AGENT: "1",
+        CURSOR_INVOKED_AS: "agent",
+        CURSOR_ASKPASS_SECRET: "made-up-secret",
+        CURSOR_RIPGREP_PATH: "/some/where/rg",
+        __CURSOR_SANDBOX_ENV_RESTORE: "x",
+        AGENT_TRANSCRIPTS: "/some/transcripts",
+        GLOBAL_AGENT_ENVIRONMENT_VARIABLE_NAMESPACE: "ns",
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: "32000",
+        CLAUDE_CODE_SESSION_ID: "made-up-session"
+      },
+      async () => {
+        const result = await resolveLoginShellEnv({ shell: FAKE_LOGIN_SHELL });
+        assert.equal(result.source, "login-shell");
+        const gone = ["CURSOR_AGENT", "CURSOR_INVOKED_AS", "CURSOR_ASKPASS_SECRET", "CURSOR_RIPGREP_PATH", "__CURSOR_SANDBOX_ENV_RESTORE", "AGENT_TRANSCRIPTS", "GLOBAL_AGENT_ENVIRONMENT_VARIABLE_NAMESPACE"];
+        for (const key of gone) assert.equal(result.env[key], undefined, key);
+        assert.equal(result.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "32000", "a Cursor host removes Cursor's names only");
+        assert.equal(result.env.CLAUDE_CODE_SESSION_ID, "made-up-session", "Claude Code's host-only names are Claude Code's to remove, not a Cursor host's (sessions drop them anyway)");
+
+        // The person's own startup file can bring a Cursor name back.
+        const own = await fakeShell(base, "cursor-own-shell", ["export CURSOR_RIPGREP_PATH=/the/persons/rg", '/bin/sh -c "$last"'].join("\n"));
+        const back = await resolveLoginShellEnv({ shell: own.file });
+        assert.equal(back.env.CURSOR_RIPGREP_PATH, "/the/persons/rg");
+        assert.equal(back.env.CURSOR_ASKPASS_SECRET, undefined);
+      }
+    );
+  });
+});
+
+test("login shell (F-S7a): a server no host agent started (a Dock launch, a plain Terminal) keeps every name, the person's own CLAUDE_ ones included", posixSkip, async () => {
+  await withShellWorld(async () => {
+    await withEnv({ CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1", CLAUDE_CONFIG_DIR: "/the/persons/config", CURSOR_RIPGREP_PATH: "/some/where/rg" }, async () => {
+      const result = await resolveLoginShellEnv({ shell: FAKE_LOGIN_SHELL });
+      assert.equal(result.source, "login-shell");
+      assert.equal(result.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE, "1");
+      assert.equal(result.env.CLAUDE_CONFIG_DIR, "/the/persons/config");
+      assert.equal(result.env.CURSOR_RIPGREP_PATH, "/some/where/rg");
+    });
+  });
+});
+
+// Where no startup file could bring a name back (the fallback, Windows), the
+// host's whole family goes, bar the two names of a person's own that sessions
+// cannot do without (CLAUDE_CONFIG_DIR by H1, CLAUDE_CODE_GIT_BASH_PATH).
+const KEPT_NAMES = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH"];
+
+test("login shell (F-S7a): the fallback and Windows drop a nested host's whole family of names, bar CLAUDE_CONFIG_DIR and CLAUDE_CODE_GIT_BASH_PATH", posixSkip, async () => {
+  await withShellWorld(async ({ base }) => {
+    const noMarkers = await fakeShell(base, "no-markers", `echo '{"PATH":"/nope"}'`);
+    const names = {
+      // host-only
+      CLAUDE_CODE_MESSAGING_SOCKET: "/made/up.sock",
+      Claude_Code_Session_Id: "made-up-session",
+      // the rest of the CLAUDE family: a host's, or a person's own that no startup file could restore
+      CLAUDE_CODE_SIMPLE: "1",
+      CLAUDE_CODE_DISABLE_CRON: "1",
+      CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1",
+      CLAUDE_EFFORT: "high",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      // kept
+      CLAUDE_CONFIG_DIR: "/the/persons/config",
+      CLAUDE_CODE_GIT_BASH_PATH: "C:\\Git\\bin\\bash.exe",
+      // Cursor's
+      CURSOR_ASKPASS_SOCKET: "/made/up.sock",
+      Cursor_Askpass_Secret: "made-up-secret",
+      CURSOR_RIPGREP_PATH: "/some/where/rg",
+      AGENT_TRANSCRIPTS: "/some/transcripts"
+    };
+    const claudeFamily = ["CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_DISABLE_CRON", "CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "CLAUDE_EFFORT", "CLAUDE_CODE_USE_BEDROCK"];
+    const claudeNames = (env) => Object.keys(env).filter((key) => key.startsWith("CLAUDE")).sort();
+    const cursorNames = (env) => Object.keys(env).filter((key) => key.startsWith("CURSOR_")).sort();
+
+    // A Claude Code host: no CLAUDE name is left but the two kept ones (a bare
+    // CLAUDE_CODE_SIMPLE would start every session in --bare mode, H3).
+    // Cursor's names are not its to remove. Outside Windows names keep their
+    // letter case apart.
+    await withEnv({ CLAUDECODE: "1", ...names }, async () => {
+      const fallback = await resolveLoginShellEnv({ shell: noMarkers.file });
+      assert.equal(fallback.source, "fallback");
+      assert.deepEqual(claudeNames(fallback.env), [...KEPT_NAMES].sort());
+      for (const key of KEPT_NAMES) assert.equal(fallback.env[key], names[key], `fallback: ${key} is kept`);
+      assert.equal(fallback.env.Claude_Code_Session_Id, "made-up-session", "outside Windows names keep their letter case apart");
+      assert.equal(fallback.env.CURSOR_RIPGREP_PATH, "/some/where/rg");
+      assert.equal(fallback.env.AGENT_TRANSCRIPTS, "/some/transcripts");
+      assert.equal(fallback.env.SESSIONS_TEST_PLANTED, "planted by the test");
+      // A nested server on the fallback must not hand CLAUDE_CODE_SIMPLE (bare mode, H3),
+      // CLAUDE_EFFORT and similar host names to a session.
+      const session = sessionEnv(fallback.env, { sessionId: "s", agentId: "claude" });
+      for (const key of claudeFamily) assert.equal(session[key], undefined, `session: ${key}`);
+      assert.equal(session.CLAUDE_CONFIG_DIR, "/the/persons/config");
+
+      const windows = await resolveLoginShellEnv({ platform: "win32" });
+      assert.equal(windows.source, "process");
+      assert.deepEqual(claudeNames(windows.env), [...KEPT_NAMES].sort(), "on Windows names ignore letter case");
+      for (const key of KEPT_NAMES) assert.equal(windows.env[key], names[key], `windows: ${key} is kept`);
+      assert.equal(windows.env.CURSOR_RIPGREP_PATH, "/some/where/rg");
+      assert.equal(windows.env.AGENT_TRANSCRIPTS, "/some/transcripts");
+      assert.equal(windows.env.SESSIONS_TEST_PLANTED, "planted by the test");
+    });
+
+    // A Cursor host: no CURSOR_ name is left, nor Cursor's host-only names;
+    // Claude's names are not its to remove.
+    await withEnv({ CURSOR_AGENT: "1", ...names }, async () => {
+      const fallback = await resolveLoginShellEnv({ shell: noMarkers.file });
+      assert.equal(fallback.source, "fallback");
+      assert.deepEqual(cursorNames(fallback.env), []);
+      assert.equal(fallback.env.AGENT_TRANSCRIPTS, undefined);
+      assert.equal(fallback.env.Cursor_Askpass_Secret, "made-up-secret", "outside Windows names keep their letter case apart");
+      for (const key of Object.keys(names).filter((key) => key.startsWith("CLAUDE"))) assert.equal(fallback.env[key], names[key], `fallback: ${key}`);
+
+      const windows = await resolveLoginShellEnv({ platform: "win32" });
+      assert.deepEqual(cursorNames(windows.env), []);
+      assert.equal(windows.env.Cursor_Askpass_Secret, undefined, "on Windows names ignore letter case");
+      assert.equal(windows.env.AGENT_TRANSCRIPTS, undefined);
+      for (const key of Object.keys(names).filter((key) => key.startsWith("CLAUDE"))) assert.equal(windows.env[key], names[key], `windows: ${key}`);
+    });
+
+    // No host agent: nothing is removed.
+    await withEnv(names, async () => {
+      const fallback = await resolveLoginShellEnv({ shell: noMarkers.file });
+      for (const [key, value] of Object.entries(names)) assert.equal(fallback.env[key], value, `fallback: ${key}`);
+      const windows = await resolveLoginShellEnv({ platform: "win32" });
+      for (const [key, value] of Object.entries(names)) assert.equal(windows.env[key], value, `windows: ${key}`);
+    });
+  });
+});
+
+// Not a posixSkip test: Windows has no login shell, so no fake shell runs and
+// the Windows CI job can run this one for real. There process.env ignores
+// letter case too, which is what the upper-case comparison is for. The names
+// that must go are set in mixed case; the kept ones are set in upper case, so
+// a developer's real CLAUDE_CONFIG_DIR is overwritten, not added to.
+test("login shell (F-S7a): on Windows a nested server loses the host's whole family whatever the letter case, bar CLAUDE_CONFIG_DIR and CLAUDE_CODE_GIT_BASH_PATH", async () => {
+  await withShellWorld(async () => {
+    const keysOf = (env, name) => Object.keys(env).filter((key) => key.toUpperCase() === name);
+    const kept = { CLAUDE_CONFIG_DIR: "D:\\claude-work", CLAUDE_CODE_GIT_BASH_PATH: "C:\\Git\\bin\\bash.exe" };
+    const assertKept = (env) => {
+      for (const name of KEPT_NAMES) assert.deepEqual(keysOf(env, name).map((key) => env[key]), [kept[name]], `${name} is kept`);
+    };
+    const claudeOnes = (env) => Object.keys(env).filter((key) => key.toUpperCase().startsWith("CLAUDE")).map((key) => key.toUpperCase()).sort();
+    await withEnv(
+      { ...kept, CLAUDECODE: "1", Claude_Code_Messaging_Token: "made-up-host-token", Claude_Pid: "1234", Claude_Code_Simple: "1", CLAUDE_CODE_USE_BEDROCK: "1", CURSOR_RIPGREP_PATH: "C:\\rg.exe" },
+      async () => {
+        const claude = await resolveLoginShellEnv({ platform: "win32" });
+        assert.equal(claude.source, "process");
+        assert.deepEqual(claudeOnes(claude.env), [...KEPT_NAMES].sort());
+        assertKept(claude.env);
+        assert.equal(claude.env.CURSOR_RIPGREP_PATH, "C:\\rg.exe", "Cursor's names are not a Claude Code host's to remove");
+      }
+    );
+    await withEnv({ ...kept, CURSOR_AGENT: "1", Cursor_Askpass_Secret: "made-up-secret", Agent_Transcripts: "/some/transcripts", CURSOR_RIPGREP_PATH: "C:\\rg.exe" }, async () => {
+      const cursor = await resolveLoginShellEnv({ platform: "win32" });
+      assert.deepEqual(Object.keys(cursor.env).filter((key) => key.toUpperCase().startsWith("CURSOR_")), []);
+      assert.deepEqual(keysOf(cursor.env, "AGENT_TRANSCRIPTS"), []);
+      assertKept(cursor.env);
+    });
+  });
+});
+
 test("getLoginShellEnv resolves once per server: the same promise every call", posixSkip, async () => {
   await withShellWorld(async ({ base }) => {
     const { file, record } = await fakeShell(base, "counted-shell", '/bin/sh -c "$last"');
@@ -679,6 +920,44 @@ const AGENT_OS_OWN = {
   COLORTERM: "24bit"
 };
 
+// The names only a host agent sets for its children (spikes S6 and S7,
+// 2026-10-16), written out here on purpose: a name dropped from NESTED_MARKERS
+// must fail a test.
+const HOST_ONLY_NAMES = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_HOST_SESSION_ID",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_PID",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_AGENT_SDK_VERSION",
+  "CLAUDE_AGENT_SDK_MCP_NO_PREFIX",
+  "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+  "CLAUDE_CODE_DESKTOP_APP_VERSION",
+  "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+  "CLAUDE_CODE_REPORT_FINDINGS",
+  "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
+  "CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL",
+  "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+  "CLAUDE_CODE_EAGER_FLUSH",
+  "CLAUDE_PREVIEW_CLASSIFIER_FLOOR",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  "CLAUDE_CODE_ACCOUNT_UUID",
+  "CLAUDE_CODE_ORGANIZATION_UUID",
+  "CLAUDE_CODE_USER_EMAIL",
+  "CURSOR_AGENT",
+  "CURSOR_INVOKED_AS",
+  "CURSOR_ASKPASS_SECRET",
+  "CURSOR_ASKPASS_SOCKET",
+  "__CURSOR_SANDBOX_ENV_RESTORE",
+  "AGENT_TRANSCRIPTS",
+  "GLOBAL_AGENT_ENVIRONMENT_VARIABLE_NAMESPACE"
+];
+
 test("sessionEnv: removes only Agent OS's variables and the nested-session markers; sets exactly the terminal variables", () => {
   const env = sessionEnv({ ...PERSON, ...AGENT_OS_OWN }, { sessionId: "6f0c2c1e-2f4b-4b8e-9d55-0d3f2a4b5c6d", agentOsVersion: "0.4.0", agentId: "codex" });
   assert.deepEqual(env, {
@@ -689,7 +968,20 @@ test("sessionEnv: removes only Agent OS's variables and the nested-session marke
     TERM_PROGRAM_VERSION: "0.4.0",
     AGENT_OS_SESSION_ID: "6f0c2c1e-2f4b-4b8e-9d55-0d3f2a4b5c6d"
   });
-  assert.deepEqual(NESTED_MARKERS, ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]);
+  assert.deepEqual(NESTED_MARKERS, HOST_ONLY_NAMES);
+});
+
+test("sessionEnv (F-S7a): no host-only name of Claude Code or Cursor reaches a session; a person's own CLAUDE_CODE_ and CURSOR_ names pass through", () => {
+  const madeUp = Object.fromEntries(HOST_ONLY_NAMES.map((name) => [name, `made-up-${name}`]));
+  const own = { CLAUDE_CODE_MAX_OUTPUT_TOKENS: "32000", CLAUDE_CODE_DISABLE_CRON: "1", CLAUDE_EFFORT: "high", CURSOR_RIPGREP_PATH: "/some/where/rg" };
+  for (const agentId of ["claude", "codex", "cursor", "hermes", "openclaw"]) {
+    const env = sessionEnv({ ...PERSON, ...own, ...madeUp }, { sessionId: "s", agentOsVersion: "0.4.0", agentId });
+    for (const name of HOST_ONLY_NAMES) assert.equal(env[name], undefined, `${agentId}: ${name}`);
+    for (const [name, value] of Object.entries(own)) assert.equal(env[name], value, `${agentId}: ${name} is the person's`);
+    assert.equal(env.HOME, PERSON.HOME);
+  }
+  assert.equal(new Set(HOST_ONLY_NAMES).size, HOST_ONLY_NAMES.length, "no name twice");
+  assert.equal(HOST_ONLY_NAMES.includes("CURSOR_RIPGREP_PATH"), false);
 });
 
 test("sessionEnv: CLAUDE_CODE_NO_FLICKER only for Claude Code with the opt-in; never the env scrub, never TERM_PROGRAM=vscode", () => {
@@ -725,7 +1017,16 @@ test("sessionEnv (fix round 1): a missing session id or a base environment that 
 
 test("sessionEnv: on Windows, variable names ignore letter case", () => {
   const env = sessionEnv(
-    { Path: "C:\\Windows", Agent_Os_Token: "secret", hermes_agent_os_home: "x", ClaudeCode: "1", Term_Program: "vscode", USERPROFILE: "C:\\Users\\someone" },
+    {
+      Path: "C:\\Windows",
+      Agent_Os_Token: "secret",
+      hermes_agent_os_home: "x",
+      ClaudeCode: "1",
+      Claude_Code_Messaging_Token: "secret",
+      cursor_agent: "1",
+      Term_Program: "vscode",
+      USERPROFILE: "C:\\Users\\someone"
+    },
     { sessionId: "s", agentOsVersion: "0.4.0", agentId: "codex", platform: "win32" }
   );
   assert.deepEqual(env, {

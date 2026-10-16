@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { cookieNameFor, sessionToken } from "../server/runtime/local-session.js";
 import { PAUSED_DROP_MS, PAUSE_LAG_BYTES, createSessionManager } from "../server/runtime/sessions/manager.js";
+import { NESTED_MARKERS } from "../server/runtime/sessions/shell-env.js";
 import {
   CLOSE_CODES,
   MAX_CLIENT_FRAME_BYTES,
@@ -397,8 +398,10 @@ const CLEARED_KEYS = [
   "AGENT_OS_ALLOWED_HOSTS",
   "FAKE_AGENT_MODE",
   "NODE_ENV",
-  "CLAUDECODE",
-  "CLAUDE_CODE_ENTRYPOINT"
+  // The markers a host agent (Claude Code, Cursor) sets for its children: a
+  // developer running these tests inside one must not make the test server
+  // look nested (F-S7a).
+  ...NESTED_MARKERS
 ];
 
 function serverEnv(home, port, extra = {}) {

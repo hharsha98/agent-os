@@ -15,10 +15,64 @@ import path from "node:path";
 import { RUNTIME_VERSION } from "../store.js";
 
 export const LOGIN_SHELL_TIMEOUT_MS = 10000;
-// Variables that make an agent think it runs inside another agent's session.
-// Spikes S3 and S6 add the Codex and Cursor ones; until then only Claude
-// Code's two are removed (removing less is the safe default, spec H2).
-export const NESTED_MARKERS = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"];
+// Variables only a HOST agent sets for the programs it starts: they make an
+// agent think it runs inside another agent's session, or hand it the host's
+// private channel. No person puts one in a startup file, so a session never
+// gets them (spec H2). Names only, as the host agents' own terminals showed
+// them in spikes S6 and S7 (2026-10-16). Names a person might set themselves
+// (CLAUDE_CODE_DISABLE_CRON, CLAUDE_CODE_SIMPLE, CLAUDE_EFFORT, ...) are not
+// listed: a nested server leaves out the host's whole family of names instead,
+// so on the login-shell path only the person's own startup files can bring them
+// back; on the fallback and on Windows no startup file runs (see withoutHostNames).
+// One list per host, because only a server that runs inside that host drops
+// its names early (withoutHostNames); sessionEnv removes all of them always.
+// Codex is not covered yet: its markers are still unknown (spike S3 is pending,
+// task F-S3), so a server started inside Codex still hands those on. Nor are
+// the host markers whose names start with neither CLAUDE nor CURSOR_ (AI_AGENT,
+// BAGGAGE, __CFBundleIdentifier, USE_STAGING_OAUTH, ...): which of them are a
+// person's own is for a later spike to settle (a plain Terminal against a host's).
+//
+// The Claude Code names (spike S7):
+const CLAUDE_CODE_HOST_NAMES = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_HOST_SESSION_ID",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_PID",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_AGENT_SDK_VERSION",
+  "CLAUDE_AGENT_SDK_MCP_NO_PREFIX",
+  "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+  "CLAUDE_CODE_DESKTOP_APP_VERSION",
+  "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+  "CLAUDE_CODE_REPORT_FINDINGS",
+  "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
+  "CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL",
+  "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+  "CLAUDE_CODE_EAGER_FLUSH",
+  "CLAUDE_PREVIEW_CLASSIFIER_FLOOR",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  "CLAUDE_CODE_ACCOUNT_UUID",
+  "CLAUDE_CODE_ORGANIZATION_UUID",
+  "CLAUDE_CODE_USER_EMAIL"
+];
+// The Cursor names (spike S6). CURSOR_RIPGREP_PATH is harmless and may be a
+// person's, so it stays.
+const CURSOR_HOST_NAMES = [
+  "CURSOR_AGENT",
+  "CURSOR_INVOKED_AS",
+  "CURSOR_ASKPASS_SECRET",
+  "CURSOR_ASKPASS_SOCKET",
+  "__CURSOR_SANDBOX_ENV_RESTORE",
+  "AGENT_TRANSCRIPTS",
+  "GLOBAL_AGENT_ENVIRONMENT_VARIABLE_NAMESPACE"
+];
+// Both lists together: the names no session ever gets.
+export const NESTED_MARKERS = [...CLAUDE_CODE_HOST_NAMES, ...CURSOR_HOST_NAMES];
 export const FALLBACK_NOTICE = "Agent OS could not read your login shell's settings, so sessions use a basic environment.";
 
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -115,12 +169,59 @@ function withoutNpmPath(value) {
     .join(path.delimiter);
 }
 
+// The two names of a person's own that a nested server still passes on in the
+// fallback and on Windows, the paths where no startup file could bring them
+// back (see withoutHostNames).
+//  - CLAUDE_CONFIG_DIR: H1 says it passes through as the person has it. Lose it
+//    and every Claude session would start in ~/.claude, maybe another account.
+//  - CLAUDE_CODE_GIT_BASH_PATH: Claude Code on Windows cannot find its Git Bash
+//    without it when Git is installed outside the usual folders.
+// Nothing else of the CLAUDE family is kept there: CLAUDE_CODE_SIMPLE alone
+// would put every session into `--bare` mode (H3: never --bare).
+const KEPT_WITHOUT_STARTUP_FILE = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH"];
+
+// Agent OS started from inside another agent's terminal (`npm start` or `npm
+// run dev` in Claude Code's or Cursor's shell; macOS `open` hands the caller's
+// environment on) holds that host's variables. They are not the person's
+// environment: Terminal never has a host agent's names, and the person's own
+// settings (CLAUDE_CODE_*, CLAUDE_CONFIG_DIR, ...) come from their startup
+// files (spec H2, spikes S6 and S7). So when the server itself runs inside a
+// host (Claude Code: it sets CLAUDECODE, and CLAUDE_CODE_CHILD_SESSION for its
+// children; Cursor: it sets CURSOR_AGENT), that host's whole family of names is
+// left out: the host-only names (the lists above) and every other name starting
+// with CLAUDE for a Claude Code host, with CURSOR_ for a Cursor host. Not
+// nested (a Dock launch, a plain Terminal): nothing is removed here.
+//  - In the login shell's input (`loginShellInput`) there is no exception, a
+//    nested host's CLAUDE_CONFIG_DIR included: only the person's own startup
+//    files can put a name back, and what they set is theirs. One edge: a value
+//    given with `launchctl setenv` instead of a startup file (Terminal and a
+//    Dock launch both get it) is lost when the server is nested. Ruled knowingly.
+//  - The fallback and Windows have no startup file, so a name of the person's
+//    own that lives only in the operating system's environment is lost there for
+//    good, bar the two in KEPT_WITHOUT_STARTUP_FILE (the ruling's cost: a
+//    CLAUDE_CODE_USE_BEDROCK or CLAUDE_CODE_USE_VERTEX of the person's goes too).
+function withoutHostNames(env, platform, { loginShellInput = false } = {}) {
+  const claude = process.env.CLAUDECODE !== undefined || process.env.CLAUDE_CODE_CHILD_SESSION !== undefined;
+  const cursor = process.env.CURSOR_AGENT !== undefined;
+  if (!claude && !cursor) return env;
+  for (const key of Object.keys(env)) {
+    const name = platform === "win32" ? key.toUpperCase() : key;
+    const hostOnly = (claude && CLAUDE_CODE_HOST_NAMES.includes(name)) || (cursor && CURSOR_HOST_NAMES.includes(name));
+    const family = (claude && name.startsWith("CLAUDE")) || (cursor && name.startsWith("CURSOR_"));
+    const kept = !loginShellInput && KEPT_WITHOUT_STARTUP_FILE.includes(name);
+    if (hostOnly || (family && !kept)) delete env[key];
+  }
+  return env;
+}
+
 // The server's own environment (text values only) without Agent OS's own
 // variables (AGENT_OS_*, HERMES_AGENT_OS_*: its session token among them),
-// without the excluded names and, when an npm script started Agent OS, without
-// what npm added. Every environment built from it (the login shell's input, the
+// without the excluded names, when an npm script started Agent OS, without
+// what npm added and, when Agent OS runs inside another agent, without that
+// host's names (see withoutHostNames; `loginShellInput` is for the login shell's
+// input). Every environment built from it (the login shell's input, the
 // fallback, Windows) is therefore free of Agent OS's variables, whoever uses it.
-function serverEnv(platform) {
+function serverEnv(platform, { loginShellInput = false } = {}) {
   const npm = startedByNpm();
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -133,7 +234,7 @@ function serverEnv(platform) {
       if (key === "PATH" || (platform === "win32" && key.toUpperCase() === "PATH")) env[key] = withoutNpmPath(env[key]);
     }
   }
-  return env;
+  return withoutHostNames(env, platform, { loginShellInput });
 }
 
 function defaultShell() {
@@ -149,9 +250,11 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-// The server's own environment (without Agent OS's variables and the excluded
-// names) plus the folders agents are usually installed in, for when the login
-// shell can't be read.
+// The server's own environment (without Agent OS's variables, the excluded
+// names and, when Agent OS runs inside another agent, that host's names, bar
+// CLAUDE_CONFIG_DIR and CLAUDE_CODE_GIT_BASH_PATH: no startup file here could
+// bring a person's own back, see withoutHostNames) plus the folders agents are
+// usually installed in, for when the login shell can't be read.
 function fallbackResult(platform) {
   const env = serverEnv(platform);
   const parts = String(env.PATH || "").split(path.delimiter).filter(Boolean);
@@ -192,10 +295,13 @@ function readLoginShell(shell, timeoutMs, nodePath) {
   const command = `${shellQuote(nodePath)} -e ${shellQuote(script)}`;
   const name = path.basename(shell);
   const args = name === "csh" || name === "tcsh" ? ["-ic", command] : ["-i", "-l", "-c", command];
-  // Agent OS's own variables (its session token among them) and the names
-  // Agent OS put into its own environment never reach the person's startup
-  // files, so what comes back is what Terminal would give.
-  const env = serverEnv(process.platform);
+  // Agent OS's own variables (its session token among them), the names Agent OS
+  // put into its own environment and, when the server runs inside another agent
+  // (Claude Code, Cursor), that host's names never reach the person's startup
+  // files, so what comes back is what Terminal would give. Here the host's
+  // CLAUDE_CONFIG_DIR goes too: a startup file can put a name of the person's
+  // own back (see withoutHostNames).
+  const env = serverEnv(process.platform, { loginShellInput: true });
   // The desktop shell extends the server's PATH with folders of its own
   // (server_path_env in main.rs). The login shell gets the PATH the app itself
   // was started with, as Terminal's does (H2, Q11a), without npm's folders
@@ -314,7 +420,9 @@ export async function resolveLoginShellEnv({
   platform = process.platform
 } = {}) {
   // Windows has no login shell: the process environment is used as it is (H2),
-  // without Agent OS's own variables and the names it put there itself.
+  // without Agent OS's own variables, the names it put there itself and, when
+  // the server runs inside another agent, that host's names (bar the two that
+  // no startup file could put back, see withoutHostNames).
   if (platform === "win32") return { env: serverEnv(platform), source: "process", notice: null };
   if (typeof shell !== "string" || !path.isAbsolute(shell)) return fallbackResult(platform);
   const env = await readLoginShell(shell, timeoutMs, nodePath);

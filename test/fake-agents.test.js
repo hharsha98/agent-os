@@ -52,10 +52,10 @@ function runProbe(file, args, env, timeout = 5000) {
 
 // Like runProbe, for a fake that is meant to keep running: instead of a fixed
 // window it polls the fake's log (every 50 ms, up to 5 s) until the fake has
-// logged its "run" event, lets it run a moment longer to prove it does not
-// exit, then stops it. A fixed 800 ms window failed on a loaded Mac, where a
-// fake needs 400 to 1100 ms from spawn to its first log line.
-async function runUntilLogged(file, args, env, log, name) {
+// logged its "run" event (or the `event` given), lets it run a moment longer
+// to prove it does not exit, then stops it. A fixed 800 ms window failed on a
+// loaded Mac, where a fake needs 400 to 1100 ms from spawn to its first log line.
+async function runUntilLogged(file, args, env, log, name, event = "run") {
   let child;
   const finished = new Promise((resolve) => {
     child = execFile(file, args, { env, timeout: 30000 }, (error, stdout) => {
@@ -65,7 +65,7 @@ async function runUntilLogged(file, args, env, log, name) {
   child.stdin?.end();
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    if ((await readLog(log)).some((entry) => entry.event === "run" && entry.name === name)) break;
+    if ((await readLog(log)).some((entry) => entry.event === event && entry.name === name)) break;
     await delay(50);
   }
   await delay(200);
@@ -208,6 +208,47 @@ test("detection probes answer at once without a terminal, and service controls a
       entries.filter((entry) => entry.event === "gateway").map((entry) => [entry.name, entry.args]),
       [["hermes", ["gateway", "stop"]]]
     );
+  });
+});
+
+test("agent and cursor-agent answer create-chat with a fresh uuid (spike S6); FAKE_CURSOR_CREATE_CHAT makes it fail, print garbage, print a uuid and still exit 1, or stall; every call is logged", POSIX_ONLY, async () => {
+  const UUID_LINE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  await withBin({}, async (bin, dir) => {
+    const log = path.join(dir, "fake.log");
+    const env = baseEnv(dir, { FAKE_AGENT_LOG: log });
+    const ids = [];
+    for (const name of ["agent", "cursor-agent"]) {
+      const first = await runProbe(bin.paths[name], ["create-chat"], env);
+      assert.equal(first.code, 0, name);
+      assert.match(first.stdout.trim(), UUID_LINE, `${name}: one uuid, nothing else`);
+      assert.equal(first.stdout.trim().split("\n").length, 1, name);
+      ids.push(first.stdout.trim(), (await runProbe(bin.paths[name], ["create-chat"], env)).stdout.trim());
+    }
+    assert.equal(new Set(ids).size, 4, "a fresh id every time");
+
+    const failed = await runProbe(bin.paths.agent, ["create-chat"], { ...env, FAKE_CURSOR_CREATE_CHAT: "fail" });
+    assert.deepEqual([failed.code, failed.stdout], [1, ""], "fail: nothing printed, exit 1");
+    const garbage = await runProbe(bin.paths.agent, ["create-chat"], { ...env, FAKE_CURSOR_CREATE_CHAT: "garbage" });
+    assert.deepEqual([garbage.code, garbage.stdout.trim()], [0, "not-a-uuid"]);
+    const uuidExit1 = await runProbe(bin.paths.agent, ["create-chat"], { ...env, FAKE_CURSOR_CREATE_CHAT: "uuid-exit1" });
+    assert.equal(uuidExit1.code, 1, "uuid-exit1: exit 1 even though the answer is a good uuid");
+    assert.match(uuidExit1.stdout.trim(), UUID_LINE, "uuid-exit1: a fresh uuid is printed");
+    const slow = await runUntilLogged(bin.paths.agent, ["create-chat"], { ...env, FAKE_CURSOR_CREATE_CHAT: "slow" }, log, "agent", "create-chat");
+    assert.deepEqual([slow.killed, slow.stdout], [true, ""], "slow: still waiting when the caller gives up");
+
+    // Only the Cursor names answer it, and only as exactly `create-chat`.
+    assert.doesNotMatch((await runProbe(bin.paths.claude, ["create-chat"], env)).stdout, /[0-9a-f]{8}-[0-9a-f]{4}-/);
+    assert.doesNotMatch((await runProbe(bin.paths.agent, ["create-chat", "--extra"], env)).stdout.split("FAKE_ARGV")[0], /[0-9a-f]{8}-[0-9a-f]{4}-/);
+
+    const calls = (await readLog(log)).filter((entry) => entry.event === "create-chat");
+    assert.deepEqual(
+      calls.map((entry) => [entry.name, entry.behaviour]),
+      [["agent", "ok"], ["agent", "ok"], ["cursor-agent", "ok"], ["cursor-agent", "ok"], ["agent", "fail"], ["agent", "garbage"], ["agent", "uuid-exit1"], ["agent", "slow"]]
+    );
+    assert.deepEqual(calls.slice(0, 4).map((entry) => entry.id), ids, "the logged id is the printed one");
+    assert.deepEqual([calls[4].id, calls[5].id], [null, null]);
+    assert.equal(calls[6].id, uuidExit1.stdout.trim(), "uuid-exit1: the logged id is the printed one");
+    assert.deepEqual(calls[0].argv, ["create-chat"]);
   });
 });
 

@@ -2721,6 +2721,9 @@ export interface SessionSummary {
   dismissed: boolean;
   brain: { kind: "plan" | "openrouter" | "local"; label: string } | null;
   resume: { available: boolean; reason: string | null; fallback: boolean };
+  // true when Claude Code's resume found no saved conversation (nothing was ever sent in the session, or Claude
+  // deleted an old transcript itself): there is nothing to resume. A server that doesn't send it means false.
+  nothingToResume: boolean;
   // Every session's alerts are "basic" in SP3 (the 20 s rule).
   alerts: "basic";
   recordingBytes: number;

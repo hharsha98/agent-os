@@ -15,8 +15,8 @@ const session = (over = {}) => ({
   id: "11111111-1111-4111-8111-111111111111", kind: "agent", agentId: "claude", agentLabel: "Claude Code",
   folder: "/Users/you/my-app", folderName: "my-app", folderShown: true, branch: null, status: "live",
   stateSince: iso(1000), startedAt: iso(60_000), endedAt: null, exitCode: null, signal: null, endedBy: null,
-  dismissed: false, brain: null, resume: { available: true, reason: null, fallback: false }, alerts: "basic",
-  recordingBytes: 0, ...over
+  dismissed: false, brain: null, resume: { available: true, reason: null, fallback: false }, nothingToResume: false,
+  alerts: "basic", recordingBytes: 0, ...over
 });
 const source = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 const key = (over) => ({ key: "", code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...over });
@@ -145,6 +145,26 @@ test("an ended session says how it ended, then where its recording is (or that i
     "Ended normally. Its recording was removed.",
     "after the 1 GB cap or a delete, Runs no longer has it, so the line does not send you there"
   );
+});
+
+test("a Claude resume with nothing saved says so plainly; Stop and quit still win, and a missing flag means false", () => {
+  const NOTHING_SAVED = "Claude Code found nothing saved for this conversation, so it couldn't be resumed.";
+  assert.equal(
+    ss.endedLine({ exitCode: 1, signal: null, endedBy: null, nothingToResume: true }),
+    NOTHING_SAVED,
+    "the exit code 1 is not shown: it would say nothing useful"
+  );
+  assert.equal(ss.endedLine({ exitCode: null, signal: "SIGTERM", endedBy: "stop", nothingToResume: true }), "Stopped by you.");
+  assert.equal(ss.endedLine({ exitCode: null, signal: "SIGTERM", endedBy: "quit", nothingToResume: true }), "Ended when Agent OS quit.");
+  // The flag is only a fact when it is exactly true: false, missing or odd values read as before.
+  assert.equal(ss.endedLine({ exitCode: 1, signal: null, endedBy: null, nothingToResume: false }), "Ended with exit code 1.");
+  assert.equal(ss.endedLine({ exitCode: 1, signal: null, endedBy: null }), "Ended with exit code 1.");
+  assert.equal(ss.endedLine({ exitCode: 1, signal: null, endedBy: null, nothingToResume: "yes" }), "Ended with exit code 1.");
+  // The tab's body and the side panel's line both use it, followed by where the recording is.
+  const ended = (over) => ss.sessionPanelLine(session({ status: "exited", endedAt: iso(1000), recordingBytes: 10, ...over }), NOW);
+  assert.equal(ended({ exitCode: 1, nothingToResume: true }), `${NOTHING_SAVED} The recording is in Runs.`);
+  assert.equal(ended({ exitCode: 1, nothingToResume: true, recordingBytes: 0 }), `${NOTHING_SAVED} Its recording was removed.`);
+  assert.equal(ended({ exitCode: 1, nothingToResume: true, endedBy: "stop" }), "Stopped by you. The recording is in Runs.");
 });
 
 test("the Stop dialog: title, body, buttons, and OpenClaw's honest extra line", () => {

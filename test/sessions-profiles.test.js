@@ -17,11 +17,11 @@ import path from "node:path";
 import { test } from "node:test";
 import { buildClaudeSettings, codexBrainArgs } from "../server/runtime/builders/brain-launch.js";
 import { helperCommandLine, openRouterKeyHelper, setKeystoreForTest, storeOpenRouterKey } from "../server/runtime/secrets/keystore.js";
-import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, assertSessionArgvSafe, buildSessionProfile } from "../server/runtime/sessions/profiles.js";
+import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, assertSessionArgvSafe, buildSessionProfile, cursorCreateChat } from "../server/runtime/sessions/profiles.js";
 import { writeSessionSettings } from "../server/runtime/sessions/settings.js";
 import { FALLBACK_NOTICE, NESTED_MARKERS, getLoginShellEnv, resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { runtimePaths } from "../server/runtime/store.js";
-import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
+import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const posixSkip = { skip: isWindows ? "fake login shell, shebang fakes and file modes are POSIX-only" : false };
@@ -89,7 +89,9 @@ function shQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-// A temp world with fake agent binaries (never run), a project folder, and a
+// A temp world with fake agent binaries (never run as a session, except that
+// Cursor's is the fake agent, which answers `create-chat` the way the real one
+// does: spike S6), a project folder, and a
 // login shell that does what a person's startup files might do (print a
 // banner, export variables, put a folder of its own first on PATH) and then
 // hands over to W1's stand-in login shell, which runs Agent OS's command with
@@ -113,6 +115,8 @@ async function withProfileEnv(fn, { startupLines = [] } = {}) {
     await chmod(file, 0o755);
     ctx.detected[agentId] = { installed: true, path: file, version: "9.9.9", features: {} };
   }
+  // Replaces the stand-in `agent` above: a new Cursor session asks it for a chat id.
+  ctx.detected.cursor.path = (await makeFakeAgentBin(ctx.bin, { names: ["agent"] })).paths.agent;
   ctx.shell = path.join(base, "fake-login-shell");
   await writeFile(
     ctx.shell,
@@ -121,6 +125,9 @@ async function withProfileEnv(fn, { startupLines = [] } = {}) {
       'echo "Good morning from a chatty startup file"',
       'export FROM_STARTUP_FILE="set in a startup file"',
       'export AGENT_OS_FROM_STARTUP="must never reach a session"',
+      // A host-only name (F-S7a) that a startup file sets: the login shell
+      // reports it, and sessions still remove it.
+      'export CLAUDE_CODE_SESSION_ID="set in a startup file"',
       `PATH=${shQuote(ctx.loginOnly)}:"$PATH"`,
       "export PATH",
       ...startupLines,
@@ -236,7 +243,12 @@ test("profile snapshot (SP3): every agent's argv and environment, with the fulls
     // The test world's PATH only: never the developer's own (AGENT_OS_LAUNCH_PATH, an npm script's folders).
     assert.deepEqual(login.env.PATH.split(path.delimiter), [ctx.loginOnly, ctx.bin, ...SYSTEM_PATH_DIRS], "the login shell started with the test PATH");
     assert.equal(login.env.AGENT_OS_TOKEN, undefined, "Agent OS's token never reaches the login shell");
-    assert.equal(login.env.CLAUDECODE, "1", "the server's own markers reach the login shell, and sessions remove them");
+    // PLANTED makes this server look as if Claude Code started it (F-S7a): the
+    // host's names never reach the login shell, so only a startup file can put
+    // one back, and sessions remove the host-only ones either way.
+    assert.equal(login.env.CLAUDECODE, undefined, "a server started inside another agent does not hand its markers to the login shell");
+    assert.equal(login.env.CLAUDE_CODE_ENTRYPOINT, undefined);
+    assert.equal(login.env.CLAUDE_CODE_SESSION_ID, "set in a startup file", "a startup file's own value is reported, and sessions remove it");
     for (const claudeFullscreen of [false, true]) {
       for (const agentId of SESSION_AGENTS) {
         const sessionId = crypto.randomUUID();
@@ -248,7 +260,7 @@ test("profile snapshot (SP3): every agent's argv and environment, with the fulls
         const expected = {
           claude: { args: ["--session-id", profile.agentSessionId], cwd: ctx.project, softStop: "claude-bg", resumeMode: "id", folderShown: true },
           codex: { args: ["-C", ctx.project, ...TUI], cwd: ctx.project, softStop: null, resumeMode: "fallback", folderShown: true },
-          cursor: { args: ["--workspace", ctx.project], cwd: ctx.project, softStop: null, resumeMode: "fallback", folderShown: true },
+          cursor: { args: ["--resume", profile.agentSessionId, "--workspace", ctx.project], cwd: ctx.project, softStop: null, resumeMode: "id", folderShown: true },
           hermes: { args: ["--in", ctx.project], cwd: ctx.project, softStop: null, resumeMode: "fallback", folderShown: true },
           openclaw: { args: ["tui", "--session", `agentos-${sessionId}`], cwd: ctx.home, softStop: "openclaw-abort", resumeMode: "id", folderShown: false }
         }[agentId];
@@ -257,8 +269,8 @@ test("profile snapshot (SP3): every agent's argv and environment, with the fulls
           expected,
           where
         );
-        if (agentId === "claude") {
-          assert.match(profile.agentSessionId, UUID, `${where}: Claude gets its own --session-id uuid`);
+        if (agentId === "claude" || agentId === "cursor") {
+          assert.match(profile.agentSessionId, UUID, `${where}: Claude gets its own --session-id uuid, Cursor the chat id create-chat printed (spike S6)`);
           assert.notEqual(profile.agentSessionId, sessionId, `${where}: separate from Agent OS's session id (Q39)`);
         } else if (agentId === "openclaw") {
           assert.equal(profile.agentSessionId, `agentos-${sessionId}`, where);
@@ -397,7 +409,7 @@ test("profiles: Codex adds codexBrainArgs for OpenRouter and Local; Cursor never
     const onLocal = await start(ctx, "codex", { brain: localBrain });
     assert.deepEqual(onLocal.args, ["-C", ctx.project, ...TUI, "--oss", "--local-provider", "ollama", "-m", "qwen3-coder:30b", "-c", "model_context_window=65536"]);
     const cursor = await start(ctx, "cursor", { brain: { mode: "plan", model: "auto" } });
-    assert.deepEqual(cursor.args, ["--workspace", ctx.project]);
+    assert.deepEqual(cursor.args, ["--resume", cursor.agentSessionId, "--workspace", ctx.project], "the chat id and the folder, no model option (H3)");
   });
 });
 
@@ -448,7 +460,7 @@ test("codexBrainArgs: headless runs keep Codex's own environment scrub; a sessio
   }
 });
 
-test("profiles: resume argv per agent (Claude by its uuid; Hermes, Codex and Cursor by the fallback; OpenClaw by its key)", posixSkip, async () => {
+test("profiles: resume argv per agent (Claude and Cursor by their ids; Hermes and Codex by the fallback; OpenClaw by its key)", posixSkip, async () => {
   await withProfileEnv(async (ctx) => {
     const sessionId = crypto.randomUUID();
     const claudeId = crypto.randomUUID();
@@ -458,8 +470,12 @@ test("profiles: resume argv per agent (Claude by its uuid; Hermes, Codex and Cur
     assert.deepEqual([claude.args, claude.agentSessionId, claude.resumeMode], [["--resume", claudeId], claudeId, "id"]);
     const codex = await resume("codex");
     assert.deepEqual([codex.args, codex.cwd, codex.resumeMode], [["resume", "--last", ...TUI], ctx.project, "fallback"]);
-    const cursor = await resume("cursor");
-    assert.deepEqual([cursor.args, cursor.resumeMode], [["--resume", "--workspace", ctx.project], "fallback"]);
+    // Cursor (spike S6): the chat id kept from the first start opens that chat; a session saved before create-chat has none and keeps the picker.
+    const chatId = crypto.randomUUID();
+    const cursor = await resume("cursor", chatId);
+    assert.deepEqual([cursor.args, cursor.agentSessionId, cursor.resumeMode], [["--resume", chatId, "--workspace", ctx.project], chatId, "id"]);
+    const cursorOlder = await resume("cursor");
+    assert.deepEqual([cursorOlder.args, cursorOlder.agentSessionId, cursorOlder.resumeMode], [["--resume", "--workspace", ctx.project], null, "fallback"]);
     const hermes = await resume("hermes");
     assert.deepEqual([hermes.args, hermes.resumeMode], [["--resume", "latest", "--in", ctx.project], "fallback"]);
     const openclaw = await resume("openclaw", `agentos-${sessionId}`);
@@ -480,12 +496,144 @@ test("profiles: resume argv per agent (Claude by its uuid; Hermes, Codex and Cur
   });
 });
 
+// ---- Cursor's exact chat id (spike S6) ----------------------------------------------------------
+// A new Cursor session first runs `agent create-chat` (here the fake agent, which logs each call
+// and answers as FAKE_CURSOR_CREATE_CHAT says) and opens on the id it prints, so Cursor's chat
+// picker, which lists every project's chats, never opens.
+
+// The fake's log file, inside the test HOME; the fake login shell exports it into every session.
+const CHAT_LOG = 'export FAKE_AGENT_LOG="$HOME/fake-agent.log"';
+
+async function createChatCalls(ctx) {
+  let text = "";
+  try {
+    text = await readFile(path.join(ctx.home, "fake-agent.log"), "utf8");
+  } catch {
+    return [];
+  }
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((entry) => entry.event === "create-chat");
+}
+
+test("profiles: a new Cursor session runs `create-chat` once, in its folder with its environment and no terminal, and opens on the chat it prints (spike S6)", posixSkip, async () => {
+  await withProfileEnv(
+    async (ctx) => {
+      const sessionId = crypto.randomUUID();
+      const profile = await start(ctx, "cursor", { sessionId });
+      const calls = await createChatCalls(ctx);
+      assert.equal(calls.length, 1, "one create-chat call");
+      const [call] = calls;
+      assert.match(call.id, UUID);
+      assert.deepEqual(profile.args, ["--resume", call.id, "--workspace", ctx.project]);
+      assert.deepEqual([profile.agentSessionId, profile.resumeMode, profile.softStop, profile.cwd], [call.id, "id", null, ctx.project]);
+      assert.deepEqual(profile.notes, [], "nothing to tell the person");
+      // Exactly the one argument, in the session's folder, with the session's environment (H1, H2), not on a terminal.
+      assert.deepEqual(call.argv, ["create-chat"]);
+      assert.equal(call.cwd, ctx.project);
+      assert.equal(call.isTTY, false);
+      assert.equal(call.env.AGENT_OS_SESSION_ID, sessionId);
+      assert.equal(call.env.TERM_PROGRAM, "AgentOS");
+      assert.equal(call.env.HOME, ctx.home);
+      assert.deepEqual(call.agentOsKeys, ["AGENT_OS_SESSION_ID"], "none of Agent OS's own variables (AGENT_OS_TOKEN, ...)");
+      assert.deepEqual(call.hostKeys, [], "none of a host agent's variables (F-S7a)");
+      assert.equal(call.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, undefined);
+      assert.equal(call.env.CLAUDE_CONFIG_DIR, undefined);
+      assert.equal(call.env.HERMES_HOME, undefined);
+      // Another session gets another chat.
+      const second = await start(ctx, "cursor");
+      assert.notEqual(second.agentSessionId, profile.agentSessionId);
+      assert.equal((await createChatCalls(ctx)).length, 2);
+    },
+    { startupLines: [CHAT_LOG] }
+  );
+});
+
+test("profiles: when `create-chat` fails or prints something else, a new Cursor session starts as before (the picker's fallback), silently (spike S6)", posixSkip, async () => {
+  for (const behaviour of ["fail", "garbage"]) {
+    await withProfileEnv(
+      async (ctx) => {
+        const profile = await start(ctx, "cursor");
+        assert.deepEqual(
+          { args: profile.args, agentSessionId: profile.agentSessionId, resumeMode: profile.resumeMode, cwd: profile.cwd, notes: profile.notes },
+          { args: ["--workspace", ctx.project], agentSessionId: null, resumeMode: "fallback", cwd: ctx.project, notes: [] },
+          behaviour
+        );
+        const calls = await createChatCalls(ctx);
+        assert.deepEqual(calls.map((call) => call.behaviour), [behaviour], "it did ask once");
+        // A later resume of that session has no id, so it keeps the picker's fallback too.
+        const resumed = await start(ctx, "cursor", { resume: { agentSessionId: profile.agentSessionId } });
+        assert.deepEqual([resumed.args, resumed.resumeMode], [["--resume", "--workspace", ctx.project], "fallback"], behaviour);
+      },
+      { startupLines: [CHAT_LOG, `export FAKE_CURSOR_CREATE_CHAT=${behaviour}`] }
+    );
+  }
+});
+
+test("profiles: a Cursor resume never asks for a new chat; an id opens that chat, anything that is not a uuid keeps the picker's fallback (spike S6)", posixSkip, async () => {
+  await withProfileEnv(
+    async (ctx) => {
+      const chatId = crypto.randomUUID();
+      const withId = await start(ctx, "cursor", { resume: { agentSessionId: chatId } });
+      assert.deepEqual([withId.args, withId.agentSessionId, withId.resumeMode], [["--resume", chatId, "--workspace", ctx.project], chatId, "id"]);
+      for (const bad of [null, undefined, "", "notauuid", "../../etc", "--workspace", [chatId], { id: chatId }, { toString: () => chatId }, 42]) {
+        const profile = await start(ctx, "cursor", { resume: { agentSessionId: bad } });
+        assert.deepEqual(
+          [profile.args, profile.agentSessionId, profile.resumeMode],
+          [["--resume", "--workspace", ctx.project], null, "fallback"],
+          String(bad)
+        );
+      }
+      assert.deepEqual(await createChatCalls(ctx), [], "resuming never creates a chat");
+    },
+    { startupLines: [CHAT_LOG] }
+  );
+});
+
+test("cursorCreateChat answers the id Cursor prints, or null for any failure, and stops a call that outlives its limit (spike S6)", posixSkip, async () => {
+  await withProfileEnv(async (ctx) => {
+    const command = ctx.detected.cursor.path;
+    const env = (extra = {}) => ({ PATH: SYSTEM_PATH_DIRS.join(path.delimiter), HOME: ctx.home, FAKE_AGENT_LOG: path.join(ctx.home, "fake-agent.log"), ...extra });
+    const ask = (extra, options = {}) => cursorCreateChat(command, { cwd: ctx.project, env: env(extra), ...options });
+
+    const id = await ask({});
+    assert.match(id, UUID);
+    assert.equal((await createChatCalls(ctx))[0].id, id, "the id is what the program printed, trimmed of its newline");
+    assert.equal(await ask({ FAKE_CURSOR_CREATE_CHAT: "fail" }), null, "a non-zero exit");
+    assert.equal(await ask({ FAKE_CURSOR_CREATE_CHAT: "garbage" }), null, "not a uuid");
+    assert.equal(await ask({ FAKE_CURSOR_CREATE_CHAT: "uuid-exit1" }), null, "a good uuid, but the program exited 1");
+    assert.equal(await cursorCreateChat(path.join(ctx.base, "no-such-agent"), { cwd: ctx.project, env: env() }), null, "a program that can't start");
+    assert.equal(await cursorCreateChat(ctx.project, { cwd: ctx.project, env: env() }), null, "a folder is not a program");
+
+    // A program that does not answer in time is stopped and left behind by nobody. The limit is long
+    // enough for the fake to start and log (a loaded machine takes a second); the fake itself waits 30 s.
+    const calls = (await createChatCalls(ctx)).length;
+    const started = Date.now();
+    assert.equal(await ask({ FAKE_CURSOR_CREATE_CHAT: "slow" }, { timeoutMs: 3000 }), null);
+    assert.ok(Date.now() - started < 15000, "it gave up at its limit, not after the program's 30 s");
+    const slow = (await createChatCalls(ctx)).slice(calls);
+    assert.equal(slow.length, 1, "the slow program had started");
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const deadline = Date.now() + 5000;
+    while (alive(slow[0].pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(alive(slow[0].pid), false, "the timed-out program was killed");
+  });
+});
+
 test("profiles: only an object resumes; false, 0, an empty string, true, a string or an array start fresh", posixSkip, async () => {
   await withProfileEnv(async (ctx) => {
     const claudeId = crypto.randomUUID();
     const expected = {
       codex: ["-C", ctx.project, ...TUI],
-      cursor: ["--workspace", ctx.project],
       hermes: ["--in", ctx.project]
     };
     for (const resume of [false, 0, "", true, 1, "latest", [], [{ agentSessionId: claudeId }]]) {
@@ -496,6 +644,11 @@ test("profiles: only an object resumes; false, 0, an empty string, true, a strin
       const claude = await start(ctx, "claude", { resume });
       assert.deepEqual(claude.args, ["--session-id", claude.agentSessionId], `claude with resume ${where}`);
       assert.match(claude.agentSessionId, UUID);
+      // Cursor starts a new chat (create-chat), never the chat the odd value names.
+      const cursor = await start(ctx, "cursor", { resume });
+      assert.deepEqual(cursor.args, ["--resume", cursor.agentSessionId, "--workspace", ctx.project], `cursor with resume ${where}`);
+      assert.match(cursor.agentSessionId, UUID);
+      assert.notEqual(cursor.agentSessionId, claudeId);
     }
     // An object still resumes, with whatever it holds.
     assert.deepEqual((await start(ctx, "codex", { resume: {} })).args, ["resume", "--last", ...TUI]);
@@ -639,6 +792,7 @@ test("assertSessionArgvSafe accepts exactly the H3 shapes, and folders whose nam
       ["codex", ["-C", folder, ...TUI, ...codexBrainArgs({ mode: "openrouter", model: "openai/gpt-5.2" }, { command: "/usr/bin/security", args: ["find-generic-password", "-w"] }, { forSession: true })]],
       ["cursor", ["--workspace", folder]],
       ["cursor", ["--resume", "--workspace", folder]],
+      ["cursor", ["--resume", uuid, "--workspace", folder]],
       ["hermes", ["--in", folder]],
       ["hermes", ["--resume", "latest", "--in", folder]],
       ["hermes", ["update"]],
@@ -646,7 +800,7 @@ test("assertSessionArgvSafe accepts exactly the H3 shapes, and folders whose nam
     ];
     for (const odd of ["--force-demo", "bypassPermissions", "dangerously-fun", "-f"]) {
       const weird = path.resolve(`/Users/someone/${odd}`);
-      accepted.push(["codex", ["-C", weird, ...TUI]], ["cursor", ["--workspace", weird]], ["hermes", ["--in", weird]]);
+      accepted.push(["codex", ["-C", weird, ...TUI]], ["cursor", ["--workspace", weird]], ["cursor", ["--resume", uuid, "--workspace", weird]], ["hermes", ["--in", weird]]);
     }
     for (const [agentId, args] of accepted) assert.doesNotThrow(() => assertSessionArgvSafe(agentId, args), `${agentId} ${args.join(" ")}`);
   });
@@ -682,6 +836,21 @@ test("assertSessionArgvSafe refuses anything outside H3: bypass, yolo, trust, MC
       ["cursor", ["--workspace", folder, "--trust"]],
       ["cursor", ["--workspace", folder, "--yolo"]],
       ["cursor", ["--workspace", folder, "--model", "auto"]],
+      // Spike S6: the chat id must be a uuid, and nothing else may ride along with it.
+      ["cursor", ["--resume", "notauuid", "--workspace", folder]],
+      ["cursor", ["--resume", "--", "--workspace", folder]],
+      ["cursor", ["--resume", uuid]],
+      ["cursor", ["--resume", uuid, "--workspace"]],
+      ["cursor", ["--resume", uuid, "--workspace", "relative/folder"]],
+      ["cursor", ["--resume", uuid, uuid, "--workspace", folder]],
+      ["cursor", [uuid, "--workspace", folder]],
+      ["cursor", ["--workspace", folder, "--resume", uuid]],
+      ["cursor", ["--resume", uuid, "--workspace", folder, "--force"]],
+      ["cursor", ["--resume", uuid, "--workspace", folder, "-f"]],
+      ["cursor", ["--resume", uuid, "--workspace", folder, "--yolo"]],
+      ["cursor", ["--resume", uuid, "--workspace", folder, "--trust"]],
+      ["cursor", ["--resume", uuid, "--workspace", folder, "--model", "auto"]],
+      ["cursor", ["create-chat"]],
       ["hermes", ["--in", folder, "--tui"]],
       ["hermes", ["--in", folder, "--accept-hooks"]],
       ["hermes", ["--in", folder, "--yolo"]],

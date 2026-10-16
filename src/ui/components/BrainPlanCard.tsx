@@ -662,7 +662,7 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
           />
         ) : versionBlocked ? (
           <div className="os-plan-card__row">
-            <button type="button" className="os-brain-link" onClick={() => navigateTo("setup", { step: "plan" })}>
+            <button type="button" className="os-brain-link" onClick={() => navigateTo("setup", { step: "plan", agent: "openclaw" })}>
               Update in Setup
             </button>
           </div>

@@ -93,6 +93,103 @@ test("SetupPage: the refresh after a finished job merges the Plan choices; nothi
   assert.match(refresh, /setSelections\(\(prev\) => mergeSelections\(prev, planRes\)\)/, "refreshServerState merges into what the person chose");
 });
 
+// ---- "Update in Setup": the asked agent starts at Update ---------------------------------
+
+test("withAskedUpdate: an agent that offers both Keep and Update starts at Update", () => {
+  const plan = { steps: [step("openclaw", "keep"), step("openclaw", "update"), step("hermes", "keep"), step("claude", "keep"), step("claude", "update")] };
+  const before = { hermes: "keep", openclaw: "keep", claude: "keep" };
+  const after = shared.withAskedUpdate(before, plan, "openclaw");
+  assert.equal(after.openclaw, "update");
+  assert.equal(after.claude, "keep", "another agent's selection is untouched");
+  assert.equal(after.hermes, "keep");
+  assert.equal(before.openclaw, "keep", "the old object is not changed in place");
+});
+
+test("withAskedUpdate: no update step for the agent (Hermes) leaves the selections as they were", () => {
+  const plan = { steps: [step("hermes", "keep"), step("openclaw", "keep"), step("openclaw", "update")] };
+  const before = { hermes: "keep", openclaw: "keep" };
+  assert.equal(shared.withAskedUpdate(before, plan, "hermes"), before, "the very same object");
+});
+
+test("withAskedUpdate: an agent that is not installed (install step) is left alone", () => {
+  const plan = { steps: [step("openclaw", "install"), step("openclaw", "prereq-node"), step("hermes", "keep")] };
+  const before = { hermes: "keep", openclaw: "install" };
+  assert.equal(shared.withAskedUpdate(before, plan, "openclaw"), before);
+});
+
+test("withAskedUpdate: an unknown agent name is ignored", () => {
+  const plan = { steps: [step("openclaw", "keep"), step("openclaw", "update")] };
+  const before = { openclaw: "keep" };
+  for (const name of ["nobody", "", "__proto__"]) assert.equal(shared.withAskedUpdate(before, plan, name), before, `"${name}"`);
+});
+
+test("withAskedUpdate: already at Update returns the same object", () => {
+  const plan = { steps: [step("openclaw", "keep"), step("openclaw", "update")] };
+  const before = { openclaw: "update" };
+  assert.equal(shared.withAskedUpdate(before, plan, "openclaw"), before);
+});
+
+test("withAskedUpdate: a later re-read of the same plan keeps the Update choice", () => {
+  const plan = { steps: [step("hermes", "keep"), step("openclaw", "keep"), step("openclaw", "update"), step("claude", "keep")] };
+  const chosen = shared.withAskedUpdate(shared.mergeSelections({}, plan), plan, "openclaw");
+  assert.equal(chosen.openclaw, "update");
+  assert.equal(shared.mergeSelections(chosen, plan).openclaw, "update", "mergeSelections keeps a choice the plan still offers");
+});
+
+test("SetupPage applies the asked Update on the first landing and on a link followed while on Setup", async () => {
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(new URL("../src/pages/SetupPage.tsx", import.meta.url), "utf8");
+  const card = readFileSync(new URL("../src/ui/components/BrainPlanCard.tsx", import.meta.url), "utf8");
+  const load = page.slice(page.indexOf("async function loadAll"), page.indexOf("async function refreshServerState"));
+  assert.match(load, /if \(landing === STEP\.plan\) chooseAskedUpdate\(planRes\.value\)/, "the first landing, only when it ends on the Plan step");
+  const listener = page.slice(page.indexOf('window.addEventListener("aos-navigate"') - 600, page.indexOf('window.addEventListener("aos-navigate"'));
+  assert.match(listener, /if \(asked === STEP\.plan\) chooseAskedUpdate\(planRef\.current\)/, "a link followed while already on Setup");
+  assert.match(card, /navigateTo\("setup", \{ step: "plan", agent: "openclaw" \}\)\}\s*>\s*Update in Setup/, "Update in Setup names OpenClaw");
+  assert.match(card, /navigateTo\("setup", \{ step: "plan" \}\)\}\s*>\s*Install in Setup/, "Install in Setup is unchanged");
+});
+
+// ---- the first landing ---------------------------------------------------------------------
+
+test("canLandYet: a step named in the address needs only the plan, never the brain options", () => {
+  // The brain read is still running, failed or timed out: all three mean brainOk is false.
+  assert.equal(shared.canLandYet({ asked: STEP.plan, planOk: true, brainOk: false }), true);
+  assert.equal(shared.canLandYet({ asked: STEP.signin, planOk: true, brainOk: true }), true);
+  assert.equal(shared.canLandYet({ asked: STEP.check, planOk: true, brainOk: false }), true, "step 0 (Check) is a step too, not 'no step'");
+});
+
+test("canLandYet: with no step in the address the automatic choice waits for the brain options", () => {
+  assert.equal(shared.canLandYet({ asked: null, planOk: true, brainOk: false }), false);
+  assert.equal(shared.canLandYet({ asked: null, planOk: true, brainOk: true }), true);
+});
+
+test("canLandYet: nothing lands without the plan", () => {
+  for (const asked of [null, STEP.plan]) for (const brainOk of [false, true]) {
+    assert.equal(shared.canLandYet({ asked, planOk: false, brainOk }), false, `asked ${asked}, brainOk ${brainOk}`);
+  }
+});
+
+test("landingStep: the order is a restored job, then a person who moved, then the address, then the automatic choice", () => {
+  assert.equal(shared.landingStep({ asked: STEP.plan, restored: STEP.install, moved: false, auto: STEP.brain }), STEP.install, "a running or failed job wins over the address");
+  assert.equal(shared.landingStep({ asked: STEP.plan, restored: STEP.install, moved: true, auto: null }), STEP.install, "...and over a person who moved (as before)");
+  assert.equal(shared.landingStep({ asked: STEP.plan, restored: null, moved: true, auto: null }), null, "a person who already moved is not moved");
+  assert.equal(shared.landingStep({ asked: STEP.plan, restored: null, moved: false, auto: null }), STEP.plan, "the address lands even though the brain options are not in");
+  assert.equal(shared.landingStep({ asked: STEP.check, restored: null, moved: false, auto: STEP.ready }), STEP.check, "the address wins over the automatic choice, Check included");
+  assert.equal(shared.landingStep({ asked: null, restored: null, moved: false, auto: STEP.brain }), STEP.brain, "no step in the address: the automatic choice");
+  assert.equal(shared.landingStep({ asked: null, restored: null, moved: false, auto: null }), null, "nothing to go on: stay");
+});
+
+test("SetupPage: loadAll puts each read on screen when it arrives and lands through the two helpers", async () => {
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(new URL("../src/pages/SetupPage.tsx", import.meta.url), "utf8");
+  const load = page.slice(page.indexOf("async function loadAll"), page.indexOf("async function refreshServerState"));
+  assert.doesNotMatch(load, /Promise\.allSettled\(\[\s*withTimeout\(getSetupPlan/, "the plan, brain and agents reads are not one allSettled that waits for the slowest");
+  assert.match(load, /const planRes = await planRead/, "the plan is awaited on its own");
+  assert.match(load, /canLandYet\(/);
+  assert.match(load, /landingStep\(/);
+  assert.match(load, /await Promise\.all\(\[brainShown, agentsShown\]\)/, "loadAll still ends only when every answer is on screen (Check again waits for it)");
+  assert.match(load, /withTimeout\(getBrainOptions\(refresh\), BRAIN_READ_LIMIT_MS\)/, "the brain read keeps its own limit");
+});
+
 // ---- words for a request that got no answer ----------------------------------------
 
 test("gotNoAnswer: only a refusal Agent OS sent itself (an ApiError) is an answer", () => {

@@ -54,17 +54,20 @@ import {
   STEP,
   agentFact,
   brainFooterNote,
+  canLandYet,
   checkFooterNote,
   formatMinutes,
   formatSize,
   gotNoAnswer,
   groupAction,
+  landingStep,
   mergeSelections,
   needsOpenClawConsent,
   railStep,
   readProblem,
   reaskNote,
   totalsOf,
+  withAskedUpdate,
   type GroupId,
   type PlanSelection
 } from "../ui/setupGroupShared";
@@ -135,6 +138,12 @@ function installStepLabel(agentId: string | null, action: string) {
 function stepFromUrl(): number | null {
   const name = queryParam("step");
   return Object.prototype.hasOwnProperty.call(STEP, name) ? STEP[name as keyof typeof STEP] : null;
+}
+
+// A read that has finished, one way or the other, as a value (it never throws), so each answer can be put on
+// screen the moment it arrives while another read is still running.
+function settled<T>(read: Promise<T>) {
+  return Promise.allSettled([read]).then(([result]) => result);
 }
 
 function brainReady(check: SystemCheck | null, brain: BrainOptionsResponse | null) {
@@ -239,6 +248,11 @@ export default function SetupPage() {
   const initializedRef = useRef(false);
   // True once the person has moved to a step themselves: the first-load landing then leaves them where they are.
   const movedRef = useRef(false);
+  // The plan on screen, for the link listener below (it is set up once, so it cannot see the newest `plan` itself).
+  const planRef = useRef<SetupPlan | null>(null);
+  // Counts the AI-brain reads: only the newest one's answer goes on screen, so a slow first read can't
+  // overwrite what a later re-read (after a job) already showed.
+  const brainReadSeq = useRef(0);
   const alive = useRef(true);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const focusOnStepChange = useRef(false);
@@ -313,6 +327,14 @@ export default function SetupPage() {
     return null;
   }
 
+  // The address names an agent (?agent=openclaw, from the Agents page's "Update in Setup"): on the Plan step its row
+  // starts at Update. withAskedUpdate decides whether the plan offers it; the person can still pick Keep.
+  function chooseAskedUpdate(forPlan: SetupPlan | null) {
+    const agentId = queryParam("agent");
+    if (!forPlan || !agentId) return;
+    setSelections((prev) => withAskedUpdate(prev, forPlan, agentId));
+  }
+
   async function loadAll(refresh = false) {
     let checkRes: SystemCheck;
     try {
@@ -327,12 +349,26 @@ export default function SetupPage() {
     setStale(false);
 
     // The plan, the brain options and the agents list are read together but judged apart:
-    // one that fails must not hide the others.
-    const [planRes, brainRes, agentsRes] = await Promise.allSettled([
-      withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS),
-      withTimeout(getBrainOptions(refresh), BRAIN_READ_LIMIT_MS),
-      withTimeout(listAgents(), READ_TIMEOUT_MS)
-    ]);
+    // one that fails must not hide the others. Each answer goes on screen when it arrives, so the
+    // brain read (a real OpenClaw takes about a minute, up to its limit) does not hold the plan back.
+    const planRead = settled(withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS));
+    const brainSeq = ++brainReadSeq.current;
+    const brainShown = settled(withTimeout(getBrainOptions(refresh), BRAIN_READ_LIMIT_MS)).then((brainRes) => {
+      if (alive.current && brainSeq === brainReadSeq.current) {
+        if (brainRes.status === "fulfilled") {
+          setBrain(brainRes.value);
+          setBrainError("");
+        } else {
+          setBrainError(readProblem(brainRes.reason, "the AI brain options"));
+        }
+      }
+      return brainRes;
+    });
+    const agentsShown = settled(withTimeout(listAgents(), READ_TIMEOUT_MS)).then((agentsRes) => {
+      if (alive.current && agentsRes.status === "fulfilled") setAgentsMeta(agentsRes.value.agents);
+    });
+
+    const planRes = await planRead;
     if (!alive.current) return;
     if (planRes.status === "fulfilled") {
       setPlan(planRes.value);
@@ -341,44 +377,53 @@ export default function SetupPage() {
     } else {
       setPlanError(readProblem(planRes.reason, "the setup plan"));
     }
-    if (brainRes.status === "fulfilled") {
-      setBrain(brainRes.value);
-      setBrainError("");
-    } else {
-      setBrainError(readProblem(brainRes.reason, "the AI brain options"));
-    }
-    if (agentsRes.status === "fulfilled") setAgentsMeta(agentsRes.value.agents);
 
-    if (planRes.status !== "fulfilled" || brainRes.status !== "fulfilled" || initializedRef.current) return;
-    initializedRef.current = true;
-    const restored = await restoreJobs();
-    if (!alive.current) return;
-    if (restored !== null) {
-      setStepIndex(restored);
-      return;
+    // The first landing, once. A step named in the address (the Get started checklist and the Agents page's
+    // "Update in Setup" use this) needs only the plan, so it does not wait for the brain read, which may be
+    // slow, fail or time out. The automatic choice below needs the brain options, so then wait for them.
+    // The step in the address is read here, and again after that wait, so a link followed meanwhile still counts.
+    const planOk = planRes.status === "fulfilled";
+    let asked = stepFromUrl();
+    let brainRes: Awaited<typeof brainShown> | null = null;
+    if (planOk && asked === null && !initializedRef.current) {
+      brainRes = await brainShown;
+      if (!alive.current) return;
+      asked = stepFromUrl();
     }
-    // The person already chose a step while this was loading: do not move them.
-    if (movedRef.current) return;
-    // A step named in the address (the Get started checklist uses this) wins
-    // over the one worked out from what is installed.
-    const asked = stepFromUrl();
-    if (asked !== null) {
-      setStepIndex(asked);
-      return;
+    if (
+      planRes.status === "fulfilled" &&
+      !initializedRef.current &&
+      canLandYet({ asked, planOk, brainOk: brainRes?.status === "fulfilled" })
+    ) {
+      initializedRef.current = true;
+      // A brand-new computer starts at Check; a half-set-up one at Plan;
+      // everything installed lands on AI brain, or Ready once configured.
+      let auto: number | null = null;
+      if (brainRes?.status === "fulfilled") {
+        const anyInstalled = ALL_AGENT_IDS.some((id) => checkRes.agents?.[id]?.detected.installed);
+        const needsAction = planRes.value.steps.some((s) => s.action === "install" || s.action === "prereq-node");
+        if (!anyInstalled) auto = STEP.check;
+        else if (needsAction) auto = STEP.plan;
+        else auto = brainReady(checkRes, brainRes.value) ? STEP.ready : STEP.brain;
+      }
+      const restored = await restoreJobs();
+      if (!alive.current) return;
+      const landing = landingStep({ asked, restored, moved: movedRef.current, auto });
+      if (landing !== null) {
+        setStepIndex(landing);
+        // "Update in Setup" names the agent (?agent=openclaw): on the Plan step its row starts at Update.
+        if (landing === STEP.plan) chooseAskedUpdate(planRes.value);
+      }
     }
-    const anyInstalled = ALL_AGENT_IDS.some((id) => checkRes.agents?.[id]?.detected.installed);
-    const needsAction = planRes.value.steps.some((s) => s.action === "install" || s.action === "prereq-node");
-    // A brand-new computer starts at Check; a half-set-up one at Plan;
-    // everything installed lands on AI brain, or Ready once configured.
-    if (!anyInstalled) setStepIndex(STEP.check);
-    else if (needsAction) setStepIndex(STEP.plan);
-    else setStepIndex(brainReady(checkRes, brainRes.value) ? STEP.ready : STEP.brain);
+    // The call is not over until the other answers are on screen (the Check again button waits for it).
+    await Promise.all([brainShown, agentsShown]);
   }
 
   // After a job finishes, what the page knew before (installed? configured?)
   // is stale; re-read it from the server so the next step is truthful. If the
   // re-read gets no answer the old data stays, with a note saying so.
   async function refreshServerState(includePlan: boolean) {
+    const brainSeq = ++brainReadSeq.current;
     try {
       const [checkRes, brainRes, planRes] = await Promise.all([
         withTimeout(getSetupCheck(true), CHECK_TIMEOUT_MS),
@@ -389,8 +434,10 @@ export default function SetupPage() {
       // Each message is about the data it came with: new data from a good answer ends it.
       setCheck(checkRes);
       setCheckError("");
-      setBrain(brainRes);
-      setBrainError("");
+      if (brainSeq === brainReadSeq.current) {
+        setBrain(brainRes);
+        setBrainError("");
+      }
       if (planRes) {
         setPlan(planRes);
         setPlanError("");
@@ -403,6 +450,10 @@ export default function SetupPage() {
       if (alive.current) setStale(true);
     }
   }
+
+  useEffect(() => {
+    planRef.current = plan;
+  }, [plan]);
 
   useEffect(() => {
     void loadAll();
@@ -418,6 +469,7 @@ export default function SetupPage() {
         focusOnStepChange.current = true;
         movedRef.current = true;
         setStepIndex(asked);
+        if (asked === STEP.plan) chooseAskedUpdate(planRef.current);
       }
     }
     window.addEventListener("aos-navigate", onNavigate);

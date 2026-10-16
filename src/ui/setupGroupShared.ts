@@ -120,6 +120,39 @@ export function mergeSelections(prev: Record<string, PlanSelection>, plan: Pick<
   return next;
 }
 
+// "Update in Setup" (the Agents page's plan card) opens Setup's Plan step with the agent's name in the address.
+// That agent's row then starts at Update, because Keep is the default and a person who followed the link would
+// otherwise never be offered the update. Only when the plan really offers both choices for it; anything else
+// (an agent that is not installed, one with no update step, an unknown name) is left as it was. Returns the same
+// object when nothing changes. The person can still pick Keep, and nothing runs until they confirm a group.
+export function withAskedUpdate(selections: Record<string, PlanSelection>, plan: Pick<SetupPlan, "steps">, agentId: string) {
+  const steps = plan.steps.filter((s) => s.agentId === agentId);
+  const offersUpdate = steps.some((s) => s.action === "keep") && steps.some((s) => s.action === "update");
+  if (!offersUpdate || selections[agentId] === "update") return selections;
+  return { ...selections, [agentId]: "update" as PlanSelection };
+}
+
+// ---- the first landing ----------------------------------------------------------------
+// When Setup first opens it shows Check while it reads the computer, then moves the person to a step. These two
+// functions are that decision (SetupPage.loadAll does the reading and the moving).
+
+// Has the page read enough to land? A step named in the address (?step=plan) needs only the plan: the AI-brain
+// read can take about a minute on a real OpenClaw (up to BRAIN_READ_LIMIT_MS) and may fail or time out, and the
+// link must not wait for it. The automatic choice (no step in the address) looks at the brain options too.
+export function canLandYet(o: { asked: number | null; planOk: boolean; brainOk: boolean }): boolean {
+  return o.planOk && (o.asked !== null || o.brainOk);
+}
+
+// Where the landing puts the person; null = leave them where they are. In this order: a running or failed job
+// that was found on the server wins; a person who already chose a step themselves is not moved; then the step
+// named in the address; then the automatic choice (`auto` is null while the brain options are not in).
+export function landingStep(o: { asked: number | null; restored: number | null; moved: boolean; auto: number | null }): number | null {
+  if (o.restored !== null) return o.restored;
+  if (o.moved) return null;
+  if (o.asked !== null) return o.asked;
+  return o.auto;
+}
+
 // Why a read failed, in words that do not claim more than the page knows. A read
 // changes nothing, but a read that got no answer is simply "no answer".
 export function readProblem(error: unknown, what: string) {

@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { FAKE_AGENT_NAMES, FAKE_AGENT_SCRIPT, FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
-import { readFakeAgentState, setFakeKnob } from "./helpers/fake-knobs.js";
+import { fakeSiwcProfile, readFakeAgentState, setFakeKnob } from "./helpers/fake-knobs.js";
 
 const require = createRequire(import.meta.url);
 const isWindows = process.platform === "win32";
@@ -584,9 +584,7 @@ test("openclaw's ChatGPT sign-in, chosen by its argv: refuses without a terminal
     } finally {
       session.stop();
     }
-    assert.deepEqual((await readFakeAgentState(dir)).authRows, [
-      { provider: "openai", method: "siwc", tokenSharing: true, email: "someone@example.com" }
-    ]);
+    assert.deepEqual((await readFakeAgentState(dir)).authRows, [fakeSiwcProfile()], "the OpenClaw 2026.10.4 profile row, and no more");
 
     const cancelled = startInPty(bin.paths.openclaw, signIn, env);
     try {

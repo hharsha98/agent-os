@@ -4,7 +4,8 @@
 // $HOME/.fake-knobs/FAKE_X: Agent OS hands some commands only an allow-listed
 // environment (childEnv), which drops FAKE_* variables, but it never changes
 // HOME. $HOME/.fake-agent-state.json holds what the fake agents "saved":
-// { primary, models, authRows }.
+// { primary, models, authRows }; authRows are the profile rows `models auth list`
+// prints (see fakeSiwcProfile).
 // A helper, not a test file: the runner only runs test/*.test.js.
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -12,6 +13,24 @@ import path from "node:path";
 export const FAKE_KNOBS_DIR = ".fake-knobs";
 export const FAKE_AGENT_STATE_FILE = ".fake-agent-state.json";
 const KNOB_NAME = /^FAKE_[A-Z0-9_]+$/;
+
+// A signed-in "Sign in with ChatGPT" profile row as OpenClaw 2026.10.4 prints it
+// (live check S-B3): these seven keys only, no `method` and no `tokenSharing`.
+// The id's second segment, "token-sharing", is what names the kind. Every value
+// is made up; `extra` overrides or adds a field. The fake sign-in program
+// (test/fakes/tui-agent.mjs) writes the same row, and a test compares the two.
+export function fakeSiwcProfile(extra = {}) {
+  return {
+    id: "openai:token-sharing:agentos-test",
+    provider: "openai",
+    type: "oauth",
+    label: "openai token sharing (ChatGPT, Beta)",
+    email: "someone@example.com",
+    displayName: "Sign in with ChatGPT (Beta)",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    ...extra
+  };
+}
 
 // Sets a knob for every fake that runs with this HOME; null removes it.
 export async function setFakeKnob(home, name, value) {

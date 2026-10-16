@@ -48,7 +48,7 @@ import {
 } from "../server/runtime/setup/openclaw-version.js";
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
-import { readFakeAgentState, setFakeKnob } from "./helpers/fake-knobs.js";
+import { fakeSiwcProfile, readFakeAgentState, setFakeKnob } from "./helpers/fake-knobs.js";
 import { H1_ENV_NAMES, withoutH1Env } from "./helpers/plan-brains-safety.js";
 
 const isWindows = process.platform === "win32";
@@ -1202,7 +1202,7 @@ test("a real sign-in in a PTY against W1's fake: the link and the code are shown
         assert.deepEqual(closes, ["session_ended"]);
         assert.deepEqual(
           (await readFakeAgentState(home)).authRows,
-          [{ provider: "openai", method: "siwc", tokenSharing: true, email: "someone@example.com" }],
+          [fakeSiwcProfile()],
           "the program signed in (the fake saved its row, as OpenClaw saves the profile)"
         );
 

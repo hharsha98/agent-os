@@ -62,9 +62,10 @@
 // openai --method siwc`, chosen by its argv (no mode), needs a terminal: without one it prints
 // "This command needs a terminal." and exits 1. In one it logs its start record and prints a
 // sign-in link, a code and "Press Enter after you approve in your browser.", echoes typing, and
-// on Enter adds a Sign in with ChatGPT row to authRows in $HOME/.fake-agent-state.json, prints
-// "Signed in." and exits 0. Ctrl+C exits 130 and saves nothing. Every start record names the
-// OPENCLAW_* variables the fake was given (openclawKeys), for the Safety 4 tests.
+// on Enter adds a Sign in with ChatGPT profile row (the OpenClaw 2026.10.4 shape, made-up values)
+// to authRows in $HOME/.fake-agent-state.json, prints "Signed in." and exits 0. Ctrl+C exits 130
+// and saves nothing. Every start record names the OPENCLAW_* variables the fake was given
+// (openclawKeys), for the Safety 4 tests.
 //
 // Probe records (plan brains): under the name openclaw, every quick answer (--version, --help,
 // the status questions, the sign-in's no-terminal refusal) is logged first as { event: "probe",
@@ -549,7 +550,16 @@ function signInProgram() {
       if (ch === "\r" || ch === "\n") {
         finished = true;
         const state = readState();
-        state.authRows.push({ provider: "openai", method: "siwc", tokenSharing: true, email: "someone@example.com" });
+        // Same row as fakeSiwcProfile() in test/helpers/fake-knobs.js (a test compares the two).
+        state.authRows.push({
+          id: "openai:token-sharing:agentos-test",
+          provider: "openai",
+          type: "oauth",
+          label: "openai token sharing (ChatGPT, Beta)",
+          email: "someone@example.com",
+          displayName: "Sign in with ChatGPT (Beta)",
+          expiresAt: "2099-01-01T00:00:00.000Z"
+        });
         writeFileSync(path.join(process.env.HOME || "", STATE_FILE), `${JSON.stringify(state, null, 2)}\n`);
         process.stdout.write("\r\nSigned in.\r\n", () => process.exit(0));
         return;

@@ -73,11 +73,12 @@ import { readChatgptAuth, readOpenclawModelsConfig, resolvePlanModel } from "../
 import { readChatgptAuth as readChatgptAuthInModels, readOpenclawModelsConfig as readOpenclawModelsConfigInModels } from "../server/runtime/setup/models.js";
 import { readReceipt } from "../server/runtime/setup/receipt.js";
 import { signInStatus } from "../server/runtime/setup/signin.js";
-import { readFakeAgentState, writeFakeAgentState } from "./helpers/fake-knobs.js";
+import { fakeSiwcProfile, readFakeAgentState, writeFakeAgentState } from "./helpers/fake-knobs.js";
 import { FAKE_CLAUDE_CLI_PINS, FAKE_SECRET, installFakeOpenclawShim } from "./helpers/fake-openclaw.js";
 import {
   CLAUDE_AUTH,
   agentEnvLog,
+  legacySiwcRow,
   listFiles,
   openclawRecord,
   readJsonLines,
@@ -220,12 +221,87 @@ test("claudePlanReadiness: every state Claude Code can be in", () => {
   for (const [input, expected] of cases) assert.equal(claudePlanReadiness(input), expected, JSON.stringify(input));
 });
 
-test("parseAuthRows and chatgptSignIn: method from method or type, sharing from tokenSharing, every other field dropped", () => {
+// `models auth list --provider openai --json` on OpenClaw 2026.10.4 (live check S-B3), with made-up values.
+const authListAnswer = (profiles) => ({
+  agentDir: "/home/someone/.openclaw/agents/main/agent",
+  agentId: "main",
+  authStatePath: "/home/someone/.openclaw/agents/main/agent/auth-state.json",
+  provider: "openai",
+  profiles
+});
+
+test("parseAuthRows and chatgptSignIn on the 2026.10.4 answer: one token-sharing profile is signed in with sharing; no profiles is signed out", () => {
+  const signedIn = authListAnswer([siwcRow()]);
+  assert.deepEqual(Object.keys(signedIn.profiles[0]).sort(), ["accessToken", "displayName", "email", "expiresAt", "id", "label", "provider", "type"], "the made-up row has the S-B3 keys, and a token that must be dropped");
+  assert.equal(signedIn.profiles[0].id.split(":")[1], "token-sharing");
+  assert.equal(signedIn.profiles[0].type, "oauth", "its type says nothing about ChatGPT");
+  const rows = parseAuthRows(signedIn);
+  assert.deepEqual(rows, [{ method: "siwc", sharing: true }]);
+  assert.deepEqual(chatgptSignIn(rows), { signedIn: true, sharing: true });
+  assert.deepEqual(chatgptSignIn(parseAuthRows(authListAnswer([fakeSiwcProfile()]))), { signedIn: true, sharing: true }, "the exact seven keys, no token");
+
+  const signedOut = parseAuthRows(authListAnswer([]));
+  assert.deepEqual(signedOut, []);
+  assert.deepEqual(chatgptSignIn(signedOut), { signedIn: false, sharing: null });
+});
+
+test("parseAuthRows: an openai oauth row whose id kind is not token-sharing is not a ChatGPT sign-in, whatever its names say; the id kind is the second segment, exactly", () => {
+  const notSignedIn = { signedIn: false, sharing: null };
+  const oauth = parseAuthRows(authListAnswer([fakeSiwcProfile({ id: "openai:oauth:agentos-test" })]));
+  assert.deepEqual(oauth, [{ method: "oauth", sharing: null }]);
+  assert.deepEqual(chatgptSignIn(oauth), notSignedIn);
+  // The wording is never the signal: displayName and label keep their ChatGPT words, the id kind decides.
+  for (const id of ["openai:default", "openai:token-sharing-extra:x", "openai:Token-Sharing:x", "token-sharing:openai:x", "openai", "", "openai:x:token-sharing"]) {
+    assert.deepEqual(chatgptSignIn(parseAuthRows([fakeSiwcProfile({ id })])), notSignedIn, JSON.stringify(id));
+  }
+  for (const id of [undefined, null, 3, ["openai", "token-sharing", "x"], { kind: "token-sharing" }]) {
+    assert.deepEqual(chatgptSignIn(parseAuthRows([fakeSiwcProfile({ id })])), notSignedIn, `id ${JSON.stringify(id)}`);
+  }
+  // A row with no type either has no method at all.
+  assert.deepEqual(parseAuthRows([{ provider: "openai", id: "openai:default" }]), [{ method: null, sharing: null }]);
+  // The second segment is what counts: a longer or shorter id still names the kind.
+  for (const id of ["openai:token-sharing", "openai:token-sharing:a:b", "anything:token-sharing:x"]) {
+    assert.deepEqual(parseAuthRows([{ provider: "openai", type: "oauth", id }]), [{ method: "siwc", sharing: true }], id);
+  }
+});
+
+test("parseAuthRows and chatgptSignIn: an explicit method and tokenSharing (an older or future shape) win over the id kind", () => {
+  const older = parseAuthRows(authListAnswer([{ provider: "openai", method: "siwc", tokenSharing: false, email: "someone@example.com" }]));
+  assert.deepEqual(older, [{ method: "siwc", sharing: false }]);
+  assert.deepEqual(chatgptSignIn(older), { signedIn: true, sharing: false });
+  // On a token-sharing id too: the explicit sharing flag, and the explicit method, are the row's own word.
+  assert.deepEqual(parseAuthRows([siwcRow({ tokenSharing: false })]), [{ method: "siwc", sharing: false }]);
+  assert.deepEqual(parseAuthRows([siwcRow({ method: "api_key" })]), [{ method: "api_key", sharing: true }]);
+  assert.deepEqual(chatgptSignIn(parseAuthRows([siwcRow({ method: "api_key" })])), { signedIn: false, sharing: null });
+  // A tokenSharing that isn't a boolean is not a flag: the id (or nothing) answers.
+  assert.deepEqual(parseAuthRows([siwcRow({ tokenSharing: "no" })]), [{ method: "siwc", sharing: true }]);
+  assert.deepEqual(parseAuthRows([legacySiwcRow({ tokenSharing: "no" })]), [{ method: "siwc", sharing: null }]);
+});
+
+test("parseAuthRows keeps only method and sharing: never an id, e-mail, label, display name, expiry or token", () => {
   const rows = parseAuthRows([
-    siwcRow(),
+    ...authListAnswer([siwcRow(), fakeSiwcProfile({ id: "openai:oauth:agentos-test" })]).profiles,
+    legacySiwcRow(),
+    { provider: "openai", method: "api_key", accessToken: FAKE_SECRET }
+  ]);
+  assert.equal(rows.length, 4);
+  for (const row of rows) assert.deepEqual(Object.keys(row), ["method", "sharing"]);
+  const kept = JSON.stringify(rows);
+  const row = fakeSiwcProfile();
+  for (const dropped of [row.id, row.label, row.email, row.displayName, row.expiresAt, FAKE_SECRET, "agentos-test", "someone@example.com"]) {
+    assert.ok(!kept.includes(dropped), `${dropped} is dropped`);
+  }
+  // The same through the whole read: what chatgptSignIn answers holds just the two fields.
+  assert.deepEqual(Object.keys(chatgptSignIn(rows)), ["signedIn", "sharing"]);
+});
+
+test("parseAuthRows and chatgptSignIn: both answer forms, method from method or type, sharing from tokenSharing, every other field dropped", () => {
+  const rows = parseAuthRows([
+    legacySiwcRow(),
     { provider: "openai", type: "siwc", email: "someone@example.com" },
     { provider: "openai", method: "api_key", accessToken: FAKE_SECRET },
     { provider: "anthropic", method: "siwc" },
+    { provider: "anthropic", id: "anthropic:token-sharing:x", type: "oauth" },
     "junk"
   ]);
   assert.deepEqual(rows, [
@@ -236,6 +312,7 @@ test("parseAuthRows and chatgptSignIn: method from method or type, sharing from 
   const kept = JSON.stringify(rows);
   assert.ok(!kept.includes("someone@example.com") && !kept.includes(FAKE_SECRET), "only each row's method and sharing are kept");
   assert.deepEqual(parseAuthRows({ profiles: [{ type: "siwc" }] }), [{ method: "siwc", sharing: null }], "a 2026.9.6 row carries only type");
+  assert.deepEqual(parseAuthRows([siwcRow()]), parseAuthRows({ profiles: [siwcRow()] }), "the bare array and the { profiles } object read alike");
   assert.deepEqual(parseAuthRows([]), []);
   for (const unreadable of [null, "x", {}, { profiles: "x" }, 3]) assert.equal(parseAuthRows(unreadable), null, JSON.stringify(unreadable));
 
@@ -535,9 +612,19 @@ test("GET /api/setup/openclaw/plans: every sign-in list state, and readiness onl
     await setState([siwcRow({ tokenSharing: false })]);
     assert.deepEqual(await chatgpt(), { signedIn: true, sharing: false, readiness: null }, "signed in without token sharing");
     await setState([siwcRow({ tokenSharing: undefined })]);
-    assert.deepEqual(await chatgpt(), { signedIn: true, sharing: null, readiness: null }, "no sharing field: unknown");
+    assert.deepEqual(await chatgpt(), { signedIn: true, sharing: true, readiness: null }, "a 2026.10.4 row has no sharing field: the token-sharing id says sharing is on");
+    await setState([legacySiwcRow()]);
+    assert.deepEqual(await chatgpt(), { signedIn: true, sharing: true, readiness: null }, "an older row with an explicit method and sharing flag");
+    await setState([legacySiwcRow({ tokenSharing: undefined })]);
+    assert.deepEqual(await chatgpt(), { signedIn: true, sharing: null, readiness: null }, "an older row with no sharing field: unknown");
+    await setState([fakeSiwcProfile({ id: "openai:oauth:agentos-test" })]);
+    assert.deepEqual(await chatgpt(), { signedIn: false, sharing: null, readiness: null }, "an openai oauth profile that is not token sharing is not a ChatGPT sign-in");
     await setState([{ provider: "openai", type: "api_key", email: "someone@example.com" }]);
     assert.deepEqual(await chatgpt(), { signedIn: false, sharing: null, readiness: null }, "an API key profile is not a ChatGPT sign-in");
+    await setState([siwcRow()]);
+    await knob("FAKE_OPENCLAW_AUTH_SHAPE", "legacy");
+    assert.deepEqual(await chatgpt(), { signedIn: true, sharing: true, readiness: null }, "the older bare array answer reads the same");
+    await knob("FAKE_OPENCLAW_AUTH_SHAPE", null);
     await knob("FAKE_OPENCLAW_AUTH_JSON", JSON.stringify({ profiles: [{ type: "siwc", email: "someone@example.com" }] }));
     assert.deepEqual(await chatgpt(), { signedIn: true, sharing: null, readiness: null }, "a 2026.9.6-style row carries only type");
     for (const unreadable of ["fail", "not json", JSON.stringify({ nothing: true })]) {
@@ -558,6 +645,47 @@ test("GET /api/setup/openclaw/plans: every sign-in list state, and readiness onl
     assert.equal((await chatgpt()).readiness, null, "on another provider: no readiness read");
     const statusRuns = (await argvLines(home)).filter((line) => line.startsWith("models status"));
     assert.deepEqual(statusRuns, ["models status --check --plain", "models status --check --plain", "models status --check --plain"]);
+  });
+});
+
+test("the fake OpenClaw answers `models auth list --provider openai --json` in the 2026.10.4 shape: an object with profiles, [] when signed out, and one made-up token-sharing row when signed in", posixSkip, async () => {
+  await withPlanEnv(async ({ home, knob }) => {
+    const shim = path.join(home, ".npm-global", "bin", "openclaw");
+    const listArgs = ["models", "auth", "list", "--provider", "openai", "--json"];
+    const answer = async () => {
+      const result = await runCommand(shim, listArgs, 10000);
+      assert.equal(result.ok, true, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const KEYS = ["agentDir", "agentId", "authStatePath", "profiles", "provider"];
+
+    const signedOut = await answer();
+    assert.deepEqual(Object.keys(signedOut).sort(), KEYS);
+    assert.equal(signedOut.provider, "openai");
+    assert.deepEqual(signedOut.profiles, []);
+
+    await writeFakeAgentState(home, { primary: null, models: null, authRows: [fakeSiwcProfile()] });
+    const signedIn = await answer();
+    assert.deepEqual(Object.keys(signedIn).sort(), KEYS);
+    assert.deepEqual(signedIn.profiles, [fakeSiwcProfile()]);
+    const [profile] = signedIn.profiles;
+    assert.deepEqual(Object.keys(profile).sort(), ["displayName", "email", "expiresAt", "id", "label", "provider", "type"], "no method and no tokenSharing field");
+    assert.deepEqual([profile.provider, profile.type, profile.displayName], ["openai", "oauth", "Sign in with ChatGPT (Beta)"]);
+    const segments = profile.id.split(":");
+    assert.deepEqual([segments.length, segments[0], segments[1]], [3, "openai", "token-sharing"]);
+    assert.ok(!segments[2].includes("@"), "the third segment is not an e-mail");
+    for (const word of ["token", "sharing", "ChatGPT", "Beta"]) assert.ok(profile.label.includes(word), `the label says ${word}`);
+    assert.ok(Date.parse(profile.expiresAt) > Date.now(), "expiresAt is an ISO date in the future");
+    assert.equal(new Date(profile.expiresAt).toISOString(), profile.expiresAt);
+    assert.ok(!JSON.stringify(signedIn).includes(FAKE_SECRET), "the fake never prints its secret here");
+
+    // The older shape stays available as an opt-in: the bare array of the rows.
+    await knob("FAKE_OPENCLAW_AUTH_SHAPE", "legacy");
+    assert.deepEqual(await answer(), [fakeSiwcProfile()]);
+    await knob("FAKE_OPENCLAW_AUTH_SHAPE", null);
+    // A raw answer from the knob is still printed as it is.
+    await knob("FAKE_OPENCLAW_AUTH_JSON", JSON.stringify({ profiles: [] }));
+    assert.deepEqual(await answer(), { profiles: [] });
   });
 });
 

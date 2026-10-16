@@ -12,7 +12,10 @@
 // OS runs through childEnv never see FAKE_* variables.
 //   FAKE_AGENT_VERSION          the whole --version line (unset: "openclaw 9.9.9-test")
 //   FAKE_OPENCLAW_MODELS_JSON   what `models list --provider <p> --json` prints ("fail": exit 1)
-//   FAKE_OPENCLAW_AUTH_JSON     what `models auth list --provider openai --json` prints ("fail": exit 1)
+//   FAKE_OPENCLAW_AUTH_JSON     what `models auth list --provider openai --json` prints ("fail": exit 1);
+//     unset: the 2026.10.4 answer, { agentDir, agentId, authStatePath, provider: "openai", profiles },
+//     where profiles are the state's authRows ([] when signed out)
+//   FAKE_OPENCLAW_AUTH_SHAPE    "legacy": with AUTH_JSON unset, answers the older bare array of the authRows instead
 //   FAKE_OPENCLAW_STATUS_EXIT   the exit code of `models status --check --plain` (0, 1 or 2; unset 0)
 //   FAKE_OPENCLAW_GET_PRIMARY         makes `config get agents.defaults.model.primary` misbehave
 //   FAKE_OPENCLAW_GET_MODEL_SETTINGS  makes `config get agents.defaults.models` misbehave
@@ -30,7 +33,8 @@
 //     refuseSystemAgentFolders("openclaw") first, because which() would then look in
 //     /opt/homebrew/bin and /usr/local/bin. Put the launcher back with installFakeOpenclawShim.
 // State: $HOME/.fake-agent-state.json = { primary, models, authRows } (`config get`
-// reads it; `onboard` and `models set` write it), and tools.exec.mode stays in
+// reads it; `onboard` and `models set` write it; authRows are the profile rows
+// `models auth list` prints, see fakeSiwcProfile in fake-knobs.js), and tools.exec.mode stays in
 // $HOME/.fake-openclaw-exec-mode (missing means "full", empty means unset).
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -149,7 +153,11 @@ if (args[0] === "models" && args[1] === "auth" && args[2] === "list") {
   await slowRead();
   const shaped = knob("FAKE_OPENCLAW_AUTH_JSON");
   if (shaped === "fail") { process.stderr.write("simulated auth list failure\\n"); process.exit(1); }
-  print(shaped !== undefined ? shaped : JSON.stringify(readState().authRows));
+  if (shaped !== undefined) { print(shaped); process.exit(0); }
+  const profiles = readState().authRows;
+  if (knob("FAKE_OPENCLAW_AUTH_SHAPE") === "legacy") { print(JSON.stringify(profiles)); process.exit(0); }
+  const agentDir = path.join(openclawDir, "agents", "main", "agent");
+  print(JSON.stringify({ agentDir, agentId: "main", authStatePath: path.join(agentDir, "auth-state.json"), provider: "openai", profiles }));
   process.exit(0);
 }
 if (args[0] === "models" && args[1] === "status") {

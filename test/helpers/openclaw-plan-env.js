@@ -26,7 +26,7 @@ import { resetSignInForTest } from "../../server/runtime/setup/signin.js";
 import { clearSystemCheckCache } from "../../server/runtime/setup/system-check.js";
 import { makeFakeAgentBin } from "./fake-agents.js";
 import { installFakeAgent, writeFakeAgentCli } from "./fake-builder-clis.js";
-import { setFakeKnob, writeFakeAgentState } from "./fake-knobs.js";
+import { fakeSiwcProfile, setFakeKnob, writeFakeAgentState } from "./fake-knobs.js";
 import { FAKE_SECRET, installFakeOpenclawShim } from "./fake-openclaw.js";
 import { H1_ENV_NAMES } from "./plan-brains-safety.js";
 
@@ -43,9 +43,16 @@ export const CLAUDE_AUTH = Object.freeze({
   signed_out: JSON.stringify({ loggedIn: false, authMethod: "none" })
 });
 
-// A Sign in with ChatGPT row as `models auth list` may print it (field names
-// provisional until S-B3), with an e-mail and a token value that must be dropped.
+// A signed-in Sign in with ChatGPT row as OpenClaw 2026.10.4 prints it (live
+// check S-B3, see fakeSiwcProfile), plus a token value that must never come
+// back (the real row has none). `extra` overrides or adds a field.
 export function siwcRow(extra = {}) {
+  return fakeSiwcProfile({ accessToken: FAKE_SECRET, ...extra });
+}
+
+// The older row shape (before 2026.10.4, or a future one): an explicit method
+// and token sharing flag instead of the "token-sharing" id.
+export function legacySiwcRow(extra = {}) {
   return { provider: "openai", method: "siwc", tokenSharing: true, email: "someone@example.com", accessToken: FAKE_SECRET, ...extra };
 }
 

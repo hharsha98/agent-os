@@ -120,8 +120,21 @@ export function claudePlanReadiness({ installed, status, method } = {}) {
 
 // `models auth list --provider openai --json` -> [{ method, sharing }], or null
 // when it can't be read. Only each row's method and token sharing are kept:
-// e-mail, names and everything else are dropped here. The field names are
-// provisional until live check S-B3 (2026.9.6 rows carry only `type`).
+// e-mail, names and everything else are dropped here.
+// What live check S-B3 found on OpenClaw 2026.10.4: the answer is an object
+// { agentDir, agentId, authStatePath, provider, profiles }, and a Sign in with
+// ChatGPT leaves one profile row with the keys id, provider, type, label,
+// email, displayName and expiresAt. It has no `method` and no `tokenSharing`
+// field; the id "openai:token-sharing:<...>" is what names it (its type is
+// just "oauth"). So a token-sharing id reads as method "siwc" with sharing on,
+// and an explicit `method` or boolean `tokenSharing` (older or future
+// versions) wins over it. The id's kind is the signal, never displayName or
+// label: those are wording and may change or be translated. A sign-in without
+// token sharing has not been seen live yet, so how it shows is unknown; such a
+// row is treated as not signed in with ChatGPT, and the Apply's readiness
+// check still catches a sign-in that can't use the plan. A bare array of rows
+// (the earlier fakes' guess; no real version is known to print it) is read the
+// same way.
 export function parseAuthRows(value) {
   const list = Array.isArray(value) ? value : plainObject(value) && Array.isArray(value.profiles) ? value.profiles : null;
   if (!list) return null;
@@ -129,10 +142,18 @@ export function parseAuthRows(value) {
   for (const row of list) {
     if (!plainObject(row)) continue;
     if (row.provider !== undefined && row.provider !== "openai") continue;
-    const method = typeof row.method === "string" ? row.method : typeof row.type === "string" ? row.type : null;
-    rows.push({ method, sharing: typeof row.tokenSharing === "boolean" ? row.tokenSharing : null });
+    const tokenSharingProfile = isTokenSharingId(row.id);
+    const method = typeof row.method === "string" ? row.method : tokenSharingProfile ? "siwc" : typeof row.type === "string" ? row.type : null;
+    const sharing = typeof row.tokenSharing === "boolean" ? row.tokenSharing : tokenSharingProfile ? true : null;
+    rows.push({ method, sharing });
   }
   return rows;
+}
+
+// OpenClaw names a ChatGPT token-sharing profile "openai:token-sharing:<...>":
+// the second colon-separated segment of the id is the profile's kind.
+function isTokenSharingId(id) {
+  return typeof id === "string" && id.split(":")[1] === "token-sharing";
 }
 
 // Signed in with ChatGPT (method "siwc"), and whether token sharing was allowed.

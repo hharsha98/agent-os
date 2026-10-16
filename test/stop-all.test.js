@@ -1350,6 +1350,19 @@ test("a setup session (OpenClaw's ChatGPT sign-in) is stopped like any session, 
   assert.deepEqual(stop.stopAllMessage(mixed), { message: "Stopped 2 sessions. OpenClaw may still be finishing its last step.", tone: "ok" });
 });
 
+// Found in E1's walkthrough: the dialog said "OpenClaw may still finish its last step" for a lone sign-in while
+// the result left it out. Both now ask the same question.
+test("the palette's dialog brings the OpenClaw note for an OpenClaw agent session, never for a setup session (its ChatGPT sign-in)", async () => {
+  const { readFileSync } = await import("node:fs");
+  assert.equal(stop.bringsOpenClawNote({ agentId: "openclaw", kind: "setup" }), false, "a sign-in has no last step to finish");
+  assert.equal(stop.bringsOpenClawNote({ agentId: "openclaw", kind: "agent" }), true);
+  assert.equal(stop.bringsOpenClawNote({ agentId: "openclaw" }), true, "a session with no kind is an agent session");
+  assert.equal(stop.bringsOpenClawNote({ agentId: "claude", kind: "agent" }), false);
+  const modal = readFileSync(new URL("../src/ui/components/StopAllRunsModal.tsx", import.meta.url), "utf8");
+  assert.match(modal, /const openClawListed = sessions\.some\(bringsOpenClawNote\);/, "the dialog asks bringsOpenClawNote");
+  assert.match(modal, /\{openClawListed \? <p>OpenClaw may still finish its last step after the terminal closes\.<\/p> : null\}/);
+});
+
 test(
   "end to end: Hold to stop all stops a real setup session (OpenClaw's ChatGPT sign-in) through its Stop, without the OpenClaw note; the palette's look names it 'OpenClaw · ChatGPT sign-in'",
   { skip: isWindows ? "the fake agents are POSIX shims (the sessions engine's own tests cover Windows)" : false },

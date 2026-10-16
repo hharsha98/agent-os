@@ -19,7 +19,7 @@ import { lookForStoppable, stopEverythingWith, stopWhatWasFound, withEndedRooms,
 // Which kinds are Agent OS's own jobs (and so are not stopped) lives in agentWork.ts.
 // Any other kind, including "agent", "team-turn", a missing kind and a kind we have
 // not heard of, IS stopped: an emergency stop errs toward stopping agent work.
-export { MAX_RUNS, sessionStopTitle, stopAllMessage, thingsWord } from "./stopAllShared";
+export { MAX_RUNS, bringsOpenClawNote, sessionStopTitle, stopAllMessage, thingsWord } from "./stopAllShared";
 export type { StopAllResult, StopLook } from "./stopAllShared";
 
 // A room that ended on its own between the look and the stop (the server answers room_not_running)

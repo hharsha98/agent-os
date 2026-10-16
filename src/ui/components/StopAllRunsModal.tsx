@@ -5,7 +5,7 @@
 // would stop, and only stops once the person confirms.
 import { useEffect, useRef, useState } from "react";
 import type { StopAllResult, StopLook } from "../stopAll";
-import { lookForWhatToStop, sessionStopTitle, stopAllMessage, stopWhatWasLookedAt, thingsWord } from "../stopAll";
+import { bringsOpenClawNote, lookForWhatToStop, sessionStopTitle, stopAllMessage, stopWhatWasLookedAt, thingsWord } from "../stopAll";
 import AgentConfirmModal from "./AgentConfirmModal";
 
 const SHOWN_TITLES = 5;
@@ -81,7 +81,7 @@ export default function StopAllRunsModal({
     ...rooms.map((room) => ({ key: `room-${room.id}`, text: `Team Room: ${room.task || room.id}` })),
     ...runs.map((run) => ({ key: `run-${run.id}`, text: run.title || run.id }))
   ];
-  const openClawListed = sessions.some((session) => session.agentId === "openclaw");
+  const openClawListed = sessions.some(bringsOpenClawNote);
 
   return (
     <AgentConfirmModal

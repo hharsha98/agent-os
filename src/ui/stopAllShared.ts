@@ -365,10 +365,7 @@ export async function stopWhatWasFound(
     sessionsTimedOut: sessions.timedOut,
     sessionsAlreadyEnded: sessions.alreadyEnded,
     sessionsStillRunning: sessions.stillRunning,
-    // A setup session (OpenClaw's ChatGPT sign-in) has no last step to finish, so it never adds the OpenClaw note.
-    openClawStopped: sessionList.filter(
-      (session, index) => session.agentId === "openclaw" && session.kind !== "setup" && sessionOutcomes[index] === "ok"
-    ).length,
+    openClawStopped: sessionList.filter((session, index) => bringsOpenClawNote(session) && sessionOutcomes[index] === "ok").length,
     skipped: look.skipped,
     runsChecked: look.runsChecked,
     roomsChecked: look.roomsChecked,
@@ -411,6 +408,13 @@ export function thingsWord(runs: number, rooms: number, sessions = 0): string {
   if (runs > 0) parts.push(runWord(runs));
   if (rooms > 0) parts.push(roomWord(rooms));
   return parts.length > 0 ? listWords(parts) : runWord(0);
+}
+
+// OpenClaw's terminal closes, but its Gateway may still finish the step it was on (spec "Stop sequence"): the
+// dialog and the result both say so. A setup session (OpenClaw's ChatGPT sign-in) has no last step to finish, so
+// it never brings the OpenClaw note, in the dialog or in the result.
+export function bringsOpenClawNote(session: Pick<StoppableSession, "agentId" | "kind">): boolean {
+  return session.agentId === "openclaw" && session.kind !== "setup";
 }
 
 // How the palette's list names a session: the same words as the Sessions page (sessionTitle in

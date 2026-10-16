@@ -15,6 +15,7 @@ import { systemCheck } from "./system-check.js";
 import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
 import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS } from "./recipes.js";
 import { SIGNIN_AGENT_IDS, cancelSignIn, openSignInInTerminal, signInOverview, startSignIn } from "./signin.js";
+import { openHermesModelTerminal } from "./hermes-model-terminal.js";
 import {
   cancelSetupJob,
   getSetupJob,
@@ -795,6 +796,28 @@ export function createSetupRouter({ sessionManager = null } = {}) {
       res.json(await startOpenclawPlanJob({ plan, model: req.body?.model, acceptOpenClawRisk: req.body?.acceptOpenClawRisk === true }));
     } catch (error) {
       mapJobError(error, res, next);
+    }
+  });
+
+  // ---- Hermes's own model picker ("Choose in Hermes", plan brains spec §4) ----
+  // Opens `<detected hermes> model` in its own Terminal.app window on macOS, or
+  // hands the command back to copy on Windows and Linux. Nothing from the
+  // request reaches the command or the file, and it never starts a session.
+  // Hermes not installed is answered here with 400 (spec §7), not through
+  // mapJobError, which maps agent_not_installed to 409.
+  router.post("/hermes/model-terminal", requireLocalMode, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      res.json(await openHermesModelTerminal());
+    } catch (error) {
+      if (error?.code === "agent_not_installed") {
+        res.status(400).json({ error: "agent_not_installed", message: error.message });
+        return;
+      }
+      next(error);
     }
   });
 

@@ -338,21 +338,28 @@ async function sweepOldTerminalFiles(dir) {
   }
 }
 
-// macOS: opens Terminal.app on a tiny .command file holding ONLY the login
-// command, so the person can sign in where a real terminal is available.
-// Elsewhere there is no one way to open a terminal, so the command is handed
-// back to be copied. `command` is always returned, for either path.
-export async function openSignInInTerminal(agentId, { platform = process.platform, spawnFn = spawn } = {}) {
-  const def = definition(agentId);
-  const detected = await ADAPTERS[agentId].detect({ refresh: true });
-  if (!detected.installed) throw signInError("agent_not_installed", `${def.label} isn't installed on this computer yet.`);
-  const command = loginCommandLine(detected.path, def.loginArgs, platform);
+// The name part of a .command file (`<name>-<8 hex>.command`): lower-case
+// letters, digits and dashes only, so it can never hold a path piece.
+const TERMINAL_NAME_RE = /^[a-z0-9-]{1,40}$/;
+
+// macOS: opens Terminal.app on a tiny .command file holding ONLY one fixed
+// command line (an agent's own program and fixed words, nothing from a
+// request), so the person runs it in a real terminal with their own shell and
+// settings. Elsewhere there is no one way to open a terminal, so the command
+// is handed back to be copied. `command` is always returned, for either path.
+// Used by the sign-in fallback below and by Hermes's model picker
+// (hermes-model-terminal.js).
+export async function openCommandInTerminal(binPath, args, { name, platform = process.platform, spawnFn = spawn } = {}) {
+  if (typeof name !== "string" || !TERMINAL_NAME_RE.test(name)) {
+    throw new TypeError("openCommandInTerminal: name must be 1 to 40 lower-case letters, digits or dashes.");
+  }
+  const command = loginCommandLine(binPath, args, platform);
   if (platform !== "darwin") return { opened: false, reason: "copy", command };
 
   const dir = path.join(runtimePaths().root, "setup", "terminal");
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   await sweepOldTerminalFiles(dir);
-  const file = path.join(dir, `${agentId}-login-${crypto.randomBytes(4).toString("hex")}.command`);
+  const file = path.join(dir, `${name}-${crypto.randomBytes(4).toString("hex")}.command`);
   await fs.writeFile(file, `${command}\n`, { mode: 0o700 });
 
   const opened = await new Promise((resolve) => {
@@ -370,6 +377,14 @@ export async function openSignInInTerminal(agentId, { platform = process.platfor
     });
   });
   return opened ? { opened: true, command } : { opened: false, reason: "spawn_failed", command };
+}
+
+// The sign-in fallback: the agent's own login command, in Terminal.app on macOS.
+export async function openSignInInTerminal(agentId, { platform = process.platform, spawnFn = spawn } = {}) {
+  const def = definition(agentId);
+  const detected = await ADAPTERS[agentId].detect({ refresh: true });
+  if (!detected.installed) throw signInError("agent_not_installed", `${def.label} isn't installed on this computer yet.`);
+  return openCommandInTerminal(detected.path, def.loginArgs, { name: `${agentId}-login`, platform, spawnFn });
 }
 
 // ---- tests only ---------------------------------------------------------------------

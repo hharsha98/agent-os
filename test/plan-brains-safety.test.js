@@ -428,3 +428,150 @@ planTest("B1b, Safety 4: no command of these flows gets another HOME or any agen
     planAssert.deepEqual(line.setVars, [], what);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Task B1c: "Choose in Hermes" opens Hermes's own model picker (`hermes model`)
+// in its own Terminal.app window (spec §4). Its share of the Safety items:
+//   1. the file-access spy over the launch sees no agent file at all, not even
+//      OpenClaw's openclaw.json (the one touch allowed elsewhere);
+//   3. the launch's argv (the one `open` call and the words in its .command
+//      file) holds no forbidden flag, nothing ran `hermes model` inside Agent
+//      OS, and the source scan finds nothing in hermes-model-terminal.js (a
+//      new module: the push below puts it on NEW_SERVER_MODULES, so B1a's
+//      Safety 3 test scans it) or in signin.js, where its Terminal helper
+//      lives (an existing module, so not on that list; the test scans it);
+//   4. the launch passes no environment of its own and changes none. For the
+//      Hermes launch, the only program Agent OS starts is `open`; its
+//      environment is the spawn options (no env, so the inherited one, with
+//      HOME the temp home and no H1 name set), and the detection fakes answer
+//      --version and --help without an env log. The spawn function below logs
+//      that inherited environment at the moment of the spawn.
+// Safety 2's Hermes part (the exact `open` argv, the file's content, no
+// session) is in test/hermes-model-terminal.test.js. Two names come from the
+// part above: `test`, and NEW_SERVER_MODULES (B1a's list of the feature's new
+// server modules). This block declares no name of its own at the top level;
+// everything else is imported inside the test, so no name here can clash with
+// the imports above.
+// ---------------------------------------------------------------------------
+
+// B1a's Safety 3 test runs the source scan over every module in this list.
+NEW_SERVER_MODULES.push("server/runtime/setup/hermes-model-terminal.js");
+
+test(
+  "Safety 1, 3 and 4 (B1c): Choose in Hermes opens the picker without an agent file, a forbidden flag or an environment of its own",
+  { skip: process.platform === "win32" ? "POSIX only: the fake agents are sh scripts" : false },
+  async () => {
+    const { default: assert } = await import("node:assert/strict");
+    const { EventEmitter } = await import("node:events");
+    const { mkdir, mkdtemp, readFile, realpath, rm } = await import("node:fs/promises");
+    const { default: os } = await import("node:os");
+    const { default: path } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const { clearDetectCaches } = await import("../server/runtime/agents/detect.js");
+    const { HERMES_MODEL_ARGS, openHermesModelTerminal } = await import("../server/runtime/setup/hermes-model-terminal.js");
+    const { FAKE_LOGIN_SHELL, makeFakeAgentBin } = await import("./helpers/fake-agents.js");
+    const { H1_ENV_NAMES, agentFileAccess, argvProblems, sourceProblems, spyOnFileAccess } = await import(
+      "./helpers/plan-brains-safety.js"
+    );
+
+    const setupDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "server", "runtime", "setup");
+    const base = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-b1c-safety-")));
+    const home = path.join(base, "home");
+    const agentOsHome = path.join(base, "agent-os");
+    const fakeBin = path.join(base, "fake-bin");
+    const agentLog = path.join(base, "fake-agents.jsonl");
+    const vars = {
+      HOME: home,
+      USERPROFILE: home,
+      AGENT_OS_HOME: agentOsHome,
+      HERMES_AGENT_OS_HOME: undefined,
+      HERMES_AGENT_OS_EXECUTABLE_PATHS: undefined,
+      PATH: [fakeBin, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter),
+      SHELL: FAKE_LOGIN_SHELL,
+      FAKE_AGENT_LOG: agentLog
+    };
+    // Safety 4 checks start without the H1 variables (HOME is the temp one).
+    for (const name of H1_ENV_NAMES) if (name !== "HOME" && name !== "USERPROFILE") vars[name] = undefined;
+    const previous = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]));
+    const setEnv = (values) => {
+      for (const [key, value] of Object.entries(values)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    };
+    setEnv(vars);
+    try {
+      await mkdir(home, { recursive: true });
+      await mkdir(agentOsHome, { recursive: true });
+      await makeFakeAgentBin(fakeBin);
+      clearDetectCaches();
+      const hermes = path.join(fakeBin, "hermes");
+      const h1Before = Object.fromEntries(H1_ENV_NAMES.map((name) => [name, process.env[name]]));
+      const calls = [];
+      const spawnFn = (command, args, options) => {
+        // Safety 4's environment log: what `open` would inherit, read at the moment of the spawn.
+        const inherited = {
+          HOME: process.env.HOME,
+          h1Set: H1_ENV_NAMES.filter((name) => process.env[name] !== undefined)
+        };
+        calls.push({ command, args, options, inherited });
+        const child = new EventEmitter();
+        child.unref = () => {};
+        setImmediate(() => child.emit("spawn"));
+        return child;
+      };
+
+      // Safety 1: the spy runs over the whole launch, Hermes's detection included.
+      const seen = [];
+      const restore = spyOnFileAccess(seen);
+      let result;
+      try {
+        result = await openHermesModelTerminal({ platform: "darwin", spawnFn });
+      } finally {
+        restore();
+      }
+      assert.deepEqual(result, { opened: true, command: `${hermes} model` });
+      assert.ok(seen.includes(hermes), "the spy saw Hermes being looked up (a control)");
+      assert.ok(
+        seen.some((p) => p.startsWith(path.join(agentOsHome, "setup", "terminal"))),
+        "the spy saw the .command file being written (a control)"
+      );
+      // agentFileAccess, not FORBIDDEN_PATH on its own: this checkout can sit under a `.claude` folder.
+      assert.deepEqual(agentFileAccess(seen, { allowed: [] }), [], "no agent file, not even ~/.openclaw/openclaw.json");
+
+      // Safety 3: the launch's argv and the words in its file; nothing started `hermes model`; the code.
+      assert.equal(calls.length, 1);
+      const fileText = await readFile(calls[0].args[2], "utf8");
+      assert.equal(fileText, `${hermes} model\n`);
+      const fileWords = fileText.trim().split(" ");
+      assert.deepEqual(fileWords, [hermes, ...HERMES_MODEL_ARGS]);
+      assert.deepEqual(argvProblems([[calls[0].command, ...calls[0].args], fileWords]), []);
+      const logText = await readFile(agentLog, "utf8").catch(() => "");
+      const started = logText
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.event === "start");
+      assert.deepEqual(started, [], "nothing ran `hermes model` inside Agent OS");
+      // The new module's scan is B1a's Safety 3 test; this only proves the push above reached its list.
+      assert.ok(
+        NEW_SERVER_MODULES.includes("server/runtime/setup/hermes-model-terminal.js"),
+        "hermes-model-terminal.js is in B1a's source scan"
+      );
+      // signin.js is an existing module, so it is not on that list; its Terminal helper is scanned here.
+      assert.deepEqual(sourceProblems(await readFile(path.join(setupDir, "signin.js"), "utf8")), [], "signin.js");
+
+      // Safety 4: `open` gets no env and no folder of its own (Terminal.app's own
+      // shell decides), so it inherits this process's environment: HOME the temp
+      // home and no H1 name set. And the launch changed none of them.
+      assert.deepEqual(calls[0].options, { stdio: "ignore", detached: true, shell: false });
+      assert.deepEqual(calls[0].inherited, { HOME: home, h1Set: [] }, "HOME unchanged and no H1 name set");
+      assert.deepEqual(Object.fromEntries(H1_ENV_NAMES.map((name) => [name, process.env[name]])), h1Before);
+      assert.equal(process.env.HOME, home);
+    } finally {
+      setEnv(previous);
+      clearDetectCaches();
+      await rm(base, { recursive: true, force: true });
+    }
+  }
+);

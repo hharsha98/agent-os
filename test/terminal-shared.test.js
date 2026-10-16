@@ -4,9 +4,18 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import xtermHeadless from "@xterm/headless";
 import * as term from "../src/ui/terminalShared.ts";
 
+// @xterm/headless is a CommonJS bundle: its classes sit on the default export.
+const { Terminal: HeadlessTerminal } = xtermHeadless;
 const TOKENS = readFileSync(new URL("../src/ui/tokens.css", import.meta.url), "utf8");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const TIMED_OUT = Symbol("timed out");
+// The promise's value, or TIMED_OUT when it has not settled after `ms` (a hang fails the test instead of stalling it).
+function within(promise, ms) {
+  return Promise.race([promise, sleep(ms).then(() => TIMED_OUT)]);
+}
 
 // Every innermost CSS block, with its custom properties (a block inside @media is found too).
 function blocks(css) {
@@ -92,6 +101,91 @@ test("a reattach puts back the modes the snapshot does not carry, in a fixed ord
   const encode = (mouseEncoding) => term.modeRestoreSequence({ ...ALL_OFF, mouseEncoding }, { altActive: false, kitty: true });
   assert.deepEqual(["sgr", "sgr-pixels"].map(encode), ["\x1b[?1006h", "\x1b[?1016h"]);
   assert.equal(term.modeRestoreSequence({ ...ALL_OFF, kittyFlags: 31 }, { altActive: false, kitty: true }), "\x1b[=31;1u");
+});
+
+// The page's terminal with its fit landing in every gap. The Sessions page's first fit runs in an animation frame
+// its ResizeObserver asks for when the terminal opens, and that frame can come after a write is queued and before
+// xterm's own 0 ms timer reads it. A microtask always lands in that gap. The headless terminal shares the browser
+// terminal's write queue (the same xterm.js commit, decision Q42).
+function fitInEveryGap(t, cols, rows) {
+  return {
+    write(data, callback) {
+      t.write(data, callback);
+      queueMicrotask(() => t.resize(cols, rows));
+    },
+    resize: (c, r) => t.resize(c, r),
+    get buffer() {
+      return t.buffer;
+    },
+    get options() {
+      return t.options;
+    }
+  };
+}
+function screenLines(t) {
+  const buffer = t.buffer.active;
+  const lines = [];
+  for (let y = 0; y < t.rows; y += 1) lines.push(buffer.getLine(buffer.baseY + y)?.translateToString(true) ?? "");
+  return lines;
+}
+
+test("xterm 6.1 forgets an empty write's callback when resize() runs before xterm reads it (why writeParsed never writes one)", async () => {
+  const t = new HeadlessTerminal({ cols: 120, rows: 32, logLevel: "off" });
+  try {
+    let emptyDone = false;
+    let textDone = false;
+    t.write("", () => {
+      emptyDone = true;
+    });
+    t.resize(101, 37);
+    t.write("text", () => {
+      textDone = true;
+    });
+    t.resize(100, 30);
+    await sleep(50);
+    assert.equal(textDone, true, "a write with text keeps its callback");
+    assert.equal(emptyDone, false, "xterm now keeps an empty write's callback too: writeParsed's guard is harmless, but this note is out of date");
+  } finally {
+    t.dispose();
+  }
+});
+
+test("a new session's empty snapshot is restored even when the page's first fit lands before xterm reads a write (blank-terminal fix)", async () => {
+  const t = new HeadlessTerminal({ cols: 80, rows: 24, logLevel: "off", allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
+  try {
+    const page = fitInEveryGap(t, 101, 37);
+    const restored = await within(term.restoreScreen(page, { data: "", cols: 120, rows: 32, modes: ALL_OFF }), 2000);
+    assert.notEqual(restored, TIMED_OUT, "the restore finishes, so the terminal can say it is open and take the keys");
+    const withModes = await within(term.restoreScreen(page, { data: "", cols: 120, rows: 32, modes: { ...ALL_OFF, bracketedPaste: true } }), 2000);
+    assert.notEqual(withModes, TIMED_OUT, "an empty snapshot with modes to put back finishes too");
+    assert.equal(t.modes.bracketedPasteMode, true);
+    // Live output after the restore still lands, and an empty chunk never holds the queue.
+    assert.notEqual(await within(term.writeParsed(page, ""), 2000), TIMED_OUT, "an empty write resolves at once");
+    assert.notEqual(await within(term.writeParsed(page, "FAKE_ARGV"), 2000), TIMED_OUT);
+    assert.equal(screenLines(t)[0], "FAKE_ARGV");
+  } finally {
+    t.dispose();
+  }
+});
+
+test("a snapshot with text is drawn once, at its own size, with its modes, when a fit lands in every gap", async () => {
+  const t = new HeadlessTerminal({ cols: 80, rows: 24, logLevel: "off", allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
+  try {
+    const sizes = [];
+    const page = fitInEveryGap(t, 30, 8);
+    const write = page.write;
+    page.write = (data, callback) => {
+      if (data === "hello\r\nworld") sizes.push([t.cols, t.rows]);
+      write(data, callback);
+    };
+    const restored = await within(term.restoreScreen(page, { data: "hello\r\nworld", cols: 40, rows: 10, modes: { ...ALL_OFF, cursorKeysApp: true } }), 2000);
+    assert.notEqual(restored, TIMED_OUT);
+    assert.deepEqual(sizes, [[40, 10]], "the snapshot is written at the size it was taken (D-U2-7)");
+    assert.deepEqual(screenLines(t).slice(0, 3), ["hello", "world", ""]);
+    assert.equal(t.modes.applicationCursorKeysMode, true);
+  } finally {
+    t.dispose();
+  }
 });
 
 test("only http and https links may open (Q45: mailto text is not a link)", () => {
@@ -286,6 +380,10 @@ test("wiring: the terminal uses the spec's options and words, leaves ⌘T/⌘1-9
     "reconnectRef.current?.focus()",
     // A size over the protocol's limits is clamped before it is sent.
     "t.resize(Math.min(t.cols, MAX_COLS), Math.min(t.rows, MAX_ROWS))",
+    // Blank-terminal fix: the reattach steps live in terminalShared.ts (tested above), and no fit runs while they
+    // draw, so no resize lands between a queued restore write and its callback.
+    "await restoreScreen(t, snapshot)",
+    "if (restoring) return;",
     // An OSC 8 link shows its real address while hovered.
     "host.title = uri",
     'host.removeAttribute("title")',
@@ -303,6 +401,8 @@ test("wiring: the terminal uses the spec's options and words, leaves ⌘T/⌘1-9
   }
   // The sentence's gate is called with what the socket answered; the component keeps no second `!sent` check.
   assert.doesNotMatch(src, /!sent\b/, "unsentNotice.report(sent) decides, not a separate !sent check");
+  // Every write goes through writeParsed, which never queues an empty one (xterm 6.1 can lose its callback).
+  assert.doesNotMatch(src, /\bt\.write\(/, "SessionTerminal writes only through writeParsed");
   // The page's callbacks are guarded inside report() and say(): a throw there must not stop the tries.
   assert.match(src, /const report = [\s\S]*?try \{\s*latest\.current\.onConnection\?\.\(next\);\s*\} catch/, "report() guards onConnection");
   assert.match(src, /const say = [\s\S]*?try \{\s*latest\.current\.onNotice\?\.\(text\);\s*\} catch/, "say() guards onNotice");

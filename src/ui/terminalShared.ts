@@ -1,8 +1,9 @@
 // The browser terminal's pure rules (spec "Browser terminal"): the Cobalt colours read from the tokens, the
-// modes a reattach puts back, which links may open, the OSC 52 rule and the reconnect pace. `import type`
-// only, so test/terminal-shared.test.js loads this file straight from src/ (decision P14).
+// modes a reattach puts back (and the reattach steps, on a terminal handed in), which links may open, the OSC 52
+// rule and the reconnect pace. `import type` only, so test/terminal-shared.test.js loads this file straight from
+// src/ (decision P14).
 import type { ITheme } from "@xterm/xterm";
-import type { SessionModes } from "../types";
+import type { SessionModes, SessionSnapshot } from "../types";
 import type { SessionCloseAdvice } from "./sessionsShared";
 
 // JetBrains Mono at 13 px (spec), rows a little apart like the prototype's 13/20 terminal.
@@ -80,6 +81,41 @@ export function modeRestoreSequence(modes: SessionModes, { altActive, kitty }: {
   out += ENCODING[modes.mouseEncoding] ?? "";
   if (kitty && Number.isInteger(modes.kittyFlags) && modes.kittyFlags > 0) out += `\x1b[=${modes.kittyFlags};1u`;
   return out;
+}
+
+// The parts of an xterm terminal a reattach drives: the page's Terminal, or @xterm/headless's in the tests.
+export interface RestoreTerminal {
+  write(data: string, callback?: () => void): void;
+  resize(cols: number, rows: number): void;
+  readonly buffer: { readonly active: { readonly type: string } };
+  readonly options: { readonly vtExtensions?: { readonly kittyKeyboard?: boolean } };
+}
+
+// Resolves once xterm has read `data`. An empty string is never written: xterm 6.1's resize() first reads the
+// write queue in a loop that stops at the first empty chunk and then throws away every callback still queued,
+// so an empty write's promise could wait forever. A new session's snapshot is empty, and the page's first fit
+// can land in exactly that gap; the terminal then stayed blank under "Connecting…" and never took the keys.
+export function writeParsed(t: Pick<RestoreTerminal, "write">, data: string): Promise<void> {
+  if (!data) return Promise.resolve();
+  return new Promise<void>((resolve) => t.write(data, resolve));
+}
+
+// Reattach (spec "Persistence"): a full reset through the write queue (so nothing still queued from an earlier
+// socket lands on the new screen), the snapshot at the size it was taken, then the modes the snapshot does not
+// carry (D-U2-7). The caller then fits the terminal to its own size.
+// Never resize or fit inside a write callback (here, in onOut, or anywhere else): xterm's resize() flushes the
+// write queue synchronously from the start of its buffer, which runs already-parsed chunks and their callbacks
+// again, and the outer resize then lands last. Each step waits until its write is parsed, then acts outside the
+// callback.
+export async function restoreScreen(t: RestoreTerminal, snapshot: SessionSnapshot): Promise<void> {
+  await writeParsed(t, "\x1bc");
+  t.resize(snapshot.cols, snapshot.rows);
+  await writeParsed(t, snapshot.data);
+  const modes = modeRestoreSequence(snapshot.modes, {
+    altActive: t.buffer.active.type === "alternate",
+    kitty: Boolean(t.options.vtExtensions?.kittyKeyboard)
+  });
+  if (modes) await writeParsed(t, modes);
 }
 
 const LINK_SCHEMES = new Set(["http:", "https:"]);

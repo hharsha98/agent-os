@@ -96,7 +96,12 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
   let lastCheckAt = now() - COUNTED_CHECK_MS;
   const disposables = [];
   const countedListeners = new Set();
+  // Snapshots waiting for a chunk to be read: { target, resolve, finish }.
   const pendingSnapshots = new Set();
+  // Every chunk written gets a number; parsedSeq is the newest one xterm.js
+  // has read (its write callback ran).
+  let writtenSeq = 0;
+  let parsedSeq = 0;
 
   function currentModes() {
     const modes = term.modes;
@@ -247,10 +252,22 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     term.onWriteParsed(() => markDirty())
   );
 
+  // A chunk's write callback. xterm.js's resize() reads its queue again from
+  // the start, so a callback can run twice; only a newer number counts.
+  function chunkRead(seq) {
+    if (seq <= parsedSeq) return;
+    parsedSeq = seq;
+    for (const waiter of [...pendingSnapshots]) {
+      if (waiter.target <= seq) waiter.finish();
+    }
+  }
+
   function write(chunk) {
     if (disposed || typeof chunk !== "string" || chunk.length === 0) return;
+    const seq = writtenSeq + 1;
     try {
-      term.write(chunk);
+      term.write(chunk, () => chunkRead(seq));
+      writtenSeq = seq;
     } catch (error) {
       // xterm.js refuses more than 50 MB waiting to be read. Keep the server
       // running; the screen catches up on the agent's next redraw.
@@ -272,28 +289,32 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
   }
 
   // The screen as of every chunk written before this call. xterm.js reads
-  // writes later, in order; the empty write's callback runs right after the
-  // earlier chunks are read and before any later one, so the serialized
-  // screen is an exact cut. Chunks written after this call are not in it:
-  // the caller sends those to the window as live output.
+  // writes later, in order, and runs a chunk's callback right after reading
+  // it and before reading the next one, so the screen serialized in the
+  // callback of the newest chunk written before this call is an exact cut
+  // (at once when every chunk has been read). Chunks written after this call
+  // are not in it: the caller sends those to the window as live output.
+  // There is no empty write to mark the cut: xterm.js 6.1's resize() stops
+  // reading its queue at an empty chunk and throws the rest away, callbacks
+  // and later output included, so a resize from the writer's window could
+  // leave an attach waiting forever and lose output.
   function snapshot() {
     if (disposed) return Promise.resolve(emptySnapshot());
     return new Promise((resolve) => {
-      const waiter = { resolve };
-      pendingSnapshots.add(waiter);
-      const finish = () => {
-        if (!pendingSnapshots.delete(waiter)) return;
-        resolve(
-          disposed
-            ? emptySnapshot()
-            : { data: serializer.serialize(), cols: term.cols, rows: term.rows, modes: currentModes() }
-        );
+      const waiter = {
+        target: writtenSeq,
+        resolve,
+        finish() {
+          if (!pendingSnapshots.delete(waiter)) return;
+          resolve(
+            disposed
+              ? emptySnapshot()
+              : { data: serializer.serialize(), cols: term.cols, rows: term.rows, modes: currentModes() }
+          );
+        }
       };
-      try {
-        term.write("", finish);
-      } catch {
-        finish();
-      }
+      pendingSnapshots.add(waiter);
+      if (parsedSeq >= waiter.target) waiter.finish();
     });
   }
 

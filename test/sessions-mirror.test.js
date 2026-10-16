@@ -11,6 +11,11 @@ import { ALERT_RAW_LIMIT, COUNTED_CHECK_MS, createMirror, isUserInput } from "..
 // @xterm/headless is a CommonJS bundle: its classes sit on the default export.
 const { Terminal } = xtermHeadless;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const TIMED_OUT = Symbol("timed out");
+// The promise's value, or TIMED_OUT when it has not settled after `ms` (a hang fails the test instead of stalling it).
+function within(promise, ms) {
+  return Promise.race([promise, sleep(ms).then(() => TIMED_OUT)]);
+}
 
 const DEFAULT_MODES = {
   altScreen: false,
@@ -75,6 +80,37 @@ test("a snapshot covers exactly the output written before it was asked for, neve
     assert.deepEqual(early.lines.slice(0, 2), ["first", ""]);
     const later = await replay(await mirror.snapshot());
     assert.deepEqual(later.lines.slice(0, 2), ["first", "second"]);
+  } finally {
+    mirror.dispose();
+  }
+});
+
+test("a snapshot still comes when the writer's window resizes before xterm.js has read the output, and no output is lost (blank-terminal fix)", async () => {
+  // A new session: nothing written yet, a window attaches and the writer's first fit arrives at once.
+  const fresh = createMirror({ cols: 120, rows: 32 });
+  try {
+    const pending = fresh.snapshot();
+    fresh.resize(101, 37);
+    const snap = await within(pending, 2000);
+    assert.notEqual(snap, TIMED_OUT, "the attach gets its snapshot");
+    assert.deepEqual([snap.cols, snap.rows], [120, 32]);
+  } finally {
+    fresh.dispose();
+  }
+
+  const mirror = createMirror({ cols: 40, rows: 10 });
+  try {
+    mirror.write("first");
+    const pending = mirror.snapshot();
+    mirror.write("\r\nafter the snapshot"); // goes to the attaching window as live output
+    mirror.resize(30, 8); // the writer's fit, before xterm.js has read either chunk
+    const early = await within(pending, 2000);
+    assert.notEqual(early, TIMED_OUT, "the snapshot comes");
+    assert.deepEqual([early.cols, early.rows], [40, 10], "taken before the resize");
+    assert.deepEqual((await replay(early)).lines.slice(0, 2), ["first", ""], "still an exact cut");
+    const later = await within(mirror.snapshot(), 2000);
+    assert.notEqual(later, TIMED_OUT, "a later snapshot comes too");
+    assert.deepEqual((await replay(later)).lines.slice(0, 2), ["first", "after the snapshot"], "the output written after the snapshot is kept");
   } finally {
     mirror.dispose();
   }

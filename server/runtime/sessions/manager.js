@@ -48,6 +48,10 @@ export const PAUSE_LAG_BYTES = 512 * 1024;
 export const CLOSE_LAG_BYTES = 4 * 1024 * 1024;
 // A PTY paused this long closes the windows that still lag (updateFlow()).
 export const PAUSED_DROP_MS = 10 * 1000;
+// A window's attach waits this long at most for the mirror's snapshot. One
+// that never comes must not keep the window's place (and the output queued
+// for it) for good, nor keep the PTY from pausing for slow windows.
+export const ATTACH_SNAPSHOT_MS = 10 * 1000;
 // One `in` frame carries at most 64 KB.
 export const MAX_INPUT_BYTES = 64 * 1024;
 // The Stop sequence (spec "Persistence, quit and Stop"): the kill grace after
@@ -242,7 +246,8 @@ export function createSessionManager({
   enforceCap = enforceRecordingCap,
   writeJson = writeJsonFile,
   killTree = killProcessTree,
-  softStop = runSoftStop
+  softStop = runSoftStop,
+  attachSnapshotMs = ATTACH_SNAPSHOT_MS
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -1025,11 +1030,22 @@ export function createSessionManager({
     state.attachments.set(entry.id, entry);
     updateFlow(state);
     let snapshot;
+    let timer = null;
     try {
-      snapshot = await state.mirror.snapshot();
+      snapshot = await Promise.race([
+        state.mirror.snapshot(),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(sessionError(504, "attach_failed", "This session's screen did not arrive in time."));
+          }, attachSnapshotMs);
+          timer.unref?.();
+        })
+      ]);
     } catch (error) {
       removeAttachment(state, entry.id);
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
     const detach = () => {
       removeAttachment(state, entry.id);

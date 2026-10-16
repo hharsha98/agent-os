@@ -29,16 +29,17 @@ import {
   isAutomaticReport,
   isOsc52Read,
   linkAllowed,
-  modeRestoreSequence,
   RECONNECT_ATTEMPTS,
   reconnectDelay,
+  restoreScreen,
   sameTheme,
   tabLeavesTerminal,
   terminalTheme,
   TERMINAL_FONT_SIZE,
   TERMINAL_LINE_HEIGHT,
   TERMINAL_SCROLLBACK,
-  unsentNoticeApplies
+  unsentNoticeApplies,
+  writeParsed
 } from "../terminalShared";
 
 const IS_MAC = isMacPlatform(typeof navigator !== "undefined" ? navigator.platform || navigator.userAgent || "" : "");
@@ -334,8 +335,13 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       window.addEventListener("focus", onWindowFocus);
       cleanups.push(() => window.removeEventListener("focus", onWindowFocus));
 
+      // True while a reattach is drawing: a fit then waits, and the reattach fits once at its end, so no resize
+      // lands between a queued restore write and its callback. Reattaches never overlap: the next socket opens only
+      // after this one's close, which waits for its restore.
+      let restoring = false;
       const fitNow = () => {
         frame = 0;
+        if (restoring) return;
         if (disposed || host.clientWidth === 0 || host.clientHeight === 0) return;
         try {
           fit.fit();
@@ -393,23 +399,16 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       };
       rendererRef.current(latest.current.webgl);
 
-      // Reattach (spec "Persistence"): a full reset through the write queue (so nothing still queued from an
-      // earlier socket lands on the new screen), the snapshot at the size it was taken, then the modes the
-      // snapshot does not carry, then this window's own size (D-U2-7).
-      // Never resize or fit inside a write callback (here, in onOut, or anywhere else): xterm's resize() flushes
-      // the write queue synchronously from the start of its buffer, which runs already-parsed chunks and their
-      // callbacks again, and the outer resize then lands last. Each step waits until its write is parsed, then
-      // acts outside the callback.
-      const writeParsed = (data: string) => new Promise<void>((resolve) => t.write(data, resolve));
+      // Reattach (spec "Persistence"): the reset, the snapshot at the size it was taken and the modes it does not
+      // carry (restoreScreen in terminalShared.ts), then this window's own size (D-U2-7). Never resize or fit
+      // inside a write callback (here, in onOut, or anywhere else); restoreScreen says why.
       const restore = async (snapshot: SessionSnapshot) => {
-        await writeParsed("\x1bc");
-        t.resize(snapshot.cols, snapshot.rows);
-        await writeParsed(snapshot.data);
-        const modes = modeRestoreSequence(snapshot.modes, {
-          altActive: t.buffer.active.type === "alternate",
-          kitty: Boolean(t.options.vtExtensions?.kittyKeyboard)
-        });
-        if (modes) await writeParsed(modes);
+        restoring = true;
+        try {
+          await restoreScreen(t, snapshot);
+        } finally {
+          restoring = false;
+        }
         fitNow();
       };
 
@@ -441,11 +440,7 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
               if (document.hasFocus()) takeKeys();
             } else if (latest.current.active !== false && latest.current.autoFocus) t.focus();
           },
-          onOut: (data) =>
-            new Promise<void>((resolve) => {
-              if (disposed) resolve();
-              else t.write(data, resolve);
-            }),
+          onOut: (data) => (disposed ? Promise.resolve() : writeParsed(t, data)),
           onState: (state) => {
             if (state.status === "exited") sessionEnded = true;
             latest.current.onState?.(state);

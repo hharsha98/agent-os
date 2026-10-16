@@ -833,6 +833,37 @@ test("attach: snapshot first, then the state, then output; output that arrives w
   });
 });
 
+test("attach: a snapshot that never comes ends the attach after the time limit, so the window's place and the pause for slow windows are not held (blank-terminal fix)", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld({ attachSnapshotMs: 100 });
+    const summary = await world.manager.create({ agentId: "claude", folder: project });
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    await attachFake(world.manager, summary.id, "w1"); // never acks
+    mirror.snapshotGate = new Promise(() => {}); // the second window's snapshot never comes
+    const frames = [];
+    const attaching = world.manager.attach(summary.id, { id: "w2", send: (frame) => frames.push(frame), close() {} });
+    pty.emit("x".repeat(PAUSE_LAG_BYTES + 1));
+    assert.equal(pty.paused, false, "a window still attaching keeps the terminal running");
+
+    const outcome = await Promise.race([
+      attaching.then(
+        () => "attached",
+        (error) => error
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still waiting"), 2000))
+    ]);
+    assert.ok(outcome instanceof Error, `the attach fails (got ${String(outcome)}), so its socket closes with attach_failed`);
+    assert.notEqual(outcome.code, "session_ended");
+    assert.deepEqual(frames, [], "nothing was sent to that window");
+    assert.equal(pty.paused, true, "with that window gone, the one that lags pauses the terminal again");
+
+    mirror.snapshotGate = null;
+    const again = await attachFake(world.manager, summary.id, "w2");
+    assert.equal(again.frames[0].t, "snapshot", "the same window can attach again: its old place is gone");
+  });
+});
+
 test("two windows: only the focused one types and sets the size, the other's keys are dropped, and the mirror answers terminal queries only while no window is the writer", async () => {
   await withSessionEnv(async ({ project }) => {
     const world = fakeWorld();

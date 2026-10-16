@@ -8,6 +8,16 @@ import type { ReactNode } from "react";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
 
+// What Tab can really reach inside the dialog: not disabled, not taken out of the tab order and drawn on screen.
+// FOCUSABLE alone also matches a button with tabindex -1 (the New session dialog's agent buttons keep tabindex -1
+// on every one but the picked one, a "roving tabindex"), and counting that one as the first or last control let
+// Shift+Tab leave the dialog for the page behind it.
+function tabbable(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => !el.hasAttribute("disabled") && el.tabIndex >= 0 && el.getClientRects().length > 0
+  );
+}
+
 export default function AgentConfirmModal({
   title,
   children,
@@ -47,7 +57,7 @@ export default function AgentConfirmModal({
 
   useEffect(() => {
     previouslyFocused.current = document.activeElement;
-    const first = dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE);
+    const first = dialogRef.current ? tabbable(dialogRef.current)[0] : undefined;
     first?.focus();
     return () => {
       (previouslyFocused.current as HTMLElement | null)?.focus?.();
@@ -62,9 +72,7 @@ export default function AgentConfirmModal({
         return;
       }
       if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-        (el) => !el.hasAttribute("disabled")
-      );
+      const focusable = tabbable(dialogRef.current);
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];

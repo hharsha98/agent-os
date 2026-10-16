@@ -44,6 +44,7 @@ import type { PaletteItem } from "./components/CommandPalette";
 import GetStartedPill from "./components/GetStartedPill";
 import HoldToStopAll from "./components/HoldToStopAll";
 import NewRunDialog from "./components/NewRunDialog";
+import NewSessionDialog from "./components/NewSessionDialog";
 import StopAllRunsModal from "./components/StopAllRunsModal";
 import Toast from "./components/Toast";
 import UpdateBanner from "./components/UpdateBanner";
@@ -53,13 +54,15 @@ import { setDensity, useDensity } from "./density";
 import Logo from "./Logo";
 import { NEW_RUN_EVENT, openNewRun } from "./newRun";
 import type { NewRunRequest } from "./newRun";
+import { NEW_SESSION_EVENT, openNewSession } from "./newSession";
+import type { NewSessionRequest } from "./newSession";
 import { withTimeout } from "./homeShared";
 import { revealGetStarted } from "./onboardingShared";
 import { createLatestRead } from "./latestRead";
 import { levelOf } from "./safetyShared";
 import { stopAllMessage } from "./stopAll";
 import QuitQuestion, { useDesktopQuit } from "./components/QuitQuestion";
-import { SessionsListProvider, useLiveSessionCount } from "./useSessionsList";
+import { SessionsListProvider, useLiveSessionCount, useSessionsList } from "./useSessionsList";
 import { PALETTE_EVENT } from "./palette";
 import { isMacPlatform, isPaletteKey } from "./sessionsShared";
 
@@ -170,6 +173,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   // The New run dialog. The Runs page and the palette ask for it through openNewRun() (src/ui/newRun.ts);
   // the id makes a second request open a fresh dialog.
   const [newRun, setNewRun] = useState<{ id: number; request: NewRunRequest } | null>(null);
+  // The New session dialog: the Sessions page (its button and ⌘T), Home, Agents and the palette ask for it through
+  // openNewSession() (src/ui/newSession.ts); the id makes a second request open a fresh dialog.
+  const [newSession, setNewSession] = useState<{ id: number; request: NewSessionRequest } | null>(null);
   // The result of "Hold to stop all", shown as a toast at the bottom of the window.
   // Each result gets its own id, so a repeated message shows as new (and an ok or
   // neutral one gets a fresh 8 second timer; warnings and failures stay until closed).
@@ -181,6 +187,9 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const firstNavRef = useRef<HTMLButtonElement>(null);
   // Running agent sessions, for the menu (null while not known: then no number is shown).
   const liveSessions = useLiveSessionCount();
+  // false in the public demo and wherever the server says sessions do not exist: then nothing here offers or opens
+  // the New session dialog (a dialog that could never start anything).
+  const sessionsAvailable = useSessionsList().available && !demoPublic;
   const quitQuestion = useDesktopQuit();
 
   const onboardingCounts = onboarding.data?.counts;
@@ -294,6 +303,8 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      // A control that already used this Escape (a menu that closed itself) has dealt with it.
+      if (event.defaultPrevented) return;
       if (event.key === "Escape" && menuOpen) {
         setMenuOpen(false);
         menuButtonRef.current?.focus();
@@ -344,10 +355,35 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
     return () => window.removeEventListener(NEW_RUN_EVENT, onNewRun);
   }, []);
 
+  useEffect(() => {
+    if (!sessionsAvailable) return undefined;
+    function onNewSession(event: Event) {
+      const request = (event as CustomEvent<NewSessionRequest>).detail || {};
+      // While a New session dialog is open (it may be busy starting a session, or hold a typed folder) a second
+      // request changes nothing: replacing it would drop what was typed, or the session it is starting.
+      setNewSession((open) => open ?? { id: Date.now(), request });
+    }
+    window.addEventListener(NEW_SESSION_EVENT, onNewSession);
+    return () => window.removeEventListener(NEW_SESSION_EVENT, onNewSession);
+  }, [sessionsAvailable]);
+
   const onboardingData = onboarding.data;
   const setOnboardingHidden = onboarding.setHidden;
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [
+      // Sessions run only in local mode, so the public demo (and a server without sessions) does not offer one.
+      ...(!sessionsAvailable
+        ? []
+        : [
+            {
+              id: "new-session",
+              label: "New session…",
+              group: "Actions",
+              keywords: "terminal open start agent claude codex cursor hermes openclaw",
+              icon: SquareTerminal,
+              run: () => openNewSession()
+            }
+          ]),
       { id: "new-run", label: "New run…", group: "Actions", keywords: "launch start agent task prompt", icon: Play, run: () => openNewRun() },
       {
         id: "stop-all",
@@ -398,7 +434,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
       items.push({ id: `page-${item.id}`, label: item.label, group: "Labs", hint: page === item.id ? "You are here" : undefined, icon: item.icon, run: () => onNavigate(item.id) });
     }
     return items;
-  }, [onboardingData, setOnboardingHidden, density, coreItems, labsItems, page, onNavigate]);
+  }, [onboardingData, setOnboardingHidden, density, coreItems, labsItems, page, onNavigate, sessionsAvailable]);
 
   const status = useStatusStrip();
   // Hover and focus handlers for one nav button's rail tooltip.
@@ -538,7 +574,8 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         </div>
       ) : null}
 
-      <div className="aos-phase2-content os-content" role={pageIsInLabs ? undefined : "main"}>
+      {/* The Sessions page fills the window under the bar (sessions.css, .os-content--fill). */}
+      <div className={`aos-phase2-content os-content${page === "sessions" ? " os-content--fill" : ""}`} role={pageIsInLabs ? undefined : "main"}>
         {children}
       </div>
       <UpdateBanner />
@@ -548,6 +585,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         <StopAllRunsModal onClose={() => setStopAllOpen(false)} onDone={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />
       ) : null}
       {newRun ? <NewRunDialog key={newRun.id} request={newRun.request} onClose={() => setNewRun(null)} /> : null}
+      {newSession ? <NewSessionDialog key={newSession.id} request={newSession.request} onClose={() => setNewSession(null)} /> : null}
       {quitQuestion.view ? (
         <QuitQuestion view={quitQuestion.view} onKeepRunning={quitQuestion.keepRunning} onQuit={quitQuestion.quit} />
       ) : null}

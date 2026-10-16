@@ -17,6 +17,10 @@ function isDesktopApp(): boolean {
 
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
 const LOG_PREFIX = "[agent-os updater]";
+// While the bar is shown it floats over the bottom of the window. This variable on the document root says how much
+// room it takes there (its height plus the gap below it), so a page that fills the window to its very bottom, the
+// Sessions page with its terminal, can keep that much clear (sessions.css). It is absent when no bar is shown.
+const SPACE_VAR = "--os-update-bar-space";
 
 // "checking": asking Agent OS which sessions run, before anything is downloaded.
 type Phase = "ready" | "checking" | "installing" | "failed";
@@ -36,6 +40,8 @@ export default function UpdateBanner() {
   // The quit question while it asks before the restart, otherwise null.
   const [ask, setAsk] = useState<QuitView | null>(null);
   const installingRef = useRef(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   // The banner as it was before the question ("ready", or "failed" after a failed install), so Keep running
   // puts back exactly that and a failed install is not forgotten.
   const phaseBefore = useRef<Phase>("ready");
@@ -60,6 +66,30 @@ export default function UpdateBanner() {
     const timer = window.setInterval(() => void checkForUpdate(), CHECK_EVERY_MS);
     return () => window.clearInterval(timer);
   }, [desktop, checkForUpdate]);
+
+  // Tell the page how much room the bar takes at the bottom of the window (see SPACE_VAR). The release notes that
+  // can open under the bar are not counted: they are a short-lived pop-up, not part of the bar.
+  const barShown = desktop && update !== null;
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    const bar = barRef.current;
+    if (!barShown || !wrap || !bar) return undefined;
+    const root = document.documentElement;
+    function measure() {
+      if (!wrap || !bar) return;
+      const gap = Number.parseFloat(window.getComputedStyle(wrap).bottom) || 0;
+      root.style.setProperty(SPACE_VAR, `${Math.ceil(gap + bar.offsetHeight)}px`);
+    }
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(bar);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      root.style.removeProperty(SPACE_VAR);
+    };
+  }, [barShown]);
 
   // Downloads, installs and relaunches. Reached only when nothing runs, or from the question's "Install & restart".
   async function installNow() {
@@ -109,8 +139,8 @@ export default function UpdateBanner() {
 
   return (
     <>
-      <div className="os-update" role="status" aria-live="polite">
-        <div className="os-update__bar">
+      <div className="os-update" role="status" aria-live="polite" ref={wrapRef}>
+        <div className="os-update__bar" ref={barRef}>
           <ArrowUpCircle size={16} className="os-update__icon" aria-hidden="true" />
           <span className="os-update__text">
             {phase === "failed"

@@ -76,6 +76,15 @@ async function runInPty(file, args, options) {
   });
   // The last bytes can arrive just after the exit event.
   await new Promise((resolve) => setTimeout(resolve, 200));
+  // Windows: node-pty keeps the ConPTY handle and its output thread until kill(), and without this the test file's
+  // process never ends (seen in CI). The server does the same (releaseConptyAfterExit in pty-host.js).
+  if (isWindows) {
+    try {
+      term.kill();
+    } catch {
+      // already released
+    }
+  }
   return { output, exit };
 }
 

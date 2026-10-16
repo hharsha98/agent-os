@@ -13,6 +13,7 @@ import { killAllTracked } from "../server/runtime/process-tree.js";
 import {
   PTY_UNAVAILABLE_REASON,
   ptyAvailable,
+  releaseConptyAfterExit,
   setPtyLoaderForTests,
   spawnPty
 } from "../server/runtime/sessions/pty-host.js";
@@ -606,4 +607,26 @@ test("through a real terminal, the mirror stays quiet while a writer is attached
     assert.equal(got, "NO REPLY");
     assert.deepEqual(alerts, ["bel", "9;from the agent"], "alerts do not depend on the writer");
   });
+});
+
+// Seen in CI: on Windows a test file whose terminal program had ended never finished, because node-pty keeps the
+// ConPTY handle and its output thread until kill(). The same would leak in the server once per ended session.
+test("after a terminal program ends, Windows gets one kill() that frees node-pty's ConPTY handles; macOS and Linux get none", async () => {
+  const calls = [];
+  const child = { kill: (...args) => calls.push(args) };
+  assert.equal(releaseConptyAfterExit(child, "win32"), true);
+  assert.deepEqual(calls, [], "not inside node-pty's own exit event: on the next turn");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [[]], "one kill(), with no signal (node-pty refuses signals on Windows)");
+  for (const platform of ["darwin", "linux"]) {
+    assert.equal(releaseConptyAfterExit(child, platform), false, platform);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 1, "nothing on macOS or Linux");
+  // A terminal that is already released throws from kill(): that is not an error.
+  const released = { kill: () => { throw new Error("already closed"); } };
+  releaseConptyAfterExit(released, "win32");
+  await new Promise((resolve) => setImmediate(resolve));
+  const source = (await import("node:fs")).readFileSync(new URL("../server/runtime/sessions/pty-host.js", import.meta.url), "utf8");
+  assert.equal(source.match(/releaseConptyAfterExit\(child\);/g)?.length, 2, "both the probe and every session release the handles at the end");
 });

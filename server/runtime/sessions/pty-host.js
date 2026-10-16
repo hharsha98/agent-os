@@ -91,6 +91,7 @@ function probe(pty) {
     child.onData(() => {}); // keep the output flowing so the exit is reported
     child.onExit(({ exitCode }) => {
       clearTimeout(timer);
+      releaseConptyAfterExit(child);
       resolve(exitCode);
     });
   });
@@ -168,6 +169,23 @@ async function canStart(command, cwd) {
   } catch {
     return false;
   }
+}
+
+// On Windows, when the program in a terminal ends by itself, node-pty closes
+// its side but keeps the ConPTY handle and the thread that read the output
+// (only its kill() lets them go), so every ended session would leave them
+// behind and keep the process alive. Calling kill() once after the end frees
+// them, as VS Code does; on macOS and Linux there is nothing to free.
+export function releaseConptyAfterExit(child, platform = process.platform) {
+  if (platform !== "win32") return false;
+  setImmediate(() => {
+    try {
+      child.kill();
+    } catch {
+      // already released
+    }
+  });
+  return true;
 }
 
 // Signal 0 sends nothing: it only asks whether the process (our own child)
@@ -305,6 +323,7 @@ export async function spawnPty({ command, args = [], cwd, env, cols = 120, rows 
     const listeners = [...exitListeners];
     exitListeners.clear();
     for (const listener of listeners) safeCall(listener, exitInfo);
+    releaseConptyAfterExit(child);
   });
 
   const handle = Object.freeze({

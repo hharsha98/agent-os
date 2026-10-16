@@ -83,8 +83,13 @@ if (process.platform !== "win32") testEnv.SHELL = FAKE_LOGIN_SHELL;
 // output) keeps TAP on every Node, so it reads the same; a terminal keeps the
 // spec format. A reporter given on the command line wins.
 const reporter = process.stdout.isTTY || flags.some((flag) => flag.startsWith("--test-reporter")) ? [] : ["--test-reporter=tap"];
+// Windows only: a native module that still holds a handle after a file's tests
+// are done (node-pty's ConPTY did, seen in CI) would keep that file's process,
+// and so the whole run, alive until the CI time limit. Each file then ends
+// once its own tests have finished; their results are unchanged.
+const forceExit = process.platform === "win32" ? ["--test-force-exit"] : [];
 
-const child = spawn(process.execPath, ["--test", "--test-timeout=180000", ...reporter, ...flags, ...files], {
+const child = spawn(process.execPath, ["--test", "--test-timeout=180000", ...reporter, ...forceExit, ...flags, ...files], {
   cwd: root,
   env: testEnv,
   stdio: "inherit"

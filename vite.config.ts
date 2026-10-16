@@ -12,6 +12,16 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+    build: {
+      // Vite's default (es2020 with the same browsers) makes esbuild rewrite
+      // `x ||= {}`, and in xterm's DECRQM handler (`let r; (...)(r ||= {})`)
+      // the minified rewrite assigns to a name that does not exist, so the
+      // first DECRQM query a real agent sends (Claude Code asks two at start)
+      // throws and freezes the page's terminal for good. es2021 keeps `||=`
+      // as it is; the browsers are Vite's own, Firefox 79 being the first
+      // with `||=`. test/build-target.test.js checks this.
+      target: ["es2021", "chrome87", "edge88", "firefox79", "safari14"]
+    },
     server: {
       port: 5173,
       // The sessions WebSocket trusts exactly the dev origins on :5173

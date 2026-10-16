@@ -11,7 +11,13 @@
 // from the trimmed text of $HOME/.fake-knobs/FAKE_X, because the commands Agent
 // OS runs through childEnv never see FAKE_* variables.
 //   FAKE_AGENT_VERSION          the whole --version line (unset: "openclaw 9.9.9-test")
-//   FAKE_OPENCLAW_MODELS_JSON   what `models list --provider <p> --json` prints ("fail": exit 1)
+//   FAKE_OPENCLAW_MODELS_JSON   what `models list --provider <p> --json` prints ("fail": exit 1). Unset: the
+//     OpenClaw 2026.10.4 answer (live check S-B3, 2026-10-16): { count, models: [row, ...] } (made-up values). An
+//     openai row holds eight keys (available, contextTokens, contextWindow, input, key, local, name, tags); an
+//     anthropic row holds seven, the same without contextTokens. The tags differ from row to row, as the live ones do
+//     (anthropic: "default", "configured", "alias:opus", one to three of them; openai: "configured" on one row, none
+//     on the other). The openai list always has rows; the anthropic list is { count: 0, models: [] } until the
+//     fake's `onboard --auth-choice anthropic-cli` has run (until its state holds a claude-cli pin), then it has rows
 //   FAKE_OPENCLAW_AUTH_JSON     what `models auth list --provider openai --json` prints ("fail": exit 1);
 //     unset: the 2026.10.4 answer, { agentDir, agentId, authStatePath, provider: "openai", profiles },
 //     where profiles are the state's authRows ([] when signed out)
@@ -66,7 +72,10 @@ import path from "node:path";
 
 // The models `onboard --auth-choice anthropic-cli` pins to the claude-cli
 // runtime, as 2026.9.6 does for its own list (and no "anthropic/*" entry), so
-// tests see both a pinned and an unpinned Claude model.
+// tests see both a pinned and an unpinned Claude model. (The real 2026.10.4
+// pins eleven; the owner is asked separately whether this fake may follow.)
+// The same onboard writes an "alias" word on the opus-5-5 entry, which is pinned. (On the real program every Claude
+// entry with an alias is pinned too, so the fake gives no alias to a model it does not pin.)
 export const FAKE_CLAUDE_CLI_PINS = Object.freeze(["claude-opus-5-5", "claude-fable-5-1"]);
 // Printed by `models status`, and carried by the auth rows tests write, so a
 // test can prove the output never reaches a log, a file or an answer.
@@ -118,10 +127,30 @@ function readState() {
   };
 }
 function writeState(state) { writeFileSync(stateFile, JSON.stringify(state)); }
+// [id, name, tags]: the tags differ from row to row, as the live ones do (S-B3).
 const DEFAULT_MODELS = {
-  anthropic: [["claude-opus-5-5", "Opus 5.5"], ["claude-sonnet-5-5", "Sonnet 5.5"], ["claude-fable-5-1", "Fable 5.1"]],
-  openai: [["gpt-6.1-sol", "GPT-6.1 Sol"], ["gpt-6-luna", "GPT-6 Luna"]]
+  anthropic: [
+    ["claude-opus-5-5", "Opus 5.5", ["default", "configured", "alias:opus"]],
+    ["claude-sonnet-5-5", "Sonnet 5.5", ["configured"]],
+    ["claude-fable-5-1", "Fable 5.1", ["configured"]]
+  ],
+  openai: [["gpt-6.1-sol", "GPT-6.1 Sol", ["configured"]], ["gpt-6-luna", "GPT-6 Luna", []]]
 };
+// The word OpenClaw 2026.10.4 writes as "alias" on a Claude entry in agents.defaults.models (made up here). The
+// entry is pinned to claude-cli as well: on the real program every Claude entry with an alias is.
+const ALIASES = { "claude-opus-5-5": "opus" };
+// One row of "models list --json" as 2026.10.4 prints it (live check S-B3): an openai row has eight keys, an
+// anthropic row seven (no contextTokens). The numbers are made up.
+function modelRow(provider, id, name, tags) {
+  const row = { available: true, contextTokens: 100000, contextWindow: 128000, input: "text+image", key: provider + "/" + id, local: false, name, tags };
+  if (provider === "anthropic") delete row.contextTokens;
+  return row;
+}
+// Has an Anthropic sign-in been set up through OpenClaw? The real anthropic list is empty until its Claude
+// onboard has run, and that onboard leaves claude-cli pins in agents.defaults.models.
+function claudeOnboardRan(models) {
+  return Boolean(models) && Object.values(models).some((entry) => entry && entry.agentRuntime && entry.agentRuntime.id === "claude-cli");
+}
 
 const openclawDir = path.join(home, ".openclaw");
 const configFile = path.join(openclawDir, "openclaw.json");
@@ -155,6 +184,9 @@ if (args[0] === "onboard") {
     const state = readState();
     const models = { ...(state.models || {}) };
     for (const id of PINS) models["anthropic/" + id] = { agentRuntime: { id: "claude-cli" } };
+    // The alias goes on an entry that is pinned (opus-5-5): on the real program every Claude entry with an alias is.
+    // claude-sonnet-5-5 is not one of this fake's pins, so it has no entry and stays "not pinned".
+    for (const [id, alias] of Object.entries(ALIASES)) models["anthropic/" + id] = { ...(models["anthropic/" + id] || {}), alias };
     writeState({ ...state, models });
   }
   print(JSON.stringify({ ok: true }));
@@ -170,8 +202,9 @@ if (args[0] === "models" && args[1] === "list") {
   const shaped = knob("FAKE_OPENCLAW_MODELS_JSON");
   if (shaped === "fail") { process.stderr.write("simulated models list failure\\n"); process.exit(1); }
   if (shaped !== undefined) { print(shaped); process.exit(0); }
-  const rows = (DEFAULT_MODELS[provider] || []).map(([id, name]) => ({ key: provider + "/" + id, name }));
-  print(JSON.stringify({ models: rows }));
+  const listed = provider === "anthropic" && !claudeOnboardRan(readState().models) ? [] : DEFAULT_MODELS[provider] || [];
+  const rows = listed.map(([id, name, tags]) => modelRow(provider, id, name, tags));
+  print(JSON.stringify({ count: rows.length, models: rows }));
   process.exit(0);
 }
 if (args[0] === "models" && args[1] === "auth" && args[2] === "list") {

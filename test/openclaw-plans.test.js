@@ -81,6 +81,7 @@ import {
   readChatgptAuth,
   readChatgptReadiness,
   readOpenclawModelsConfig,
+  readPlanModels,
   resolvePlanModel
 } from "../server/runtime/setup/openclaw-plans.js";
 import { readChatgptAuth as readChatgptAuthInModels, readOpenclawModelsConfig as readOpenclawModelsConfigInModels } from "../server/runtime/setup/models.js";
@@ -112,6 +113,14 @@ const apply = (call, plan, model, extra = {}) =>
   call("POST", "/api/setup/openclaw/plan", { plan, model, confirm: true, acceptOpenClawRisk: true, ...extra });
 const argvLines = async (home) => (await openclawRecord(home)).map((line) => line.argv.join(" "));
 const stepOf = (job, id) => job.steps.find((step) => step.id === id);
+
+// Runs the fake OpenClaw's own `onboard --auth-choice anthropic-cli`, the command the Claude Apply's first step runs,
+// so the fake's state holds the claude-cli pins. As on the real 2026.10.4 (live check S-B3, 2026-10-16), its
+// anthropic model list is empty until then and has rows afterwards.
+async function runFakeClaudeOnboard(home) {
+  const result = await runCommand(path.join(home, ".npm-global", "bin", "openclaw"), ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "anthropic-cli"], 10000);
+  assert.equal(result.ok, true, result.stderr);
+}
 
 // A ChatGPT plan job as it sits in the jobs folder. `statuses` is one status per step of PLAN_JOB_STEPS.chatgpt
 // (model, safe defaults, readiness, hello). The id carries its own time, the way real job ids do, so it sorts
@@ -1038,14 +1047,20 @@ const FALLBACK = {
   ]
 };
 
-test("GET /api/setup/openclaw/plan-models: the account's list, prefixes stripped, the Fable note, every model offered before any pin; a wrong plan is refused", posixSkip, async () => {
-  await withPlanEnv(async ({ call }) => {
+test("GET /api/setup/openclaw/plan-models: the account's list, prefixes stripped, the Fable note; the Claude list is empty (so the dated fallback shows) until OpenClaw's Claude onboard has run; a wrong plan is refused", posixSkip, async () => {
+  await withPlanEnv(async ({ call, home }) => {
+    // Live check S-B3 (2026-10-16): before OpenClaw's Claude onboard, `models list --provider anthropic --json` is
+    // { count: 0, models: [] }, so the card shows Agent OS's fallback list with its note, every model offered.
+    const before = await call("GET", "/api/setup/openclaw/plan-models?plan=claude");
+    assert.equal(before.status, 200);
+    assert.deepEqual(before.body, { models: FALLBACK.claude, source: "fallback", asOf: "2026-10-15" });
+    await runFakeClaudeOnboard(home);
     const claude = await call("GET", "/api/setup/openclaw/plan-models?plan=claude");
     assert.equal(claude.status, 200);
     assert.deepEqual(claude.body, {
       models: [
         { id: "claude-opus-5-5", name: "Opus 5.5", note: null, available: true },
-        { id: "claude-sonnet-5-5", name: "Sonnet 5.5", note: null, available: true },
+        { id: "claude-sonnet-5-5", name: "Sonnet 5.5", note: null, available: false },
         { id: "claude-fable-5-1", name: "Fable 5.1", note: FABLE_NOTE, available: true }
       ],
       source: "account",
@@ -1141,9 +1156,12 @@ test("GET /api/setup/openclaw/plan-models with OpenClaw not installed: the dated
 });
 
 test("resolvePlanModel: a listed name in any letter case gives the list's own id; a typed name is accepted only with the fallback; anything else is refused", posixSkip, async () => {
-  await withPlanEnv(async ({ knob }) => {
+  await withPlanEnv(async ({ home, knob }) => {
     const detected = await ADAPTERS.openclaw.detect({ refresh: true });
     const refused = (error) => error?.code === "invalid_model_id" && error.message === "That doesn't look like a model name.";
+    // Before OpenClaw's Claude onboard its anthropic list is empty, which is the fallback, where a typed name counts.
+    assert.equal(await resolvePlanModel("claude", "claude-new-9", { detected }), "claude-new-9", "no Claude list yet: a plain typed name is accepted");
+    await runFakeClaudeOnboard(home);
     assert.equal(await resolvePlanModel("claude", "CLAUDE-OPUS-5-5", { detected }), "claude-opus-5-5");
     assert.equal(await resolvePlanModel("chatgpt", " gpt-6-luna ", { detected }), "gpt-6-luna");
     for (const name of ["claude-new-9", "anthropic/claude-opus-5-5", "gpt-6-luna", "", "   ", null, 42]) {
@@ -1288,6 +1306,8 @@ test("POST /api/setup/openclaw/plan refuses before anything runs: confirm, the p
     await assert.rejects(() => startOpenclawPlanJob({ plan: "claude", model: "claude-opus-5-5" }), (error) => error.code === "openclaw_risk_not_accepted");
     await assert.rejects(() => startOpenclawPlanJob({ plan: "hermes", model: "x", acceptOpenClawRisk: true }), TypeError);
 
+    // The state holds the claude-cli pins (as after OpenClaw's Claude onboard), so the anthropic list has rows; with
+    // an empty list (the fallback) a plain typed name like claude-new-9 would be accepted instead.
     for (const model of ["Bad Name!", "claude-new-9", "", "anthropic/../x"]) {
       const refused = await post({ ...good, model });
       assert.deepEqual([refused.status, refused.body], [400, { error: "invalid_model_id", message: "That doesn't look like a model name." }], model);
@@ -1295,7 +1315,7 @@ test("POST /api/setup/openclaw/plan refuses before anything runs: confirm, the p
     const lines = await argvLines(home);
     assert.ok(!lines.some((line) => line.startsWith("onboard") || line.startsWith("config set") || line.startsWith("models set")), "a refused model changes nothing");
     assert.deepEqual(await listFiles(path.join(agentOsHome, "setup", "jobs")), [], "no job was made");
-  });
+  }, { state: { models: Object.fromEntries(FAKE_CLAUDE_CLI_PINS.map((id) => [`anthropic/${id}`, CLI])) } });
 });
 
 test("POST plan reads Claude Code's sign-in again inside the job lock: switched to an API key, signed out or removed after the card's read gets 409 plan_not_ready, and no onboard runs (Review Focus 3)", posixSkip, async () => {
@@ -2294,4 +2314,96 @@ test("Every plan route answers 404 not_available outside local mode, and runs no
       assert.deepEqual(await agentEnvLog(home), []);
     });
   }
+});
+
+// Live check S-B3 on OpenClaw 2026.10.4 (2026-10-16) found that the fake printed three reads in shapes the real
+// program never prints. Agent OS reads only each model row's key and name and each models-config entry's
+// agentRuntime.id, so nothing went wrong for the person, but the tests built on the fake proved less. The values
+// below are made up; the shapes are the live ones.
+test("live shape from S-B3 (2026-10-16): model lists and models-config", posixSkip, async () => {
+  await withPlanEnv(async ({ call, home }) => {
+    const shim = path.join(home, ".npm-global", "bin", "openclaw");
+    const read = async (...args) => {
+      const result = await runCommand(shim, args, 10000);
+      assert.equal(result.ok, true, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const list = (provider) => read("models", "list", "--provider", provider, "--json");
+    // The live rows: openai has eight keys, anthropic seven (no contextTokens).
+    const ROW_KEYS = {
+      openai: ["available", "contextTokens", "contextWindow", "input", "key", "local", "name", "tags"],
+      anthropic: ["available", "contextWindow", "input", "key", "local", "name", "tags"]
+    };
+    const assertLiveList = (answer, provider, expectedIds) => {
+      assert.deepEqual(Object.keys(answer).sort(), ["count", "models"], `${provider}: only count and models`);
+      assert.equal(answer.count, answer.models.length, `${provider}: count is the number of rows`);
+      assert.deepEqual(answer.models.map((row) => row.key), expectedIds.map((id) => `${provider}/${id}`), provider);
+      for (const row of answer.models) {
+        assert.deepEqual(Object.keys(row).sort(), ROW_KEYS[provider], `${provider}: ${row.key} has its ${ROW_KEYS[provider].length} keys`);
+        assert.deepEqual(
+          [typeof row.contextWindow, row.input, row.local, row.available, typeof row.name],
+          ["number", "text+image", false, true, "string"],
+          row.key
+        );
+        if (provider === "openai") assert.equal(typeof row.contextTokens, "number", `${row.key} contextTokens`);
+        assert.ok(Array.isArray(row.tags) && row.tags.every((tag) => typeof tag === "string" && tag !== ""), `${row.key}: tags is a list of words`);
+      }
+      // The live tags differ from row to row, so the rows are not all alike.
+      assert.ok(new Set(answer.models.map((row) => JSON.stringify(row.tags))).size > 1, `${provider}: the rows' tags vary`);
+    };
+    const detected = await ADAPTERS.openclaw.detect({ refresh: true });
+
+    // 1. The openai list: always rows, in the live shape.
+    const openai = await list("openai");
+    assertLiveList(openai, "openai", ["gpt-6.1-sol", "gpt-6-luna"]);
+    assert.deepEqual(planModelRows(openai, "chatgpt"), [{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol" }, { id: "gpt-6-luna", name: "GPT-6 Luna" }]);
+    const chatgptModels = [
+      { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", note: null, available: true },
+      { id: "gpt-6-luna", name: "GPT-6 Luna", note: null, available: true }
+    ];
+    const chatgptAnswer = { models: chatgptModels, source: "account", asOf: null };
+    assert.deepEqual(await readPlanModels("chatgpt", { detected }), chatgptAnswer);
+    assert.deepEqual((await call("GET", "/api/setup/openclaw/plan-models?plan=chatgpt")).body, chatgptAnswer);
+
+    // 2. The anthropic list before OpenClaw's Claude onboard: empty, so the card shows Agent OS's fallback list.
+    assert.deepEqual(await list("anthropic"), { count: 0, models: [] });
+    assert.equal(planModelRows(await list("anthropic"), "claude"), null, "an empty list is not a list");
+    const fallbackAnswer = { models: FALLBACK.claude, source: "fallback", asOf: "2026-10-15" };
+    assert.deepEqual(await readPlanModels("claude", { detected }), fallbackAnswer);
+    assert.deepEqual((await call("GET", "/api/setup/openclaw/plan-models?plan=claude")).body, fallbackAnswer);
+
+    // 3. After the fake's onboard: rows of the anthropic shape (seven keys), and a models-config with one alias.
+    await runFakeClaudeOnboard(home);
+    const anthropic = await list("anthropic");
+    assertLiveList(anthropic, "anthropic", ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]);
+    assert.deepEqual(planModelRows(anthropic, "claude"), [
+      { id: "claude-opus-5-5", name: "Opus 5.5" },
+      { id: "claude-sonnet-5-5", name: "Sonnet 5.5" },
+      { id: "claude-fable-5-1", name: "Fable 5.1" }
+    ]);
+    const modelsConfig = await read("config", "get", "agents.defaults.models", "--json");
+    assert.deepEqual(Object.keys(modelsConfig).sort(), ["anthropic/claude-fable-5-1", "anthropic/claude-opus-5-5"], "only the two pins have an entry");
+    for (const [ref, entry] of Object.entries(modelsConfig)) {
+      assert.deepEqual(Object.keys(entry).filter((key) => key !== "agentRuntime" && key !== "alias"), [], `${ref}: nothing but agentRuntime and alias`);
+    }
+    for (const id of FAKE_CLAUDE_CLI_PINS) assert.deepEqual(modelsConfig[`anthropic/${id}`].agentRuntime, { id: "claude-cli" }, id);
+    assert.deepEqual(modelsConfig["anthropic/claude-opus-5-5"], { agentRuntime: { id: "claude-cli" }, alias: "opus" }, "the alias sits on a pinned entry, as every live alias does");
+    assert.equal(Object.hasOwn(modelsConfig["anthropic/claude-fable-5-1"], "alias"), false, "the other pin has none");
+    assert.equal(Object.hasOwn(modelsConfig, "anthropic/claude-sonnet-5-5"), false, "sonnet is not pinned, so it has no entry and no alias");
+    assert.deepEqual(await readOpenclawModelsConfig(detected), modelsConfig, "Agent OS reads the same config");
+    assert.equal(hasClaudeCliPin(modelsConfig), true);
+    assert.deepEqual(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"].map((id) => claudeCliPinned(modelsConfig, id)), [true, false, true], "the pins decide, not the alias");
+    const claudeAnswer = {
+      models: [
+        { id: "claude-opus-5-5", name: "Opus 5.5", note: null, available: true },
+        { id: "claude-sonnet-5-5", name: "Sonnet 5.5", note: null, available: false },
+        { id: "claude-fable-5-1", name: "Fable 5.1", note: FABLE_NOTE, available: true }
+      ],
+      source: "account",
+      asOf: null
+    };
+    assert.deepEqual(await readPlanModels("claude", { detected }), claudeAnswer);
+    assert.deepEqual((await call("GET", "/api/setup/openclaw/plan-models?plan=claude")).body, claudeAnswer);
+    assert.deepEqual(await readPlanModels("chatgpt", { detected }), chatgptAnswer, "the openai answer did not change");
+  });
 });

@@ -133,7 +133,9 @@ async function withTempRuntime(fn) {
   } finally {
     if (previous == null) delete process.env.HERMES_AGENT_OS_HOME;
     else process.env.HERMES_AGENT_OS_HOME = previous;
-    await rm(dir, { recursive: true, force: true });
+    // Retries: a run's last writes (the video queue's caption files) can land while the
+    // folder is being removed, which gave ENOTEMPTY on a CI runner once.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

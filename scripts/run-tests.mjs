@@ -78,7 +78,13 @@ for (const key of [
 }
 if (process.platform !== "win32") testEnv.SHELL = FAKE_LOGIN_SHELL;
 
-const child = spawn(process.execPath, ["--test", "--test-timeout=180000", ...flags, ...files], {
+// Node 22 writes TAP when its output is not a terminal; Node 23 and later write
+// their "spec" format everywhere. A log (CI, a file, a test that reads the
+// output) keeps TAP on every Node, so it reads the same; a terminal keeps the
+// spec format. A reporter given on the command line wins.
+const reporter = process.stdout.isTTY || flags.some((flag) => flag.startsWith("--test-reporter")) ? [] : ["--test-reporter=tap"];
+
+const child = spawn(process.execPath, ["--test", "--test-timeout=180000", ...reporter, ...flags, ...files], {
   cwd: root,
   env: testEnv,
   stdio: "inherit"

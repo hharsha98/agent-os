@@ -195,8 +195,10 @@ export async function withPlanEnv(
     );
   } finally {
     await new Promise((resolve) => mirror.close(resolve));
-    await rm(home, { recursive: true, force: true });
-    await rm(agentOsHome, { recursive: true, force: true });
+    // A fake read the server started but did not wait for may still write its line into HOME while it is removed
+    // (ENOTEMPTY); rm tries again a few times.
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await rm(agentOsHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

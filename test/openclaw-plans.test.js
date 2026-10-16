@@ -810,6 +810,8 @@ test("GET /api/setup/agents/openclaw/model starts the plan-confirming read besid
     await writeFakeAgentState(home, { primary: "openrouter/vendor/old", models: null, authRows: [] });
     const plain = await call("GET", "/api/setup/agents/openclaw/model");
     assert.deepEqual([plain.body.plan, plain.body.providerLabel, plain.body.model], [null, "OpenRouter", "vendor/old"]);
+    // The confirming read started beside it was not waited for: let it end (1.5 s) before its HOME is removed.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   });
 });
 

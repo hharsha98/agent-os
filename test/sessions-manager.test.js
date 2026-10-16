@@ -560,7 +560,7 @@ test("limit: at most 8 live agent sessions even when starts race; an update sess
 });
 
 test("create refuses an unknown agent, a refused folder (with the folder's own code and sentence), a missing terminal module, a terminal that can't be made and a failed start, and leaves nothing behind", async () => {
-  await withSessionEnv(async ({ agentOsHome, project }) => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
     const notInstalled = Object.assign(
       new Error("Codex isn't installed, or Agent OS can't find it. Install it in Setup, then try again."),
       { status: 409, code: "agent_not_installed" }
@@ -576,7 +576,8 @@ test("create refuses an unknown agent, a refused folder (with the folder's own c
       (error) => error.status === 400 && error.code === "unknown_agent"
     );
     await assert.rejects(
-      world.manager.create({ agentId: "claude", folder: "/etc" }),
+      // The temp folder that holds the test's home: it exists on every OS (Windows has no /etc) and is outside home.
+      world.manager.create({ agentId: "claude", folder: path.dirname(home) }),
       (error) =>
         error.status === 400 &&
         error.code === "folder_refused" &&

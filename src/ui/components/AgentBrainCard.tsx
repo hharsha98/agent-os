@@ -74,6 +74,8 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   const titleRef = useRef<HTMLHeadingElement>(null);
   // "Your plan" on OpenClaw's card: Change model brings its list into view while OpenClaw is on a plan.
   const planCard = useRef<BrainPlanCardHandle>(null);
+  // The Change brain panel, which opens below the whole card.
+  const panel = useRef<HTMLDivElement>(null);
   // The plan routes and Hermes's Terminal launch exist only where Agent OS runs in local mode, as sessions do.
   const { available: localMode } = useSessionsList();
   useEffect(() => {
@@ -122,6 +124,18 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
     setPlanCardOff(false);
     void load();
   }, [agentId, load]);
+
+  // The panel opens after the card, and the plan card or Choose in Hermes sit above it, so on a short window it can
+  // open below the fold and the click would look like nothing happened. Bring its top into view, under the top bar
+  // (scroll-margin-top, agents.css). The focus stays on the Change brain / Close button, which scrolling does not move.
+  useEffect(() => {
+    if (!open) return;
+    const node = panel.current;
+    // A panel whose top is already on screen stays where it is: no needless jump on a tall window.
+    if (!node || node.getBoundingClientRect().top < window.innerHeight - 120) return;
+    const calm = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    node.scrollIntoView({ block: "start", behavior: calm ? "auto" : "smooth" });
+  }, [open]);
 
   function retry() {
     setBrain(null);
@@ -306,6 +320,7 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
           initialAgents={[agentId]}
           showModelActions={false}
           showPlanCard={false}
+          rootRef={panel}
           onChanged={onModelChanged}
           onContinue={() => setOpen(false)}
           continueLabel="Done"

@@ -29,7 +29,8 @@ export default function AgentConfirmModal({
   danger = false,
   wide = false,
   closeOnBackdrop = true,
-  cancelLabel = "Cancel"
+  cancelLabel = "Cancel",
+  giveFocusBack = () => true
 }: {
   title: string;
   children: ReactNode;
@@ -45,6 +46,9 @@ export default function AgentConfirmModal({
   closeOnBackdrop?: boolean;
   // The words on the button that closes without acting ("Keep running", "Keep it running").
   cancelLabel?: string;
+  // Asked as the dialog goes away: false leaves the focus where it fell (the New session dialog, once a session
+  // started, must not give the keys back to the terminal that was open before it).
+  giveFocusBack?: () => boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // Its own title id, so two of these dialogs open at once (the update banner's quit question and the
@@ -54,20 +58,26 @@ export default function AgentConfirmModal({
   // began inside the dialog (selecting text) and let go outside never closes it.
   const pressedOnBackdrop = useRef(false);
   const previouslyFocused = useRef<Element | null>(null);
+  const giveBack = useRef(giveFocusBack);
+  giveBack.current = giveFocusBack;
 
   useEffect(() => {
     previouslyFocused.current = document.activeElement;
     const first = dialogRef.current ? tabbable(dialogRef.current)[0] : undefined;
     first?.focus();
     return () => {
-      (previouslyFocused.current as HTMLElement | null)?.focus?.();
+      if (giveBack.current()) (previouslyFocused.current as HTMLElement | null)?.focus?.();
     };
   }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        event.stopPropagation();
+        // Every open dialog listens here; only the topmost one (the last in the page) answers, so a question drawn
+        // over another dialog closes alone.
+        const dialogs = document.querySelectorAll('[aria-modal="true"]');
+        if (dialogs[dialogs.length - 1] !== dialogRef.current) return;
+        event.stopImmediatePropagation();
         onClose();
         return;
       }

@@ -36,10 +36,37 @@ export function pickSelected(tabs: Array<Pick<SessionSummary, "id" | "status">>,
   return (tabs.find((tab) => tab.status !== "exited") || tabs[0])?.id || "";
 }
 
-// Decision copy: an ended tab reads "<agent> · <folder> · Ended · open recording".
+// Whether the selected terminal takes the keyboard (its autoFocus). Only when the page asked for that (`focusTerminal`)
+// and, while the tab asked for is not in the list yet (a session started a moment ago; the list is read every 5 s),
+// only for that very tab: until it arrives the page shows another tab, and typing must not go into that agent.
+export function terminalTakesKeys({
+  focusTerminal,
+  wanted,
+  selectedId,
+  wantedListed
+}: {
+  focusTerminal: boolean;
+  wanted: string;
+  selectedId: string;
+  wantedListed: boolean;
+}): boolean {
+  if (!focusTerminal) return false;
+  if (wanted && !wantedListed) return selectedId === wanted;
+  return true;
+}
+
+// An ended session's recording is gone when it is 0 bytes (the 1 GB cap, Q38, or a delete removed it: a recording
+// always holds at least its header line). Runs then has no row for it.
+export function recordingKept(recordingBytes: number): boolean {
+  return recordingBytes > 0;
+}
+
+// Decision copy: an ended tab reads "<agent> · <folder> · Ended · open recording", and only "Ended" when its
+// recording was removed (there is nothing to open).
 export const ENDED_WORDS = "Ended · open recording";
-export function tabLabel(title: string, status: string): string {
-  return status === "exited" ? `${title} · ${ENDED_WORDS}` : title;
+export function tabLabel(title: string, status: string, recordingBytes: number): string {
+  if (status !== "exited") return title;
+  return `${title} · ${recordingKept(recordingBytes) ? ENDED_WORDS : "Ended"}`;
 }
 
 // The marker after a tab's title (spec, Session activity states). No SP3 session is waiting or held; SP4's alerts
@@ -56,6 +83,10 @@ export function dismissLabel(title: string): string {
 // The keyboard way to dismiss an ended tab, said as the tab's description. The x beside the tab is for the mouse
 // only (it is not a tab, so it stays out of the tab list for a screen reader).
 export const DISMISS_KEY_HINT = "Press Delete to dismiss";
+// The keys that dismiss an ended tab: Delete, and the Mac key that is labelled "delete", which sends "Backspace".
+export function isDismissKey(key: string, status: string): boolean {
+  return status === "exited" && (key === "Delete" || key === "Backspace");
+}
 
 // Tabs dismissed on this page are hidden at once, before the server's answer. Once the list shows one of them not
 // ended (it was resumed in another window), the local hiding is dropped and from then on the server's own

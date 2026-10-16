@@ -56,9 +56,28 @@ test("the selected tab: the one asked for, else the first open one, else the fir
   assert.equal(page.pickSelected([], "x"), "");
 });
 
+test("the terminal takes the keyboard only for the tab asked for: while that tab is not in the list yet, no other terminal does", () => {
+  const take = (over) => page.terminalTakesKeys({ focusTerminal: true, wanted: "new", selectedId: "new", wantedListed: true, ...over });
+  // Nothing asked for the keyboard: no terminal takes it, whatever else is true.
+  assert.equal(take({ focusTerminal: false }), false);
+  assert.equal(take({ focusTerminal: false, wanted: "", selectedId: "old", wantedListed: false }), false);
+  // Start session: the new tab is asked for but the 5 s poll has not brought it yet, so the page shows the first open
+  // tab. That old terminal must not take the keys (typing would go into the wrong agent).
+  assert.equal(take({ selectedId: "old", wantedListed: false }), false, "the new session is pending: the tab shown instead does not take the keys");
+  // The tab arrived (it is selected and listed): its terminal takes them, as before.
+  assert.equal(take({}), true);
+  // A tab picked from the keyboard (⌘1-9): asked for and listed.
+  assert.equal(take({ wanted: "old", selectedId: "old" }), true);
+  // Nothing asked for in the address (a page opened with no ?session=): the shown tab is the one.
+  assert.equal(take({ wanted: "", selectedId: "old", wantedListed: false }), true);
+  // If the pending tab is somehow the one shown, it is the one that takes them.
+  assert.equal(take({ selectedId: "new", wantedListed: false }), true);
+});
+
 test("an ended tab says so; Dismiss names the tab; the waiting and held markers (SP4) are words", () => {
-  assert.equal(page.tabLabel("Claude Code · my-app", "exited"), "Claude Code · my-app · Ended · open recording");
-  assert.equal(page.tabLabel("Claude Code · my-app", "live"), "Claude Code · my-app");
+  assert.equal(page.tabLabel("Claude Code · my-app", "exited", 4096), "Claude Code · my-app · Ended · open recording");
+  assert.equal(page.tabLabel("Claude Code · my-app", "live", 4096), "Claude Code · my-app");
+  assert.equal(page.tabLabel("Claude Code · my-app", "live", 0), "Claude Code · my-app", "an open session is never labelled ended");
   assert.equal(page.dismissLabel("Claude Code · my-app"), "Dismiss Claude Code · my-app");
   assert.equal(page.tabMarker("live"), null);
   assert.equal(page.tabMarker("exited"), null);
@@ -66,8 +85,29 @@ test("an ended tab says so; Dismiss names the tab; the waiting and held markers 
   assert.deepEqual(page.tabMarker("held"), { kind: "held", word: "Plan ran out" });
 });
 
+test("an ended tab whose recording was removed does not offer to open it", () => {
+  // 0 bytes: the 1 GB cap or a delete took it, so Runs has no row (the panel's line says "Its recording was removed.").
+  assert.equal(page.recordingKept(0), false);
+  assert.equal(page.recordingKept(1), true);
+  assert.equal(page.recordingKept(250_000), true);
+  assert.equal(page.tabLabel("Claude Code · my-app", "exited", 0), "Claude Code · my-app · Ended");
+  assert.doesNotMatch(page.tabLabel("Codex · notes", "exited", 0), /recording/);
+});
+
 test("an ended tab names its keyboard way to dismiss (the x beside it is for the mouse only)", () => {
   assert.equal(page.DISMISS_KEY_HINT, "Press Delete to dismiss");
+});
+
+test("Delete, and the Mac key labelled delete (Backspace), dismiss an ended tab; no other key and no open tab does", () => {
+  assert.equal(page.isDismissKey("Delete", "exited"), true);
+  assert.equal(page.isDismissKey("Backspace", "exited"), true, "the Mac delete key sends Backspace");
+  for (const open of ["live", "starting", "idle", "waiting", "held"]) {
+    assert.equal(page.isDismissKey("Delete", open), false, `${open}: a session ends with Stop`);
+    assert.equal(page.isDismissKey("Backspace", open), false, open);
+  }
+  for (const other of ["Enter", " ", "ArrowRight", "Escape", "d", "x", "Home"]) {
+    assert.equal(page.isDismissKey(other, "exited"), false, other);
+  }
 });
 
 test("tabs dismissed here are forgotten once the list shows them running again; after that the server's flag decides", () => {
@@ -333,4 +373,31 @@ test("Shell: the New session dialog sits right after New run and under the quit 
   assert.match(backdrop, /z-index:\s*100\b/);
   const sessionsCss = readFileSync(new URL("../src/ui/sessions.css", import.meta.url), "utf8");
   assert.doesNotMatch(sessionsCss, /os-modal__backdrop/, "sessions.css does not raise or lower a dialog's backdrop");
+});
+
+test("the final-fix pieces are wired where the probes look: Escape on the topmost dialog, focus after a start, Backspace, Open recording, the CSS", () => {
+  const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+  const modal = read("src/ui/components/AgentConfirmModal.tsx");
+  assert.ok(modal.includes("dialogs[dialogs.length - 1] !== dialogRef.current"), "only the last aria-modal dialog answers Escape");
+  assert.ok(modal.includes("event.stopImmediatePropagation();"), "and it stops the others from hearing it");
+  assert.ok(modal.includes("if (giveBack.current())"), "closing hands the focus back only when the dialog says so");
+  const newSession = read("src/ui/components/NewSessionDialog.tsx");
+  assert.ok(newSession.includes("started.current = true;") && newSession.includes("giveFocusBack={() => !started.current}"), "a started session keeps the focus off the old terminal");
+  assert.ok(read("src/pages/SessionsPage.tsx").includes("autoFocus={terminalTakesKeys({ focusTerminal, wanted, selectedId, wantedListed })}"), "the page asks terminalTakesKeys");
+  assert.ok(read("src/ui/components/SessionTabs.tsx").includes("isDismissKey(event.key, tabs[index].status)"), "the tab strip asks isDismissKey");
+  assert.ok(read("src/ui/components/SessionSidePanel.tsx").includes("recordingKept(session.recordingBytes) ? ("), "Open recording only while the recording exists");
+  // Change brain scrolls its panel into view when its top is not on screen; the panel stops below the top bar.
+  const brainCard = read("src/ui/components/AgentBrainCard.tsx");
+  assert.ok(brainCard.includes("node.scrollIntoView({ block: \"start\""), "Change brain scrolls its panel into view");
+  assert.ok(brainCard.includes("node.getBoundingClientRect().top < window.innerHeight - 120) return;"), "but not when the panel's top is already on screen");
+  assert.match(read("src/ui/agents.css"), /\.os-agt-secs > \.os-brain \{[^}]*scroll-margin-top: calc\(var\(--os-bar-h, 48px\) \+ var\(--os-sp-4\)\)/);
+  // Setup's plan card takes the whole row of the card grid; the Agents page's card is not in that grid.
+  assert.match(read("src/ui/brain.css"), /\.os-brain-cards > \.os-plan-card \{\s*grid-column: 1 \/ -1;/);
+  // An ended tab's whole title fits (a folder name of about 16 characters plus "· Ended · open recording").
+  const cap = /button\.os-sess-tab__btn \{[^}]*max-width: (\d+)px/.exec(read("src/ui/sessions.css"));
+  assert.ok(cap && Number(cap[1]) >= 460, `the tab's cap is ${cap?.[1]}px`);
+  // Dialog paragraphs use the app's body line height without outweighing a paragraph's own.
+  for (const file of ["src/ui/agents.css", "src/ui/runs.css"]) {
+    assert.match(read(file), /:where\(\.os-modal__body\) p \{\s*line-height: var\(--os-lh-body\);/, file);
+  }
 });

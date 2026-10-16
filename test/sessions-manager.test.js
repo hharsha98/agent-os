@@ -1610,6 +1610,31 @@ test("quit check: names every live session of both kinds with its kind, and none
   });
 });
 
+test("quit: once shutdownAll has started, a new session, an update, a sign-in and a resume are all refused with agent_os_quitting, and the running session still stops", async () => {
+  await withSessionEnv(async ({ project, other }) => {
+    const world = fakeWorld();
+    const running = await world.manager.create({ agentId: "claude", folder: project });
+    const earlier = await world.manager.create({ agentId: "codex", folder: other });
+    world.ptys[1].exit(0);
+    await ended(world, earlier.id);
+    const spawnsBefore = world.spawnCalls;
+    const isQuitting = (error) =>
+      error.status === 409 && error.code === "agent_os_quitting" && error.message === "Agent OS is quitting, so no new session can start.";
+
+    // Not awaited: the quit is under way, and the refusals must not wait for it.
+    const quitting = world.manager.shutdownAll({ reason: "quit" });
+    await assert.rejects(world.manager.create({ agentId: "claude", folder: other }), isQuitting);
+    await assert.rejects(world.manager.createUpdateSession({ agentId: "hermes", folder: project }), isQuitting);
+    await assert.rejects(world.manager.createSetupSession({ action: "openclaw-chatgpt-signin", detected: { installed: true, path: "/fake/bin/openclaw" } }), isQuitting);
+    await assert.rejects(world.manager.resume(earlier.id), isQuitting);
+    assert.deepEqual(await quitting, { stopped: 1 }, "the running session is still stopped");
+    // Still refused afterwards, and nothing was started.
+    await assert.rejects(world.manager.create({ agentId: "claude", folder: other }), isQuitting);
+    assert.equal(world.spawnCalls, spawnsBefore, "no process started");
+    assert.equal((await world.manager.get(running.id)).endedBy, "quit");
+  });
+});
+
 test("ids: anything that is not a session id is unknown before any file is touched", async () => {
   await withSessionEnv(async () => {
     const world = fakeWorld();

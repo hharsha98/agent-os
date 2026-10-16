@@ -83,6 +83,7 @@ const UNKNOWN_MESSAGE = "That session doesn't exist anymore.";
 const BUSY_MESSAGE = "This session is already being changed. Try again in a moment.";
 const SAVE_FAILED_MESSAGE = "Agent OS could not save this session, so it was stopped. Check the free disk space, then try again.";
 const UNKNOWN_KIND_MESSAGE = "Agent OS can't start that kind of session.";
+const QUITTING_MESSAGE = "Agent OS is quitting, so no new session can start.";
 // The answer to a second sign-in start (plan-brains contract, 409 setup_running).
 const SETUP_RUNNING_MESSAGE = "A ChatGPT sign-in is already open in Agent OS.";
 // A setup session never records (plan-brains spec §1, Safety 5). This stands in
@@ -270,6 +271,9 @@ export function createSessionManager({
   // ids being resumed or dismissed right now, so two requests never race: a
   // second request for one of them is answered "session_busy".
   const busy = new Set();
+  // Set when a quit begins (shutdownAll): from then on nothing new starts, so a
+  // session cannot appear after the stop list was taken.
+  let closing = false;
   // Slots held by starts that have not finished yet.
   let reservedAgents = 0;
   let reservedUpdate = false;
@@ -847,7 +851,12 @@ export function createSessionManager({
 
   // ---- starting, resuming, dismissing -----------------------------------------------------------------
 
+  function assertNotClosing() {
+    if (closing) throw sessionError(409, "agent_os_quitting", QUITTING_MESSAGE);
+  }
+
   async function startNew({ kind, agentId, folder }) {
+    assertNotClosing();
     if (!SESSION_AGENTS.includes(agentId)) {
       throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
     }
@@ -952,6 +961,7 @@ export function createSessionManager({
   // recording: state.dir is null, so nothing can be written for it by mistake.
   // Answers its SessionSummary, built from memory.
   async function createSetupSession({ action, detected } = {}) {
+    assertNotClosing();
     const setup = typeof action === "string" && Object.hasOwn(SETUP_ACTIONS, action) ? SETUP_ACTIONS[action] : null;
     if (!setup) throw sessionError(400, "unknown_kind", UNKNOWN_KIND_MESSAGE);
     // The id first, so a second start is always told which session to attach to.
@@ -1038,6 +1048,7 @@ export function createSessionManager({
 
   async function resume(id) {
     assertSessionId(id);
+    assertNotClosing();
     // A session another request is resuming or dismissing right now is not
     // "still running" (a double click), so it gets its own answer.
     if (busy.has(id)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
@@ -1398,6 +1409,8 @@ export function createSessionManager({
   // says "exited" early: the state in memory keeps the real status, so list(),
   // resume() and dismiss() still treat the session as running until it ends.
   async function shutdownAll({ reason = "quit" } = {}) {
+    // Only a quit closes the manager for good; a stop of everything leaves new sessions allowed.
+    if (reason !== "stop") closing = true;
     const endedBy = reason === "stop" ? "stop" : "quit";
     const running = [...live.values()].filter((state) => state.status !== "exited");
     let timer;

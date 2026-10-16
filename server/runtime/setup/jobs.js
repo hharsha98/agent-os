@@ -55,6 +55,7 @@ import {
   PLAN_MODE,
   PLAN_NOT_READY_MESSAGE,
   PLAN_PROVIDER,
+  PLAN_READ_TIMEOUT_MS,
   RUNTIME_CHECK_FAILED,
   claudeCliPinned,
   claudePlanReadiness,
@@ -710,6 +711,18 @@ export async function cancelSetupJob(id) {
   const lastRunId = currentStep?.runIds?.[currentStep.runIds.length - 1];
   if (lastRunId) await getRunManager().stopRun(lastRunId);
 
+  // A plan job answers once the step in progress has settled, so the card's
+  // re-read of OpenClaw's model sees the final state. Until then the job still
+  // reads "running" (the card's poll must not take it as ended early); its
+  // runner writes "cancelled" itself when it stops. A run was stopped above;
+  // what is left is a read that can't be stopped (at most PLAN_READ_TIMEOUT_MS).
+  if (job.plan && active) {
+    const deadline = Date.now() + PLAN_CANCEL_SETTLE_MS;
+    while (activeJobs.has(id) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (job.status !== "running") return job;
+  }
   job.status = "cancelled";
   job.endedAt = new Date().toISOString();
   await persistJob(job);
@@ -776,6 +789,10 @@ const CONFIGURE_RUN_TIMEOUT_MS = 60 * 1000;
 const HELP_TIMEOUT_MS = 5000;
 const HERMES_AUTH_HELP_TIMEOUT_MS = 15 * 1000;
 const CONFIG_GET_TIMEOUT_MS = 10 * 1000;
+// How long Cancel on a plan job waits for the step in progress to settle: a
+// little more than the longest read that can't be stopped (the readiness
+// check, PLAN_READ_TIMEOUT_MS), and under the card's 20 s limit for the answer.
+const PLAN_CANCEL_SETTLE_MS = PLAN_READ_TIMEOUT_MS + 2 * 1000;
 const HEALTH_PROMPT = "Reply with exactly: ready";
 // The "hello" after a model change may take at most this long (a busy free
 // model can be slow; the screen then says so instead of waiting for half an hour).
@@ -1367,7 +1384,7 @@ async function executeConfigureStep(job, step, check, ctx, manager) {
       await runHealthChecks(job, step, check, manager, ctx);
       break;
     case "openclaw-plan-onboard":
-      await onboardOpenclawForClaudePlan(step, check, manager);
+      await onboardOpenclawForClaudePlan(job, step, check, manager);
       break;
     case "openclaw-plan-runtime-check":
       await checkClaudePlanRuntime(job, check);
@@ -1467,6 +1484,14 @@ async function runConfigureJobSteps(job, apiKey) {
     const manager = redactingManager(getRunManager(), ctx);
     for (let i = 0; i < job.steps.length; i += 1) {
       const step = job.steps[i];
+      // Cancel pressed before this step started (the first pass is right after
+      // the system check): it and the steps after it stay pending, and never run.
+      if (job.cancelRequested) {
+        job.status = "cancelled";
+        job.endedAt = new Date().toISOString();
+        await persistJob(job);
+        return;
+      }
       if (step.status === "succeeded") continue;
       job.currentStepIndex = i;
       try {
@@ -1728,6 +1753,9 @@ async function startModelJobLocked({ agentId, model, presetSlug = null, previous
 // saved to disk, cancelable, a hello check at the end.
 // =========================================================================
 
+// What a plan step says when Cancel stopped it before its command ran.
+const PLAN_CANCELLED = "Cancelled.";
+
 export const PLAN_JOB_STEPS = Object.freeze({
   claude: Object.freeze([
     "openclaw-plan-onboard",
@@ -1812,9 +1840,10 @@ async function startOpenclawPlanJobLocked({ plan, model }) {
 // Claude plan, step 1: `openclaw onboard ... --auth-choice anthropic-cli`, which
 // points OpenClaw at the signed-in Claude Code on this computer, with today's
 // flag checks.
-async function onboardOpenclawForClaudePlan(step, check, manager) {
+async function onboardOpenclawForClaudePlan(job, step, check, manager) {
   const detected = planOpenclaw(check);
   const args = await onboardArgs(step, detected, ["--auth-choice", "anthropic-cli"]);
+  if (job.cancelRequested) throw jobError("cancelled", PLAN_CANCELLED);
   await runConfigureCommand(
     manager,
     { agentId: "openclaw", kind: "configure", title: "openclaw onboard", command: detected.path, args, cwd: os.tmpdir(), timeoutMs: CONFIGURE_RUN_TIMEOUT_MS },
@@ -1858,14 +1887,18 @@ async function newestChatgptPlanJob(exceptId) {
 }
 
 // Did this earlier ChatGPT plan job leave OpenClaw on its model? It did when it
-// ended badly (failed, or saved as running with nothing in this process
-// running it, which is what a quit leaves) after `models set` was reached:
-// the model step ran or finished, or it was the step Agent OS quit in.
+// ended badly (failed, cancelled, or saved as running with nothing in this
+// process running it, which is what a quit leaves) after `models set` was
+// reached: the model step ran or finished, or it was the step Agent OS quit in.
+// A cancel can stop `models set` itself, after it had already taken, so a
+// cancelled job whose model step failed with a `models set` run counts too.
 function leftItsModelSet(job) {
-  const endedBadly = job.status === "failed" || (job.status === "running" && !activeJobs.has(job.id));
+  const endedBadly = job.status === "failed" || job.status === "cancelled" || (job.status === "running" && !activeJobs.has(job.id));
   const modelStep = Array.isArray(job.steps) ? job.steps.find((step) => step.id === "openclaw-plan-model") : null;
   if (!endedBadly || !modelStep) return false;
-  return modelStep.status === "succeeded" || modelStep.status === "running" || (modelStep.status === "failed" && modelStep.error === PLAN_JOB_INTERRUPTED);
+  if (modelStep.status === "succeeded" || modelStep.status === "running") return true;
+  if (modelStep.status !== "failed") return false;
+  return modelStep.error === PLAN_JOB_INTERRUPTED || (job.status === "cancelled" && modelStep.runIds?.length > 0);
 }
 
 // The model a ChatGPT Apply records as the earlier one (the one a failed
@@ -1910,6 +1943,8 @@ async function setOpenclawPlanModel(job, step, check, manager) {
     job.previousPrimary = await earlierPrimaryOfApply(job, primary);
     await persistJob(job);
   }
+  // Cancel pressed during the read above: `models set` must not run.
+  if (job.cancelRequested) throw jobError("cancelled", PLAN_CANCELLED);
   await runConfigureCommand(
     manager,
     {

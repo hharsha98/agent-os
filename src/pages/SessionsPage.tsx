@@ -48,6 +48,7 @@ import {
   serializeTerminalPrefs,
   stableOrder,
   terminalKey,
+  terminalTakesKeys,
   visibleTabs
 } from "../ui/sessionsPageShared";
 import type { Generations, StopNote, TerminalPrefs } from "../ui/sessionsPageShared";
@@ -92,6 +93,8 @@ export default function SessionsPage() {
   const [wanted, setWanted] = useState(() => queryParam("session"));
   const selectedId = pickSelected(tabs, wanted);
   const selected = tabs.find((tab) => tab.id === selectedId) || null;
+  // The tab asked for is not in the list yet (a session started a moment ago): no terminal takes the keys meanwhile.
+  const wantedListed = tabs.some((tab) => tab.id === wanted);
   const key = selected ? terminalKey(selected.id, gens) : "";
   // The terminal key that was on screen while its session was open (see the comment at the top).
   const [liveShown, setLiveShown] = useState<string | null>(null);
@@ -406,7 +409,7 @@ export default function SessionsPage() {
       </h1>
       <div className="os-sess__bar">
         <SessionTabs
-          tabs={tabs.map((session) => ({ id: session.id, title: sessionTitle(session), status: session.status }))}
+          tabs={tabs.map((session) => ({ id: session.id, title: sessionTitle(session), status: session.status, recordingBytes: session.recordingBytes }))}
           selectedId={selectedId}
           panelId={PANEL_ID}
           onSelect={(id) => select(id)}
@@ -439,7 +442,7 @@ export default function SessionsPage() {
                 kittyKeyboard={prefs.kittyKeyboard}
                 webgl={prefs.webgl}
                 ended={selected.status === "exited"}
-                autoFocus={focusTerminal}
+                autoFocus={terminalTakesKeys({ focusTerminal, wanted, selectedId, wantedListed })}
                 onState={onTerminalState}
                 onNotice={onTerminalNotice}
               />

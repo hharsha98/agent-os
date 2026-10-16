@@ -721,6 +721,11 @@
   flex-direction: column;
   gap: var(--os-sp-2);
 }
+/* Dialog text lines are an app body line apart, not the browser's tight default; a paragraph with a line height of
+   its own keeps it (:where adds no weight). */
+:where(.os-modal__body) p {
+  line-height: var(--os-lh-body);
+}
 .os-modal__actions {
   display: flex;
   justify-content: flex-end;

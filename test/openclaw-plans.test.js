@@ -26,6 +26,7 @@ import { runCommand } from "../server/runtime/safety.js";
 import {
   HELLO_SKIPPED_AT_LOOK_ONLY,
   PLAN_JOB_STEPS,
+  cancelSetupJob,
   getSetupJob,
   healthFixLine,
   resetSetupJobsForTest,
@@ -1112,6 +1113,96 @@ test("ChatGPT plan Apply stopped at readiness puts the earlier model back; with 
   );
 });
 
+// How long a test waits after a cancel to be sure nothing starts late.
+const AFTER_CANCEL_MS = 1200;
+// What a cancelled Apply must never have run (onboard --help only reads).
+const CHANGING_CALL = /^(models set|onboard --non-interactive|config set)/;
+
+// Waits until the fake OpenClaw has seen one more call that starts with `prefix` than `seen`.
+async function waitForAnotherCall(home, prefix, seen) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    if ((await argvLines(home)).filter((line) => line.startsWith(prefix)).length > seen) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`the fake OpenClaw never saw another "${prefix}"`);
+}
+const callsStarting = async (home, prefix) => (await argvLines(home)).filter((line) => line.startsWith(prefix)).length;
+
+test("Cancel during a plan Apply's system check: the first step never runs (no onboard, no models set), for both plans", posixSkip, async () => {
+  for (const [plan, model] of [["claude", "claude-opus-5-5"], ["chatgpt", "gpt-6.1-sol"]]) {
+    await withPlanEnv(
+      async ({ home }) => {
+        // In process, so the cancel lands while the job is still in its system check.
+        const job = await startOpenclawPlanJob({ plan, model, acceptOpenClawRisk: true });
+        const cancelled = await cancelSetupJob(job.id);
+        assert.equal(cancelled.status, "cancelled", plan);
+        await new Promise((resolve) => setTimeout(resolve, AFTER_CANCEL_MS));
+        const lines = await argvLines(home);
+        assert.deepEqual(lines.filter((line) => CHANGING_CALL.test(line)), [], `${plan}: nothing was changed`);
+        assert.ok(!lines.includes("config get agents.defaults.model.primary"), `${plan}: not even the earlier model was read`);
+        assert.ok(!lines.includes("onboard --help"), `${plan}: no first step at all`);
+        const done = await waitForPlanJob(job.id);
+        assert.deepEqual([done.status, done.steps.map((step) => step.status)], ["cancelled", done.steps.map(() => "pending")], plan);
+        assert.equal((await readFakeAgentState(home)).primary, "openrouter/vendor/old", `${plan}: OpenClaw keeps its model`);
+        assert.deepEqual(await readReceipt(), [], `${plan}: a cancelled job writes no receipt`);
+      },
+      { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+    );
+  }
+});
+
+test("Cancel during the ChatGPT Apply's read of the earlier model: models set never runs, and Cancel answers only after the read has ended", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ home, knob }) => {
+      await knob("FAKE_OPENCLAW_READ_DELAY_MS", "1500");
+      const timingFile = path.join(home, ".fake-openclaw-timing.jsonl");
+      const job = await startOpenclawPlanJob({ plan: "chatgpt", model: "gpt-6.1-sol", acceptOpenClawRisk: true });
+      const reads = await callsStarting(home, "config get agents.defaults.model.primary");
+      await waitForAnotherCall(home, "config get agents.defaults.model.primary", reads);
+      const answer = cancelSetupJob(job.id);
+      // While the read runs, a poll (the card's, every second) still sees the job running: only the settled job
+      // reads cancelled, so the card never re-reads the model before the step has ended.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal((await getSetupJob(job.id)).status, "running", "a poll during Cancel's wait sees the job still running");
+      const cancelled = await answer;
+      assert.equal(cancelled.status, "cancelled");
+      // The slow read had finished (the fake notes that as it ends) by the time Cancel answered.
+      const timings = await readJsonLines(timingFile);
+      assert.ok(timings.some((entry) => entry.argv.join(" ") === "config get agents.defaults.model.primary" && entry.endedAt <= Date.now()), JSON.stringify(timings));
+      await new Promise((resolve) => setTimeout(resolve, AFTER_CANCEL_MS));
+      assert.deepEqual((await argvLines(home)).filter((line) => CHANGING_CALL.test(line)), [], "no models set after the cancel");
+      assert.equal((await readFakeAgentState(home)).primary, "openrouter/vendor/old");
+      const done = await waitForPlanJob(job.id);
+      assert.equal(done.status, "cancelled");
+      assert.deepEqual(done.steps.map((step) => step.status), ["failed", "pending", "pending", "pending"]);
+      assert.equal(stepOf(done, "openclaw-plan-model").error, "Cancelled.");
+      assert.deepEqual(await readReceipt(), []);
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+  );
+});
+
+test("Cancel during the Claude plan Apply's onboard --help: onboard never runs", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ home, knob }) => {
+      await knob("FAKE_OPENCLAW_READ_DELAY_MS", "1500");
+      const job = await startOpenclawPlanJob({ plan: "claude", model: "claude-opus-5-5", acceptOpenClawRisk: true });
+      const helps = await callsStarting(home, "onboard --help");
+      await waitForAnotherCall(home, "onboard --help", helps);
+      assert.equal((await cancelSetupJob(job.id)).status, "cancelled");
+      await new Promise((resolve) => setTimeout(resolve, AFTER_CANCEL_MS));
+      const lines = await argvLines(home);
+      assert.deepEqual(lines.filter((line) => CHANGING_CALL.test(line)), [], "onboard and models set never ran");
+      const done = await waitForPlanJob(job.id);
+      assert.deepEqual([done.status, stepOf(done, "openclaw-plan-onboard").status, stepOf(done, "openclaw-plan-onboard").error], ["cancelled", "failed", "Cancelled."]);
+      assert.deepEqual(done.steps.slice(1).map((step) => step.status), ["pending", "pending", "pending", "pending", "pending"]);
+      assert.deepEqual(await readReceipt(), []);
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+  );
+});
+
 test("ChatGPT plan Apply: a current model that can't be read (timed out, can't run) or can't be put back (not a plain model name) stops it before models set with nothing changed, each with its own sentence; a plain failed read still counts as no earlier model", posixSkip, async () => {
   // A model name that is parseable (a space, or 121-200 characters) but is not one Agent OS puts back on a command line.
   const spaced = "openrouter/vendor/old model";
@@ -1544,6 +1635,20 @@ test("ChatGPT plan Apply after an interrupted or failed Apply: the half-applied 
       const tampered = await applyWith("not a plain reference", [storedChatgptJob({ previousPrimary: "--probe" })]);
       assert.equal(tampered.previousPrimary, HALF);
       assert.ok(!tampered.sets.some((line) => line.includes("--probe")), "nothing odd was run");
+
+      // 9. A cancelled job counts like one that failed, once its `models set` was reached: the model step finished,
+      // or its run was the one Cancel stopped. A job cancelled before `models set` ran changed nothing.
+      const cancelledAfter = await applyWith("cancelled after models set", [
+        storedChatgptJob({ statuses: ["succeeded", "failed", "pending", "pending"], status: "cancelled", errors: { "openclaw-safe-defaults": "Cancelled." } })
+      ]);
+      assert.equal(cancelledAfter.previousPrimary, "openrouter/vendor/old", "the cancelled job's earlier model, not the half-applied one");
+      assert.equal(cancelledAfter.primaryAfter, "openrouter/vendor/old");
+      const stoppedRun = storedChatgptJob({ statuses: ["failed", "pending", "pending", "pending"], status: "cancelled", errors: { "openclaw-plan-model": "openclaw models set failed; see the run log." } });
+      stoppedRun.steps[0].runIds = ["run_stopped_by_cancel"];
+      assert.equal((await applyWith("cancel stopped models set", [stoppedRun])).previousPrimary, "openrouter/vendor/old");
+      const beforeRun = storedChatgptJob({ statuses: ["failed", "pending", "pending", "pending"], status: "cancelled", errors: { "openclaw-plan-model": "Cancelled." } });
+      assert.equal((await applyWith("cancelled before models set", [beforeRun])).previousPrimary, HALF);
+      assert.equal((await applyWith("cancelled at the first step", [storedChatgptJob({ statuses: ["pending", "pending", "pending", "pending"], status: "cancelled" })])).previousPrimary, HALF);
     },
     { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
   );

@@ -71,6 +71,8 @@ export default function NewSessionDialog({ request, onClose }: { request: NewSes
   const [rechecking, setRechecking] = useState(false);
   const [problem, setProblem] = useState<StartProblem | null>(null);
   const alive = useRef(true);
+  // Set once a session started: the dialog then leaves the focus alone as it closes (see giveFocusBack below).
+  const started = useRef(false);
   const folderRef = useRef<HTMLInputElement>(null);
   const chipsRef = useRef<HTMLDivElement>(null);
 
@@ -219,7 +221,9 @@ export default function NewSessionDialog({ request, onClose }: { request: NewSes
       const createdId = createdSessionId(created);
       if (!createdId) throw new SyntaxError("Agent OS answered with something that is not a session.");
       rememberSessionDraft(null);
-      // The Start button is gone after this, so the new session's terminal takes the keyboard.
+      // The Start button is gone after this, so the new session's terminal takes the keyboard. Until that terminal
+      // exists, no other one does: closing does not hand the focus back to the terminal that was open before.
+      started.current = true;
       askToFocusNextSession();
       navigateTo("sessions", { session: createdId });
       onClose();
@@ -255,6 +259,7 @@ export default function NewSessionDialog({ request, onClose }: { request: NewSes
       busy={busy}
       wide
       closeOnBackdrop={false}
+      giveFocusBack={() => !started.current}
       onConfirm={() => void start()}
       onClose={requestClose}
     >

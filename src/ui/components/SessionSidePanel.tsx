@@ -11,7 +11,7 @@ import { CircleDot, Folder, GitBranch, History, OctagonX } from "lucide-react";
 import type { SessionSummary } from "../../types";
 import { collapseHomePath } from "../agentsShared";
 import { resumeConfirmCopy, sessionPanelLine, sessionStateWord } from "../sessionsShared";
-import { meterRows, panelFolder } from "../sessionsPageShared";
+import { meterRows, panelFolder, recordingKept } from "../sessionsPageShared";
 import StatusWord from "./StatusWord";
 import { useInterval } from "./useInterval";
 
@@ -80,10 +80,13 @@ export default function SessionSidePanel({
                 <History size={16} aria-hidden="true" />
                 Resume conversation
               </button>
-              <button type="button" className="os-btn os-btn--secondary" onClick={onOpenRecording}>
-                <CircleDot size={16} aria-hidden="true" />
-                Open recording
-              </button>
+              {/* A removed recording (0 bytes) has no row in Runs; the line above already says so. */}
+              {recordingKept(session.recordingBytes) ? (
+                <button type="button" className="os-btn os-btn--secondary" onClick={onOpenRecording}>
+                  <CircleDot size={16} aria-hidden="true" />
+                  Open recording
+                </button>
+              ) : null}
               {blocked ? (
                 <p id="os-sess-resume-why" className="os-sess-panel__why">
                   {blocked}

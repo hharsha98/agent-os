@@ -66,6 +66,12 @@
   align-items: start;
 }
 
+/* In Setup, "Your plan" is the third card: it takes the whole row, so its two plans sit side by side as they do on the
+   Agents page (where the plan card is inside .os-agent-brain, not in this grid). */
+.os-brain-cards > .os-plan-card {
+  grid-column: 1 / -1;
+}
+
 .os-brain-card {
   display: flex;
   flex-direction: column;

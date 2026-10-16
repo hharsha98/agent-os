@@ -20,7 +20,7 @@
 //     runCommand gives for a timeout), "fail" (exit 1) or, for the model settings
 //     only, "garbage" (exit 0 and text that isn't JSON); unset: the normal answer
 //   FAKE_OPENCLAW_READ_DELAY_MS  milliseconds `config get agents.defaults.model.primary`,
-//     `config get agents.defaults.models` and `models auth list` wait before they answer; each
+//     `config get agents.defaults.models`, `models auth list` and `onboard --help` wait before they answer; each
 //     then adds { argv, startedAt, endedAt } (epoch milliseconds) to $HOME/.fake-openclaw-timing.jsonl,
 //     so a test can tell whether two reads overlapped (unset: no wait, no timing line)
 //   FAKE_OPENCLAW_VANISH_AFTER  an argv prefix such as "gateway status": the first call that
@@ -102,6 +102,7 @@ const runningMarker = path.join(home, ".fake-openclaw-gateway-running");
 if (args.includes("--version")) { print(knob("FAKE_AGENT_VERSION") ?? "openclaw 9.9.9-test"); process.exit(0); }
 
 if (args[0] === "onboard" && args.includes("--help")) {
+  await slowRead();
   print(
     "Usage: openclaw onboard [--non-interactive] [--accept-risk] [--auth-choice CHOICE]\\n" +
     "  --openrouter-api-key KEY --custom-base-url URL\\n" +

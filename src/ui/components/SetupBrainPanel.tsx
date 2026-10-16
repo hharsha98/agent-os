@@ -13,6 +13,7 @@
 // "use an existing key" path keeps the pasted key in the OpenRouter card's
 // state until it is sent once.
 import { useEffect, useId, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { AlertTriangle } from "lucide-react";
 import BrainLocalCard from "./BrainLocalCard";
 import BrainModelActions from "./BrainModelActions";
@@ -54,7 +55,8 @@ export default function SetupBrainPanel({
   continueLabel = "Continue",
   initialAgents,
   showModelActions = true,
-  showPlanCard = true
+  showPlanCard = true,
+  rootRef
 }: {
   brain: BrainOptionsResponse;
   agents: BrainAgentLine[];
@@ -69,6 +71,8 @@ export default function SetupBrainPanel({
   showModelActions?: boolean;
   // OpenClaw's "Your plan" card; off where the parent already shows it (OpenClaw's Brain card on the Agents page).
   showPlanCard?: boolean;
+  // The panel's outer box, for a parent that scrolls it into view (the Agents page, when Change brain opens it).
+  rootRef?: RefObject<HTMLDivElement>;
 }) {
   // "Choose for me" is ALWAYS OpenRouter: a local model with the 64K working
   // memory agents need is a stretch even for a 24 GB computer. Local is always
@@ -240,7 +244,7 @@ export default function SetupBrainPanel({
 
   if (job && job.status === "running") {
     return (
-      <div className="os-brain">
+      <div className="os-brain" ref={rootRef}>
         <SetupInstallPanel
           title="Giving your agents a brain"
           job={job}
@@ -260,14 +264,14 @@ export default function SetupBrainPanel({
 
   if (job) {
     return (
-      <div className="os-brain">
+      <div className="os-brain" ref={rootRef}>
         <BrainResult job={job} agents={agents} onBack={backToChoices} onContinue={onContinue} continueLabel={continueLabel} />
       </div>
     );
   }
 
   return (
-    <div className="os-brain">
+    <div className="os-brain" ref={rootRef}>
       <div className="os-brain-intro">
         <p>{brain.reason}</p>
         <button type="button" className="os-btn os-btn--secondary" onClick={chooseForMe}>

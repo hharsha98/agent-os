@@ -33,6 +33,7 @@ import {
   reconnectDelay,
   restoreScreen,
   sameTheme,
+  snapshotTakesFocus,
   tabLeavesTerminal,
   terminalTheme,
   TERMINAL_FONT_SIZE,
@@ -178,6 +179,8 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
     // The session has ended (an exited state frame, a session_ended close, or the page's `ended`): this
     // window keeps its last screen and never attaches again.
     let sessionEnded = false;
+    // The next snapshot is the first since this terminal was mounted: only that one may take the focus (autoFocus).
+    let firstSnapshot = true;
     // Tries in a row that ended without a screen, since the last snapshot (Q40: at most RECONNECT_ATTEMPTS).
     let attempts = 0;
     let firstTry = true;
@@ -425,6 +428,8 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
         socket = openSessionSocket(sessionId, {
           onSnapshot: async (snapshot) => {
             if (disposed) return;
+            const first = firstSnapshot;
+            firstSnapshot = false;
             attempts = 0;
             // A snapshot is back: the next disconnect tells the person again.
             unsentNotice.reset();
@@ -435,10 +440,22 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
             // the focus takes them back: a background window whose box merely still holds the focus inside its
             // page must not take the writer role from the window the person is typing in. (Asked to take them
             // now, the box's own focus event does it, once this window has the focus; the window's focus event
-            // above covers a window that gets the focus later.)
+            // above covers a window that gets the focus later.) Asked to take them is only for the first
+            // snapshot, and never over an open dialog or off another control of the page.
             if (document.activeElement === t.textarea) {
               if (document.hasFocus()) takeKeys();
-            } else if (latest.current.active !== false && latest.current.autoFocus) t.focus();
+            } else {
+              const holder = document.activeElement;
+              const elsewhere = holder !== null && holder !== document.body && holder !== document.documentElement && !host.contains(holder);
+              const takes = snapshotTakesFocus({
+                firstSnapshot: first,
+                autoFocus: latest.current.autoFocus === true,
+                active: latest.current.active !== false,
+                modalOpen: Boolean(document.querySelector('[aria-modal="true"]')),
+                focusElsewhere: elsewhere
+              });
+              if (takes) t.focus();
+            }
           },
           onOut: (data) => (disposed ? Promise.resolve() : writeParsed(t, data)),
           onState: (state) => {

@@ -416,3 +416,30 @@ test("wiring: the terminal uses the spec's options and words, leaves ⌘T/⌘1-9
   assert.ok(!src.includes(String.fromCharCode(0x2014)), "no em dash in the terminal's words");
   assert.equal(term.TERMINAL_FONT_SIZE, 13);
 });
+
+test("a snapshot takes the keyboard for autoFocus only the first time, never over a dialog or off another control", () => {
+  const take = (over) => term.snapshotTakesFocus({ firstSnapshot: true, autoFocus: true, active: true, modalOpen: false, ...over });
+  assert.equal(take({}), true, "the first snapshot of a terminal the page asked to focus");
+  // A reattach (a later snapshot) must not pull the focus out of a Stop, Resume or quit dialog drawn over the terminal.
+  assert.equal(take({ firstSnapshot: false }), false, "a reattach never takes the keyboard on its own");
+  assert.equal(take({ modalOpen: true }), false, "a dialog is open: Tab and Enter belong to it");
+  assert.equal(take({ focusElsewhere: true }), false, "the person moved to another control of the page");
+  assert.equal(take({ focusElsewhere: false }), true, "the focus is on the page itself, or already on this terminal");
+  assert.equal(take({ autoFocus: false }), false, "the page did not ask");
+  assert.equal(take({ active: false }), false, "a hidden terminal never takes it");
+});
+
+test("SessionTerminal asks snapshotTakesFocus, with the first-snapshot flag, the open dialog and the focused control", () => {
+  const src = readFileSync(new URL("../src/ui/components/SessionTerminal.tsx", import.meta.url), "utf8");
+  for (const needle of [
+    "snapshotTakesFocus({",
+    "let firstSnapshot = true;",
+    "firstSnapshot = false;",
+    "firstSnapshot: first",
+    `document.querySelector('[aria-modal="true"]')`,
+    "focusElsewhere: elsewhere"
+  ]) {
+    assert.ok(src.includes(needle), `SessionTerminal.tsx has ${needle}`);
+  }
+  assert.doesNotMatch(src, /latest\.current\.autoFocus\) t\.focus\(\)/, "no snapshot focuses the terminal without asking snapshotTakesFocus");
+});

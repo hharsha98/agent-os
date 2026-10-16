@@ -193,6 +193,26 @@ export function tabLeavesTerminal(
   return event.key === "Tab" && connection !== "open" && !event.ctrlKey && !event.altKey && !event.metaKey;
 }
 
+// Whether a snapshot may move the keyboard into the terminal because the page asked for it (autoFocus). Only the
+// first snapshot after the terminal is mounted may: a reattach later on must not pull the focus out of a dialog
+// that is open over the terminal (Tab and Enter would then go to the agent), nor off another control of the page
+// the person moved to (`focusElsewhere`: the focus rests on a control that is not this terminal).
+export function snapshotTakesFocus({
+  firstSnapshot,
+  autoFocus,
+  active,
+  modalOpen,
+  focusElsewhere = false
+}: {
+  firstSnapshot: boolean;
+  autoFocus: boolean;
+  active: boolean;
+  modalOpen: boolean;
+  focusElsewhere?: boolean;
+}): boolean {
+  return firstSnapshot && autoFocus && active && !modalOpen && !focusElsewhere;
+}
+
 export interface UnsentNotice {
   // `sent` is what the socket's input() answered. True when the person should be told now: the first input
   // that was not sent since the last snapshot. Input that was sent never starts or ends a round.

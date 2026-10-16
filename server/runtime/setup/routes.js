@@ -3,9 +3,14 @@
 // URL, command, args, path, or script body -- a job only ever takes step
 // ids from a plan this server just computed itself.
 import express from "express";
+import { ADAPTERS } from "../agents/index.js";
 import { authRequired } from "../auth.js";
 import { isDemoPublic } from "../demo-public.js";
+import { requireLocalMode } from "../local-session.js";
 import { getServerPort } from "../server-info.js";
+import { errorBody, sessionError } from "../sessions/errors.js";
+import { getSessionManager } from "../sessions/manager.js";
+import { OPENCLAW_SIGNIN_ACTION } from "../sessions/profiles.js";
 import { systemCheck } from "./system-check.js";
 import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
 import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS } from "./recipes.js";
@@ -20,6 +25,7 @@ import {
   startSetupJob
 } from "./jobs.js";
 import { readReceipt } from "./receipt.js";
+import { OPENCLAW_TOO_OLD_MESSAGE, OPENCLAW_VERSION_UNKNOWN_MESSAGE, openclawVersionInfo } from "./openclaw-version.js";
 import { brainOptions, currentBrain, listFreeOpenRouterModels, localBrainSummary, verifyOpenRouterKey } from "./brain.js";
 import {
   OPENROUTER_BROWSE_URL,
@@ -134,9 +140,28 @@ function mapJobError(error, res, next) {
   next(error);
 }
 
-export function createSetupRouter() {
+// The sessions sentence for a missing agent (profiles.js, Task S3), for OpenClaw.
+const OPENCLAW_MISSING_MESSAGE = "OpenClaw isn't installed, or Agent OS can't find it. Install it in Setup, then try again.";
+
+// A refusal from the sessions engine (sessionError, sessions/errors.js) keeps
+// its own status and every field it carries, as the sessions routes answer it
+// (ruling R4): setup_running's sessionId and setupAction tell the card which
+// sign-in to attach to. Never mapJobError, which keeps only error and message.
+function sendSessionError(error, res, next) {
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599 && typeof error?.code === "string") {
+    res.status(error.status).json(errorBody(error));
+    return;
+  }
+  next(error);
+}
+
+// `sessionManager` is for tests. The server uses the one shared manager
+// (getSessionManager(), the same one server/index.js hands the sessions routes
+// and the WebSocket), looked up when a request needs it.
+export function createSetupRouter({ sessionManager = null } = {}) {
   // caseSensitive: "/check" and "/CHECK" are different addresses.
   const router = express.Router({ caseSensitive: true });
+  const sessions = () => sessionManager ?? getSessionManager();
 
   router.get("/check", async (req, res, next) => {
     try {
@@ -681,6 +706,42 @@ export function createSetupRouter() {
       res.json(await openSignInInTerminal(req.params.agentId));
     } catch (error) {
       mapJobError(error, res, next);
+    }
+  });
+
+  // ---- OpenClaw's ChatGPT sign-in, in a terminal inside Agent OS (plan brains §1, §7) ----
+  // The only routes that start or find a setup session. Nothing from the
+  // request reaches the command: the body carries only { confirm: true }; the
+  // action is fixed here and its argv comes from SETUP_ACTIONS
+  // (sessions/profiles.js). Local mode only, like every sessions route (the
+  // /api/setup mount has no local-mode guard of its own). The card attaches
+  // through the sessions WebSocket and closes it with POST /api/sessions/:id/stop.
+
+  router.post("/openclaw/signin-terminal", requireLocalMode, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      // Never the 30 s detection cache: an update installed a moment ago counts (spec §3).
+      const detected = await ADAPTERS.openclaw.detect({ refresh: true });
+      if (!detected?.installed) throw sessionError(409, "agent_not_installed", OPENCLAW_MISSING_MESSAGE);
+      const version = openclawVersionInfo(detected);
+      if (version.newEnough === null) throw sessionError(409, "openclaw_version_unknown", OPENCLAW_VERSION_UNKNOWN_MESSAGE);
+      if (!version.newEnough) throw sessionError(409, "openclaw_too_old", OPENCLAW_TOO_OLD_MESSAGE);
+      const session = await sessions().createSetupSession({ action: OPENCLAW_SIGNIN_ACTION, detected });
+      res.status(201).json({ session });
+    } catch (error) {
+      sendSessionError(error, res, next);
+    }
+  });
+
+  // The live sign-in, or null, so a card that was closed or reloaded attaches to it again.
+  router.get("/openclaw/signin-terminal", requireLocalMode, async (_req, res, next) => {
+    try {
+      res.json({ session: await sessions().liveSetupSession() });
+    } catch (error) {
+      sendSessionError(error, res, next);
     }
   });
 

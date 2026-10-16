@@ -43,6 +43,19 @@ export const SESSION_AGENT_LABEL = Object.freeze({
 // starts in the person's HOME and the panel says "Set by OpenClaw".
 export const OPENCLAW_FOLDER_HONOURED = false;
 
+// The setup kind (plan-brains spec §1, Safety 2): a sign-in command that needs a
+// real terminal. Each action names one agent and its one fixed argv; nothing
+// from a request reaches it (the route names the action, this table the argv).
+// The only action is OpenClaw's official "Sign in with ChatGPT". Every lookup
+// goes through ownValue (Object.hasOwn), so prototype names are never actions.
+export const OPENCLAW_SIGNIN_ACTION = "openclaw-chatgpt-signin";
+export const SETUP_ACTIONS = Object.freeze({
+  "openclaw-chatgpt-signin": Object.freeze({
+    agentId: "openclaw",
+    args: Object.freeze(["models", "auth", "login", "--provider", "openai", "--method", "siwc"])
+  })
+});
+
 // A crypto.randomUUID() value: Agent OS's session ids and Claude's --session-id.
 const UUID = SESSION_ID_RE;
 const OPENCLAW_KEY = /^agentos-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -137,6 +150,7 @@ async function writeSessionClaudeSettings({ settings, file }) {
 // { command, args, cwd, env, agentSessionId, settingsFile, softStop, resumeMode, folderShown, notes }.
 // `resume` is null for a fresh start, or { agentSessionId } (from meta.json)
 // to continue an ended agent session. `kind: "update"` is `hermes update`.
+// `kind: "setup"` runs the `setupAction` entry of SETUP_ACTIONS in HOME.
 export async function buildSessionProfile({
   agentId,
   folder,
@@ -146,12 +160,18 @@ export async function buildSessionProfile({
   settings,
   detected,
   brain = null,
-  agentOsVersion = RUNTIME_VERSION
+  agentOsVersion = RUNTIME_VERSION,
+  setupAction = null
 } = {}) {
   if (!SESSION_AGENTS.includes(agentId)) throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
   if (!isSessionId(sessionId)) throw sessionError(404, "unknown_session", "That session doesn't exist anymore.");
-  if (kind !== "agent" && kind !== "update") throw sessionError(400, "unknown_kind", "Agent OS can't start that kind of session.");
+  if (kind !== "agent" && kind !== "update" && kind !== "setup") throw sessionError(400, "unknown_kind", "Agent OS can't start that kind of session.");
   if (kind === "update" && agentId !== "hermes") throw sessionError(400, "update_not_available", "Only Hermes is updated in a session.");
+  // A setup session runs exactly one action of SETUP_ACTIONS, for that action's own agent.
+  const setup = kind === "setup" ? ownValue(SETUP_ACTIONS, setupAction) : undefined;
+  if (kind === "setup" && (!setup || setup.agentId !== agentId)) {
+    throw sessionError(400, "unknown_kind", "Agent OS can't start that kind of session.");
+  }
   const label = ownValue(SESSION_AGENT_LABEL, agentId);
 
   const shell = await getLoginShellEnv();
@@ -159,7 +179,12 @@ export async function buildSessionProfile({
 
   let cwd = os.homedir();
   let folderShown = true;
-  if (kind === "agent" && agentId === "openclaw" && !OPENCLAW_FOLDER_HONOURED) {
+  if (kind === "setup") {
+    // The one other exception to the folder policy (plan-brains spec §1): the
+    // sign-in works on the agent's own settings, not on a project folder, so it
+    // runs in HOME (which the policy refuses) and no folder is shown.
+    folderShown = false;
+  } else if (kind === "agent" && agentId === "openclaw" && !OPENCLAW_FOLDER_HONOURED) {
     folderShown = false;
   } else {
     const check = await checkSessionFolder(folder);
@@ -181,7 +206,11 @@ export async function buildSessionProfile({
   let pendingSettings = null;
   let softStop = null;
   let resumeMode = null;
-  if (kind === "update") {
+  if (kind === "setup") {
+    // Exactly the action's argv, as a fresh array. No soft stop (a sign-in has no
+    // last step to finish), no resume and no agent session id.
+    args = [...setup.args];
+  } else if (kind === "update") {
     // Session kinds: exactly `hermes update`, no --yes and no H3 additions.
     args = ["update"];
   } else if (agentId === "claude") {
@@ -224,7 +253,7 @@ export async function buildSessionProfile({
     softStop = "openclaw-abort";
     resumeMode = "id";
   }
-  assertSessionArgvSafe(agentId, args);
+  assertSessionArgvSafe(agentId, args, { kind, setupAction });
   if (pendingSettings) await writeSessionClaudeSettings(pendingSettings);
   return {
     command,
@@ -312,10 +341,20 @@ function isBlockedWord(word, agentId) {
   return containsBlockedFlag(word) || NEVER.includes(name) || NEVER_WORDS.test(word) || (agentId === "hermes" && name === "--tui");
 }
 
+// The setup kind's one shape: exactly the action's argv, item by item, for the
+// action's own agent (undefined, so refused, for anything else).
+function setupShape(agentId, setupAction) {
+  const setup = ownValue(SETUP_ACTIONS, setupAction);
+  if (!setup || setup.agentId !== agentId) return undefined;
+  return (args) => args.length === setup.args.length && args.every((arg, index) => arg === setup.args[index]);
+}
+
 // Throws unless `args` is exactly one of the argv shapes above (spec H3: only
-// additive options) and holds nothing from the blocked lists.
-export function assertSessionArgvSafe(agentId, args) {
-  const shape = ownValue(SHAPES, agentId);
+// additive options) and holds nothing from the blocked lists. For the setup
+// kind (plan-brains Safety 2) the only shape is its action's own argv; every
+// other kind keeps SHAPES, so an agent session can never run a sign-in command.
+export function assertSessionArgvSafe(agentId, args, { kind = "agent", setupAction = null } = {}) {
+  const shape = kind === "setup" ? setupShape(agentId, setupAction) : ownValue(SHAPES, agentId);
   const label = ownValue(SESSION_AGENT_LABEL, agentId) || "this agent";
   const refuse = () =>
     sessionError(500, "unsafe_argv", `Agent OS stopped ${label} from starting: its command line had an option Agent OS never adds.`);

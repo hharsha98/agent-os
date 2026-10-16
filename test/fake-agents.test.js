@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { FAKE_AGENT_NAMES, FAKE_AGENT_SCRIPT, FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
+import { readFakeAgentState, setFakeKnob } from "./helpers/fake-knobs.js";
 
 const require = createRequire(import.meta.url);
 const isWindows = process.platform === "win32";
@@ -476,4 +477,97 @@ test("the stand-in login shell runs the command with the PATH it was given and r
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ---- plan brains (Task B1a): the version knob and OpenClaw's ChatGPT sign-in ----------------------
+
+test("FAKE_AGENT_VERSION sets openclaw's whole --version line, from the environment or else $HOME/.fake-knobs; other names and the default are unchanged", POSIX_ONLY, async () => {
+  await withBin({}, async (bin, dir) => {
+    const version = async (file, extra = {}) => (await runProbe(file, ["--version"], baseEnv(dir, extra))).stdout.trim();
+    assert.equal(await version(bin.paths.openclaw), "openclaw 9.9.9-fake", "unset: today's line, which reads as older than 2026.9.7");
+    for (const text of ["OpenClaw 2026.9.6 (eb377ac)", "OpenClaw 2026.9.7", "OpenClaw 2026.10.1", "OpenClaw unknown"]) {
+      assert.equal(await version(bin.paths.openclaw, { FAKE_AGENT_VERSION: text }), text);
+    }
+    assert.equal(await version(bin.paths.claude, { FAKE_AGENT_VERSION: "OpenClaw 2026.9.7" }), "claude 9.9.9-fake", "only the openclaw name takes it");
+    // The knob file, for callers that hand the fake an allow-listed environment without FAKE_* variables.
+    await setFakeKnob(dir, "FAKE_AGENT_VERSION", "OpenClaw 2026.9.7\n");
+    assert.equal(await version(bin.paths.openclaw), "OpenClaw 2026.9.7", "read from $HOME/.fake-knobs, trimmed");
+    assert.equal(await version(bin.paths.openclaw, { FAKE_AGENT_VERSION: "OpenClaw 2026.10.1" }), "OpenClaw 2026.10.1", "the environment wins");
+    await setFakeKnob(dir, "FAKE_AGENT_VERSION", null);
+    assert.equal(await version(bin.paths.openclaw), "openclaw 9.9.9-fake", "null removes the knob");
+    await assert.rejects(setFakeKnob(dir, "NOT_A_KNOB", "x"), /not a FAKE_\* knob name/);
+  });
+});
+
+test("openclaw's ChatGPT sign-in, chosen by its argv: refuses without a terminal; in one it shows a link and a code, saves a siwc row on Enter, says Signed in. and exits 0; Ctrl+C saves nothing; its start record lists every OPENCLAW_* name; every quick answer of openclaw is logged as a probe record", POSIX_ONLY, async () => {
+  await withBin({}, async (bin, dir) => {
+    const log = path.join(dir, "fake.log");
+    const signIn = ["models", "auth", "login", "--provider", "openai", "--method", "siwc"];
+    const env = baseEnv(dir, { FAKE_AGENT_LOG: log });
+
+    const noTerminal = await runProbe(bin.paths.openclaw, signIn, env);
+    assert.equal(noTerminal.code, 1);
+    assert.equal(noTerminal.stdout.trim(), "This command needs a terminal.");
+    assert.deepEqual((await readFakeAgentState(dir)).authRows, [], "nothing saved without a terminal");
+
+    // Every quick answer of `openclaw` is logged first as a "probe" record (the start record's fields), so the
+    // Safety tests also see the commands detection runs; no other name logs one.
+    await runProbe(bin.paths.openclaw, ["--version"], { ...env, OPENCLAW_PROFILE: "work" });
+    await runProbe(bin.paths.claude, ["--version"], env);
+    const probes = (await readLog(log)).filter((entry) => entry.event === "probe");
+    assert.deepEqual(
+      probes.map((entry) => [entry.name, entry.argv, entry.isTTY]),
+      [
+        ["openclaw", signIn, false],
+        ["openclaw", ["--version"], false]
+      ]
+    );
+    assert.equal(probes[1].env.HOME, dir);
+    assert.equal(probes[1].env.OPENCLAW_PROFILE, "work");
+    assert.deepEqual(probes[1].openclawKeys, ["OPENCLAW_PROFILE"]);
+
+    const session = startInPty(bin.paths.openclaw, signIn, { ...env, OPENCLAW_PROFILE: "work", OPENCLAW_SOMETHING_ELSE: "x" });
+    try {
+      await session.waitFor("Press Enter after you approve in your browser.", "the sign-in's three lines");
+      assert.match(session.output, /Sign in with ChatGPT: https:\/\/auth\.openai\.com\/fake-signin\?state=agentos-test/);
+      assert.match(session.output, /Code: FAKE-1234/);
+      assert.doesNotMatch(session.output, /FAKE_ARGV/, "only the sign-in's own lines are shown");
+      const start = (await readLog(log)).find((entry) => entry.event === "start" && entry.pid === session.term.pid);
+      assert.deepEqual(start.argv, signIn);
+      assert.equal(start.isTTY, true);
+      assert.equal(start.env.HOME, dir);
+      assert.equal(start.env.OPENCLAW_PROFILE, "work", "OpenClaw's state and profile variables are recorded");
+      assert.deepEqual(start.openclawKeys, ["OPENCLAW_PROFILE", "OPENCLAW_SOMETHING_ELSE"], "names only, every OPENCLAW_* one");
+      await session.type("approved\r", "Signed in.");
+      assert.equal((await session.exited).exitCode, 0);
+    } finally {
+      session.stop();
+    }
+    assert.deepEqual((await readFakeAgentState(dir)).authRows, [
+      { provider: "openai", method: "siwc", tokenSharing: true, email: "someone@example.com" }
+    ]);
+
+    const cancelled = startInPty(bin.paths.openclaw, signIn, env);
+    try {
+      await cancelled.waitFor("Press Enter after you approve in your browser.", "the sign-in's lines");
+      cancelled.term.write("\x03");
+      assert.equal((await cancelled.exited).exitCode, 130);
+    } finally {
+      cancelled.stop();
+    }
+    assert.equal((await readFakeAgentState(dir)).authRows.length, 1, "Ctrl+C saves nothing");
+
+    // Any other argv, or another name, is the TUI as before.
+    for (const [file, args] of [
+      [bin.paths.openclaw, ["models", "auth", "login", "--provider", "anthropic"]],
+      [bin.paths.claude, signIn]
+    ]) {
+      const other = startInPty(file, args, env);
+      try {
+        await other.waitFor(/FAKE_ARGV .*\r[\s\S]*> /, `the TUI for ${path.basename(file)} ${args.join(" ")}`);
+      } finally {
+        other.stop();
+      }
+    }
+  });
 });

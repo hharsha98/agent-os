@@ -31,12 +31,14 @@ import { BUILDER_AGENT_IDS, loadBrains, validateAgentBrain } from "./brains.js";
 export const OLLAMA_MIN_VERSION = { claude: "0.14.0", codex: "0.13.4" };
 const OLLAMA_VERSION_TIMEOUT_MS = 3 * 1000;
 
-function parseVersion(text) {
+// Exported for OpenClaw's version gate (plan brains, setup/openclaw-version.js); the body is unchanged.
+export function parseVersion(text) {
   const match = /(\d+)\.(\d+)\.(\d+)/.exec(String(text ?? ""));
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
-function versionAtLeast(have, need) {
+// `have` and `need` are parseVersion() arrays; true when `have` is the same version or newer.
+export function versionAtLeast(have, need) {
   for (let i = 0; i < 3; i += 1) {
     if (have[i] !== need[i]) return have[i] > need[i];
   }

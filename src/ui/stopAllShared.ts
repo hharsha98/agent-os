@@ -365,7 +365,10 @@ export async function stopWhatWasFound(
     sessionsTimedOut: sessions.timedOut,
     sessionsAlreadyEnded: sessions.alreadyEnded,
     sessionsStillRunning: sessions.stillRunning,
-    openClawStopped: sessionList.filter((session, index) => session.agentId === "openclaw" && sessionOutcomes[index] === "ok").length,
+    // A setup session (OpenClaw's ChatGPT sign-in) has no last step to finish, so it never adds the OpenClaw note.
+    openClawStopped: sessionList.filter(
+      (session, index) => session.agentId === "openclaw" && session.kind !== "setup" && sessionOutcomes[index] === "ok"
+    ).length,
     skipped: look.skipped,
     runsChecked: look.runsChecked,
     roomsChecked: look.roomsChecked,
@@ -415,6 +418,8 @@ export function thingsWord(runs: number, rooms: number, sessions = 0): string {
 // "—" means unknown.
 export function sessionStopTitle(session: StoppableSession): string {
   const agent = session.agentLabel || session.agentId || "Agent";
+  // The same first branch as sessionTitle (a test keeps the two equal): a setup session is OpenClaw's ChatGPT sign-in.
+  if (session.kind === "setup") return `${agent} · ChatGPT sign-in`;
   if (session.kind === "update") return `${agent} update`;
   if (session.folderShown === false) return `${agent} · Set by OpenClaw`;
   return `${agent} · ${session.folderName || "—"}`;

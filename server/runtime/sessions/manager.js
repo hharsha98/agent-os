@@ -12,9 +12,12 @@
 //   (write()) and the mirror's replies to terminal queries, which the mirror
 //   sends only while no window is the writer (startProcess()).
 // - An agent session starts or resumes only when Safety allows running agents
-//   (decision Q15). The update kind is not gated.
-// - At most `maxLive` live agent sessions. Update sessions are not counted,
-//   and at most one update session runs at a time.
+//   (decision Q15). The update and setup kinds are not gated.
+// - At most `maxLive` live agent sessions. Update and setup sessions are not
+//   counted; at most one update session and one setup session run at a time.
+// - A setup session (plan-brains spec §1: OpenClaw's ChatGPT sign-in) lives in
+//   memory only: no session folder, no meta.json, no recording. Its input goes
+//   to the PTY unscanned, and its mirror is disposed the moment it ends.
 import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
@@ -29,7 +32,7 @@ import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
 import { createMirror, isUserInput } from "./mirror.js";
-import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, buildSessionProfile } from "./profiles.js";
+import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, SETUP_ACTIONS, buildSessionProfile } from "./profiles.js";
 import { ptyAvailable, spawnPty } from "./pty-host.js";
 import { CAST_FILE, createRecorder, enforceRecordingCap } from "./recorder.js";
 import { readSessionSettings } from "./settings.js";
@@ -79,6 +82,18 @@ const PTY_MESSAGE = "Agent OS could not load its terminal module on this compute
 const UNKNOWN_MESSAGE = "That session doesn't exist anymore.";
 const BUSY_MESSAGE = "This session is already being changed. Try again in a moment.";
 const SAVE_FAILED_MESSAGE = "Agent OS could not save this session, so it was stopped. Check the free disk space, then try again.";
+const UNKNOWN_KIND_MESSAGE = "Agent OS can't start that kind of session.";
+// The answer to a second sign-in start (plan-brains contract, 409 setup_running).
+const SETUP_RUNNING_MESSAGE = "A ChatGPT sign-in is already open in Agent OS.";
+// A setup session never records (plan-brains spec §1, Safety 5). This stands in
+// for its recorder, so the output, resize and exit paths need no special case
+// and nothing is ever written to disk for it.
+const NO_RECORDER = Object.freeze({
+  output() {},
+  marker() {},
+  resize() {},
+  close: async () => {}
+});
 // How long a process that started but could not be saved gets to end on its own
 // before it is killed (the same grace as Stop).
 const FAILED_START_GRACE_MS = 3000;
@@ -258,6 +273,11 @@ export function createSessionManager({
   // Slots held by starts that have not finished yet.
   let reservedAgents = 0;
   let reservedUpdate = false;
+  // The setup session being started right now, as { id, action }. Its id is
+  // made before anything else, so a second start can be told which session to
+  // attach to even while the first is still starting. It is never counted in
+  // reservedAgents, so a sign-in never takes one of the `maxLive` places.
+  let reservedSetup = null;
   // The same starts, by agent and folder (set once the folder is known), so the
   // fallback-resume rule also sees a New session that is still starting there.
   const openStarts = new Set();
@@ -308,6 +328,15 @@ export function createSessionManager({
         else reservedAgents -= 1;
       }
     };
+  }
+
+  // The setup session starting or running now, as { id, action }, or null.
+  function runningSetup() {
+    if (reservedSetup) return reservedSetup;
+    for (const state of live.values()) {
+      if (state.meta.kind === "setup" && state.status !== "exited") return { id: state.meta.id, action: state.setupAction };
+    }
+    return null;
   }
 
   async function requirePty() {
@@ -541,6 +570,15 @@ export function createSessionManager({
     } catch {
       // already disposed
     }
+    if (state.meta.kind === "setup") {
+      // A setup session keeps nothing (plan-brains spec §1, Safety 5): no
+      // recording to close, no meta.json to write and no recording cap to run.
+      // It leaves `live` in the same step as its exit, so GET /api/sessions/:id
+      // answers 404 and the WebSocket refuses a new window at once.
+      live.delete(state.meta.id);
+      state.resolveExited();
+      return;
+    }
     try {
       await state.recorder.close();
     } catch {
@@ -615,8 +653,10 @@ export function createSessionManager({
         `Agent OS could not start ${state.meta.agentLabel}. Check that it is installed, then try again.`
       );
     }
-    // From here to the end of this function nothing awaits.
-    state.recorder = recorderFactory({ dir: state.dir, cols: state.cols, rows: state.rows, append, now });
+    // From here to the end of this function nothing awaits. A setup session
+    // never records (plan-brains spec §1): its recorder factory is never called.
+    state.recorder =
+      state.meta.kind === "setup" ? NO_RECORDER : recorderFactory({ dir: state.dir, cols: state.cols, rows: state.rows, append, now });
     live.set(state.meta.id, state);
     releaseSlot();
     state.offs.push(state.handle.onData((data) => onOutput(state, data)));
@@ -891,6 +931,88 @@ export function createSessionManager({
     return startNew({ kind: "update", agentId, folder });
   }
 
+  // The setup kind (plan-brains spec §1): OpenClaw's ChatGPT sign-in, which
+  // needs a real terminal. Made only by POST /api/setup/openclaw/signin-terminal
+  // (server/runtime/setup/routes.js), never by POST /api/sessions. `action`
+  // names one entry of SETUP_ACTIONS (profiles.js), which holds the only argv.
+  // Not gated by Safety, not counted toward maxLive, one at a time. No folder
+  // policy (it runs in HOME), no brain, no session folder, no meta.json and no
+  // recording: state.dir is null, so nothing can be written for it by mistake.
+  // Answers its SessionSummary, built from memory.
+  async function createSetupSession({ action, detected } = {}) {
+    const setup = typeof action === "string" && Object.hasOwn(SETUP_ACTIONS, action) ? SETUP_ACTIONS[action] : null;
+    if (!setup) throw sessionError(400, "unknown_kind", UNKNOWN_KIND_MESSAGE);
+    // The id first, so a second start is always told which session to attach to.
+    const id = crypto.randomUUID();
+    const running = runningSetup();
+    if (running) {
+      throw sessionError(409, "setup_running", SETUP_RUNNING_MESSAGE, { sessionId: running.id, setupAction: running.action });
+    }
+    reservedSetup = { id, action };
+    const releaseSlot = () => {
+      if (reservedSetup?.id === id) reservedSetup = null;
+    };
+    try {
+      await requirePty();
+      const agentId = setup.agentId;
+      const found = detected === undefined ? await detect(agentId) : detected;
+      const profile = await buildProfile({
+        agentId,
+        folder: null,
+        sessionId: id,
+        kind: "setup",
+        setupAction: action,
+        settings: { claudeFullscreen: false },
+        detected: found
+      });
+      const at = iso(now());
+      const state = newState(null, {
+        version: META_VERSION,
+        id,
+        kind: "setup",
+        agentId,
+        agentLabel: SESSION_AGENT_LABEL[agentId],
+        folder: profile.cwd,
+        folderName: path.basename(profile.cwd),
+        folderShown: false,
+        branch: null,
+        status: "starting",
+        createdAt: at,
+        startedAt: at,
+        endedAt: null,
+        exitCode: null,
+        signal: null,
+        endedBy: null,
+        dismissed: false,
+        brain: null,
+        agentSessionId: null,
+        resumeMode: null,
+        resumes: 0,
+        lastUsedAt: at
+      });
+      state.setupAction = action;
+      // startProcess puts the session into `live` and frees the reservation in one step.
+      await startProcess(state, profile, { append: false, releaseSlot });
+      const view = viewOfState(state);
+      return toSummary(view, [view], new Map());
+    } finally {
+      releaseSlot();
+    }
+  }
+
+  // The live setup session's SessionSummary, or null (none, or one still
+  // before its spawn). GET /api/setup/openclaw/signin-terminal answers it, so a
+  // card that was closed or reloaded finds the sign-in again.
+  async function liveSetupSession() {
+    for (const state of live.values()) {
+      if (state.meta.kind === "setup" && state.status !== "exited") {
+        const view = viewOfState(state);
+        return toSummary(view, [view], new Map());
+      }
+    }
+    return null;
+  }
+
   // True while the session's process runs. A session whose process has just
   // ended may still be closing its recording and writing meta.json; it counts
   // as ended, and callers wait for that to finish (finishedExit) instead of
@@ -1088,7 +1210,9 @@ export function createSessionManager({
     if (typeof data !== "string" || data.length === 0) return false;
     if (Buffer.byteLength(data, "utf8") > MAX_INPUT_BYTES) return false;
     found.state.handle.write(data);
-    if (isUserInput(data)) markActive(found.state);
+    // A setup session's input is a byte pipe (plan-brains spec §1): it may hold a
+    // sign-in code, so it is never scanned; its activity comes from output only.
+    if (found.state.meta.kind !== "setup" && isUserInput(data)) markActive(found.state);
     return true;
   }
 
@@ -1130,8 +1254,9 @@ export function createSessionManager({
   // ---- quit check and recovery ------------------------------------------------------------------------
 
   async function quitCheck() {
+    // A setup session is never in the quit question (plan-brains spec §1); quitting still stops it.
     const running = [...live.values()]
-      .filter((state) => state.status !== "exited")
+      .filter((state) => state.status !== "exited" && state.meta.kind !== "setup")
       .map((state) => state.meta)
       .sort(byCreated);
     // The kind lets the quit question leave out "you can resume them later"
@@ -1275,6 +1400,9 @@ export function createSessionManager({
       await Promise.all(
         running.map((state) => {
           if (!state.endedBy) state.endedBy = endedBy;
+          // A setup session keeps nothing on disk (plan-brains spec §1): there is
+          // no meta.json to write. It is still stopped below, inside the guard.
+          if (state.meta.kind === "setup") return Promise.resolve();
           state.meta.status = "exited";
           state.meta.endedAt = endedAt;
           state.meta.endedBy = state.endedBy;
@@ -1295,6 +1423,8 @@ export function createSessionManager({
   return {
     create,
     createUpdateSession,
+    createSetupSession,
+    liveSetupSession,
     list,
     get,
     attach,

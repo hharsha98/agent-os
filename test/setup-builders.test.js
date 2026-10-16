@@ -10,10 +10,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
-import fs, { promises as fsp } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
-import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +37,8 @@ import {
 } from "../server/runtime/setup/signin.js";
 import { clearSystemCheckCache, systemCheck } from "../server/runtime/setup/system-check.js";
 import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
+// The file-access spy lives with the other plan-brains Safety checks (Task B1a); it is the same code.
+import { FORBIDDEN_PATH, spyOnFileAccess } from "./helpers/plan-brains-safety.js";
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -935,37 +935,6 @@ test("openSignInInTerminal(): macOS writes a .command file holding ONLY the logi
 // =====================================================================
 // 7. No credential file is ever opened
 // =====================================================================
-
-const FORBIDDEN_PATH = /(^|[\\/])(\.claude|\.codex|\.cursor|\.hermes|\.openclaw)([\\/]|$)|auth\.json|(^|[\\/])\.env($|\.)/;
-
-// Records the first argument (the path) of the file-system calls these modules
-// could use to look at a file, then puts everything back.
-function spyOnFileAccess(seen) {
-  const undo = [];
-  const wrap = (target, name) => {
-    const original = target[name];
-    if (typeof original !== "function") return;
-    target[name] = function spied(...args) {
-      const first = args[0];
-      if (typeof first === "string" || first instanceof URL || Buffer.isBuffer(first)) seen.push(String(first));
-      return original.apply(this, args);
-    };
-    undo.push(() => {
-      target[name] = original;
-    });
-  };
-  for (const name of ["readFile", "open", "access", "stat", "lstat", "readdir", "opendir", "realpath", "readlink", "copyFile", "cp", "writeFile", "mkdir", "rm"]) {
-    wrap(fsp, name);
-  }
-  for (const name of ["readFileSync", "openSync", "existsSync", "statSync", "lstatSync", "readdirSync", "accessSync", "createReadStream"]) {
-    wrap(fs, name);
-  }
-  syncBuiltinESMExports();
-  return () => {
-    undo.forEach((restore) => restore());
-    syncBuiltinESMExports();
-  };
-}
 
 test("no credential file is ever opened: status, sign-in, Terminal fallback and detection never touch ~/.claude, ~/.codex, ~/.cursor or auth.json", posixSkip, async () => {
   await withTempEnv(async ({ home }) => {

@@ -35,6 +35,12 @@ test("a session's title is '<agent> · <folder>'; OpenClaw's folder reads 'Set b
   assert.equal(ss.sessionTitle(session({ agentLabel: "", agentId: "" })), "Agent · my-app", "no label and no id: Agent");
   assert.equal(ss.sessionTitle(session({ kind: "update", agentLabel: "", agentId: "hermes" })), "hermes update");
   assert.equal(ss.sessionTitle(session({ agentLabel: "", agentId: "openclaw", folderShown: false })), "openclaw · Set by OpenClaw");
+  // A setup session (plan brains): OpenClaw's ChatGPT sign-in in a brain card, never a folder.
+  assert.equal(
+    ss.sessionTitle(session({ kind: "setup", agentId: "openclaw", agentLabel: "OpenClaw", folderShown: false, folderName: "you" })),
+    "OpenClaw · ChatGPT sign-in"
+  );
+  assert.equal(ss.sessionTitle(session({ kind: "setup", agentId: "openclaw", agentLabel: "" })), "openclaw · ChatGPT sign-in");
 });
 
 test("Stop all names a session with the same words as the Sessions page (S10's sessionStopTitle)", () => {
@@ -49,7 +55,10 @@ test("Stop all names a session with the same words as the Sessions page (S10's s
     session({ agentLabel: "" }),
     session({ agentLabel: "", agentId: "" }),
     session({ kind: "update", agentId: "hermes", agentLabel: "" }),
-    session({ agentLabel: "", agentId: "openclaw", folderShown: false })
+    session({ agentLabel: "", agentId: "openclaw", folderShown: false }),
+    // A setup session (OpenClaw's ChatGPT sign-in, plan brains): the same title in both copies.
+    session({ kind: "setup", agentId: "openclaw", agentLabel: "OpenClaw", folderShown: false, folderName: "you" }),
+    session({ kind: "setup", agentId: "openclaw", agentLabel: "" })
   ]) {
     assert.equal(stopAll.sessionStopTitle(s), ss.sessionTitle(s), `${s.kind} "${s.agentLabel}" ${s.agentId} ${s.folderShown} "${s.folderName}"`);
   }

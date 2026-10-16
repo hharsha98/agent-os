@@ -15,6 +15,7 @@ import { clearDetectCaches } from "../server/runtime/agents/detect.js";
 import { setExecutionGateStatus } from "../server/runtime/execution-gate.js";
 import { requireLocalMode } from "../server/runtime/local-session.js";
 import { createSessionManager } from "../server/runtime/sessions/manager.js";
+import { OPENCLAW_SIGNIN_ACTION } from "../server/runtime/sessions/profiles.js";
 import { createSessionsRouter } from "../server/runtime/sessions/routes.js";
 import { resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
@@ -1317,6 +1318,116 @@ test(
                 { timeoutMs: 5000 }
               ).catch(() => {});
             }
+            server.closeAllConnections?.();
+            await new Promise((resolve) => server.close(resolve));
+            resetLoginShellEnvForTests();
+            clearDetectCaches();
+          }
+        }
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await rm(agentOsHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }
+);
+
+// ---- plan brains (Task B1a): a setup session (OpenClaw's ChatGPT sign-in) ---------------------------
+
+test("a setup session (OpenClaw's ChatGPT sign-in) is stopped like any session, never adds the OpenClaw note, and is named 'OpenClaw · ChatGPT sign-in'", async () => {
+  const signIn = { ...session("su", { kind: "setup", agentId: "openclaw" }), folderName: "you" };
+  assert.equal(stop.sessionStopTitle(signIn), "OpenClaw · ChatGPT sign-in");
+  const { deps: d, calls } = deps({ listSessions: async () => ({ sessions: [signIn] }) });
+  const result = await stop.stopEverythingWith(d);
+  assert.deepEqual(calls.stopSession, ["su"]);
+  assert.equal(result.sessionsStopped, 1);
+  assert.equal(result.openClawStopped, 0, "a sign-in has no last step to finish");
+  assert.deepEqual(stop.stopAllMessage(result), { message: "Stopped 1 session.", tone: "ok" });
+  // Next to an OpenClaw agent session, the note is said for that one only.
+  const { deps: both } = deps({ listSessions: async () => ({ sessions: [signIn, session("oc", { agentId: "openclaw" })] }) });
+  const mixed = await stop.stopEverythingWith(both);
+  assert.equal(mixed.openClawStopped, 1);
+  assert.deepEqual(stop.stopAllMessage(mixed), { message: "Stopped 2 sessions. OpenClaw may still be finishing its last step.", tone: "ok" });
+});
+
+test(
+  "end to end: Hold to stop all stops a real setup session (OpenClaw's ChatGPT sign-in) through its Stop, without the OpenClaw note; the palette's look names it 'OpenClaw · ChatGPT sign-in'",
+  { skip: isWindows ? "the fake agents are POSIX shims (the sessions engine's own tests cover Windows)" : false },
+  async () => {
+    const home = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-stopall-setup-home-")));
+    const agentOsHome = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-stopall-setup-data-")));
+    const bin = path.join(home, "fake-bin");
+    const logFile = path.join(home, "fake.log");
+    try {
+      await makeFakeAgentBin(bin);
+      await withEnv(
+        {
+          HOME: home,
+          USERPROFILE: home,
+          AGENT_OS_HOME: agentOsHome,
+          HERMES_AGENT_OS_HOME: undefined,
+          AGENT_OS_MANAGED_ROOT: path.join(home, ".agent-os"),
+          SHELL: FAKE_LOGIN_SHELL,
+          PATH: [bin, ...SYSTEM_PATH_DIRS].join(path.delimiter),
+          HERMES_AGENT_OS_EXECUTABLE_PATHS: undefined,
+          FAKE_AGENT_LOG: logFile,
+          FAKE_AGENT_MODE: undefined,
+          HERMES_HOME: undefined,
+          HERMES_AGENT_OS_ENABLE_EXEC: undefined,
+          DEMO_PUBLIC: undefined,
+          HERMES_AGENT_OS_DEMO_PUBLIC: undefined,
+          HERMES_AGENT_OS_PUBLIC_MODE: undefined,
+          HERMES_AGENT_OS_REQUIRE_AUTH: undefined
+        },
+        async () => {
+          assert.equal(os.homedir(), home, "tests must never see the real home folder");
+          clearDetectCaches();
+          resetLoginShellEnvForTests();
+          const manager = createSessionManager();
+          const app = express();
+          app.use(express.json());
+          app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager }));
+          app.use((error, _req, res, _next) => res.status(500).json({ error: error.message }));
+          const server = await new Promise((resolve) => {
+            const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
+          });
+          const base = `http://127.0.0.1:${server.address().port}`;
+          try {
+            // Made the way POST /api/setup/openclaw/signin-terminal makes it (that route is tested in
+            // test/setup-session-kind.test.js); the manager finds the fake openclaw itself.
+            const signIn = await manager.createSetupSession({ action: OPENCLAW_SIGNIN_ACTION });
+            assert.equal(signIn.kind, "setup");
+            await waitFor(async () => (await readFakeLog(logFile)).some((entry) => entry.event === "start" && entry.name === "openclaw"));
+            const answers = stop.withSessionAnswers({
+              listRuns: async () => ({ runs: [] }),
+              stopRun: async () => ({}),
+              listRooms: async () => ({ rooms: [] }),
+              stopRoom: async () => ({}),
+              // The same addresses as realStopAllDeps in src/ui/stopAll.ts.
+              listSessions: () => httpJson(`${base}/api/sessions?kind=all&live=1`),
+              stopSession: (id) => httpJson(`${base}/api/sessions/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" }),
+              isAgentWork: work.isAgentWork
+            });
+            // The palette's look: its dialog lists the sign-in by this title.
+            const look = await stop.lookForStoppable(answers);
+            assert.deepEqual(look.sessions.map((item) => stop.sessionStopTitle(item)), ["OpenClaw · ChatGPT sign-in"]);
+
+            const result = await stop.stopEverythingWith(answers);
+            assert.equal(result.sessions, 1);
+            assert.equal(result.sessionsStopped, 1);
+            assert.equal(result.sessionsFailed + result.sessionsTimedOut + result.sessionsAlreadyEnded + result.sessionsStillRunning, 0);
+            assert.equal(result.openClawStopped, 0, "a sign-in has no last step to finish");
+            assert.deepEqual(stop.stopAllMessage(result), { message: "Stopped 1 session.", tone: "ok" });
+            assert.equal(manager.isLive(signIn.id), false);
+            await assert.rejects(manager.get(signIn.id), (error) => error.status === 404 && error.code === "unknown_session");
+
+            const entries = await readFakeLog(logFile);
+            const started = entries.find((entry) => entry.event === "start" && entry.name === "openclaw");
+            assert.deepEqual(started.argv, ["models", "auth", "login", "--provider", "openai", "--method", "siwc"]);
+            assert.ok(entries.some((entry) => entry.event === "sigterm" && entry.pid === started.pid), "its Stop ended it with SIGTERM");
+            assert.deepEqual(entries.filter((entry) => entry.event === "gateway"), [], "no Gateway or service command");
+          } finally {
+            await manager.shutdownAll({ reason: "quit" });
             server.closeAllConnections?.();
             await new Promise((resolve) => server.close(resolve));
             resetLoginShellEnvForTests();

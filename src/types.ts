@@ -2687,7 +2687,10 @@ export interface TeamProposalDecisionResult {
 // contract). Frames are read defensively by src/ui/sessionsShared.ts (parseServerFrame).
 // ---------------------------------------------------------------------------
 
-export type SessionKind = "agent" | "update";
+// "setup": OpenClaw's ChatGPT sign-in in a brain card (plan-brains spec §1). The server lists it only with
+// ?kind=all and leaves it out of the quit check, so the Sessions page, Home, the menu's count and the quit
+// question never see one; Hold to stop all does.
+export type SessionKind = "agent" | "update" | "setup";
 
 // "waiting" and "held" are never produced in SP3; they arrive with SP4's signals.
 export type SessionStatus = "starting" | "live" | "waiting" | "idle" | "held" | "exited";

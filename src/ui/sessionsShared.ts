@@ -23,6 +23,8 @@ import type { StatusState } from "./components/StatusWord";
 // name falls back to its id, then to "Agent" (the same rule as Stop all's sessionStopTitle, which a test keeps equal).
 export function sessionTitle(s: Pick<SessionSummary, "kind" | "agentId" | "agentLabel" | "folderName" | "folderShown">): string {
   const agent = s.agentLabel || s.agentId || "Agent";
+  // A setup session (plan brains §1) is OpenClaw's ChatGPT sign-in in a brain card: "OpenClaw · ChatGPT sign-in".
+  if (s.kind === "setup") return `${agent} · ChatGPT sign-in`;
   if (s.kind === "update") return `${agent} update`;
   if (s.folderShown === false) return `${agent} · Set by OpenClaw`;
   return `${agent} · ${s.folderName || "—"}`;

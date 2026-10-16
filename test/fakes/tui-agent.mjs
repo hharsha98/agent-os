@@ -42,8 +42,28 @@
 //                                        process's AGENT_OS_SESSION_ID (the quit test knows
 //                                        the id only after the session starts)
 //   FAKE_CLAUDE_AGENTS_JSON              what `claude agents --json` prints (default "[]")
+//   FAKE_AGENT_VERSION                   openclaw only: the whole line `--version` prints, verbatim
+//                                        (unset: "openclaw 9.9.9-fake", which reads as older than 2026.9.7)
+//
+// Knobs (plan brains): FAKE_AGENT_VERSION is read from the environment, else from the trimmed
+// text of $HOME/.fake-knobs/FAKE_AGENT_VERSION (test/helpers/fake-knobs.js writes it), because
+// some callers hand an agent only an allow-listed environment that drops FAKE_* variables.
+//
+// OpenClaw's ChatGPT sign-in (plan brains, Task B1a): `openclaw models auth login --provider
+// openai --method siwc`, chosen by its argv (no mode), needs a terminal: without one it prints
+// "This command needs a terminal." and exits 1. In one it logs its start record and prints a
+// sign-in link, a code and "Press Enter after you approve in your browser.", echoes typing, and
+// on Enter adds a Sign in with ChatGPT row to authRows in $HOME/.fake-agent-state.json, prints
+// "Signed in." and exits 0. Ctrl+C exits 130 and saves nothing. Every start record names the
+// OPENCLAW_* variables the fake was given (openclawKeys), for the Safety 4 tests.
+//
+// Probe records (plan brains): under the name openclaw, every quick answer (--version, --help,
+// the status questions, the sign-in's no-terminal refusal) is logged first as { event: "probe",
+// ... } with the fields of a start record, so the Safety 3 and 4 tests also see the argv and the
+// environment of the commands agent detection runs. Other names log nothing for a quick answer.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 const name = process.env.FAKE_AGENT_NAME || "";
 const mode = process.env.FAKE_AGENT_MODE || "tui";
@@ -80,7 +100,22 @@ function log(entry) {
   }
 }
 
+// The knob rule (plan brains): the environment first, else $HOME/.fake-knobs/<name>, trimmed.
+function knob(knobName) {
+  if (process.env[knobName] !== undefined) return process.env[knobName];
+  if (!process.env.HOME) return undefined;
+  try {
+    return readFileSync(path.join(process.env.HOME, ".fake-knobs", knobName), "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+// A quick answer, then exit. Under the name `openclaw` it is logged first as a "probe" record
+// with the fields of a "start" record (plan brains, Safety 3 and 4): agent detection runs
+// `--version`, `agent exec --help` and `agent --help`, which never reach a terminal.
 function answer(text, code = 0) {
+  if (name === "openclaw") log({ event: "probe", ...argvRecord() });
   process.stdout.write(`${text}\n`, () => process.exit(code));
   return true;
 }
@@ -116,6 +151,11 @@ const SHOWN_ENV = [
   "CODEX_HOME",
   "XDG_CONFIG_HOME",
   "HERMES_HOME",
+  "OPENCLAW_STATE_DIR",
+  "OPENCLAW_PROFILE",
+  "OPENCLAW_CONFIG_PATH",
+  "OPENCLAW_HOME",
+  "OPENCLAW_AGENT_DIR",
   "FAKE_AGENT_MODE"
 ];
 
@@ -133,6 +173,8 @@ function argvRecord() {
     isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     env,
     agentOsKeys: keys.filter((key) => key.startsWith("AGENT_OS_") || key.startsWith("HERMES_AGENT_OS_")),
+    // Names only: every OPENCLAW_* variable this program was given (plan brains, Safety 4).
+    openclawKeys: keys.filter((key) => key.startsWith("OPENCLAW_")),
     secretKeys: keys.filter((key) => SECRET_KEY.test(key))
   };
 }
@@ -142,7 +184,11 @@ function argvRecord() {
 // Returns true when it handled the command line.
 function oneShot() {
   const joined = args.join(" ");
-  if (args.includes("--version") || joined === "-v") return answer(`${name} 9.9.9-fake`);
+  if (args.includes("--version") || joined === "-v") {
+    // Only `openclaw` takes FAKE_AGENT_VERSION (plan brains: its ChatGPT sign-in needs 2026.9.7 or newer).
+    const version = name === "openclaw" ? knob("FAKE_AGENT_VERSION") : undefined;
+    return answer(version || `${name} 9.9.9-fake`);
+  }
   if (args.includes("--help") || joined === "-h") {
     return answer(`Usage: ${name} [options]\n  --help     Show help\n  --version  Show version`);
   }
@@ -419,6 +465,65 @@ function onTerm() {
   process.kill(process.pid, "SIGTERM");
 }
 
+// --- OpenClaw's ChatGPT sign-in (plan brains) -------------------------------------------------------
+
+const SIGNIN_ARGV = ["models", "auth", "login", "--provider", "openai", "--method", "siwc"];
+const STATE_FILE = ".fake-agent-state.json";
+
+function isSignIn() {
+  return name === "openclaw" && args.length === SIGNIN_ARGV.length && args.every((arg, index) => arg === SIGNIN_ARGV[index]);
+}
+
+// $HOME/.fake-agent-state.json: { primary, models, authRows } (test/helpers/fake-knobs.js reads it).
+function readState() {
+  let value = null;
+  try {
+    value = JSON.parse(readFileSync(path.join(process.env.HOME || "", STATE_FILE), "utf8"));
+  } catch {
+    value = null;
+  }
+  const state = { primary: null, models: null, authRows: [], ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}) };
+  if (!Array.isArray(state.authRows)) state.authRows = [];
+  return state;
+}
+
+function signInProgram() {
+  if (!(process.stdin.isTTY && process.stdout.isTTY)) {
+    answer("This command needs a terminal.", 1);
+    return;
+  }
+  process.on("SIGTERM", onTerm);
+  setTimeout(() => process.exit(0), MAX_LIFETIME_MS).unref();
+  process.stdin.setRawMode(true);
+  process.stdin.setEncoding("utf8");
+  log({ event: "start", ...argvRecord() });
+  line("Sign in with ChatGPT: https://auth.openai.com/fake-signin?state=agentos-test");
+  line("Code: FAKE-1234");
+  line("Press Enter after you approve in your browser.");
+  let finished = false;
+  process.stdin.on("data", (chunk) => {
+    for (const ch of chunk) {
+      if (finished) return;
+      if (ch === "\x03") {
+        finished = true;
+        out("^C\r\n");
+        process.exit(130);
+      }
+      if (ch === "\r" || ch === "\n") {
+        finished = true;
+        const state = readState();
+        state.authRows.push({ provider: "openai", method: "siwc", tokenSharing: true, email: "someone@example.com" });
+        writeFileSync(path.join(process.env.HOME || "", STATE_FILE), `${JSON.stringify(state, null, 2)}\n`);
+        process.stdout.write("\r\nSigned in.\r\n", () => process.exit(0));
+        return;
+      }
+      if (ch >= " ") out(ch); // echoes what is typed, as a terminal program does
+    }
+  });
+  process.stdin.on("end", () => process.exit(0));
+  process.stdin.on("error", () => process.exit(0));
+}
+
 function startTui() {
   process.on("SIGTERM", onTerm);
   // No SIGHUP handler on purpose: when the terminal closes (for example the
@@ -441,4 +546,5 @@ function startTui() {
   process.stdin.on("error", () => process.exit(0));
 }
 
-if (!oneShot()) startTui();
+if (isSignIn()) signInProgram();
+else if (!oneShot()) startTui();

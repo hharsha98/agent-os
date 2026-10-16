@@ -56,6 +56,9 @@ function runProbe(file, args, env, timeout = 5000) {
 // to prove it does not exit, then stops it. A fixed 800 ms window failed on a
 // loaded Mac, where a fake needs 400 to 1100 ms from spawn to its first log line.
 async function runUntilLogged(file, args, env, log, name, event = "run") {
+  // Earlier calls in the same test may already have logged this event: wait for one more than that.
+  const isIt = (entry) => entry.event === event && entry.name === name;
+  const before = (await readLog(log)).filter(isIt).length;
   let child;
   const finished = new Promise((resolve) => {
     child = execFile(file, args, { env, timeout: 30000 }, (error, stdout) => {
@@ -65,7 +68,7 @@ async function runUntilLogged(file, args, env, log, name, event = "run") {
   child.stdin?.end();
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    if ((await readLog(log)).some((entry) => entry.event === event && entry.name === name)) break;
+    if ((await readLog(log)).filter(isIt).length > before) break;
     await delay(50);
   }
   await delay(200);

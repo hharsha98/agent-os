@@ -3,17 +3,18 @@
 // service and Its own dashboard (Hermes and OpenClaw only) and Configuration. It fetches the one
 // agent's detail (config + safety + service) itself, independent of the rail's list-level fetch.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { ExternalLink, Plus, RefreshCw, SquareTerminal } from "lucide-react";
 import { getAgentDetail } from "../../api";
 import { navigateTo } from "../../nav";
 import type { BuilderBrains } from "../../buildersApi";
-import type { AgentDetail, AgentSummary } from "../../types";
+import type { AgentDetail, AgentSummary, SessionSummary } from "../../types";
 import Banner from "./Banner";
 import StatusWord from "./StatusWord";
 import { AGENT_LABEL, AGENT_MAKER, AGENT_ROLE, SERVICE_AGENT_SET, SETUP_CAN_INSTALL_AGENT_SET, SETUP_INSTALLED_AGENT_SET, friendlyError } from "../agentsShared";
 import { installState } from "../agentsPageShared";
 import { isBuilderId } from "../builderShared";
 import { AGENT_DETAIL_LIMIT_MS, withTimeout } from "../homeShared";
+import { openNewSession } from "../newSession";
 import { useInterval } from "./useInterval";
 import AgentBrainCard from "./AgentBrainCard";
 import BuilderBrainCard from "./BuilderBrainCard";
@@ -39,7 +40,9 @@ export default function AgentBay({
   onRetryAgents,
   brains = null,
   brainsFailed = false,
-  onBrainsChanged
+  onBrainsChanged,
+  session = null,
+  sessionsAvailable = true
 }: {
   agentId: string;
   agent: AgentSummary | undefined;
@@ -50,6 +53,10 @@ export default function AgentBay({
   brains?: BuilderBrains | null;
   brainsFailed?: boolean;
   onBrainsChanged?: () => void | Promise<void>;
+  // The newest open session of this agent (Sessions, SP3): the header then offers "Open session".
+  session?: SessionSummary | null;
+  // false where sessions do not run (the public demo, a shared server): no session button at all.
+  sessionsAvailable?: boolean;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [detailError, setDetailError] = useState("");
@@ -149,7 +156,21 @@ export default function AgentBay({
           <p className="os-agent-head__who">{AGENT_MAKER[agentId] || "—"} · {operator ? "Operator" : "Builder"}</p>
           <p className="os-agent-head__about">{AGENT_ROLE[agentId]}</p>
         </div>
-        {/* "Open session" / "New session" arrive with Sessions in SP3. */}
+        {session ? (
+          <div className="os-agent-head__actions">
+            <button type="button" className="os-btn os-btn--secondary" onClick={() => navigateTo("sessions", { session: session.id })}>
+              <SquareTerminal size={17} aria-hidden="true" />
+              Open session
+            </button>
+          </div>
+        ) : sessionsAvailable && found !== "missing" ? (
+          <div className="os-agent-head__actions">
+            <button type="button" className="os-btn os-btn--secondary" onClick={() => openNewSession({ agentId })}>
+              <Plus size={17} aria-hidden="true" />
+              New session
+            </button>
+          </div>
+        ) : null}
       </header>
 
       {detailError ? (
@@ -284,6 +305,18 @@ export default function AgentBay({
           </section>
         </div>
       ) : null}
+
+      {/* H8: said once, for every agent, installed or not (decision copy). */}
+      <div className="os-agt-secs">
+        <section className="os-panel os-agent-works" aria-labelledby="os-agent-works-title">
+          <h3 id="os-agent-works-title">What works here</h3>
+          <p className="os-agent-works__body">
+            Agent OS runs each agent&apos;s own terminal program, with your login, settings, plugins, skills, MCP servers and hooks. Features that live
+            only in a vendor&apos;s desktop app or editor, such as the Claude desktop app, the Codex app or the Cursor editor, are not part of a terminal, so
+            they are not here.
+          </p>
+        </section>
+      </div>
     </section>
   );
 }

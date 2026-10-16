@@ -470,7 +470,11 @@ export default function SafetyPage() {
           busy={enableBusy}
           error={enableError}
         >
-          <p>Agents you start will run for real, each started in a folder inside the Workspace (OpenClaw's Gateway uses its own). Every run shows its command and folder on the Runs page.</p>
+          <p>
+            Agents you start will run for real. Runs start in a folder inside the Workspace (OpenClaw's Gateway uses its own); sessions start in a folder you
+            pick inside your home folder (OpenClaw picks its own for now). Every run shows its command and folder on the Runs page, and every session is
+            recorded in Runs.
+          </p>
         </SetupModal>
       ) : null}
 

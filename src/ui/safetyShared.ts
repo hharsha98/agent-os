@@ -5,6 +5,10 @@
 // Every sentence here describes what Agent OS does TODAY (decision P26), and was
 // checked against the server:
 //   - the folder rule is resolveRunCwd in server/runtime/agents/routes.js;
+//   - the session folder rule is checkSessionFolder in server/runtime/sessions/folders.js (a folder inside HOME,
+//     never HOME itself or Agent OS's own folders); OpenClaw's terminal starts in HOME until spike S5 (profiles.js);
+//   - Look only refuses a new or resumed agent session (sessions/manager.js, decision Q15) and stops none that is
+//     already open;
 //   - the flag rule is run-manager.js (blockedFlagError) and agent-flags.js;
 //   - the gate is read when an agent run starts, before every Team Room turn and before Setup's (and the Agents
 //     page's) hello check; it kills nothing already going, so a run keeps going until it ends or is stopped.
@@ -19,10 +23,14 @@ import type { AgentDetail, MachineControlStatus } from "../setupApi";
 export const ARM_PHRASE = "ENABLE MACHINE CONTROL";
 
 export const LEVELS: Record<number, { label: string; blurb: string }> = {
-  0: { label: "Look only", blurb: "Agents are found and past runs shown. Agent OS starts no new agent run or Team Room." },
+  0: { label: "Look only", blurb: "Agents are found and past runs shown. Agent OS starts no new agent run, session or Team Room." },
   // The second sentence is the New run dialog's own (RISKY_STEP_HINT, owner ruling C3-3):
   // the two pages must say the same thing about a step a level does not allow.
-  1: { label: "Run agents", blurb: "Runs start in a folder inside the Workspace (OpenClaw's Gateway uses its own). Anything this safety level does not allow is refused, not run." },
+  1: {
+    label: "Run agents",
+    blurb:
+      "Runs start in a folder inside the Workspace (OpenClaw's Gateway uses its own). Sessions start in a folder you pick inside your home folder (OpenClaw picks its own for now). Anything this safety level does not allow is refused, not run."
+  },
   2: { label: "Machine control", blurb: "Agent OS can also see the screen and use the mouse and keyboard on this Mac. Off until you turn it on." }
 };
 
@@ -30,13 +38,14 @@ export const LEVEL_DETAIL: Record<number, { can: string; asks: string; cannot: s
   0: {
     can: "See which agents are installed and look at past runs.",
     asks:
-      "Nothing, because no new agent run or Team Room can start. A Team Room that is already going stops before its next turn. Setup and the Agents page skip their hello check, but Setup's own install, sign-in, service and config steps still run when you press them. A run that is already going keeps going until it ends or you stop it.",
-    cannot: "Start a new agent run or Team Room, or use machine control."
+      "Nothing, because no new agent run, session or Team Room can start. A Team Room that is already going stops before its next turn. Setup and the Agents page skip their hello check, but Setup's own install, sign-in, service and config steps still run when you press them. A run that is already going keeps going until it ends or you stop it. A session that is already open keeps running until you stop it.",
+    cannot: "Start a new agent run, session or Team Room, or use machine control."
   },
   1: {
-    can: "Run the agents you choose, each one started in a folder inside the Workspace (OpenClaw's Gateway uses its own folder).",
+    can: "Run the agents you choose: a run starts in a folder inside the Workspace (OpenClaw's Gateway uses its own folder), and a session, the agent's own terminal, starts in a folder you pick inside your home folder (OpenClaw picks its own for now), where the agent asks its own permissions as in Terminal.",
     asks: "You choose what runs and where. Anything this safety level does not allow is refused, not run.",
-    cannot: "Use machine control, which needs Level 2, or start a run in a folder outside the Workspace."
+    cannot:
+      "Use machine control, which needs Level 2, start a run in a folder outside the Workspace, or start a session outside your home folder or in Agent OS's own folders."
   },
   2: {
     can: "Everything in Level 1, plus Agent OS can see the screen and use the mouse and keyboard in other apps. macOS only.",

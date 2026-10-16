@@ -3,15 +3,26 @@
 // Every request has a time limit, so nothing loads for ever (Review Focus 5).
 // After a good load, a failed refresh keeps the last good data (marked stale) and
 // Home says it can't reach Agent OS; it never wipes what it already knows.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listAgents, listRuns } from "../api";
 import type { BuilderBrains } from "../buildersApi";
 import { getAgentModel } from "../setupApi";
-import type { AgentSummary, RunMeta } from "../types";
+import type { AgentSummary, RunMeta, SessionSummary } from "../types";
 import { friendlyError } from "./agentsShared";
 import { useBuilderBrains } from "./components/useBuilderBrains";
 import { useInterval } from "./components/useInterval";
-import { agentsPollMs, failedLoad, HOME_RUNS_LIMIT, loaded, MODEL_READ_LIMIT_MS, withTimeout, type ModelLookup, type Source } from "./homeShared";
+import {
+  agentsPollMs,
+  failedLoad,
+  HOME_RUNS_LIMIT,
+  loaded,
+  MODEL_READ_LIMIT_MS,
+  sessionsSource,
+  withTimeout,
+  type ModelLookup,
+  type Source
+} from "./homeShared";
+import { useSessionsList } from "./useSessionsList";
 
 const RUNS_TIMEOUT_MS = 8000;
 // /api/agents (and the model lookups) wait on the agents' own help checks. The
@@ -30,6 +41,10 @@ export interface HomeData {
   // last read failed or timed out; Home retries it on its poll.
   brains: BuilderBrains | null;
   brainsFailed: boolean;
+  // The shared sessions list (useSessionsList, decision Q30): open and ended agent sessions.
+  sessions: Source<SessionSummary[]>;
+  // false where sessions do not run (the public demo, a shared server): Home then offers no New session.
+  sessionsAvailable: boolean;
   now: number;
 }
 
@@ -86,5 +101,8 @@ export function useHomeData(): HomeData {
   }, 5000);
   useInterval(() => void loadAgents(), agentsPollMs(agents));
 
-  return { agents, runs, models, brains, brainsFailed, now };
+  const sessionsList = useSessionsList();
+  const sessions = useMemo(() => sessionsSource(sessionsList.source, sessionsList.available), [sessionsList.source, sessionsList.available]);
+
+  return { agents, runs, models, brains, brainsFailed, sessions, sessionsAvailable: sessionsList.available, now };
 }

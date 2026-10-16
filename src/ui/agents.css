@@ -68,6 +68,12 @@
 .os-agent-head h2 { margin: 0; font-size: var(--os-fs-26); font-stretch: 87.5%; letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .os-agent-head__who { margin: var(--os-sp-1) 0 0; font-size: var(--os-fs-14); color: var(--os-text-2); }
 .os-agent-head__about { margin: var(--os-sp-2) 0 0; font-size: var(--os-fs-14); color: var(--os-text-1); max-width: 60ch; }
+/* The head: the name on the left, Open session or New session on the right (SP3, the prototype's agt-head). */
+.os-agent-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: var(--os-sp-4) var(--os-sp-6); }
+.os-agent-head > div:first-child { flex: 1 1 320px; min-width: 0; }
+.os-agent-head__actions { flex: none; display: flex; gap: var(--os-sp-3); padding-top: var(--os-sp-1); }
+/* What works here (H8): the same hairline row as the sections above it. */
+.os-agent-works__body { margin: 0; max-width: 70ch; color: var(--os-text-2); line-height: 1.5; }
 
 .os-agent-version { padding: var(--os-sp-4) var(--os-sp-5); background: var(--os-surface-1); border: 1px solid var(--os-line-1); border-radius: var(--os-r-md); }
 .os-agent-version h3 { margin: 0 0 var(--os-sp-2); font-size: var(--os-fs-15); }

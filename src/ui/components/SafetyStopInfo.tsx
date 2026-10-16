@@ -1,4 +1,5 @@
 import { OctagonX } from "lucide-react";
+import { navigateTo } from "../../nav";
 
 // What the red "Hold to stop all" button does and does not stop (design spec D11, decision D-D2-6,
 // planning decision Q16). The facts are src/ui/stopAllShared.ts (it stops every session of both kinds and
@@ -31,6 +32,17 @@ export default function SafetyStopInfo() {
           </p>
           <p className="os-saf-stop__not">
             It does not stop the Hermes background service or the OpenClaw Gateway, and it leaves Agent OS&apos;s own setup jobs running. Each service has its own Stop on Agents. A Claude Code background task moved with /bg may keep running if Agent OS can&apos;t find it, and OpenClaw may still finish its last step after the terminal closes.
+          </p>
+          <p className="os-saf-stop__more">
+            <a
+              href="?page=help"
+              onClick={(event) => {
+                event.preventDefault();
+                navigateTo("help");
+              }}
+            >
+              How stopping works
+            </a>
           </p>
         </div>
         <div className="os-saf-frames" aria-hidden="true">

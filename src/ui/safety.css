@@ -93,6 +93,8 @@
 .os-saf-stop__steps { margin: var(--os-sp-3) 0; padding-left: var(--os-sp-5); color: var(--os-text-2); line-height: 1.5; }
 .os-saf-stop__keys { margin: 0 0 var(--os-sp-3); max-width: 52ch; color: var(--os-text-2); font-size: var(--os-fs-13); }
 .os-saf-stop__not { margin: 0; padding: var(--os-sp-3) var(--os-sp-4); background: var(--os-surface-1); border-radius: var(--os-r-sm); color: var(--os-text-2); font-size: var(--os-fs-13); }
+.os-saf-stop__more { margin: var(--os-sp-3) 0 0; font-size: var(--os-fs-13); }
+.os-saf-stop__more a { color: var(--os-accent-strong); }
 .os-saf-frames { display: flex; flex-direction: column; gap: var(--os-sp-3); }
 .os-saf-frame { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: var(--os-sp-3); align-items: center; }
 .os-saf-frame__btn {

@@ -2,7 +2,7 @@
 // the recent activity rows and today's spend. `import type` only (decision P14):
 // the logic test loads this file straight from src/ and Node strips the types.
 import type { AgentModelInfo } from "../setupApi";
-import type { AgentSummary, RunMeta } from "../types";
+import type { AgentSummary, RunMeta, SessionSummary } from "../types";
 import type { StatusState } from "./components/StatusWord";
 
 export const HOME_AGENTS = [
@@ -101,11 +101,48 @@ export function lastRunsByAgent(runs: RunMeta[]): Partial<Record<HomeAgentId, Ru
   return out;
 }
 
-// A line lights only while that agent works. "waiting" (amber) arrives with SP4.
-export function orbitStates(runs: RunMeta[]): OrbitStates {
+// A line lights only while that agent works: a live agent run, or a session whose state is live (spec: Home Orbit is
+// lit only while live; starting, idle, held and exited stay dim). An update session never shows on Home. "waiting"
+// (amber) arrives with SP4.
+export function orbitStates(runs: RunMeta[], sessions: SessionSummary[] = []): OrbitStates {
   const out: OrbitStates = {};
   for (const id of Object.keys(liveRunsByAgent(runs)) as HomeAgentId[]) out[id] = "live";
+  for (const session of sessions) {
+    if (session.kind !== "update" && session.status === "live" && isHomeAgent(session.agentId)) out[session.agentId] = "live";
+  }
   return out;
+}
+
+// Open agent sessions: every one that has not ended. (Update sessions are never counted on Home, spec Session kinds.)
+export function openSessions(sessions: SessionSummary[]): SessionSummary[] {
+  return sessions.filter((session) => session.kind !== "update" && session.status !== "exited");
+}
+
+// Each agent's newest open session.
+export function openSessionByAgent(sessions: SessionSummary[]): Partial<Record<string, SessionSummary>> {
+  const out: Partial<Record<string, SessionSummary>> = {};
+  for (const session of openSessions(sessions)) {
+    const before = out[session.agentId];
+    if (!before || Date.parse(session.startedAt) > Date.parse(before.startedAt)) out[session.agentId] = session;
+  }
+  return out;
+}
+
+// Home's view of the shared sessions list (useSessionsList): only the sessions, as a Source. Where sessions do not
+// run (the public demo, a shared server) there are none, which is true, not unknown.
+export function sessionsSource(source: Source<{ sessions: SessionSummary[] }>, available: boolean): Source<SessionSummary[]> {
+  if (!available) return loaded([]);
+  if (source.state !== "ok") return source;
+  const list = Array.isArray(source.data?.sessions) ? source.data.sessions : [];
+  return source.stale ? { state: "ok", data: list, stale: true } : { state: "ok", data: list };
+}
+
+// Whether the lede may say "Nothing is running right now.": the runs list and the sessions list have both loaded
+// (`workKnown`) AND no agent session is open. A starting or idle session does not light the Orbit, but it is open
+// (the menu says "1 running", the agent's row says Session in ...), so then the lede says only how many agents are
+// installed. The result is the lede's `runsKnown`.
+export function nothingRunningKnown(workKnown: boolean, sessions: SessionSummary[]): boolean {
+  return workKnown && openSessions(sessions).length === 0;
 }
 
 function namesOf(states: OrbitStates): string[] {
@@ -147,9 +184,13 @@ export function agentLine(input: {
   agents: "loading" | "ok" | "error";
   // The runs list: until it has loaded, Home can't say what an agent is doing.
   runs: "loading" | "ok" | "error";
+  // The shared sessions list (SP3). Left out, it counts as loaded with no session for this agent.
+  sessions?: "loading" | "ok" | "error";
   summary?: AgentSummary;
   live?: RunMeta;
   last?: RunMeta;
+  // This agent's newest open session (openSessionByAgent).
+  session?: SessionSummary;
   now: number;
 }): AgentLine {
   if (input.agents === "loading") return { state: "loading", where: "" };
@@ -163,6 +204,17 @@ export function agentLine(input: {
     const task = [input.live.task?.line, input.live.title].map((text) => (text || "").trim()).find(Boolean) ?? "";
     const elapsed = elapsedLabel(input.live.startedAt || input.live.createdAt, input.now);
     return { state: "live", where: [elapsed === "—" ? "" : elapsed, task].filter(Boolean).join(" · ") };
+  }
+  // Until the sessions list is known, "Nothing running" could be false.
+  const sessions = input.sessions ?? "ok";
+  if (sessions === "loading") return { state: "loading", where: "" };
+  if (sessions === "error") return { state: "unknown", where: "Can't tell if it's working" };
+  if (input.session) {
+    const where = input.session.folderShown === false ? "Session open" : `Session in ${input.session.folderName}`;
+    if (input.session.status === "live") return { state: "live", where };
+    // Ruling R26 (decision Q18): Starting is the idle icon with the word "Starting", never "working".
+    if (input.session.status === "starting") return { state: "idle", label: "Starting", where };
+    return { state: "idle", where };
   }
   const last = input.last;
   if (last && last.limit && !last.continuedBy && !ACTIVE.has(last.status)) return { state: "held", where: "Plan limit reached" };

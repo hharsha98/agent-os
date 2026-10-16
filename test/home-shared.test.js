@@ -233,3 +233,97 @@ test("the read limits sit above what the server itself may take, so Retry can su
   assert.ok(home.AGENT_DETAIL_LIMIT_MS >= 5_000 + 30_000 + 3_000, "agent detail");
   assert.ok(home.MODEL_READ_LIMIT_MS >= 2 * 10_000 + 5_000, "model read");
 });
+
+// SP3 (Task U4): sessions count on Home too. The shared sessions list holds agent sessions; an update session
+// (Agent OS updating an agent) is never shown on Home.
+const sess = (over = {}) => ({
+  id: over.id || "11111111-1111-4111-8111-111111111111", kind: "agent", agentId: "claude", agentLabel: "Claude Code",
+  folder: "/Users/you/projects/my-app", folderName: "my-app", folderShown: true, branch: null, status: "live",
+  stateSince: iso(60_000), startedAt: iso(60_000), endedAt: null, exitCode: null, signal: null, endedBy: null, dismissed: false,
+  brain: null, resume: { available: false, reason: null, fallback: false }, alerts: "basic", recordingBytes: 0, ...over
+});
+
+test("sessions: only a live session lights its agent's line; starting, idle and ended stay dim", () => {
+  const sessions = [
+    sess({ id: "a", agentId: "codex", status: "live" }),
+    sess({ id: "b", agentId: "hermes", status: "idle" }),
+    sess({ id: "c", agentId: "cursor", status: "starting" }),
+    sess({ id: "d", agentId: "openclaw", status: "exited" }),
+    sess({ id: "e", agentId: "claude", kind: "update", status: "live" })
+  ];
+  assert.deepEqual(home.orbitStates([], sessions), { codex: "live" });
+  assert.deepEqual(home.orbitStates([run({ status: "running", endedAt: null })], sessions), { claude: "live", codex: "live" });
+  assert.deepEqual(home.orbitStates([run({ status: "running", endedAt: null })]), { claude: "live" }, "runs alone still work");
+});
+
+test("sessions: the open ones are counted, and each agent's newest one is found", () => {
+  const sessions = [
+    sess({ id: "old", agentId: "claude", startedAt: iso(600_000) }),
+    sess({ id: "new", agentId: "claude", status: "idle", startedAt: iso(60_000) }),
+    sess({ id: "end", agentId: "codex", status: "exited" }),
+    sess({ id: "upd", agentId: "hermes", kind: "update" })
+  ];
+  assert.deepEqual(home.openSessions(sessions).map((s) => s.id), ["old", "new"]);
+  assert.equal(home.openSessionByAgent(sessions).claude.id, "new");
+  assert.equal(home.openSessionByAgent(sessions).codex, undefined);
+  assert.equal(home.openSessionByAgent(sessions).hermes, undefined);
+});
+
+test("each agent's line with a session: live, starting, idle; an unknown sessions list never says Nothing running", () => {
+  const a = agent("claude");
+  assert.deepEqual(home.agentLine({ agents: "ok", runs: "ok", summary: a, session: sess(), now: NOW }), { state: "live", where: "Session in my-app" });
+  // Ruling R26: Starting is the idle icon with the word "Starting" (it never claims "working").
+  assert.deepEqual(home.agentLine({ agents: "ok", runs: "ok", summary: a, session: sess({ status: "starting" }), now: NOW }), { state: "idle", label: "Starting", where: "Session in my-app" });
+  assert.deepEqual(home.agentLine({ agents: "ok", runs: "ok", summary: a, session: sess({ status: "idle" }), now: NOW }), { state: "idle", where: "Session in my-app" });
+  assert.deepEqual(
+    home.agentLine({ agents: "ok", runs: "ok", summary: agent("openclaw"), session: sess({ agentId: "openclaw", folderShown: false }), now: NOW }),
+    { state: "live", where: "Session open" }
+  );
+  assert.deepEqual(home.agentLine({ agents: "ok", runs: "ok", sessions: "loading", summary: a, now: NOW }), { state: "loading", where: "" });
+  assert.deepEqual(home.agentLine({ agents: "ok", runs: "ok", sessions: "error", summary: a, now: NOW }), { state: "unknown", where: "Can't tell if it's working" });
+  const live = run({ status: "running", startedAt: iso(125_000), endedAt: null, task: { line: "Fix the login page" } });
+  assert.equal(home.agentLine({ agents: "ok", runs: "ok", summary: a, live, session: sess(), now: NOW }).where, "2 m · Fix the login page", "a live run comes first");
+});
+
+test("Home's view of the shared sessions list: the sessions as a Source; where sessions don't run, there are none", () => {
+  const body = { sessions: [sess()], environmentNotice: null, pty: { ok: true, reason: null }, maxLive: 8 };
+  assert.deepEqual(home.sessionsSource({ state: "ok", data: body }, true), { state: "ok", data: [sess()] });
+  assert.deepEqual(home.sessionsSource({ state: "ok", data: body, stale: true }, true), { state: "ok", data: [sess()], stale: true });
+  assert.deepEqual(home.sessionsSource({ state: "loading" }, true), { state: "loading" });
+  assert.deepEqual(home.sessionsSource({ state: "error", message: "x" }, true), { state: "error", message: "x" });
+  assert.deepEqual(home.sessionsSource({ state: "error", message: "x" }, false), { state: "ok", data: [] }, "not available: none, which is true");
+});
+
+// SP3 (Task U4, fix round 1): an idle or starting session lights no line, but it is open. The lede must not say
+// "Nothing is running right now." next to the menu's "1 running" and the agent row's "Session in ...".
+test("the lede never says Nothing is running while an agent session is open (starting, idle or live)", () => {
+  const five = ["hermes", "openclaw", "claude", "codex", "cursor"].map((id) => agent(id));
+  const lede = (sessions, workKnown = true) =>
+    home.homeLede({
+      agents: { state: "ok", data: five },
+      states: home.orbitStates([], sessions),
+      runsKnown: home.nothingRunningKnown(workKnown, sessions)
+    });
+  for (const status of ["starting", "idle"]) {
+    const sessions = [sess({ status })];
+    assert.deepEqual(home.orbitStates([], sessions), {}, `a ${status} session lights no line`);
+    assert.equal(home.nothingRunningKnown(true, sessions), false, `a ${status} session is open, so quiet is not known`);
+    assert.equal(lede(sessions), "All five are installed.", `${status}: only the install count, no new sentence`);
+    assert.doesNotMatch(lede(sessions), /Nothing is running/);
+  }
+  assert.equal(lede([sess({ status: "live" })]), "Claude Code is working.", "a live session still names who is working");
+  assert.doesNotMatch(lede([sess({ id: "a", status: "idle" }), sess({ id: "b", agentId: "codex", status: "starting" })]), /Nothing is running/);
+  // What the lede said before this fix: the work was known and nothing lit, so it claimed quiet.
+  assert.equal(
+    home.homeLede({ agents: { state: "ok", data: five }, states: home.orbitStates([], [sess({ status: "idle" })]), runsKnown: true }),
+    "All five are installed. Nothing is running right now."
+  );
+  // Nothing open still says it: no session, only ended sessions, only an update session.
+  const quiet = "All five are installed. Nothing is running right now.";
+  assert.equal(lede([]), quiet);
+  assert.equal(lede([sess({ status: "exited" })]), quiet, "an ended session is not open");
+  assert.equal(lede([sess({ kind: "update", status: "live" })]), quiet, "an update session never counts on Home");
+  // And nothing is claimed until both lists have loaded.
+  assert.equal(home.nothingRunningKnown(false, []), false);
+  assert.equal(lede([], false), "All five are installed.");
+});

@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent } from "react";
 import { navigateTo } from "../../nav";
 import { describeBrain, isBuilderId, PLAN_OF } from "../builderShared";
-import { agentLine, HOME_AGENTS, lastRunsByAgent, liveRunsByAgent, operatorBrain, type HomeAgentId } from "../homeShared";
+import { agentLine, HOME_AGENTS, lastRunsByAgent, liveRunsByAgent, openSessionByAgent, operatorBrain, type HomeAgentId } from "../homeShared";
 import type { HomeData } from "../useHomeData";
 import StatusWord from "./StatusWord";
 import { useOnboarding } from "./useOnboarding";
@@ -55,6 +55,7 @@ export default function HomeAgentTable({ data }: { data: HomeData }) {
   const runs = data.runs.state === "ok" ? data.runs.data : [];
   const live = liveRunsByAgent(runs);
   const last = lastRunsByAgent(runs);
+  const openByAgent = openSessionByAgent(data.sessions.state === "ok" ? data.sessions.data : []);
   const open = (event: MouseEvent, id: string) => {
     event.preventDefault();
     navigateTo("agents", { agent: id });
@@ -67,7 +68,16 @@ export default function HomeAgentTable({ data }: { data: HomeData }) {
       </div>
       {HOME_AGENTS.filter((a) => a.role === role).map((a) => {
         const summary = list.find((x) => x.id === a.id);
-        const line = agentLine({ agents: data.agents.state, runs: data.runs.state, summary, live: live[a.id], last: last[a.id], now: data.now });
+        const line = agentLine({
+          agents: data.agents.state,
+          runs: data.runs.state,
+          sessions: data.sessions.state,
+          summary,
+          live: live[a.id],
+          last: last[a.id],
+          session: openByAgent[a.id],
+          now: data.now
+        });
         return (
           <a key={a.id} className="os-table__row os-home-agent" role="row" href={`?page=agents&agent=${a.id}`} onClick={(e) => open(e, a.id)}>
             <div className="os-table__cell" role="cell">

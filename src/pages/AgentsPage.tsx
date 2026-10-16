@@ -15,7 +15,8 @@ import Banner from "../ui/components/Banner";
 import PageHeader from "../ui/components/PageHeader";
 import { useBuilderBrains } from "../ui/components/useBuilderBrains";
 import { useInterval } from "../ui/components/useInterval";
-import { HOME_RUNS_LIMIT, withTimeout } from "../ui/homeShared";
+import { HOME_RUNS_LIMIT, openSessionByAgent, withTimeout } from "../ui/homeShared";
+import { useSessionsList } from "../ui/useSessionsList";
 import "../ui/agents.css";
 
 const AGENTS_WATCHDOG_MS = 15000;
@@ -128,6 +129,9 @@ export default function AgentsPage() {
   }
 
   const selectedAgent = agents ? agents.find((a) => a.id === effectiveId) : undefined;
+  // The shared sessions list (decision Q30): the selected agent's newest open session, for "Open session".
+  const sessionsList = useSessionsList();
+  const openByAgent = openSessionByAgent(sessionsList.source.state === "ok" ? sessionsList.source.data.sessions : []);
 
   return (
     <section className="os-agents" aria-labelledby="os-agents-title">
@@ -167,6 +171,8 @@ export default function AgentsPage() {
           brains={brains}
           brainsFailed={brainsFailed}
           onBrainsChanged={reloadBrains}
+          session={openByAgent[effectiveId] ?? null}
+          sessionsAvailable={sessionsList.available}
         />
       </div>
     </section>

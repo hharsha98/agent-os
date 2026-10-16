@@ -8,6 +8,7 @@ import BrainPage from "./pages/BrainPage";
 import ChatPage from "./pages/ChatPage";
 import AgentsPage from "./pages/AgentsPage";
 import FleetPage from "./pages/FleetPage";
+import HelpPage from "./pages/HelpPage";
 import SessionsPage from "./pages/SessionsPage";
 import RunsPage from "./pages/RunsPage";
 import SafetyPage from "./pages/SafetyPage";
@@ -48,6 +49,7 @@ type ShellPage =
   | "team"
   | "setup"
   | "safety"
+  | "help"
   | "mission"
   | "home"
   | "layers"
@@ -78,6 +80,7 @@ const ALL_PAGES = new Set<ShellPage>([
   "team",
   "setup",
   "safety",
+  "help",
   "mission",
   "home",
   "layers",
@@ -270,6 +273,8 @@ export default function DashboardRoot() {
         <SetupPage />
       ) : page === "safety" ? (
         <SafetyPage />
+      ) : page === "help" ? (
+        <HelpPage />
       ) : page === "mission" ? (
         <MissionControlPage />
       ) : demoPublic && (page === "builder" || page === "home") ? (

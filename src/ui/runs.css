@@ -727,3 +727,55 @@
   gap: var(--os-sp-3);
   margin-top: var(--os-sp-4);
 }
+
+/* --- Session recordings (Task U4) ----------------------------------------------- */
+.os-runs-rec__wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-4);
+}
+.os-runs-rec {
+  --os-table-cols: minmax(0, 1fr) 120px 112px 96px 232px;
+}
+.os-runs-rec .os-table__row {
+  min-height: 64px;
+}
+/* The row "Open recording" asked for: a selection, drawn as a wash with a hairline (one accent). */
+.os-runs-rec__row.is-highlighted {
+  background: var(--os-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--os-accent-line);
+}
+.os-runs-rec__acts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--os-sp-1);
+  text-align: right;
+}
+.os-shell .os-runs-rec__acts .os-btn {
+  min-height: 30px;
+}
+.os-runs-rec__note {
+  font-size: var(--os-fs-12);
+  line-height: 1.35;
+  color: var(--os-text-2);
+}
+.os-runs-rec__sofar {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+.os-runs-rec__status {
+  margin: 0;
+  padding: var(--os-sp-3) 0;
+}
+@media (max-width: 1100px) {
+  .os-runs-rec {
+    --os-table-cols: minmax(0, 1fr) 110px 200px;
+  }
+  .os-runs-rec .os-runs-rec__len,
+  .os-runs-rec .os-runs-rec__when {
+    display: none;
+  }
+}

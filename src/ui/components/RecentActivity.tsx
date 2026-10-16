@@ -3,7 +3,7 @@ import { Activity } from "lucide-react";
 import { navigateTo } from "../../nav";
 import { AGENT_LABEL } from "../agentsShared";
 import { costLabel, durationLabel } from "../fleetShared";
-import { activityRuns, noRunsYet, spendToday } from "../homeShared";
+import { activityRuns, noRunsYet, openSessions, spendToday } from "../homeShared";
 import { stateOf, taskText } from "../runsBoard";
 import type { HomeData } from "../useHomeData";
 import EmptyState from "./EmptyState";
@@ -15,6 +15,8 @@ const COLS = { "--os-table-cols": "150px minmax(0, 1fr) 124px 80px 60px 84px" } 
 export default function RecentActivity({ data }: { data: HomeData }) {
   const runs = data.runs.state === "ok" ? data.runs.data : null;
   const rows = runs ? activityRuns(runs, 8) : [];
+  // The prototype's "Open sessions n" (hidden in SP2, decision D-C2-6): "…" while loading, "—" when unknown.
+  const openCount = data.sessions.state === "ok" ? openSessions(data.sessions.data).length : data.sessions.state === "loading" ? "…" : "—";
   const go = (event: MouseEvent, page: string, extra: Record<string, string> = {}) => {
     event.preventDefault();
     navigateTo(page, extra);
@@ -24,6 +26,12 @@ export default function RecentActivity({ data }: { data: HomeData }) {
       <div className="os-home-activity__head">
         <h2 id="os-home-activity-title">Recent activity</h2>
         <p className="os-home-activity__quiet">
+          {data.sessionsAvailable ? (
+            <>
+              Open sessions <span className="os-mono">{openCount}</span>
+              <span className="os-home-activity__bar" aria-hidden="true" />
+            </>
+          ) : null}
           Spend today <span className="os-mono">{runs ? spendToday(runs, data.now) : "—"}</span> (only Claude Code and OpenClaw report cost)
           <span className="os-home-activity__bar" aria-hidden="true" />
           <a href="?page=runs" onClick={(e) => go(e, "runs")}>All runs</a>

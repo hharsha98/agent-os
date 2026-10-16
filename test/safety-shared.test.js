@@ -65,7 +65,7 @@ test("no level word promises what the server does not do", () => {
   // ...but it starts nothing (owner decision, 2026-10-14): a Team Room already going stops before its next
   // turn, and Setup and the Agents page skip their hello check (the "reply ready" test). The old words said
   // both still ran; they must not come back.
-  assert.match(safety.LEVEL_DETAIL[0].asks, /^Nothing, because no new agent run or Team Room can start\./);
+  assert.match(safety.LEVEL_DETAIL[0].asks, /^Nothing, because no new agent run, session or Team Room can start\./);
   assert.match(safety.LEVEL_DETAIL[0].asks, /Team Room that is already going stops before its next turn/);
   assert.match(safety.LEVEL_DETAIL[0].asks, /Setup and the Agents page skip their hello check/);
   assert.doesNotMatch(safety.LEVEL_DETAIL[0].asks, /brain check|still runs|run or Team Room that is already going keeps going/);
@@ -74,7 +74,7 @@ test("no level word promises what the server does not do", () => {
   assert.match(safety.LEVEL_DETAIL[0].asks, /Setup's own install, sign-in, service and config steps still run when you press them/);
   assert.doesNotMatch(safety.LEVEL_DETAIL[0].asks, /nothing new can start/);
   // The blurb on the card and the cell in the table say the same thing about what starts.
-  assert.match(safety.LEVELS[0].blurb, /starts no new agent run or Team Room/);
+  assert.match(safety.LEVELS[0].blurb, /starts no new agent run, session or Team Room/);
   assert.doesNotMatch(safety.LEVELS[0].blurb, /nothing can start|nothing new/i);
   for (const text of [safety.LEVELS[0].blurb, safety.LEVEL_DETAIL[0].cannot]) {
     assert.doesNotMatch(text, /No agent can start|Start an agent run or a Team Room/, text);
@@ -85,6 +85,28 @@ test("no level word promises what the server does not do", () => {
   assert.match(safety.LEVEL_DETAIL[2].asks, /shell command/i);
   assert.doesNotMatch(safety.LEVEL_DETAIL[2].can, /shell/i, "shell commands are off by default, so they are not a promise");
   assert.doesNotMatch(safety.LEVEL_DETAIL[1].cannot, /system settings|reach folders/i, "only what Agent OS enforces");
+});
+
+// SP3 (Task U4; the Safety words test of Review Focus 5, rulings R23 and R28): sessions start outside the Workspace,
+// in a folder the person picks inside their home folder (server/runtime/sessions/folders.js), and Look only refuses a
+// new or resumed session while an open one keeps running (manager.js, decision Q15). OpenClaw's terminal starts in the
+// home folder itself until spike S5.
+test("SP3: the level words say where sessions start, and that Look only starts none but stops none either", () => {
+  assert.equal(safety.LEVELS[0].blurb, "Agents are found and past runs shown. Agent OS starts no new agent run, session or Team Room.");
+  assert.match(safety.LEVEL_DETAIL[0].asks, / A session that is already open keeps running until you stop it\.$/);
+  assert.equal(safety.LEVEL_DETAIL[0].cannot, "Start a new agent run, session or Team Room, or use machine control.");
+  assert.equal(
+    safety.LEVELS[1].blurb,
+    `Runs start in a folder inside the Workspace (OpenClaw's Gateway uses its own). Sessions start in a folder you pick inside your home folder (OpenClaw picks its own for now). ${RISKY_STEP_HINT}`
+  );
+  assert.equal(
+    safety.LEVEL_DETAIL[1].can,
+    "Run the agents you choose: a run starts in a folder inside the Workspace (OpenClaw's Gateway uses its own folder), and a session, the agent's own terminal, starts in a folder you pick inside your home folder (OpenClaw picks its own for now), where the agent asks its own permissions as in Terminal."
+  );
+  assert.equal(
+    safety.LEVEL_DETAIL[1].cannot,
+    "Use machine control, which needs Level 2, start a run in a folder outside the Workspace, or start a session outside your home folder or in Agent OS's own folders."
+  );
 });
 
 test("the Updater safeguard names only the agents Setup really updates (Hermes has no update step)", () => {

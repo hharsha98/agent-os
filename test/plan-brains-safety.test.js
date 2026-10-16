@@ -323,3 +323,108 @@ test("Safety 1, 3 and 4: OpenClaw's ChatGPT sign-in, started and stopped through
     await rm(agentOsHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+// ===========================================================================
+// Task B1b: plan status, both model lists and both Applies (Safety 1, 3 and 4).
+// An ES module may import anywhere at its top level; every name this block
+// brings in or declares starts with "plan", so it never meets a name of the
+// part above (B1b's Step 0 checks that). node:test comes in as a namespace, so
+// the file keeps exactly one line that imports test by name from node:test
+// (Task B1c's Step 0 counts such lines). The one name of the part above used
+// here is NEW_SERVER_MODULES: B1b's modules join B1a's source scan (its Safety
+// 3 test).
+// ===========================================================================
+import planAssert from "node:assert/strict";
+import planPath from "node:path";
+import * as planNodeTest from "node:test";
+import * as planSafety from "./helpers/plan-brains-safety.js";
+import {
+  agentEnvLog as planAgentEnvLog,
+  openclawRecord as planOpenclawRecord,
+  siwcRow as planSiwcRow,
+  waitForPlanJob as planWaitForJob,
+  withPlanEnv as planWithEnv
+} from "./helpers/openclaw-plan-env.js";
+
+const planTest = planNodeTest.test;
+const planPosixSkip = { skip: process.platform === "win32" ? "the fake agents are POSIX shell shims" : false };
+const planModules = ["server/runtime/setup/openclaw-plan-rules.js", "server/runtime/setup/openclaw-plans.js"];
+
+// B1a's Safety 3 test runs the source scan over every module in this list.
+NEW_SERVER_MODULES.push(...planModules);
+
+// One run of every B1b flow, shared by the three checks below: plan status,
+// both model lists, a Claude plan Apply without the risk tick (refused) and one
+// with it, the model answer, a ChatGPT plan Apply stopped at readiness (the
+// earlier model put back) and one that succeeds, and plan status again (its
+// readiness read). The file-access spy is on for all of it.
+let planFlowsRun = null;
+function planFlows() {
+  planFlowsRun ??= planRunFlows();
+  return planFlowsRun;
+}
+
+async function planRunFlows() {
+  let result = null;
+  await planWithEnv(
+    async ({ call, home, knob }) => {
+      const seen = [];
+      const restore = planSafety.spyOnFileAccess(seen);
+      try {
+        planAssert.equal((await call("GET", "/api/setup/openclaw/plans")).status, 200);
+        planAssert.equal((await call("GET", "/api/setup/openclaw/plan-models?plan=claude")).status, 200);
+        planAssert.equal((await call("GET", "/api/setup/openclaw/plan-models?plan=chatgpt")).status, 200);
+        const planApply = (plan, model, acceptOpenClawRisk) =>
+          call("POST", "/api/setup/openclaw/plan", { plan, model, confirm: true, acceptOpenClawRisk });
+        planAssert.equal((await planApply("claude", "claude-opus-5-5", false)).status, 400, "no risk tick: refused, nothing runs");
+        const claude = await planApply("claude", "claude-opus-5-5", true);
+        planAssert.equal((await planWaitForJob(claude.body.id)).status, "succeeded");
+        planAssert.equal((await call("GET", "/api/setup/agents/openclaw/model")).body.plan, "claude");
+        await knob("FAKE_OPENCLAW_STATUS_EXIT", "1");
+        const stopped = await planApply("chatgpt", "gpt-6.1-sol", true);
+        planAssert.equal((await planWaitForJob(stopped.body.id)).status, "failed");
+        await knob("FAKE_OPENCLAW_STATUS_EXIT", "0");
+        const chatgpt = await planApply("chatgpt", "gpt-6.1-sol", true);
+        planAssert.equal((await planWaitForJob(chatgpt.body.id)).status, "succeeded");
+        planAssert.equal((await call("GET", "/api/setup/openclaw/plans")).body.chatgpt.readiness, "ready");
+      } finally {
+        restore();
+      }
+      result = { home, seen, openclaw: await planOpenclawRecord(home), agents: await planAgentEnvLog(home) };
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [planSiwcRow()] } }
+  );
+  return result;
+}
+
+planTest("B1b, Safety 1: plan status, both model lists and both Applies never open an agent's files", planPosixSkip, async () => {
+  const { home, seen } = await planFlows();
+  planAssert.ok(seen.some((file) => file.includes(planPath.join(home, ".npm-global", "bin"))), "the spy saw OpenClaw being looked up");
+  planAssert.ok(seen.length > 20, `expected many recorded calls, got ${seen.length}`);
+  const allowed = planSafety.allowedAgentFile(home);
+  planAssert.deepEqual(planSafety.agentFileAccess(seen, { allowed: [allowed] }), []);
+});
+
+planTest("B1b, Safety 3: every command of these flows is allowed, --accept-risk only on onboard with the tick, and B1a's source scan covers the new modules", planPosixSkip, async () => {
+  const { openclaw, agents } = await planFlows();
+  const argvLists = [...openclaw.map((line) => line.argv), ...agents.map((line) => line.args)];
+  planAssert.deepEqual(planSafety.argvProblems(argvLists, { riskTicked: true }), []);
+  const withRisk = openclaw.filter((line) => line.argv.includes("--accept-risk"));
+  planAssert.deepEqual(withRisk.map((line) => line.argv[0]), ["onboard"], "one onboard, from the one ticked Claude plan Apply");
+  planAssert.ok(
+    openclaw.filter((line) => line.argv[0] === "models" && line.argv[1] === "status").every((line) => line.argv.join(" ") === "models status --check --plain"),
+    "models status only ever as --check --plain"
+  );
+  // The scan itself is B1a's Safety 3 test; this only proves the push above reached it.
+  for (const file of planModules) planAssert.ok(NEW_SERVER_MODULES.includes(file), `${file} is in B1a's source scan`);
+});
+
+planTest("B1b, Safety 4: no command of these flows gets another HOME or any agent config variable", planPosixSkip, async () => {
+  const { home, openclaw, agents } = await planFlows();
+  planAssert.ok(openclaw.length > 10 && agents.length > 0, "both fakes logged their environment");
+  for (const line of [...openclaw, ...agents]) {
+    const what = JSON.stringify(line.argv ?? line.args);
+    planAssert.equal(line.home, home, what);
+    planAssert.deepEqual(line.setVars, [], what);
+  }
+});

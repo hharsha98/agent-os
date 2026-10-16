@@ -142,19 +142,31 @@ export function interpretStatus(agentId, result) {
   return unknown("Couldn't tell whether Cursor is signed in. Sign in, then open Cursor's agent once to check.");
 }
 
+// How Claude Code is signed in: the `authMethod` word `claude auth status`
+// printed, only when it is one this module knows (a key of CLAUDE_METHOD_NOTE),
+// else null. The plan brains need it (spec 2026-10-15, section 2); the account,
+// e-mail and organisation printed next to it are never kept.
+function signInMethod(agentId, result) {
+  if (agentId !== "claude" || result.signal || typeof result.code === "string") return null;
+  const parsed = parseJson(result.stdout);
+  const method = parsed && typeof parsed === "object" ? parsed.authMethod : null;
+  return typeof method === "string" && Object.hasOwn(CLAUDE_METHOD_NOTE, method) ? method : null;
+}
+
 // Asks the agent itself (never its files). One of signed_in | not_signed_in |
-// unknown, plus a plain note. Reused by the AI brain step for these agents.
+// unknown, plus a plain note and `method` (Claude Code only; null otherwise).
+// Reused by the AI brain step for these agents and by the plan brains.
 export async function signInStatus(agentId) {
   const def = definition(agentId);
   const detected = await ADAPTERS[agentId].detect({ refresh: true });
   const base = { agentId, label: def.label, cost: def.cost, installed: Boolean(detected.installed) };
   if (!detected.installed) {
-    return { ...base, status: "unknown", note: `${def.label} isn't installed yet. Install it first, then sign in.` };
+    return { ...base, status: "unknown", note: `${def.label} isn't installed yet. Install it first, then sign in.`, method: null };
   }
   // The same limited environment Agent OS gives the agents it runs, so the
   // answer matches what a run started from here would see.
   const result = await runCommand(detected.path, def.statusArgs, STATUS_TIMEOUT_MS, { env: childEnv(process.env) });
-  return { ...base, ...interpretStatus(agentId, result), checkedAt: new Date().toISOString() };
+  return { ...base, ...interpretStatus(agentId, result), method: signInMethod(agentId, result), checkedAt: new Date().toISOString() };
 }
 
 // ---- the login run ----------------------------------------------------------------

@@ -22,8 +22,11 @@ import {
   startConfigureJob,
   startModelJob,
   startOllamaPull,
+  startOpenclawPlanJob,
   startSetupJob
 } from "./jobs.js";
+import { OPENCLAW_PLANS } from "./openclaw-plan-rules.js";
+import { readOpenclawPlans, readPlanModels } from "./openclaw-plans.js";
 import { readReceipt } from "./receipt.js";
 import { OPENCLAW_TOO_OLD_MESSAGE, OPENCLAW_VERSION_UNKNOWN_MESSAGE, openclawVersionInfo } from "./openclaw-version.js";
 import { brainOptions, currentBrain, listFreeOpenRouterModels, localBrainSummary, verifyOpenRouterKey } from "./brain.js";
@@ -77,7 +80,8 @@ const MESSAGE_CODES = new Set([
   "agent_not_installed",
   "openrouter_unreachable",
   "connection_not_ready",
-  "signin_in_progress"
+  "signin_in_progress",
+  "plan_not_ready"
 ]);
 
 function apiError(code, message) {
@@ -127,7 +131,8 @@ function mapJobError(error, res, next) {
     agent_not_installed: 409,
     openrouter_unreachable: 502,
     connection_not_ready: 409,
-    signin_in_progress: 409
+    signin_in_progress: 409,
+    plan_not_ready: 409
   }[error?.code];
   if (mapped) {
     // Never spread the source error here: it may carry no extra fields, but
@@ -742,6 +747,54 @@ export function createSetupRouter({ sessionManager = null } = {}) {
       res.json({ session: await sessions().liveSetupSession() });
     } catch (error) {
       sendSessionError(error, res, next);
+    }
+  });
+
+  // ---- OpenClaw plan brains: status, model lists and Apply ---------------------------
+  // Spec docs/superpowers/specs/2026-10-15-plan-brains-design.md, sections 2, 3
+  // and 7. Local mode only (404 not_available otherwise). Every answer comes
+  // from OpenClaw's and Claude Code's own commands; nothing from a request
+  // reaches a command except the model id, which is matched against the list
+  // read again at Apply.
+
+  const PLAN_VALUE_ERROR = 'plan must be "claude" or "chatgpt"';
+  const planValue = (value) => (OPENCLAW_PLANS.includes(value) ? value : null);
+
+  router.get("/openclaw/plans", requireLocalMode, async (_req, res, next) => {
+    try {
+      res.json(await readOpenclawPlans());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/openclaw/plan-models", requireLocalMode, async (req, res, next) => {
+    try {
+      const plan = planValue(req.query.plan);
+      if (!plan) {
+        res.status(400).json({ ok: false, error: PLAN_VALUE_ERROR });
+        return;
+      }
+      res.json(await readPlanModels(plan));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/openclaw/plan", requireLocalMode, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      const plan = planValue(req.body?.plan);
+      if (!plan) {
+        res.status(400).json({ ok: false, error: PLAN_VALUE_ERROR });
+        return;
+      }
+      res.json(await startOpenclawPlanJob({ plan, model: req.body?.model, acceptOpenClawRisk: req.body?.acceptOpenClawRisk === true }));
+    } catch (error) {
+      mapJobError(error, res, next);
     }
   });
 

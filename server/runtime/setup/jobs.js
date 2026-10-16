@@ -32,15 +32,38 @@ import {
   streamOllamaPull
 } from "./brain.js";
 import {
+  MODEL_ID_PATTERN,
   OPENCLAW_MODEL_PATH,
   cleanCliText,
   hermesModelCommands,
   openclawModelRef,
   openclawOverrideWarnings,
+  configTextIsUnset,
+  parseConfigText,
   parseJsonOutput,
   readAgentModel
 } from "./models.js";
+import {
+  CHATGPT_EXPIRING,
+  CHATGPT_NOT_READY,
+  CURRENT_MODEL_NOT_RESTORABLE,
+  CURRENT_MODEL_UNREADABLE,
+  MODEL_SETTINGS_UNREADABLE,
+  OPENCLAW_PLANS,
+  PLAN_HEALTH_LINES,
+  PLAN_JOB_INTERRUPTED,
+  PLAN_MODE,
+  PLAN_NOT_READY_MESSAGE,
+  PLAN_PROVIDER,
+  RUNTIME_CHECK_FAILED,
+  claudeCliPinned,
+  claudePlanReadiness,
+  noEarlierPrimary,
+  readDidNotFinish
+} from "./openclaw-plan-rules.js";
+import { readChatgptAuth, readChatgptReadiness, readOpenclawModelsConfig, resolvePlanModel } from "./openclaw-plans.js";
 import { takeKey } from "./openrouter-oauth.js";
+import { signInStatus } from "./signin.js";
 
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15000;
@@ -633,7 +656,36 @@ async function startSetupJobLocked({ steps = [], acceptOpenClawRisk = false } = 
 export async function getSetupJob(id) {
   const active = activeJobs.get(id);
   if (active) return active.job;
-  return loadJob(id);
+  const stored = await loadJob(id);
+  // A plan job saved as "running" that this process isn't running: Agent OS
+  // quit while it ran (a plan job is in activeJobs before its first save).
+  if (stored?.plan && stored.status === "running") return markPlanJobInterrupted(stored);
+  return stored;
+}
+
+// Answered, and saved, as failed with a plain sentence, so the card stops
+// waiting and offers Apply again (Review Focus 5). Plan jobs only: every other
+// job keeps today's answer. The sentence goes on the step that never finished:
+// the one saved as running, else the first one not succeeded. currentStepIndex
+// can still point at a step that succeeded (runConfigureJobSteps saves step i
+// as succeeded before step i + 1 as running), so it is only the fallback for a
+// job whose every step succeeded (Agent OS quit while writing the receipt).
+async function markPlanJobInterrupted(job) {
+  const steps = Array.isArray(job.steps) ? job.steps : [];
+  let current = steps.findIndex((step) => step.status === "running");
+  if (current < 0) current = steps.findIndex((step) => step.status !== "succeeded");
+  if (current < 0) {
+    current = Number.isInteger(job.currentStepIndex) && steps[job.currentStepIndex] ? job.currentStepIndex : steps.length - 1;
+  }
+  const step = steps[current];
+  if (step) {
+    step.status = "failed";
+    step.error = PLAN_JOB_INTERRUPTED;
+  }
+  job.status = "failed";
+  job.endedAt = job.endedAt || new Date().toISOString();
+  await persistJob(job).catch(() => {});
+  return job;
 }
 
 export async function cancelSetupJob(id) {
@@ -673,6 +725,7 @@ export async function retrySetupJob(id) {
 async function retrySetupJobLocked(id) {
   const stored = await loadJob(id);
   if (!stored) return null;
+  if (stored.plan && stored.status === "running" && !activeJobs.has(id)) await markPlanJobInterrupted(stored);
   if (stored.status === "running") return stored;
 
   // A download restarts from the top; Ollama keeps the layers it already has,
@@ -862,17 +915,33 @@ async function configureHermesBrain(step, check, ctx, manager) {
   }
 }
 
-async function configureOpenclawBrain(step, check, ctx, manager) {
-  const detected = check.agents.openclaw.detected;
-  const target = ctx.targets.openclaw;
+// `openclaw onboard`'s arguments, each flag checked against this OpenClaw's own
+// `onboard --help` first: the three it can't work without stop the step, and
+// the optional ones are added only when listed (a log line names any skipped).
+// `authArgs` is --auth-choice and what that choice needs. One copy for the
+// OpenRouter and Local brains and the Claude plan.
+async function onboardArgs(step, detected, authArgs) {
   const help = await runCommand(detected.path, ["onboard", "--help"], HELP_TIMEOUT_MS);
   const helpText = `${help.stdout}\n${help.stderr}`;
-
   for (const flag of ["--non-interactive", "--accept-risk", "--auth-choice"]) {
     if (!helpText.includes(flag)) {
       throw jobError("configure_failed", `This OpenClaw version's "onboard" command has no ${flag} flag.`);
     }
   }
+  const args = ["onboard", "--non-interactive", "--accept-risk", ...authArgs];
+  for (const flag of ["--skip-health", "--skip-channels", "--skip-skills", "--skip-ui", "--install-daemon"]) {
+    if (helpText.includes(flag)) {
+      args.push(flag);
+    } else {
+      timestampedLog(step, `openclaw onboard --help does not list ${flag}; skipped.`);
+    }
+  }
+  return args;
+}
+
+async function configureOpenclawBrain(step, check, ctx, manager) {
+  const detected = check.agents.openclaw.detected;
+  const target = ctx.targets.openclaw;
 
   // KNOWN LIMITATION: `openclaw onboard --help` (2026.9.6) offers the key
   // only as `--openrouter-api-key <key>`, so it is a command-line argument,
@@ -882,16 +951,13 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
   // OpenClaw's background gateway would not have, so it can't be used here.
   // Ollama is reached at its native API (no /v1); OpenClaw's docs note that
   // the OpenAI-compatible /v1 path makes tool calling unreliable.
-  const args = target.mode === "ollama"
-    ? ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "ollama", "--custom-base-url", ollamaBaseUrl()]
-    : ["onboard", "--non-interactive", "--accept-risk", "--auth-choice", "openrouter-api-key", "--openrouter-api-key", ctx.apiKey];
-  for (const flag of ["--skip-health", "--skip-channels", "--skip-skills", "--skip-ui", "--install-daemon"]) {
-    if (helpText.includes(flag)) {
-      args.push(flag);
-    } else {
-      timestampedLog(step, `openclaw onboard --help does not list ${flag}; skipped.`);
-    }
-  }
+  const args = await onboardArgs(
+    step,
+    detected,
+    target.mode === "ollama"
+      ? ["--auth-choice", "ollama", "--custom-base-url", ollamaBaseUrl()]
+      : ["--auth-choice", "openrouter-api-key", "--openrouter-api-key", ctx.apiKey]
+  );
 
   await runConfigureCommand(
     manager,
@@ -1019,28 +1085,42 @@ async function runAllOutput(manager, id) {
   return events.map((event) => event.text || "").join("\n");
 }
 
+// Today's network pattern and last sentence, shared by every brain.
+const HEALTH_NETWORK_RE = /econnrefused|enotfound|fetch failed|network|could not resolve|connection (refused|error)/i;
+const HEALTH_LAST_LINE = "The agent didn't reply as expected. Open its run on the Runs page for details, or pick another model.";
+
 // A short, plain next step for a failed "say hello" check. `target` is the
-// brain we just gave that agent.
-function healthFixLine(output, target, timedOut) {
+// brain we just gave that agent. A plan brain (claude-plan, chatgpt-plan) has
+// its own lines and never gets an OpenRouter or Ollama sentence (spec
+// 2026-10-15, section 5); openrouter and ollama keep today's order and words.
+export function healthFixLine(output, target, timedOut) {
   const text = String(output || "");
+  const mode = target?.mode;
+  if (mode === "claude-plan" || mode === "chatgpt-plan") {
+    if (/usage limit|limit reached|rate.?limit|\b429\b|quota/i.test(text)) return PLAN_HEALTH_LINES.usageLimit;
+    if (/not (logged|signed) in|\/login|\b401\b|unauthori[sz]ed|expired/i.test(text)) return PLAN_HEALTH_LINES.signedOut;
+    if (HEALTH_NETWORK_RE.test(text)) return PLAN_HEALTH_LINES.unreachable[mode];
+    if (timedOut) return PLAN_HEALTH_LINES.timedOut;
+    return HEALTH_LAST_LINE;
+  }
   if (/\b429\b|rate.?limit|too many requests|free-models-per-day|quota/i.test(text)) {
     return "OpenRouter's free limit was reached (50 requests a day until you add $10 of credit). Try again tomorrow, add credit, or use Local.";
   }
   if (/\b40[13]\b|unauthori[sz]ed|invalid.{0,12}(api )?key|no auth|authentication|credential/i.test(text)) {
     return "The agent didn't accept the key. Connect OpenRouter again and press the button again.";
   }
-  if (/econnrefused|enotfound|fetch failed|network|could not resolve|connection (refused|error)/i.test(text)) {
-    return target?.mode === "ollama"
+  if (HEALTH_NETWORK_RE.test(text)) {
+    return mode === "ollama"
       ? "Couldn't reach Ollama. Open the Ollama app and try again."
       : "Couldn't reach OpenRouter. Check your internet connection and try again.";
   }
   if (timedOut) {
     return "The agent didn't answer within a minute. Free models are sometimes busy; try again, or pick another model.";
   }
-  if (target?.mode === "ollama") {
+  if (mode === "ollama") {
     return "This local model didn't answer properly. Try a bigger model, or use OpenRouter.";
   }
-  return "The agent didn't reply as expected. Open its run on the Runs page for details, or pick another model.";
+  return HEALTH_LAST_LINE;
 }
 
 // Safety on Look only (the execution gate off) starts nothing. The hello check starts the agent (it asks it to
@@ -1070,7 +1150,9 @@ async function runHealthChecks(job, step, check, manager, ctx) {
   // After a model change the "hello" must prove the NEW model works, and must
   // not hang for long: OpenClaw gets a conversation of its own (an old one
   // could still be pinned to the previous model) and every agent a short limit.
-  const afterModelChange = job.kind === "model";
+  // A plan brain is a model change too, so a stuck hello never holds the job
+  // lock for half an hour.
+  const afterModelChange = job.kind === "model" || Boolean(job.plan);
   for (const agentId of jobScope(job)) {
     const detected = check.agents[agentId].detected;
     if (!detected?.installed) continue;
@@ -1275,6 +1357,18 @@ async function executeConfigureStep(job, step, check, ctx, manager) {
     case "health":
       await runHealthChecks(job, step, check, manager, ctx);
       break;
+    case "openclaw-plan-onboard":
+      await onboardOpenclawForClaudePlan(step, check, manager);
+      break;
+    case "openclaw-plan-runtime-check":
+      await checkClaudePlanRuntime(job, check);
+      break;
+    case "openclaw-plan-model":
+      await setOpenclawPlanModel(job, step, check, manager);
+      break;
+    case "openclaw-plan-readiness":
+      await checkChatgptPlanReadiness(job, step, check, manager);
+      break;
     default:
       break;
   }
@@ -1282,6 +1376,20 @@ async function executeConfigureStep(job, step, check, ctx, manager) {
 }
 
 async function appendConfigureReceipt(job, check) {
+  if (job.plan) {
+    const changes = [`Set the model provider to ${job.mode}`, `Set the model to ${job.model}`];
+    if (job.execModeChanged) changes.push(`tools.exec.mode: ${job.execModeChanged.from} -> ${job.execModeChanged.to}`);
+    if (job.servicesStarted?.includes("openclaw")) changes.push("Started the background gateway service");
+    await appendReceiptEntry({
+      agentId: "openclaw",
+      action: "configure",
+      version: check.agents.openclaw.detected.version,
+      provider: job.mode,
+      model: job.model,
+      changes
+    });
+    return;
+  }
   if (job.kind === "model") {
     const target = job.targets?.[job.agentId];
     if (!target) return;
@@ -1591,6 +1699,200 @@ async function startModelJobLocked({ agentId, model, presetSlug = null, previous
   runningJobId = id;
   runConfigureJobSteps(job, "").catch(() => {});
   return job;
+}
+
+// =========================================================================
+// OpenClaw's plan brains (docs/superpowers/specs/2026-10-15-plan-brains-design.md,
+// sections 2 and 3). The Claude plan points OpenClaw at the person's own
+// signed-in Claude Code (OpenClaw's claude-cli runtime runs the unmodified
+// `claude` program); the ChatGPT plan uses the Sign in with ChatGPT the person
+// already did in the card. No key or token is ever passed. Started only by
+// POST /api/setup/openclaw/plan: POST /api/setup/configure and normalizeTarget
+// keep refusing these modes. Same machinery as the other jobs: one at a time,
+// saved to disk, cancelable, a hello check at the end.
+// =========================================================================
+
+export const PLAN_JOB_STEPS = Object.freeze({
+  claude: Object.freeze([
+    "openclaw-plan-onboard",
+    "openclaw-safe-defaults",
+    "openclaw-plan-runtime-check",
+    "openclaw-plan-model",
+    "services",
+    "health"
+  ]),
+  chatgpt: Object.freeze(["openclaw-plan-model", "openclaw-safe-defaults", "openclaw-plan-readiness", "health"])
+});
+
+function planNotReady(reason) {
+  return jobError("plan_not_ready", PLAN_NOT_READY_MESSAGE[reason]);
+}
+
+// The OpenClaw a plan step works on (installed when the job started).
+function planOpenclaw(check) {
+  const detected = check.agents.openclaw.detected;
+  if (!detected?.installed) throw jobError("configure_failed", PLAN_NOT_READY_MESSAGE.openclaw_missing);
+  return detected;
+}
+
+export async function startOpenclawPlanJob({ plan, model, acceptOpenClawRisk } = {}) {
+  // The risk tick comes first: without it nothing runs and nothing is read.
+  if (acceptOpenClawRisk !== true) {
+    throw jobError("openclaw_risk_not_accepted", "OpenClaw brain configuration requires acceptOpenClawRisk:true.");
+  }
+  if (!OPENCLAW_PLANS.includes(plan)) throw new TypeError('plan must be "claude" or "chatgpt"');
+  return withJobLock(() => startOpenclawPlanJobLocked({ plan, model }));
+}
+
+async function startOpenclawPlanJobLocked({ plan, model }) {
+  const detected = await ADAPTERS.openclaw.detect({ refresh: true });
+  if (!detected?.installed) throw planNotReady("openclaw_missing");
+  // Read again here, never trusted from the card: Claude Code may have been
+  // signed out, or switched to an API key, since the card last looked.
+  if (plan === "claude") {
+    const readiness = claudePlanReadiness(await signInStatus("claude"));
+    if (readiness !== "ready") throw planNotReady(readiness);
+  } else if ((await readChatgptAuth(detected)).signedIn !== true) {
+    throw planNotReady("chatgpt_signed_out");
+  }
+  const modelId = await resolvePlanModel(plan, model, { detected });
+  const mode = PLAN_MODE[plan];
+  const id = generateJobId();
+  const now = new Date().toISOString();
+  const job = {
+    id,
+    kind: "configure",
+    status: "running",
+    plan,
+    mode,
+    model: modelId,
+    targets: { hermes: null, openclaw: { mode, model: modelId } },
+    scope: ["openclaw"],
+    steps: PLAN_JOB_STEPS[plan].map((stepId) =>
+      makeConfigureStep(stepId, stepId === "services" || stepId === "health" ? null : "openclaw", "run")
+    ),
+    currentStepIndex: 0,
+    startedAt: now,
+    endedAt: null,
+    acceptOpenClawRisk: true,
+    acceptOpenClawRiskAt: now,
+    previousPrimary: null,
+    readiness: null
+  };
+  // In activeJobs before its first save, so a read in between never takes it
+  // for a job that Agent OS quit during (getSetupJob).
+  activeJobs.set(id, { job, controller: null });
+  try {
+    await persistJob(job);
+  } catch (error) {
+    activeJobs.delete(id);
+    throw error;
+  }
+  runningJobId = id;
+  runConfigureJobSteps(job, "").catch(() => {});
+  return job;
+}
+
+// Claude plan, step 1: `openclaw onboard ... --auth-choice anthropic-cli`, which
+// points OpenClaw at the signed-in Claude Code on this computer, with today's
+// flag checks.
+async function onboardOpenclawForClaudePlan(step, check, manager) {
+  const detected = planOpenclaw(check);
+  const args = await onboardArgs(step, detected, ["--auth-choice", "anthropic-cli"]);
+  await runConfigureCommand(
+    manager,
+    { agentId: "openclaw", kind: "configure", title: "openclaw onboard", command: detected.path, args, cwd: os.tmpdir(), timeoutMs: CONFIGURE_RUN_TIMEOUT_MS },
+    step
+  );
+}
+
+// Claude plan, step 3, before `models set`: OpenClaw must run this model
+// through Claude Code (claude-cli on anthropic/<model>, or on anthropic/* when
+// the model has no runtime of its own). Otherwise it would bill an Anthropic
+// API key, so the job stops here and OpenClaw keeps its old model.
+async function checkClaudePlanRuntime(job, check) {
+  const config = await readOpenclawModelsConfig(planOpenclaw(check));
+  // null: the read failed or its answer couldn't be parsed. That is not "no
+  // pin", and Agent OS must not say an API key would be billed. Nothing has
+  // changed yet, so Apply can safely be tried again.
+  if (config === null) throw jobError("configure_failed", MODEL_SETTINGS_UNREADABLE);
+  if (!claudeCliPinned(config, job.model)) throw jobError("configure_failed", RUNTIME_CHECK_FAILED);
+}
+
+// `openclaw models set <provider>/<model>`. For the ChatGPT plan the current
+// model is read first, so a failed readiness check can put it back.
+async function setOpenclawPlanModel(job, step, check, manager) {
+  const detected = planOpenclaw(check);
+  if (job.plan === "chatgpt") {
+    const current = await runCommand(detected.path, ["config", "get", OPENCLAW_MODEL_PATH], CONFIG_GET_TIMEOUT_MS);
+    // A read that timed out or couldn't run says nothing about the current
+    // model: "couldn't read it", and trying again can work. A plain non-zero
+    // exit still counts as "no model set" until live check S-B3 shows what
+    // OpenClaw prints for that.
+    if (readDidNotFinish(current)) throw jobError("configure_failed", CURRENT_MODEL_UNREADABLE);
+    const primary = current.ok ? parseConfigText(current.stdout) : null;
+    // Only a plain model reference ever goes back onto a command line. A model
+    // that was read but isn't one can't be put back, so it is not "none" either:
+    // stop before `models set`, with nothing changed. This is a different
+    // sentence from the one above, because trying again can't help until the
+    // person switches OpenClaw to another model.
+    if (primary && !MODEL_ID_PATTERN.test(primary)) throw jobError("configure_failed", CURRENT_MODEL_NOT_RESTORABLE);
+    // Set, but dropped by the config reader for its characters (a "+", an
+    // accented letter): that is a model Agent OS can't put back, not "none".
+    if (current.ok && primary === null && !configTextIsUnset(current.stdout)) {
+      throw jobError("configure_failed", CURRENT_MODEL_NOT_RESTORABLE);
+    }
+    job.previousPrimary = primary;
+    await persistJob(job);
+  }
+  await runConfigureCommand(
+    manager,
+    {
+      agentId: "openclaw",
+      kind: "configure",
+      title: "openclaw models set",
+      command: detected.path,
+      args: ["models", "set", `${PLAN_PROVIDER[job.plan]}/${job.model}`],
+      cwd: os.tmpdir(),
+      timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+    },
+    step
+  );
+}
+
+// ChatGPT plan, step 3: can OpenClaw use the plan? Exit code only
+// (readChatgptReadiness). Expiring soon: a warning, and the job goes on. Not
+// ready: the earlier model is put back (or, when there was none, the job's last
+// line says OpenClaw keeps the new one) and the job stops.
+async function checkChatgptPlanReadiness(job, step, check, manager) {
+  const detected = planOpenclaw(check);
+  const readiness = await readChatgptReadiness(detected);
+  job.readiness = readiness;
+  if (readiness === "ready") return;
+  if (readiness === "expiring") {
+    step.warnings.push(CHATGPT_EXPIRING);
+    return;
+  }
+  if (job.previousPrimary) {
+    const back = await runConfigureCommand(
+      manager,
+      {
+        agentId: "openclaw",
+        kind: "configure",
+        title: "openclaw models set",
+        command: detected.path,
+        args: ["models", "set", job.previousPrimary],
+        cwd: os.tmpdir(),
+        timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
+      },
+      step,
+      { optional: true }
+    );
+    if (back.run.status !== "succeeded") step.warnings.push("openclaw models set failed; see the run log.");
+  } else {
+    step.warnings.push(noEarlierPrimary(`openai/${job.model}`));
+  }
+  throw jobError("configure_failed", CHATGPT_NOT_READY);
 }
 
 // =========================================================================

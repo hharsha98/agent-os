@@ -7,6 +7,7 @@
 import { runCommand } from "../safety.js";
 import { HERMES_MIN_CONTEXT, fetchWithTimeout } from "./brain.js";
 import { applyMirror } from "./recipes.js";
+import { PLAN_READ_TIMEOUT_MS, chatgptSignIn, openclawProviderLabel, parseAuthRows, planOfPrimary } from "./openclaw-plan-rules.js";
 
 const CATALOG_URL = "https://openrouter.ai/api/v1/models";
 const ACCOUNT_CATALOG_URL = "https://openrouter.ai/api/v1/models/user";
@@ -320,6 +321,24 @@ export async function checkPreset(slug, key) {
 // sentences. Anything that doesn't look like a model id or provider is dropped
 // (it is shown on screen, so it never carries odd text).
 export function parseConfigText(stdout) {
+  const value = configTextValue(stdout);
+  if (isUnsetValue(value)) return null;
+  return /^[A-Za-z0-9._:/@~ -]{1,200}$/.test(value) ? value : null;
+}
+
+// True only when `config get` printed nothing or one of the "not set" answers.
+// A value parseConfigText drops for its characters (a "+", an accented letter)
+// is set, not unset: the ChatGPT plan job must not count it as "no model".
+export function configTextIsUnset(stdout) {
+  return isUnsetValue(configTextValue(stdout));
+}
+
+function isUnsetValue(value) {
+  return !value || /^(null|undefined|unset|none)$/i.test(value) || /not set|no value|unset/i.test(value);
+}
+
+// The last line `config get` printed, without colour codes, JSON or quotes.
+function configTextValue(stdout) {
   const lines = String(stdout ?? "")
     // eslint-disable-next-line no-control-regex
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
@@ -333,9 +352,7 @@ export function parseConfigText(stdout) {
   } catch {
     value = value.replace(/^["']|["']$/g, "");
   }
-  value = value.trim();
-  if (!value || /^(null|undefined|unset|none)$/i.test(value) || /not set|no value|unset/i.test(value)) return null;
-  return /^[A-Za-z0-9._:/@~ -]{1,200}$/.test(value) ? value : null;
+  return value.trim();
 }
 
 const PROVIDER_LABEL = { openrouter: "OpenRouter", ollama: "Local (Ollama)" };
@@ -352,11 +369,41 @@ function describeModel(agentId, provider, model) {
   return { agentId, installed: true, provider: provider || null, providerLabel, model: model || null, isPreset: Boolean(presetSlug), presetSlug };
 }
 
+// Which plan OpenClaw's model runs on (spec 2026-10-15, section 5), checked the
+// way OpenClaw itself decides, through its own commands (never its files): an
+// anthropic/ model pinned to the claude-cli runtime is the Claude plan, an
+// openai/ model with a Sign in with ChatGPT profile is the ChatGPT plan. Only
+// each sign-in's method is kept from `models auth list`; its output is never
+// logged or returned.
+// Answers { plan, confirmed }. `confirmed: false` means the read that would have
+// confirmed a plan failed (or came back garbled), so the label must not claim
+// how the model is billed (openclawProviderLabel).
+async function openclawPlanOf(detected, primary) {
+  if (typeof primary !== "string" || primary.includes("@")) return { plan: null, confirmed: true };
+  if (primary.startsWith("anthropic/")) {
+    const result = await runCommand(detected.path, ["config", "get", "agents.defaults.models", "--json"], CONFIG_GET_TIMEOUT_MS);
+    const value = result.ok ? parseJsonOutput(result.stdout) : null;
+    // A command that ran and printed nothing says "no per-model settings", so
+    // there is no pin; a failed command or unreadable output says nothing.
+    const readable = value !== null && typeof value === "object" && !Array.isArray(value);
+    return { plan: planOfPrimary(primary, value, false), confirmed: result.ok && (readable || result.stdout === "") };
+  }
+  if (primary.startsWith("openai/")) {
+    const result = await runCommand(detected.path, ["models", "auth", "list", "--provider", "openai", "--json"], PLAN_READ_TIMEOUT_MS);
+    const rows = result.ok ? parseAuthRows(parseJsonOutput(result.stdout)) : null;
+    return { plan: planOfPrimary(primary, null, chatgptSignIn(rows).signedIn), confirmed: rows !== null };
+  }
+  return { plan: null, confirmed: true };
+}
+
 // Hermes and OpenClaw's current model, read through their own `config get`
 // (never from their config files). `detected` is the agent's detection result.
+// OpenClaw's answer also says which plan it runs on (`plan`), and labels an
+// anthropic/ or openai/ model by it; Hermes's answer keeps its shape.
 export async function readAgentModel(agentId, detected) {
   if (!detected?.installed) {
-    return { agentId, installed: false, provider: null, providerLabel: null, model: null, isPreset: false, presetSlug: null };
+    const missing = { agentId, installed: false, provider: null, providerLabel: null, model: null, isPreset: false, presetSlug: null };
+    return agentId === "openclaw" ? { ...missing, plan: null } : missing;
   }
   // `ok` says the command ran and answered. A command that failed or timed out has NOT said the value
   // is empty, so it must never read as "no model set" (see `known` below).
@@ -384,7 +431,8 @@ export async function readAgentModel(agentId, detected) {
   const primary = read.value;
   const slash = primary ? primary.indexOf("/") : -1;
   const info = slash > 0 ? describeModel("openclaw", primary.slice(0, slash), primary.slice(slash + 1)) : describeModel("openclaw", null, primary);
-  return withKnown(info, read.ok);
+  const { plan, confirmed } = await openclawPlanOf(detected, primary);
+  return withKnown({ ...info, providerLabel: openclawProviderLabel(info.provider, plan, confirmed) ?? info.providerLabel, plan }, read.ok);
 }
 
 // ---- command builders and plain-English helpers (used by jobs.js) -------------------------

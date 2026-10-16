@@ -38,6 +38,7 @@ import {
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
 import { clearSystemCheckCache, systemCheck } from "../server/runtime/setup/system-check.js";
 import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
+import { installFakeOpenclawShim } from "./helpers/fake-openclaw.js";
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -144,107 +145,6 @@ if (args[0] === "gateway" && (args[1] === "install" || args[1] === "start")) {
   process.exit(0);
 }
 print("fake-hermes: " + JSON.stringify(args));
-process.exit(0);
-`;
-
-const FAKE_OPENCLAW_CLI_SOURCE = `
-import { existsSync, writeFileSync, appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import path from "node:path";
-
-const args = process.argv.slice(2);
-const home = process.env.HOME || process.env.USERPROFILE;
-function print(t) { process.stdout.write(t + "\\n"); }
-try {
-  appendFileSync(
-    path.join(home, ".fake-openclaw-record.jsonl"),
-    JSON.stringify({ argv: args, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || null }) + "\\n"
-  );
-} catch {}
-
-const openclawDir = path.join(home, ".openclaw");
-const configFile = path.join(openclawDir, "openclaw.json");
-const execModeFile = path.join(home, ".fake-openclaw-exec-mode");
-const runningMarker = path.join(home, ".fake-openclaw-gateway-running");
-
-if (args.includes("--version")) { print("openclaw 9.9.9-test"); process.exit(0); }
-
-if (args[0] === "onboard" && args.includes("--help")) {
-  print(
-    "Usage: openclaw onboard [--non-interactive] [--accept-risk] [--auth-choice CHOICE]\\n" +
-    "  --openrouter-api-key KEY --custom-base-url URL\\n" +
-    "  --skip-health --skip-channels --skip-skills --skip-ui --install-daemon --skip-daemon"
-  );
-  process.exit(0);
-}
-if (args[0] === "onboard") {
-  if (existsSync(path.join(home, ".fake-openclaw-onboard-fail"))) {
-    process.stderr.write("simulated onboard failure\\n");
-    process.exit(1);
-  }
-  if (!args.includes("--non-interactive") || !args.includes("--accept-risk") || !args.includes("--auth-choice")) {
-    process.stderr.write("missing required flags\\n");
-    process.exit(1);
-  }
-  mkdirSync(openclawDir, { recursive: true });
-  writeFileSync(configFile, JSON.stringify({ onboarded: true }));
-  if (args.includes("--install-daemon")) writeFileSync(runningMarker, "1");
-  print(JSON.stringify({ ok: true }));
-  process.exit(0);
-}
-if (args[0] === "models" && args[1] === "set") { print("ok"); process.exit(0); }
-
-if (args[0] === "agent" && args[1] === "exec" && args.includes("--help")) {
-  print("Usage\\n --message-file PATH\\n --cwd DIR\\n --json");
-  process.exit(0);
-}
-if (args[0] === "agent" && args[1] === "exec") {
-  let input = "";
-  try { input = readFileSync(0, "utf8"); } catch {}
-  if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
-    process.stderr.write("simulated agent failure\\n");
-    process.exit(2);
-  }
-  print(JSON.stringify({ ok: true, final: "ready: " + input.slice(0, 20) }));
-  process.exit(0);
-}
-if (args[0] === "agent" && args[1] === "-m") {
-  if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
-    process.stderr.write("simulated agent failure\\n");
-    process.exit(2);
-  }
-  print(JSON.stringify({ ok: true, final: "ready" }));
-  process.exit(0);
-}
-if (args[0] === "doctor") {
-  const ok = existsSync(configFile);
-  print(JSON.stringify({ ok, findings: ok ? [] : [{ message: "not onboarded" }] }));
-  process.exit(0);
-}
-if (args[0] === "config" && args[1] === "get") {
-  if (args[2] === "tools.exec.mode") {
-    let value = "full";
-    try { value = readFileSync(execModeFile, "utf8").trim(); } catch {}
-    print(value);
-    process.exit(0);
-  }
-  print("");
-  process.exit(0);
-}
-if (args[0] === "config" && args[1] === "set") {
-  if (args[2] === "tools.exec.mode") writeFileSync(execModeFile, args[3]);
-  print("ok");
-  process.exit(0);
-}
-if (args[0] === "gateway" && args[1] === "status") {
-  print(JSON.stringify({ running: existsSync(runningMarker) }));
-  process.exit(0);
-}
-if (args[0] === "gateway" && args[1] === "start") {
-  writeFileSync(runningMarker, "1");
-  print("ok");
-  process.exit(0);
-}
-print("fake-openclaw: " + JSON.stringify(args));
 process.exit(0);
 `;
 
@@ -459,18 +359,6 @@ async function installFakeHermesShim(home) {
   const binDir = path.join(home, ".local", "bin");
   await mkdir(binDir, { recursive: true });
   const shimPath = path.join(binDir, "hermes");
-  await writeFile(shimPath, `#!/bin/sh\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
-  await chmod(shimPath, 0o755);
-}
-
-async function installFakeOpenclawShim(home) {
-  const jsDir = path.join(home, ".fake-cli");
-  await mkdir(jsDir, { recursive: true });
-  const jsPath = path.join(jsDir, "openclaw.mjs");
-  await writeFile(jsPath, FAKE_OPENCLAW_CLI_SOURCE);
-  const binDir = path.join(home, ".npm-global", "bin");
-  await mkdir(binDir, { recursive: true });
-  const shimPath = path.join(binDir, "openclaw");
   await writeFile(shimPath, `#!/bin/sh\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
   await chmod(shimPath, 0o755);
 }

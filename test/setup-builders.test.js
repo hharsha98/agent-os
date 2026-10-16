@@ -37,6 +37,7 @@ import {
 } from "../server/runtime/setup/signin.js";
 import { clearSystemCheckCache, systemCheck } from "../server/runtime/setup/system-check.js";
 import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
+import { installFakeAgent as installFakeAgentAt, shimText, writeFakeAgentCli } from "./helpers/fake-builder-clis.js";
 // The file-access spy lives with the other plan-brains Safety checks (Task B1a); it is the same code.
 import { FORBIDDEN_PATH, spyOnFileAccess } from "./helpers/plan-brains-safety.js";
 
@@ -46,76 +47,9 @@ const posixSkip = { skip: isWindows ? "spawns shebang fake CLIs via a local mirr
 const CODING = ["claude", "codex", "cursor"];
 
 // ---- fake CLIs -----------------------------------------------------------------
-// One script plays all three agents (its first argument says which). It writes
-// every call to $HOME/.fake-agent-calls.log, so a test can prove that only
-// --version, --help, status and login were ever run.
-
-const FAKE_AGENT_CLI_SOURCE = `
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
-import path from "node:path";
-
-const [kind, ...args] = process.argv.slice(2);
-const home = process.env.HOME || process.env.USERPROFILE;
-const flag = (name) => existsSync(path.join(home, name));
-const out = (t) => process.stdout.write(t + "\\n");
-const err = (t) => process.stderr.write(t + "\\n");
-try { appendFileSync(path.join(home, ".fake-agent-calls.log"), kind + " " + args.join(" ") + "\\n"); } catch {}
-
-const VERSION = { claude: "2.1.900 (Claude Code)", codex: "codex-cli 0.200.0", cursor: "2026.10.99-test" };
-const LOGIN_URL = {
-  claude: "https://claude.ai/oauth/authorize?code_challenge=abc&state=xyz",
-  codex: "https://auth.openai.com/oauth/authorize?state=xyz",
-  cursor: "https://cursor.com/loginDeepControl?uuid=abc"
-};
-const signedIn = () => flag(".fake-signed-in-" + kind);
-
-if (args[0] === "--version") {
-  out(flag(".fake-updated-" + kind) ? "9.9.9-updated" : VERSION[kind]);
-  process.exit(0);
-}
-if (args[0] === "--help") {
-  if (kind === "claude") out("Usage: claude [options]\\nCommands:\\n  auth    Manage authentication\\n  update  Check for updates");
-  if (kind === "codex") out("Usage: codex\\nCommands:\\n  login   Manage login\\n  update  Update Codex");
-  if (kind === "cursor") out("Usage: agent\\nCommands:\\n  login  Authenticate with Cursor\\n  status|whoami [options]  View authentication status");
-  process.exit(0);
-}
-if (args[0] === "exec" && args[1] === "--help") { out("Usage: codex exec"); process.exit(0); }
-if (args[0] === "update") {
-  writeFileSync(path.join(home, ".fake-updated-" + kind), "1");
-  out("updated");
-  process.exit(0);
-}
-
-const isLogin = (kind === "claude" && args[0] === "auth" && args[1] === "login") || (kind !== "claude" && args[0] === "login" && args.length === 1);
-const isStatus = (kind === "claude" && args[0] === "auth" && args[1] === "status") || (kind === "codex" && args[0] === "login" && args[1] === "status") || (kind === "cursor" && args[0] === "status");
-if (isLogin) {
-  if (flag(".fake-login-notty")) { err("Error: stdin is not a TTY. This command requires an interactive terminal."); process.exit(1); }
-  if (flag(".fake-login-fail")) { err("login failed: the code was rejected"); process.exit(1); }
-  out("Opening your browser. If it did not open, visit: " + LOGIN_URL[kind]);
-  out("Or visit https://evil.example/phish?token=nope");
-  out("a-very-long-opaque-string-that-looks-like-a-token-" + "x".repeat(40));
-  if (flag(".fake-login-sleep")) { setInterval(() => {}, 1000); }
-  else { writeFileSync(path.join(home, ".fake-signed-in-" + kind), "1"); out("Login successful"); process.exit(0); }
-} else if (isStatus) {
-  if (flag(".fake-status-broken")) { err("boom"); process.exit(2); }
-  if (kind === "claude") {
-    if (signedIn()) { out(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "someone@example.com", orgName: "Secret Org" })); process.exit(0); }
-    out(JSON.stringify({ loggedIn: false, authMethod: "none" })); process.exit(1);
-  }
-  if (kind === "codex") {
-    if (signedIn()) { out("Logged in using ChatGPT"); process.exit(0); }
-    err("Not logged in"); process.exit(1);
-  }
-  out(signedIn() ? "Logged in as someone@example.com" : "Not logged in");
-  process.exit(0);
-} else {
-  out("fake-" + kind + ": " + JSON.stringify(args));
-}
-`;
-
-function shimText(jsPath, kind) {
-  return `#!/bin/sh\nexec "${process.execPath}" "${jsPath}" ${kind} "$@"\n`;
-}
+// One script plays all three agents (test/helpers/fake-builder-clis.js; its first
+// argument says which). It writes every call to $HOME/.fake-agent-calls.log, so a
+// test can prove that only --version, --help, status and login were ever run.
 
 // The official installers, as fake bash scripts. Each one logs that it ran, so
 // a test can prove an installer was (or was not) ever started.
@@ -213,8 +147,7 @@ const mirrorState = { scripts: {}, nodeShasums: "", nodeTarballName: "", nodeTar
 before(async () => {
   if (isWindows) return;
   sourceDir = await mkdtemp(path.join(os.tmpdir(), "agent-os-builders-src-"));
-  agentJsPath = path.join(sourceDir, "fake-agent-cli.mjs");
-  await writeFile(agentJsPath, FAKE_AGENT_CLI_SOURCE);
+  agentJsPath = await writeFakeAgentCli(sourceDir);
   const npmText = buildFakeNpm(agentJsPath);
 
   oldNodeDir = await mkdtemp(path.join(os.tmpdir(), "agent-os-builders-oldnode-"));
@@ -333,13 +266,7 @@ async function withTempEnv(fn, { extraPath = [oldNodeDir, fakeOpenDir] } = {}) {
 
 // An agent that is "already installed": the launcher a real installer leaves.
 async function installFakeAgent(home, kind) {
-  const names = kind === "cursor" ? ["agent", "cursor-agent"] : [kind];
-  const binDir = path.join(home, ".local", "bin");
-  await mkdir(binDir, { recursive: true });
-  for (const name of names) {
-    await writeFile(path.join(binDir, name), shimText(agentJsPath, kind));
-    await chmod(path.join(binDir, name), 0o755);
-  }
+  await installFakeAgentAt(home, kind, agentJsPath);
 }
 
 async function readIfExists(file) {

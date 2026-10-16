@@ -129,7 +129,9 @@ export default function AgentsPage() {
   }
 
   const selectedAgent = agents ? agents.find((a) => a.id === effectiveId) : undefined;
-  // The shared sessions list (decision Q30): the selected agent's newest open session, for "Open session".
+  // The shared sessions list (decision Q30): the selected agent's newest open session, for "Open session". Until that
+  // list has been read (still loading, or the first read failed) the bay offers neither session button: either one could
+  // be the wrong one (sessionsKnown).
   const sessionsList = useSessionsList();
   const openByAgent = openSessionByAgent(sessionsList.source.state === "ok" ? sessionsList.source.data.sessions : []);
 
@@ -173,6 +175,7 @@ export default function AgentsPage() {
           onBrainsChanged={reloadBrains}
           session={openByAgent[effectiveId] ?? null}
           sessionsAvailable={sessionsList.available}
+          sessionsKnown={sessionsList.source.state === "ok"}
         />
       </div>
     </section>

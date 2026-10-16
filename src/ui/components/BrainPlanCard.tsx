@@ -44,13 +44,16 @@ import {
   PLAN_LIMITS_MS,
   PLANS_FOCUS_GAP_MS,
   SETUP_RUNNING_POLL_MS,
-  SETUP_RUNNING_WAIT_MS,
+  TYPED_MODEL_CHOICE_LABEL,
   TYPED_MODEL_LABEL,
   UNREADABLE_WORDS,
   chatgptPlanState,
   claudePlanState,
   planApplyModel,
   planProblem,
+  signInAfterClose,
+  signInLookupWait,
+  takeJobAnswer,
   type ChatgptPlanState,
   type ClaudePlanState,
   type PlanSelection
@@ -70,6 +73,9 @@ export interface BrainPlanCardProps {
   currentPlan: OpenclawPlan | null;
   // A plan job ended: the page should read OpenClaw's model again.
   onChanged(): void;
+  // Whether the card is on screen: false once its routes answered 404 not_available and it hid itself (spec section 7).
+  // The Brain card then sends Change model to the OpenRouter picker, as before plan brains.
+  onAvailable?(available: boolean): void;
 }
 
 export interface BrainPlanCardHandle {
@@ -93,7 +99,7 @@ function hasCode(error: unknown, ...codes: string[]) {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(function BrainPlanCard({ where, currentPlan, onChanged }, ref) {
+const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(function BrainPlanCard({ where, currentPlan, onChanged, onAvailable }, ref) {
   const baseId = useId();
   const [plans, setPlans] = useState<Read<OpenclawPlansInfo>>({ state: "loading" });
   const [lists, setLists] = useState<Partial<Record<OpenclawPlan, Read<PlanModelList>>>>({});
@@ -115,6 +121,8 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
   const plansAt = useRef(0);
   const listGeneration = useRef<Record<OpenclawPlan, number>>({ claude: 0, chatgpt: 0 });
   const pollBusy = useRef(false);
+  // The id of the job that reached a final state on this card: no later answer about it counts (takeJobAnswer).
+  const settledJob = useRef<string | null>(null);
   const root = useRef<HTMLElement>(null);
   const cardTitle = useRef<HTMLHeadingElement>(null);
   const claudeTitle = useRef<HTMLHeadingElement>(null);
@@ -122,6 +130,8 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
   const chatgptSection = useRef<HTMLElement>(null);
   const latestOnChanged = useRef(onChanged);
   latestOnChanged.current = onChanged;
+  const latestOnAvailable = useRef(onAvailable);
+  latestOnAvailable.current = onAvailable;
 
   // What each plan needs now. A failed read keeps the last good answer under a note (P26); where these routes do not
   // exist (404 not_available), the card hides itself. A failed read says it in the app's own words (planProblem:
@@ -204,6 +214,13 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
     return () => window.removeEventListener("focus", onFocus);
   }, [readPlans]);
 
+  // Where the plan routes do not exist the card hides itself (below); the Brain card is told, so its Change model never
+  // points at a list that is not there.
+  const hidden = plans.state === "off";
+  useEffect(() => {
+    latestOnAvailable.current?.(!hidden);
+  }, [hidden]);
+
   const info = plans.state === "ok" ? plans.value : null;
   const claudeState = info ? claudePlanState(info.claude) : null;
   const chatgptState = info ? chatgptPlanState(info) : null;
@@ -239,6 +256,20 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
     if (!active || active === document.body || Boolean(root.current?.contains(active))) cardTitle.current?.focus();
   }
 
+  // An answer about the job, from the poll or from Cancel. Once the job reached a final state on this card, no later
+  // answer about it counts, so a poll answer that was already on its way when Cancel finished (or the reverse) never
+  // runs jobEnded a second time, and never brings a job back that the person has already left.
+  function takeJob(next: SetupJob) {
+    const kind = takeJobAnswer(settledJob.current, next);
+    if (kind === "ignore") return;
+    if (kind === "final") {
+      settledJob.current = next.id;
+      keepKeysInCard();
+    }
+    setJob(next);
+    if (kind === "final") jobEnded();
+  }
+
   useInterval(
     async () => {
       if (!job || pollBusy.current) return;
@@ -246,9 +277,7 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
       try {
         const next = await withTimeout(getSetupJob(job.id), PLAN_LIMITS_MS.action);
         if (!alive.current) return;
-        if (next.status !== "running") keepKeysInCard();
-        setJob(next);
-        if (next.status !== "running") jobEnded();
+        takeJob(next);
       } catch {
         // a passing failure; the next tick asks again
       } finally {
@@ -317,9 +346,7 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
     try {
       const next = await withTimeout(cancelSetupJob(job.id), PLAN_LIMITS_MS.action);
       if (!alive.current) return;
-      if (next.status !== "running") keepKeysInCard();
-      setJob(next);
-      if (next.status !== "running") jobEnded();
+      takeJob(next);
     } catch (error) {
       if (!alive.current) return;
       const words = planProblem(error, friendlyError);
@@ -366,10 +393,11 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
       setSignin({ id: answer.session.id, fresh: true });
     } catch (error) {
       if (!alive.current) return;
-      const running = hasCode(error, "setup_running");
-      // A sign-in already open (409), or a start whose answer never came: attach to the one that is running.
-      if (running || gotNoAnswer(error)) {
-        const found = await findSignInSession(running ? SETUP_RUNNING_WAIT_MS : 0);
+      // A sign-in already open (409), or a start whose answer never came (it timed out, and the server may have started
+      // it all the same): ask for the running one every second, for up to 15 s, and attach to it if it appears.
+      const wait = signInLookupWait(error);
+      if (wait !== null) {
+        const found = await findSignInSession(wait);
         if (!alive.current) return;
         if (found) {
           setSignin({ id: found, fresh: true });
@@ -395,31 +423,30 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
     if (keepFocus) chatgptTitle.current?.focus();
   }, [readPlans]);
 
-  // Close stopped the sign-in (or found it already gone): the panel closes as for an end, then the card asks once
-  // for the live sign-in, so one started meanwhile (from another window) is shown here, not left out of sight. The
+  // Close stopped the sign-in (or found it already gone): the panel closes as for an end, then the card asks once for
+  // the live sign-in, so one started meanwhile (from another window) is shown here, not left out of sight. The
   // session just closed is never shown again, even while its stop is still finishing; a sign-in the person started
-  // meanwhile is never replaced.
-  // When Close's stop answered 404 (`gone`), the session was not live, and a sign-in still before its spawn answers
-  // that too (Task B1a carry-forward): the person pressed Close, so whichever sign-in this read finds running is
-  // stopped, not shown. A stop that fails leaves it running, so it is shown instead of being lost from sight.
+  // meanwhile is never replaced. What happens to the sign-in found is signInAfterClose's rule: when Close's stop
+  // answered 404 (`gone`), the session was not live, and a sign-in still before its spawn answers that too (Task B1a
+  // carry-forward), so that same session is stopped, not shown; a different session is another window's, which is
+  // left running and shown. A stop that fails leaves it running, so it is shown instead of being lost from sight.
   const closedSignIn = useCallback(
     (closedId: string, gone: boolean) => {
       signinOver();
       withTimeout(getOpenclawSignInTerminal(), PLAN_LIMITS_MS.signInLookup)
         .then(async (answer) => {
-          const session = answer?.session;
-          if (!session || session.status === "exited") return;
-          if (gone) {
+          const next = signInAfterClose(closedId, gone, answer?.session);
+          const stopId = next.stop;
+          if (stopId) {
             try {
-              await stopSession(session.id);
+              await stopSession(stopId);
               return;
             } catch (error) {
               if (error instanceof ApiError && error.status === 404) return;
             }
-          } else if (session.id === closedId) {
-            return;
           }
-          if (alive.current) setSignin((current) => current ?? { id: session.id, fresh: false });
+          const showId = stopId ?? next.show;
+          if (showId && alive.current) setSignin((current) => current ?? { id: showId, fresh: false });
         })
         .catch(() => undefined);
     },
@@ -511,7 +538,7 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
                 type="radio"
                 name={name}
                 value=""
-                aria-label={TYPED_MODEL_LABEL}
+                aria-label={TYPED_MODEL_CHOICE_LABEL}
                 checked={picked?.kind === "typed"}
                 disabled={locked}
                 onChange={() => choose(plan, { kind: "typed" })}
@@ -543,11 +570,12 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
           <button
             type="button"
             className="os-btn os-btn--primary"
-            aria-label={`Apply · ${PLAN_LABEL[plan]}`}
             disabled={!chosen.model || !riskAccepted || locked}
             onClick={() => void apply(plan)}
           >
+            {/* The name is what is on the button, then the plan: "Apply · Claude plan", "Starting… · Claude plan". */}
             {busy === plan ? "Starting…" : "Apply"}
+            <span className="os-visually-hidden"> · {PLAN_LABEL[plan]}</span>
           </button>
         </div>
       </>
@@ -602,6 +630,9 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
             key={signin.id}
             sessionId={signin.id}
             autoFocus={signin.fresh}
+            onFocused={() =>
+              setSignin((current) => (current && current.id === signin.id && current.fresh ? { ...current, fresh: false } : current))
+            }
             onEnded={signinOver}
             onClose={(gone) => closedSignIn(signin.id, gone === true)}
           />

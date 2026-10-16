@@ -729,6 +729,11 @@ export function createSetupRouter({ sessionManager = null } = {}) {
         res.status(400).json({ ok: false, error: "confirm must be true" });
         return;
       }
+      // A sign-in that is starting or running is looked for first, before any
+      // command is run: a second press is answered 409 setup_running at once,
+      // without reading OpenClaw's version again. After it the order is
+      // unchanged: detect, the version gate, start.
+      sessions().assertNoSetupRunning();
       // Never the 30 s detection cache: an update installed a moment ago counts (spec §3).
       const detected = await ADAPTERS.openclaw.detect({ refresh: true });
       if (!detected?.installed) throw sessionError(409, "agent_not_installed", OPENCLAW_MISSING_MESSAGE);

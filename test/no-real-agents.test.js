@@ -13,12 +13,14 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_NAMES,
   REAL_AGENT_PATHS,
+  checksPhrase,
   defaultAllowedRoots,
   findViolations,
   isAllowedBinary,
   parsePsRows,
   readPsRows,
-  startWatcher
+  startWatcher,
+  violationLine
 } from "./helpers/no-real-agents.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -282,6 +284,7 @@ test("startWatcher reports a planted claude once, stops it with SIGTERM, and cou
     await waitUntil(() => reported.find((v) => v.pid === planted.pid), "the watcher to report the planted claude");
     assert.equal(await exited, "SIGTERM");
     const result = await watcher.stop();
+    assert.equal(reported.find((v) => v.pid === planted.pid).stopped, "sigterm", "the report says it really sent SIGTERM");
     assert.ok(result.checks >= 1);
     assert.equal(result.violations.filter((v) => v.pid === planted.pid).length, 1, "reported once");
     assert.equal(reported.filter((v) => v.pid === planted.pid).length, 1);
@@ -290,6 +293,82 @@ test("startWatcher reports a planted claude once, stops it with SIGTERM, and cou
     killGroup(planted);
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ---- The violation line says what the watcher really did ----------------------------
+
+// One ps snapshot per call (the first is the baseline): the runner, then a
+// "claude" outside the fake folder that only shows up from the second look on.
+function plantedRows(pid) {
+  return (n) =>
+    n === 1
+      ? [{ pid: RUNNER, ppid: 1, command: "node scripts/run-tests.mjs" }]
+      : [
+          { pid: RUNNER, ppid: 1, command: "node scripts/run-tests.mjs" },
+          { pid, ppid: RUNNER, command: `${REAL_HOME}/.local/bin/claude --print` }
+        ];
+}
+
+async function watchOnce(options) {
+  const reported = [];
+  const watcher = await startWatcher({
+    rootPid: RUNNER,
+    intervalMs: 20,
+    allowedRoots: [FAKE_ROOT],
+    onViolation: (violation) => reported.push(violation),
+    ...options
+  });
+  try {
+    await waitUntil(() => reported.length, "the violation to be reported");
+  } finally {
+    await watcher.stop();
+  }
+  return reported[0];
+}
+
+test("a violation says what the watcher really did: SIGTERM sent, already gone, could not be signalled, or kill off", POSIX_ONLY, async () => {
+  const signalled = [];
+  const sent = await watchOnce({ readRows: scriptedRows(plantedRows(4242)), killProcess: (pid, signal) => signalled.push([pid, signal]) });
+  assert.equal(sent.stopped, "sigterm");
+  assert.deepEqual(signalled, [[4242, "SIGTERM"]]);
+
+  const gone = await watchOnce({
+    readRows: scriptedRows(plantedRows(4243)),
+    killProcess: () => {
+      throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    }
+  });
+  assert.equal(gone.stopped, "gone");
+
+  const refused = await watchOnce({
+    readRows: scriptedRows(plantedRows(4244)),
+    killProcess: () => {
+      throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+    }
+  });
+  assert.equal(refused.stopped, "failed");
+
+  const off = await watchOnce({
+    readRows: scriptedRows(plantedRows(4245)),
+    kill: false,
+    killProcess: () => assert.fail("kill is off, so no signal may be sent")
+  });
+  assert.equal(off.stopped, "no");
+});
+
+test("violationLine tells the truth about each outcome and never claims SIGTERM unless it was sent; checksPhrase is singular for one", () => {
+  const base = { name: "claude", pid: 4242, binary: `${REAL_HOME}/.local/bin/claude` };
+  const head = `no-real-agents watcher: a real "claude" started during the tests (pid 4242, ${base.binary}, from test/a.test.js). `;
+  assert.equal(violationLine({ ...base, stopped: "sigterm" }, "test/a.test.js"), `${head}Sent it SIGTERM.`);
+  assert.equal(violationLine({ ...base, stopped: "gone" }, "test/a.test.js"), `${head}It had already ended by then.`);
+  assert.equal(violationLine({ ...base, stopped: "failed" }, "test/a.test.js"), `${head}Could not stop it, so it may still be running.`);
+  assert.equal(violationLine({ ...base, stopped: "no" }, "test/a.test.js"), `${head}Did not stop it.`);
+  // A violation that says nothing about it never gets the SIGTERM sentence.
+  assert.equal(violationLine(base, "test/a.test.js"), `${head}Did not stop it.`);
+
+  assert.equal(checksPhrase(0), "0 checks");
+  assert.equal(checksPhrase(1), "1 check");
+  assert.equal(checksPhrase(2), "2 checks");
 });
 
 // ---- Fix round 1 ------------------------------------------------------------
@@ -453,14 +532,14 @@ test("the runner does not call a run clean when ps stopped working: it says so a
 test("the runner reports the polls that could not run ps, still passes when the final sweep worked, and ends without process.exit()", POSIX_ONLY, async () => {
   const run = await runRunner((broken) => sleepAndBreakPs(broken, { thenFix: true }));
   assert.equal(run.code, 0, run.stderr);
-  assert.match(run.stdout, /^no-real-agents watcher: no real agent started \(\d+ checks, [1-9]\d* could not run ps\)$/m);
+  assert.match(run.stdout, /^no-real-agents watcher: no real agent started \(\d+ checks?, [1-9]\d* could not run ps\)$/m);
   assert.equal(run.exitCalls, "", "the runner set process.exitCode and let the process end by itself");
 });
 
 test("a clean run prints the plain summary line, with no ps failures to mention", POSIX_ONLY, async () => {
   const run = await runRunner(() => "await new Promise((resolve) => setTimeout(resolve, 300));\n");
   assert.equal(run.code, 0, run.stderr);
-  assert.match(run.stdout, /^no-real-agents watcher: no real agent started \(\d+ checks\)$/m);
+  assert.match(run.stdout, /^no-real-agents watcher: no real agent started \(\d+ checks?\)$/m);
   assert.equal(run.exitCalls, "");
 });
 

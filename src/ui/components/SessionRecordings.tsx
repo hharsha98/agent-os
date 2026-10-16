@@ -2,7 +2,10 @@
 // sessions list for Resume. A live one offers "Open live session". An ended one offers "Resume conversation" (or says
 // why it can't) and the note "Replay arrives in a later update" (the player is SP4). An update recording ("<agent>
 // update") offers nothing: it is never resumed. "Open recording" on an ended Sessions tab lands here with that row
-// highlighted (?highlight=<session id>), and the row takes keyboard focus once. listRecordings and resumeSession carry
+// highlighted (?highlight=<session id>; the row also says aria-current), and the row takes keyboard focus once. A
+// resumed session is one recording: Recorded is when it first started and Length covers all its parts (recordingsShared.ts).
+// A Resume the server refuses as impossible (session_live, not_resumable) shuts the dialog's Resume button and keeps the
+// server's own sentence. listRecordings and resumeSession carry
 // their own time limits (sessionsApi.ts, SESSION_LIMITS_MS). Where sessions do not run (the public demo, a shared
 // server) the route answers 404 not_available: the tab says so once and stops asking, instead of "isn't responding".
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -13,9 +16,9 @@ import { listRecordings, resumeSession, sessionGotNoAnswer } from "../../session
 import type { SessionSummary } from "../../types";
 import { collapseHomePath } from "../agentsShared";
 import { askToFocusNextSession, createdSessionId } from "../newSession";
-import { CAP_NOTE, EMPTY_BODY, EMPTY_TITLE, REPLAY_LATER, isRecording, readRecordings, recordingLength, rowAction } from "../recordingsShared";
+import { CAP_NOTE, EMPTY_BODY, EMPTY_TITLE, REPLAY_LATER, isRecording, readRecordings, recordedAt, recordingLength, rowAction } from "../recordingsShared";
 import type { RecordingRow, RecordingsBody } from "../recordingsShared";
-import { resumeConfirmCopy, sessionTitle } from "../sessionsShared";
+import { isImpossibleResume, resumeConfirmCopy, sessionTitle } from "../sessionsShared";
 import { actionProblem, isLookOnlyRefusal } from "../sessionsPageShared";
 import { useSessionsList } from "../useSessionsList";
 import AgentConfirmModal from "./AgentConfirmModal";
@@ -84,7 +87,8 @@ export default function SessionRecordings({ value, highlight, onReload }: { valu
     sessionsList.source.state === "ok" && Array.isArray(sessionsList.source.data.sessions) ? sessionsList.source.data.sessions : [];
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const [now, setNow] = useState(() => Date.now());
-  const [resuming, setResuming] = useState<{ session: SessionSummary; busy: boolean; error: string; toSafety: boolean } | null>(null);
+  // `blocked`: the server refused the Resume as impossible (isImpossibleResume), so pressing it again cannot work.
+  const [resuming, setResuming] = useState<{ session: SessionSummary; busy: boolean; error: string; toSafety: boolean; blocked: boolean } | null>(null);
   const alive = useRef(true);
   const highlighted = useRef("");
   const anyLive = value.state === "ok" && value.data.rows.some((row) => row.live);
@@ -107,10 +111,17 @@ export default function SessionRecordings({ value, highlight, onReload }: { valu
     row.focus({ preventScroll: true });
   }, [highlight, value]);
 
+  // The keyboard was on the Resume button when the server refused it as impossible, and that button is now shut: it goes
+  // to Cancel, so it neither falls to the page behind the dialog nor sits on a button that does nothing.
+  const blocked = resuming?.blocked === true;
+  useEffect(() => {
+    if (blocked) document.querySelector<HTMLElement>(".os-modal__actions .os-btn--ghost")?.focus();
+  }, [blocked]);
+
   async function confirmResume() {
-    if (!resuming || resuming.busy) return;
+    if (!resuming || resuming.busy || resuming.blocked) return;
     const { session } = resuming;
-    setResuming({ session, busy: true, error: "", toSafety: false });
+    setResuming({ session, busy: true, error: "", toSafety: false, blocked: false });
     try {
       const resumed = await resumeSession(session.id);
       if (!alive.current) return;
@@ -123,7 +134,13 @@ export default function SessionRecordings({ value, highlight, onReload }: { valu
       navigateTo("sessions", { session: session.id });
     } catch (error) {
       if (!alive.current) return;
-      setResuming({ session, busy: false, error: actionProblem(error, "resume", sessionGotNoAnswer(error)), toSafety: isLookOnlyRefusal(error) });
+      setResuming({
+        session,
+        busy: false,
+        error: actionProblem(error, "resume", sessionGotNoAnswer(error)),
+        toSafety: isLookOnlyRefusal(error),
+        blocked: isImpossibleResume(error)
+      });
       // The conversation may have started although nothing readable came back: read both lists again.
       sessionsList.refresh();
       onReload();
@@ -207,6 +224,7 @@ export default function SessionRecordings({ value, highlight, onReload }: { valu
                 className={`os-table__row os-runs-rec__row${lit ? " is-highlighted" : ""}`}
                 role="row"
                 data-recording={row.sessionId}
+                aria-current={lit ? "true" : undefined}
                 tabIndex={lit ? -1 : undefined}
               >
                 <div className="os-table__cell" role="cell">
@@ -225,7 +243,7 @@ export default function SessionRecordings({ value, highlight, onReload }: { valu
                   {length.soFar ? <span className="os-runs-rec__sofar">so far</span> : null}
                 </div>
                 <div className="os-table__cell os-runs-rec__when" role="cell">
-                  {row.startedAt ? <TimeAgo since={row.startedAt} /> : "—"}
+                  {recordedAt(row) ? <TimeAgo since={recordedAt(row)} /> : "—"}
                 </div>
                 <div className="os-table__cell os-runs-rec__acts" role="cell">
                   {action.kind === "open" ? (
@@ -242,7 +260,7 @@ export default function SessionRecordings({ value, highlight, onReload }: { valu
                         disabled={!action.available || !session}
                         aria-describedby={`os-rec-note-${row.sessionId}`}
                         onClick={() => {
-                          if (session) setResuming({ session, busy: false, error: "", toSafety: false });
+                          if (session) setResuming({ session, busy: false, error: "", toSafety: false, blocked: false });
                         }}
                       >
                         <History size={15} aria-hidden="true" />
@@ -266,6 +284,7 @@ export default function SessionRecordings({ value, highlight, onReload }: { valu
           title={copy.title}
           confirmLabel="Resume conversation"
           busy={resuming.busy}
+          confirmDisabled={resuming.blocked}
           onConfirm={() => void confirmResume()}
           onClose={() => {
             if (!resuming.busy) setResuming(null);

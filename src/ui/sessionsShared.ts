@@ -54,9 +54,17 @@ export function isSessionRunning(s: Pick<SessionSummary, "status">): boolean {
   return knownStatus(s.status) && s.status !== "exited";
 }
 
-// The menu's count: running AGENT sessions only; an update session is never shown there (spec, Session kinds).
+// THE rule for an open session in the UI: an AGENT session whose program is still running. An update session is never
+// counted (spec, Session kinds), nor is a setup session (OpenClaw's ChatGPT sign-in terminal), nor a status this
+// version does not know. The menu's count, Home (its lede, rows, Recent activity) and Agents' Open session button all
+// use this one function, so they never disagree.
+export function isOpenAgentSession(s: Pick<SessionSummary, "kind" | "status">): boolean {
+  return s.kind === "agent" && isSessionRunning(s);
+}
+
+// The menu's count: open agent sessions only.
 export function runningSessionCount(sessions: ReadonlyArray<Pick<SessionSummary, "kind" | "status">>): number {
-  return sessions.filter((s) => s.kind === "agent" && isSessionRunning(s)).length;
+  return sessions.filter(isOpenAgentSession).length;
 }
 
 // "under 1 m", "26 m", "1 h 05 m" (the same words as Home's elapsedLabel); "—" when not known.
@@ -161,6 +169,15 @@ export function resumeConfirmCopy(s: DialogFields & Pick<SessionSummary, "resume
     cancel: "Cancel",
     confirm: "Resume conversation"
   };
+}
+
+// A Resume the server refused because it can never work as things stand: 409 session_live (the session runs again, so
+// there is nothing to resume) or 409 not_resumable (an update session, or the agent's resume rules say no). The
+// dialog then disables its Resume button and keeps the server's own sentence; every other refusal (a busy double
+// click, Look only, no answer) can work on another try. An Error is Agent OS's own answer when it is named
+// "ApiError" (src/api.ts), the same test the other pages' refusal helpers use.
+export function isImpossibleResume(error: unknown): boolean {
+  return error instanceof Error && error.name === "ApiError" && (error.message === "session_live" || error.message === "not_resumable");
 }
 
 // ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ import { readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAKE_LOGIN_SHELL } from "../test/helpers/fake-agents.js";
-import { startWatcher } from "../test/helpers/no-real-agents.js";
+import { checksPhrase, startWatcher, violationLine } from "../test/helpers/no-real-agents.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const extra = process.argv.slice(2);
@@ -34,20 +34,12 @@ function shownPath(file) {
   return relative.startsWith("..") || path.isAbsolute(relative) ? file : relative;
 }
 
-function violationLine(violation) {
-  const where = shownPath(violation.testFile);
-  return (
-    `no-real-agents watcher: a real "${violation.name}" started during the tests ` +
-    `(pid ${violation.pid}, ${violation.binary}, from ${where}). Sent it SIGTERM.`
-  );
-}
-
 let watcher = null;
 if (process.platform === "win32") {
   console.log("no-real-agents watcher: not available on Windows");
 } else {
   try {
-    watcher = await startWatcher({ rootPid: process.pid, onViolation: (violation) => console.error(violationLine(violation)) });
+    watcher = await startWatcher({ rootPid: process.pid, onViolation: (violation) => console.error(violationLine(violation, shownPath(violation.testFile))) });
   } catch (error) {
     console.error(`${error.message}. The tests did not run.`);
     process.exit(1);
@@ -115,7 +107,7 @@ child.once("exit", async (code, signal) => {
       exitCode = 1;
     } else if (!violations.length) {
       const failed = failedChecks ? `, ${failedChecks} could not run ps` : "";
-      console.log(`no-real-agents watcher: no real agent started (${checks} checks${failed})`);
+      console.log(`no-real-agents watcher: no real agent started (${checksPhrase(checks)}${failed})`);
     }
   }
   // Not process.exit(): on a pipe (npm test | tail) it can cut off the line

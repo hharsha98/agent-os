@@ -1,9 +1,15 @@
 // Home's pure logic: what lights the Orbit, each agent's status line, the lede,
 // the recent activity rows and today's spend. `import type` only (decision P14):
-// the logic test loads this file straight from src/ and Node strips the types.
+// the logic test loads this file straight from src/ and Node strips the types. The one exception is the open-session
+// rule below, imported from sessionsShared.ts so there is a single copy of it (see the note on that import).
 import type { AgentModelInfo } from "../setupApi";
 import type { AgentSummary, RunMeta, SessionSummary } from "../types";
 import type { StatusState } from "./components/StatusWord";
+// The import path carries its .ts extension because Node cannot follow an extensionless import when a test loads this
+// file straight from src/ (the Vite build and the browser do not mind it). tsconfig does not allow the extension, so
+// TypeScript's only complaint (TS5097) is silenced on this one line; every type still comes through.
+// @ts-expect-error TS5097
+import { isOpenAgentSession } from "./sessionsShared.ts";
 
 export const HOME_AGENTS = [
   { id: "hermes", name: "Hermes Agent", maker: "Nous Research", role: "operator" },
@@ -113,9 +119,10 @@ export function orbitStates(runs: RunMeta[], sessions: SessionSummary[] = []): O
   return out;
 }
 
-// Open agent sessions: every one that has not ended. (Update sessions are never counted on Home, spec Session kinds.)
+// Open agent sessions: the same rule as the menu's count (isOpenAgentSession, sessionsShared.ts). Update sessions and
+// setup sessions are never counted on Home, spec Session kinds.
 export function openSessions(sessions: SessionSummary[]): SessionSummary[] {
-  return sessions.filter((session) => session.kind !== "update" && session.status !== "exited");
+  return sessions.filter(isOpenAgentSession);
 }
 
 // Each agent's newest open session.

@@ -63,6 +63,9 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   // What the last good brain answer said about this agent: installed or not. A failed read and Retry keep it, so the
   // plan card and Choose in Hermes (shown after the states below) are never unmounted by one; a new agent starts over.
   const [installedSeen, setInstalledSeen] = useState(false);
+  // The plan card hid itself because its routes answered 404 not_available (it tells us, onAvailable below): Change model
+  // then opens the OpenRouter picker, not a plan list that is not on screen.
+  const [planCardOff, setPlanCardOff] = useState(false);
   // False once the card is gone, and the newest read is the only one allowed to answer: a late
   // answer must not update a screen that is not there, or one showing another agent.
   const alive = useRef(true);
@@ -116,6 +119,7 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
     setFailed(null);
     setOpen(false);
     setInstalledSeen(false);
+    setPlanCardOff(false);
     void load();
   }, [agentId, load]);
 
@@ -143,6 +147,8 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
   const live = models[agentId];
   // The plan OpenClaw is on, from its own answer (spec section 5); never for Hermes.
   const livePlan = agentId === "openclaw" ? live?.plan ?? null : null;
+  // "Your plan" is on screen on OpenClaw's card in local mode, once OpenClaw is seen installed, unless it hid itself.
+  const planCardShown = agentId === "openclaw" && localMode && installedSeen && !planCardOff;
   // Three different things hide behind `live`, and only the first one may say "No model yet":
   //   an object  = the lookup answered (its model may be empty),
   //   null       = the lookup failed or ran out of time,
@@ -263,13 +269,14 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
                 `${current.summary} Press Change model, or Change brain, to give ${label} one.`
               )}
             </p>
-            {/* While OpenClaw is on a plan, Change model opens that plan's list in "Your plan", not the OpenRouter picker. */}
+            {/* While OpenClaw is on a plan and "Your plan" is on screen, Change model opens that plan's list there; with no plan
+                card (public mode, or it hid itself) it opens the OpenRouter picker, as before plan brains. */}
             <BrainModelActions
               agents={lines}
               models={models}
               initialAgents={[agentId]}
               onChanged={onModelChanged}
-              onChangeModel={livePlan ? () => planCard.current?.showModels(livePlan) : undefined}
+              onChangeModel={livePlan && planCardShown ? () => planCard.current?.showModels(livePlan) : undefined}
               extraActions={
                 <button type="button" className="os-btn os-btn--secondary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
                   {open ? "Close" : "Change brain"}
@@ -283,12 +290,12 @@ export default function AgentBrainCard({ agentId, label }: { agentId: BrainAgent
             model name, a job's result or an open sign-in would be thrown away, P26). Both show once a good answer
             has said the agent is installed, and only in local mode, where their routes exist. */}
         {agentId === "openclaw" && localMode && installedSeen ? (
-          <BrainPlanCard ref={planCard} where="agents" currentPlan={livePlan} onChanged={onModelChanged} />
+          <BrainPlanCard ref={planCard} where="agents" currentPlan={livePlan} onChanged={onModelChanged} onAvailable={(available) => setPlanCardOff(!available)} />
         ) : null}
         {/* Hermes: Refresh reads the whole card again (the brain and the models, so the status follows the new model);
             window focus, which comes in bursts, reads only the models, never the slow brain read. */}
         {agentId === "hermes" && localMode && installedSeen ? (
-          <ChooseInHermes onRefresh={onModelChanged} onWindowFocus={() => void reloadModels()} />
+          <ChooseInHermes onRefresh={onModelChanged} onWindowFocus={() => void reloadModels("hermes")} />
         ) : null}
       </section>
 

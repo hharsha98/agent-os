@@ -323,17 +323,56 @@ test("wiring: every request of the new cards has a time limit, Hermes never gets
 test("wiring: the two Task B1a carry-forwards (a Close that got 404 stops what it finds; a refused first attach asks the session at once)", () => {
   const card = read("src/ui/components/BrainPlanCard.tsx");
   const term = read("src/ui/components/PlanSignInTerminal.tsx");
-  // (a) The terminal tells the card when Close's stop answered 404, and the card then stops the sign-in it finds
-  // running instead of only showing it. Without a 404 it still never stops (or shows again) the session just closed.
+  // (a) The terminal tells the card when Close's stop answered 404. The card closes the panel and reads the plans, then
+  // asks the pure rule (signInAfterClose, tested above) what to do with the live sign-in the GET finds: stop it (only
+  // the session just closed, after a 404), show it (another window's, or one whose stop failed), or leave it.
   assert.match(term, /gone = true;/);
   assert.match(term, /latest\.current\.onClose\(gone\)/);
   assert.match(card, /onClose=\{\(gone\) => closedSignIn\(signin\.id, gone === true\)\}/);
-  assert.match(card, /if \(gone\) \{\s*try \{\s*await stopSession\(session\.id\);/);
-  assert.match(card, /else if \(session\.id === closedId\) \{\s*return;/);
-  // (b) A terminal that has never been open and fails its first try asks the session at once, so a sign-in that
-  // already ended closes the panel (a 404 is an end) before the 5 s tick, with no new sentence.
-  assert.match(term, /else if \(\(connection === "reconnecting" \|\| connection === "lost"\) && !opened\.current\) void latestAsk\.current\(\);/);
-  assert.match(term, /else if \(connection === "open"\) opened\.current = true;/);
+  assert.match(card, /signinOver\(\);\s*withTimeout\(getOpenclawSignInTerminal\(\), PLAN_LIMITS_MS\.signInLookup\)/, "the panel closes and the plans are read before the look");
+  assert.match(card, /const next = signInAfterClose\(closedId, gone, answer\?\.session\);\s*const stopId = next\.stop;/);
+  assert.match(card, /if \(stopId\) \{\s*try \{\s*await stopSession\(stopId\);\s*return;/);
+  assert.match(card, /const showId = stopId \?\? next\.show;\s*if \(showId && alive\.current\) setSignin\(\(current\) => current \?\? \{ id: showId, fresh: false \}\);/);
+  assert.doesNotMatch(card, /if \(gone\) \{\s*try/, "the old rule (stop whatever is found after a 404) is gone");
+  // (b) A terminal that has never been open and fails its first try asks the session at once (asksSessionAtOnce), so a
+  // sign-in that already ended closes the panel (a 404 is an end: signInSessionEnded) before the 5 s tick, with no new sentence.
+  assert.match(term, /else if \(asksSessionAtOnce\(connection, opened\.current\)\) void latestAsk\.current\(\);/);
+  assert.match(term, /opened\.current = true;/);
+  assert.match(term, /if \(alive\.current && signInSessionEnded\(summary, false\)\) setEnded\(true\);/);
+  assert.match(term, /if \(alive\.current && signInSessionEnded\(null, isGone\(error\)\)\) setEnded\(true\);/);
+});
+
+test("wiring: the sweep's small fixes are in place in the cards (C2 comment, C3, C4, C5, C6, C7, C8)", () => {
+  const card = read("src/ui/components/BrainPlanCard.tsx");
+  const term = read("src/ui/components/PlanSignInTerminal.tsx");
+  const agents = read("src/ui/components/AgentBrainCard.tsx");
+  const hook = read("src/ui/components/useAgentModels.ts");
+  // C2: Close's comment no longer says a 404 means the session ended AND that it can be a sign-in still before its spawn.
+  assert.doesNotMatch(term, /so a 404 here means it ended/);
+  assert.match(term, /usually means the session already ended/);
+  assert.match(term, /still before its spawn/);
+  assert.match(term, /another window's/);
+  // C3: a Sign in that timed out looks for the running sign-in just as one that got 409 does.
+  assert.match(card, /const wait = signInLookupWait\(error\);\s*if \(wait !== null\) \{\s*const found = await findSignInSession\(wait\);/);
+  assert.doesNotMatch(card, /running \? SETUP_RUNNING_WAIT_MS : 0/);
+  // C4: Change model opens the plan's list only while the plan card is on screen; otherwise the OpenRouter picker.
+  assert.match(agents, /const planCardShown = agentId === "openclaw" && localMode && installedSeen && !planCardOff;/);
+  assert.match(agents, /onChangeModel=\{livePlan && planCardShown \? \(\) => planCard\.current\?\.showModels\(livePlan\) : undefined\}/);
+  assert.match(agents, /<BrainPlanCard ref=\{planCard\} where="agents" currentPlan=\{livePlan\} onChanged=\{onModelChanged\} onAvailable=\{\(available\) => setPlanCardOff\(!available\)\} \/>/);
+  assert.match(card, /const hidden = plans\.state === "off";\s*useEffect\(\(\) => \{\s*latestOnAvailable\.current\?\.\(!hidden\);\s*\}, \[hidden\]\);/);
+  // C5: the poll's answer and Cancel's answer both go through takeJob, which asks takeJobAnswer.
+  assert.match(card, /const kind = takeJobAnswer\(settledJob\.current, next\);/);
+  assert.equal(card.match(/takeJob\(next\);/g)?.length, 2, "the poll and Cancel");
+  assert.equal(card.match(/setJob\(next\)/g)?.length, 1, "no answer about the job is taken without the rule: the one setJob(next) is inside takeJob");
+  // C6: the terminal says once that it took the keys; the card then clears `fresh`, so a remount never takes them again.
+  assert.match(term, /if \(latest\.current\.autoFocus && !focused\.current\) \{\s*focused\.current = true;\s*latest\.current\.onFocused\?\.\(\);/);
+  assert.match(card, /onFocused=\{\(\) =>\s*setSignin\(\(current\) => \(current && current\.id === signin\.id && current\.fresh \? \{ \.\.\.current, fresh: false \} : current\)\)/);
+  // C7: window focus on Hermes's card reads Hermes's model only; the hook reads one agent when asked, and never throws away another agent's read.
+  assert.match(agents, /<ChooseInHermes onRefresh=\{onModelChanged\} onWindowFocus=\{\(\) => void reloadModels\("hermes"\)\} \/>/);
+  assert.match(hook, /reload = useCallback\(\s*async \(only\?: BrainAgentId\)/);
+  assert.match(hook, /mergeModelReads\(previous, answers, asked, only === undefined\)/);
+  // C8: the terminal's notice line clears when the terminal is connected again.
+  assert.match(term, /else if \(connection === "open"\) \{\s*opened\.current = true;\s*(?:\/\/[^\n]*\s*)*setNotice\(""\);/);
 });
 
 test("Brain card after Choose in Hermes (fix round 1): the mark follows the live model, and 'Last set by Agent OS' only sits beside the model Agent OS set", () => {
@@ -370,7 +409,7 @@ test("Brain card after Choose in Hermes (fix round 1): the mark follows the live
   assert.match(agents, /brainMark\(Boolean\(current\?\.configured\), live\)/);
   assert.match(agents, /<StatusMark kind=\{mark\.kind\} label=\{mark\.label\} \/>/);
   assert.match(agents, /receiptFitsModel\(receipt, live\?\.model\)/);
-  assert.match(agents, /<ChooseInHermes onRefresh=\{onModelChanged\} onWindowFocus=\{\(\) => void reloadModels\(\)\} \/>/);
+  assert.match(agents, /<ChooseInHermes onRefresh=\{onModelChanged\} onWindowFocus=\{\(\) => void reloadModels\("hermes"\)\} \/>/);
   const hermes = read("src/ui/components/ChooseInHermes.tsx");
   assert.match(hermes, /latestFocus\.current\(\);/);
   assert.match(hermes, /function refresh\(\) \{\s*lastRead\.current = Date\.now\(\);\s*latest\.current\(\);/, "the Refresh button runs onRefresh");
@@ -392,4 +431,96 @@ test("Brain card while the receipt is read again (fix round 2): 'set up outside 
   assert.ok(at("receiptReading ? (") < at("receiptUnknown ? ("), "...and before the record-unreadable sentences");
   assert.ok(at("receiptReading ? (") < at("it was set up outside Agent OS"), "...and before every 'set up outside Agent OS'");
   assert.match(agents, /receiptReading \? \(\s*(?:\/\/[^\n]*\s*)*current\.configured \? current\.summary : null\s*\) : receiptUnknown \? \(/);
+});
+
+// ---- Minor sweep, Group C: the brain screens' small fixes --------------------------------------------------------
+
+const live = (id) => ({ id, status: "live" });
+const exited = (id) => ({ id, status: "exited" });
+
+test("signInAfterClose: after a Close, the sign-in the GET finds is stopped only when it is the one just closed (sweep C1, C9)", () => {
+  const after = shared.signInAfterClose;
+  const nothing = { stop: null, show: null };
+  // Close stopped it cleanly: the session just closed is never shown again (its stop may still be finishing); a
+  // different one (another window's) is never stopped, it is shown.
+  assert.deepEqual(after("a", false, live("a")), nothing);
+  assert.deepEqual(after("a", false, live("b")), { stop: null, show: "b" });
+  // Close got 404: a sign-in still before its spawn answers that too, so the same id is stopped (it is live now).
+  assert.deepEqual(after("a", true, live("a")), { stop: "a", show: null });
+  // ...but a different id after a 404 is another window's sign-in: left running, and shown, never stopped.
+  assert.deepEqual(after("a", true, live("b")), { stop: null, show: "b" });
+  // Nothing live, an ended session, or an answer that is not a session: nothing to stop or show.
+  for (const gone of [false, true]) {
+    for (const found of [null, undefined, exited("a"), exited("b"), {}, { id: "", status: "live" }]) {
+      assert.deepEqual(after("a", gone, found), nothing, `${gone} ${JSON.stringify(found)}`);
+    }
+  }
+});
+
+test("asksSessionAtOnce and signInSessionEnded: a terminal that never opened and fails its first try asks at once; 404 or exited is an end (Task B1a carry-forward)", () => {
+  for (const connection of ["reconnecting", "lost"]) {
+    assert.equal(shared.asksSessionAtOnce(connection, false), true, `${connection}, never open`);
+    assert.equal(shared.asksSessionAtOnce(connection, true), false, `${connection}, was open: the 5 s tick asks`);
+  }
+  for (const connection of ["connecting", "open", "ended"]) {
+    for (const opened of [false, true]) assert.equal(shared.asksSessionAtOnce(connection, opened), false, `${connection} ${opened}`);
+  }
+  assert.equal(shared.signInSessionEnded({ status: "exited" }, false), true);
+  assert.equal(shared.signInSessionEnded({ status: "live" }, false), false);
+  assert.equal(shared.signInSessionEnded(null, false), false, "an answer that is not a session is not an end");
+  assert.equal(shared.signInSessionEnded(undefined, true), true, "a 404 is how a setup session answers once it ended");
+  assert.equal(shared.signInSessionEnded({ status: "live" }, true), true);
+});
+
+test("signInLookupWait: a Sign in that got 409 setup_running, or no answer at all, looks for the running sign-in for up to 15 s (sweep C3)", () => {
+  assert.equal(shared.signInLookupWait(apiError("setup_running", "", 409)), shared.SETUP_RUNNING_WAIT_MS);
+  assert.equal(shared.signInLookupWait(new Error(shared.TIMEOUT_WORDS)), shared.SETUP_RUNNING_WAIT_MS, "a start that timed out may still have started it");
+  assert.equal(shared.signInLookupWait(new TypeError("Failed to fetch")), shared.SETUP_RUNNING_WAIT_MS, "a start whose answer never came");
+  assert.equal(shared.SETUP_RUNNING_WAIT_MS, 15_000);
+  // A refusal with its own sentence says it at once: there is no sign-in to find.
+  for (const code of ["openclaw_too_old", "openclaw_version_unknown", "pty_unavailable", "invalid_request"]) {
+    assert.equal(shared.signInLookupWait(apiError(code, "words", 409)), null, code);
+  }
+});
+
+test("takeJobAnswer: once a job reached a final state on this card, no later answer for it counts, so the job's end is handled once (sweep C5)", () => {
+  const take = shared.takeJobAnswer;
+  assert.equal(take(null, { id: "j1", status: "running" }), "running");
+  for (const status of ["succeeded", "failed", "cancelled"]) assert.equal(take(null, { id: "j1", status }), "final", status);
+  // Cancel answered "cancelled" first; the poll's answer that was already on its way is dropped (and the reverse).
+  for (const status of ["running", "succeeded", "failed", "cancelled"]) assert.equal(take("j1", { id: "j1", status }), "ignore", `after final: ${status}`);
+  // Another job's end does not block a new job.
+  assert.equal(take("j1", { id: "j2", status: "running" }), "running");
+  assert.equal(take("j1", { id: "j2", status: "succeeded" }), "final");
+});
+
+test("mergeModelReads: a read of one agent leaves the other agent's answer alone; a whole read drops agents no longer asked about (sweep C7)", () => {
+  const merge = brain.mergeModelReads;
+  const a = { model: "a" };
+  const b = { model: "b" };
+  const c = { model: "c" };
+  const d = { model: "d" };
+  const before = { hermes: a, openclaw: b };
+  assert.deepEqual(merge(before, [["hermes", c]], ["hermes"], false), { hermes: c, openclaw: b }, "Hermes only");
+  assert.deepEqual(merge(before, [["openclaw", d]], ["openclaw"], false), { hermes: a, openclaw: d }, "OpenClaw only");
+  assert.deepEqual(merge(before, [["hermes", c], ["openclaw", d]], ["hermes", "openclaw"], true), { hermes: c, openclaw: d }, "both");
+  assert.deepEqual(merge(before, [["hermes", c]], ["hermes"], true), { hermes: c }, "OpenClaw is not installed any more: dropped");
+  assert.deepEqual(merge(before, [["hermes", c]], ["hermes", "openclaw"], true), { hermes: c, openclaw: b }, "a newer read of OpenClaw is on its way: its older answer stays");
+  assert.deepEqual(merge(before, [["hermes", null]], ["hermes"], false), { hermes: null, openclaw: b }, "a failed read is null, not 'no model'");
+  assert.deepEqual(before, { hermes: a, openclaw: b }, "the old map is not changed");
+});
+
+test("the fallback row's radio and its text field have different accessible names, and Apply's name keeps its visible state (sweep C10, C11)", () => {
+  assert.equal(shared.TYPED_MODEL_LABEL, "Type a model name", "the field keeps the spec's words");
+  assert.notEqual(shared.TYPED_MODEL_CHOICE_LABEL, shared.TYPED_MODEL_LABEL);
+  assert.doesNotMatch(shared.TYPED_MODEL_CHOICE_LABEL, /—/, "no em dash");
+  assert.doesNotMatch(shared.TYPED_MODEL_CHOICE_LABEL, /[‘’“”]/, "straight quotes");
+  const card = read("src/ui/components/BrainPlanCard.tsx");
+  assert.equal(card.match(/aria-label=\{TYPED_MODEL_LABEL\}/g)?.length, 1, "one control is named Type a model name (the text field)");
+  assert.equal(card.match(/aria-label=\{TYPED_MODEL_CHOICE_LABEL\}/g)?.length, 1, "the radio has its own name");
+  assert.match(card, /type="radio"[^>]*\n[^<]*value=""\n\s*aria-label=\{TYPED_MODEL_CHOICE_LABEL\}/, "...and it is the radio's");
+  // Apply: no aria-label that replaces what is on the button; the plan's name is added after the visible word, so the
+  // name is "Apply · Claude plan" or "Starting… · Claude plan".
+  assert.doesNotMatch(card, /aria-label=\{`Apply/);
+  assert.match(card, /\{busy === plan \? "Starting…" : "Apply"\}\s*<span className="os-visually-hidden"> · \{PLAN_LABEL\[plan\]\}<\/span>/);
 });

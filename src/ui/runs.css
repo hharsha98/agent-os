@@ -740,10 +740,14 @@
 .os-runs-rec .os-table__row {
   min-height: 64px;
 }
-/* The row "Open recording" asked for: a selection, drawn as a wash with a hairline (one accent). */
+/* The row "Open recording" asked for: a selection, drawn as a wash with a hairline (one accent). The hairline is on
+   the row's edge, so the row reaches out past the table by as much as it pads in: the title and the buttons keep
+   their columns (they line up with the other rows) and stay clear of the line. */
 .os-runs-rec__row.is-highlighted {
   background: var(--os-accent-soft);
   box-shadow: inset 0 0 0 1px var(--os-accent-line);
+  margin-inline: calc(-1 * var(--os-sp-3));
+  padding-inline: var(--os-sp-3);
 }
 .os-runs-rec__acts {
   display: flex;

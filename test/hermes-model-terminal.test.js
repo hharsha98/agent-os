@@ -18,7 +18,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -31,7 +31,7 @@ import {
   openHermesModelTerminal
 } from "../server/runtime/setup/hermes-model-terminal.js";
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
-import { openCommandInTerminal, openSignInInTerminal } from "../server/runtime/setup/signin.js";
+import { TERMINAL_OPEN_WAIT_MS, absoluteBinPath, openCommandInTerminal, openSignInInTerminal } from "../server/runtime/setup/signin.js";
 import { FAKE_AGENT_NAMES, FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { refuseSystemAgent } from "./helpers/openclaw-plan-env.js";
 
@@ -62,6 +62,15 @@ const NOT_LOCAL_MODES = [
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function waitUntil(probe, label, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await probe()) return;
+    await delay(10);
+  }
+  assert.fail(`timed out waiting for ${label}`);
+}
+
 async function withEnv(vars, fn) {
   const previous = {};
   for (const key of Object.keys(vars)) previous[key] = process.env[key];
@@ -79,14 +88,27 @@ async function withEnv(vars, fn) {
   }
 }
 
-// A spawn function that starts nothing: it records the call, then says the
-// program started ("spawn") or could not start ("error").
-function fakeSpawn(outcome, calls) {
+// A spawn function that starts nothing: it records the call, then says what
+// the program did. "spawn": it started and ended cleanly (a real `open` exits 0
+// as soon as Terminal has been asked). "exit1": it started and exited with
+// code 1. "hang": it started and is still running (it ends only when a test
+// calls `finish` on the child kept in `children`). "error": it could not start.
+function fakeSpawn(outcome, calls, children = []) {
   return (command, args, options) => {
     calls.push({ command, args, options });
     const child = new EventEmitter();
     child.unref = () => {};
-    setImmediate(() => (outcome === "spawn" ? child.emit("spawn") : child.emit("error", new Error("could not start"))));
+    child.finish = (code = 0, signal = null) => child.emit("exit", code, signal);
+    children.push(child);
+    setImmediate(() => {
+      if (outcome === "error") {
+        child.emit("error", new Error("could not start"));
+        return;
+      }
+      child.emit("spawn");
+      if (outcome === "spawn") child.emit("exit", 0, null);
+      else if (outcome === "exit1") child.emit("exit", 1, null);
+    });
     return child;
   };
 }
@@ -202,18 +224,21 @@ async function withSetupApp(fn) {
   }
 }
 
-// The fake `open` runs detached, so its log line can land a moment after the answer.
-async function waitForOpenLine(openLog, timeoutMs = 5000) {
+// The fake `open` runs detached, so its log line can land a moment after the
+// answer. After the first line it waits a short moment (settleMs) and reads
+// again, so a second `open` that follows the first would be caught too.
+async function waitForOpenLine(openLog, { timeoutMs = 5000, settleMs = 250 } = {}) {
+  const readLines = async () => (await readFile(openLog, "utf8").catch(() => "")).split("\n").filter(Boolean);
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const lines = (await readFile(openLog, "utf8").catch(() => "")).split("\n").filter(Boolean);
-    if (lines.length) {
-      assert.equal(lines.length, 1, "exactly one open call");
-      return lines[0];
-    }
+    if ((await readLines()).length) break;
     if (Date.now() > deadline) assert.fail("the fake open was never called");
     await delay(50);
   }
+  await delay(settleMs);
+  const lines = await readLines();
+  assert.equal(lines.length, 1, "exactly one open call");
+  return lines[0];
 }
 
 // Code with its comments taken out, the way the sign-in source scan in
@@ -322,6 +347,138 @@ test("openCommandInTerminal(): the name is only lower-case letters, digits and d
       assert.equal(answer.reason, "copy", `name ${name}`);
     }
   });
+});
+
+test("openCommandInTerminal(): opened follows open's exit, not only its start: exit 1 is spawn_failed, a clean exit is opened, and still running after the wait counts as opened", posixSkip, async () => {
+  await withLaunchEnv(async () => {
+    const command = "/opt/fake/bin/hermes model";
+    const launch = (spawnFn, extra = {}) =>
+      openCommandInTerminal("/opt/fake/bin/hermes", ["model"], { name: "hermes-model", platform: "darwin", spawnFn, ...extra });
+
+    assert.deepEqual(await launch(fakeSpawn("exit1", [])), { opened: false, reason: "spawn_failed", command });
+    assert.deepEqual(await launch(fakeSpawn("spawn", [])), { opened: true, command });
+    // Ended by a signal, so no exit code at all: not a clean exit either.
+    const killed = (_command, _args, _options) => {
+      const child = new EventEmitter();
+      child.unref = () => {};
+      setImmediate(() => {
+        child.emit("spawn");
+        child.emit("exit", null, "SIGKILL");
+      });
+      return child;
+    };
+    assert.deepEqual(await launch(killed), { opened: false, reason: "spawn_failed", command });
+
+    // Still running when the wait is over: Terminal was asked, so it counts as opened, and only after the wait.
+    const startedAt = Date.now();
+    assert.deepEqual(await launch(fakeSpawn("hang", []), { exitWaitMs: 150 }), { opened: true, command });
+    assert.ok(Date.now() - startedAt >= 120, "it waited for open before calling it opened");
+
+    // A non-zero exit that comes while it waits ends the wait at once.
+    const children = [];
+    const late = launch(fakeSpawn("hang", [], children), { exitWaitMs: 5000 });
+    await waitUntil(() => children.length === 1, "the launch");
+    setTimeout(() => children[0].finish(1), 40);
+    const lateAt = Date.now();
+    assert.deepEqual(await late, { opened: false, reason: "spawn_failed", command });
+    assert.ok(Date.now() - lateAt < 3000, "it did not wait out the whole time");
+
+    // The wait is 5 s unless a test says otherwise.
+    assert.equal(TERMINAL_OPEN_WAIT_MS, 5000);
+  });
+});
+
+test("openCommandInTerminal(): one launch at a time per name: a second call while one is in flight gets the same answer and opens no second window; another name is independent; a call after it ended launches again", posixSkip, async () => {
+  await withLaunchEnv(async ({ terminalDir }) => {
+    const command = "/opt/fake/bin/hermes model";
+    const calls = [];
+    const children = [];
+    const secondCalls = [];
+    const launch = (spawnFn, name = "hermes-model") =>
+      openCommandInTerminal("/opt/fake/bin/hermes", ["model"], { name, platform: "darwin", spawnFn, exitWaitMs: 5000 });
+
+    const first = launch(fakeSpawn("hang", calls, children));
+    await waitUntil(() => children.length === 1, "the first launch to start Terminal");
+    // A double click: the same name again while the first is still waiting for open.
+    const second = launch(fakeSpawn("spawn", secondCalls));
+    // Another name does not wait for it.
+    const otherCalls = [];
+    const other = await launch(fakeSpawn("spawn", otherCalls), "claude-login");
+    assert.deepEqual(other, { opened: true, command });
+    assert.equal(otherCalls.length, 1, "another name launches on its own");
+
+    children[0].finish(0);
+    const [a, b] = await Promise.all([first, second]);
+    assert.deepEqual(a, { opened: true, command });
+    assert.deepEqual(b, a, "the same answer");
+    assert.equal(calls.length, 1);
+    assert.equal(secondCalls.length, 0, "no second Terminal window");
+    const files = (await readdir(terminalDir)).filter((name) => name.startsWith("hermes-model-"));
+    assert.equal(files.length, 1, "no second file either");
+
+    // Once it has ended, the same name launches again.
+    const again = [];
+    assert.deepEqual(await launch(fakeSpawn("spawn", again)), { opened: true, command });
+    assert.equal(again.length, 1);
+    // A launch that failed also frees the name.
+    assert.deepEqual(await launch(fakeSpawn("exit1", [])), { opened: false, reason: "spawn_failed", command });
+    const afterFailure = [];
+    assert.deepEqual(await launch(fakeSpawn("spawn", afterFailure)), { opened: true, command });
+    assert.equal(afterFailure.length, 1);
+  });
+});
+
+test("openCommandInTerminal(): a binPath that is not a non-empty absolute path, or args that are not an array of strings, is a TypeError before anything is written or spawned", posixSkip, async () => {
+  await withLaunchEnv(async ({ agentOsHome }) => {
+    const calls = [];
+    const badPaths = [undefined, null, 7, "", "hermes", "./hermes", "bin/hermes", "~/bin/hermes", ["/opt/fake/bin/hermes"], {}];
+    const badArgs = [undefined, null, "model", ["model", 1], [null], [["model"]], ["model", undefined], { 0: "model", length: 1 }];
+    for (const platform of ["darwin", "linux", "win32"]) {
+      for (const binPath of [...badPaths, ...(platform === "win32" ? ["hermes.exe", "..\\hermes.exe"] : [])]) {
+        await assert.rejects(
+          openCommandInTerminal(binPath, ["model"], { name: "hermes-model", platform, spawnFn: fakeSpawn("spawn", calls) }),
+          TypeError,
+          `binPath ${String(binPath)} on ${platform}`
+        );
+      }
+      for (const args of badArgs) {
+        await assert.rejects(
+          openCommandInTerminal("/opt/fake/bin/hermes", args, { name: "hermes-model", platform, spawnFn: fakeSpawn("spawn", calls) }),
+          TypeError,
+          `args ${JSON.stringify(args)} on ${platform}`
+        );
+      }
+    }
+    assert.equal(calls.length, 0);
+    assert.equal(await exists(path.join(agentOsHome, "setup")), false, "nothing was written");
+
+    // The plain cases still work: an empty list of arguments, and a Windows path on Windows.
+    const linux = await openCommandInTerminal("/opt/fake/bin/hermes", [], { name: "hermes-model", platform: "linux", spawnFn: fakeSpawn("spawn", calls) });
+    assert.deepEqual(linux, { opened: false, reason: "copy", command: "/opt/fake/bin/hermes" });
+    const windows = await openCommandInTerminal("C:\\Users\\a b\\hermes\\hermes.exe", ["model"], {
+      name: "hermes-model",
+      platform: "win32",
+      spawnFn: fakeSpawn("spawn", calls)
+    });
+    assert.equal(windows.reason, "copy");
+  });
+});
+
+test("waitForOpenLine: a second open that follows the first one a moment later is caught", posixSkip, async () => {
+  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-open-line-")));
+  try {
+    const log = path.join(dir, "open.log");
+    await writeFile(log, "-a Terminal /one.command\n");
+    const second = delay(80).then(() => appendFile(log, "-a Terminal /two.command\n"));
+    await assert.rejects(waitForOpenLine(log), /exactly one open call/);
+    await second;
+    // Control: one line with nothing after it passes.
+    const calm = path.join(dir, "calm.log");
+    await writeFile(calm, "-a Terminal /one.command\n");
+    assert.equal(await waitForOpenLine(calm), "-a Terminal /one.command");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("openCommandInTerminal(): .command files older than an hour are swept first, the picker's and the sign-in's alike", posixSkip, async () => {
@@ -511,6 +668,23 @@ test("POST /api/setup/hermes/model-terminal: 200 { opened, command, reason? } wi
   });
 });
 
+test("POST /api/setup/hermes/model-terminal: when Terminal can't open the window, the answer is still 200 { opened: false, reason: spawn_failed, command }", { skip: process.platform === "darwin" ? false : "only macOS opens a Terminal window; elsewhere the command is handed back to copy" }, async () => {
+  await withLaunchEnv(async ({ fakeBin, openLog }) => {
+    const hermes = path.join(fakeBin, "hermes");
+    // The fake `open` logs its call and then fails, the way `open` ends when it can't start Terminal.
+    await writeFile(path.join(fakeBin, "open"), '#!/bin/sh\necho "$@" >> "$HOME/.fake-open-calls.log"\nexit 1\n');
+    await chmod(path.join(fakeBin, "open"), 0o755);
+    await withSetupApp(async ({ post, touched }) => {
+      assert.equal(process.env.PATH.split(path.delimiter)[0], fakeBin, "PATH finds the fake open first");
+      const answer = await post({ confirm: true });
+      assert.equal(answer.status, 200);
+      assert.deepEqual(answer.json, { opened: false, reason: "spawn_failed", command: `${hermes} model` });
+      assert.ok((await waitForOpenLine(openLog)).startsWith("-a Terminal "), "the fake open was asked once");
+      assert.deepEqual(touched, [], "the route never reads the session manager");
+    });
+  });
+});
+
 test("POST /api/setup/hermes/model-terminal: 400 without confirm: true, and nothing is launched", posixSkip, async () => {
   await withLaunchEnv(async ({ agentOsHome, openLog }) => {
     await withSetupApp(async ({ post, touched }) => {
@@ -594,4 +768,12 @@ test("openCommandInTerminal spawns only `open -a Terminal <file>`, and the route
   assert.ok(routes.includes('router.post("/hermes/model-terminal", requireLocalMode, async (req, res, next) => {'));
   assert.equal((routes.match(/openHermesModelTerminal\(/g) || []).length, 1);
   assert.ok(routes.includes("await openHermesModelTerminal()"), "called with no argument: nothing from the request");
+});
+
+test("absoluteBinPath: a relative detected path becomes absolute, so the Terminal launch never fails with a TypeError; absolute paths are kept", () => {
+  assert.equal(absoluteBinPath("/usr/local/bin/hermes", "darwin"), "/usr/local/bin/hermes");
+  assert.equal(absoluteBinPath("bin/hermes", "darwin"), path.posix.resolve("bin/hermes"));
+  assert.ok(path.posix.isAbsolute(absoluteBinPath("./hermes", "linux")));
+  assert.equal(absoluteBinPath("C:\\Tools\\hermes.exe", "win32"), "C:\\Tools\\hermes.exe");
+  assert.ok(path.win32.isAbsolute(absoluteBinPath("tools\\hermes.exe", "win32")));
 });

@@ -6,12 +6,12 @@
 // Everything is read through OpenClaw's and Claude Code's own commands
 // (`config get`, `models list`, `models auth list`, `models status`, `auth
 // status`), never their files, and through runCommand only (output kept in
-// memory, never written to a run log). `models auth list` leaves this module
-// as each row's method and token sharing only; `models status --check` as its
-// exit code only. Nothing here changes OpenClaw: jobs.js does that.
+// memory, never written to a run log). `models auth list` leaves as each row's
+// method and token sharing only (readChatgptAuth, in models.js); `models status
+// --check` as its exit code only. Nothing here changes OpenClaw: jobs.js does that.
 import { ADAPTERS } from "../agents/index.js";
 import { runCommand } from "../safety.js";
-import { OPENCLAW_MODEL_PATH, parseConfigText, parseJsonOutput } from "./models.js";
+import { OPENCLAW_MODEL_PATH, parseConfigText, parseJsonOutput, readChatgptAuth, readOpenclawModelsConfig } from "./models.js";
 import { openclawVersionInfo } from "./openclaw-version.js";
 import {
   FABLE_NOTE,
@@ -23,11 +23,9 @@ import {
   PLAN_PROVIDER,
   PLAN_READ_TIMEOUT_MS,
   TYPED_MODEL_RE,
-  chatgptSignIn,
   claudeCliPinned,
   hasClaudeCliPin,
   isFableModel,
-  parseAuthRows,
   planModelRows,
   planOfPrimary,
   readinessOf
@@ -52,23 +50,13 @@ async function openclawNow(detected) {
   return detected ?? ADAPTERS.openclaw.detect({ refresh: true });
 }
 
-// `config get agents.defaults.models --json`: the per-model settings, where the
-// claude-cli runtime pins live. A plain object, or null.
-export async function readOpenclawModelsConfig(detected) {
-  if (!detected?.installed) return null;
-  const result = await runCommand(detected.path, ["config", "get", "agents.defaults.models", "--json"], CONFIG_GET_TIMEOUT_MS);
-  if (!result.ok) return null;
-  const value = parseJsonOutput(result.stdout);
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
-}
-
-// Signed in with ChatGPT? Only each saved sign-in's method and token sharing
-// are kept; the command's output goes no further than this function.
-export async function readChatgptAuth(detected) {
-  if (!detected?.installed) return { signedIn: null, sharing: null };
-  const result = await runCommand(detected.path, ["models", "auth", "list", "--provider", "openai", "--json"], PLAN_READ_TIMEOUT_MS);
-  return chatgptSignIn(result.ok ? parseAuthRows(parseJsonOutput(result.stdout)) : null);
-}
+// The two reads that tell which plan OpenClaw is on live in models.js (readAgentModel
+// uses them too, and models.js must not import this module): `config get
+// agents.defaults.models --json` (the per-model settings, where the claude-cli runtime
+// pins live) and `models auth list` (whether Sign in with ChatGPT is saved; only each
+// sign-in's method and token sharing are kept, and the output goes no further than that
+// function). They are re-exported here under the same names.
+export { readChatgptAuth, readOpenclawModelsConfig };
 
 // Can OpenClaw use the ChatGPT plan right now? `models status --check --plain`
 // makes no model call (it never gets the probe option); only its exit code is

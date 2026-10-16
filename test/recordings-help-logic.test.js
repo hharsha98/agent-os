@@ -4,6 +4,7 @@
 // (decision P14); neither file imports anything at run time. Row titles are Task U1's sessionTitle (tested in
 // test/sessions-shared.test.js). The pages themselves are checked by the sp3-pages probe of the UI audit.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as help from "../src/ui/helpShared.ts";
 import * as rec from "../src/ui/recordingsShared.ts";
@@ -58,6 +59,30 @@ test("lengths: so far for a live one, — when the end is unknown, the same word
   for (const ms of [5_000, 61_000, 3_725_000, -1_000]) {
     assert.equal(rec.durationWords(iso(ms), NOW), page.durationWords(iso(ms), NOW), `the copy of durationWords agrees at ${ms} ms`);
   }
+});
+
+// Minor sweep, Group B item 9: a resumed session is one recording. Recorded is when it first started, and Length runs
+// from there to the end of its last part (the recording's own clock, which keeps counting while the session was ended,
+// like the replay timeline of SP4). startedAt still means the latest start and still decides the order.
+test("a resumed session's row: Recorded is its first start and Length covers all its parts; the order still follows the latest start", () => {
+  const first = iso(3 * 3_600_000 + 760_000);
+  const body = rec.readRecordings({
+    recordings: [
+      { sessionId: "old", agentId: "claude", agentLabel: "Claude Code", startedAt: iso(500_000), firstStartedAt: iso(900_000), endedAt: iso(60_000), bytes: 10, live: false },
+      { sessionId: "resumed", agentId: "claude", agentLabel: "Claude Code", startedAt: iso(760_000), firstStartedAt: first, endedAt: iso(60_000), bytes: 10, live: false },
+      { sessionId: "plain", agentId: "claude", agentLabel: "Claude Code", startedAt: iso(300_000), endedAt: iso(60_000), bytes: 10, live: false }
+    ],
+    removedByCap: 0
+  });
+  assert.deepEqual(body.rows.map((r) => r.sessionId), ["plain", "old", "resumed"], "newest latest-start first, as before");
+  const byId = Object.fromEntries(body.rows.map((r) => [r.sessionId, r]));
+  assert.equal(byId.resumed.firstStartedAt, first);
+  assert.equal(byId.resumed.startedAt, iso(760_000), "startedAt is kept as the server sent it");
+  assert.equal(byId.plain.firstStartedAt, iso(300_000), "an answer without firstStartedAt (an older server) falls back to startedAt");
+  assert.deepEqual(rec.recordingLength(byId.resumed, NOW), { value: "3 h 11 m", soFar: false }, "from the first start to the last end");
+  assert.deepEqual(rec.recordingLength({ ...byId.resumed, live: true, endedAt: null }, NOW), { value: "3 h 12 m", soFar: true });
+  assert.deepEqual(rec.recordingLength(row({ firstStartedAt: undefined }), NOW), { value: "11 m 40 s", soFar: false }, "a row without it measures from startedAt");
+  assert.deepEqual(rec.recordingLength(row({ firstStartedAt: "" }), NOW), { value: "11 m 40 s", soFar: false });
 });
 
 test("the decided words: the replay note, the cap note, the empty state", () => {
@@ -133,4 +158,51 @@ test("the State word: an update recording being written is Recording, an ended o
   assert.equal(state({}, session({ status: "live" })), true, "it was resumed since");
   assert.equal(state({}, session()), false, "an ended agent session is Saved");
   assert.equal(state({}, undefined, "loading"), false);
+});
+
+// Minor sweep, Group B: what the pages do is checked by the sp3-pages probe of the UI audit (a real browser); these
+// read the sources for the wiring the logic above depends on, as test/plan-brains-ui-logic.test.js does for its cards.
+const source = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+
+test("Resume in Runs: an answer that is not a session is an answer that could not be read, and nothing is acted on first", () => {
+  const text = source("ui/components/SessionRecordings.tsx");
+  const body = text.slice(text.indexOf("async function confirmResume"));
+  const read = body.indexOf("createdSessionId(resumed) === null");
+  assert.ok(read > 0, "the answer is checked");
+  assert.match(body.slice(read, read + 160), /throw new SyntaxError\(/, "an unreadable answer is thrown as one, which sessionGotNoAnswer counts as an answer");
+  for (const action of ["sessionsList.refresh();", "askToFocusNextSession();", 'navigateTo("sessions"']) {
+    assert.ok(body.indexOf(action) > read, `${action} comes only after the check`);
+  }
+  assert.match(body, /catch \(error\) \{[\s\S]*actionProblem\(error, "resume", sessionGotNoAnswer\(error\)\)[\s\S]*sessionsList\.refresh\(\);\s*onReload\(\);/, "the failure says why and reads both lists again");
+});
+
+test("Runs: a failed read after a good one keeps the rows under a warning (stale), and a first failed read is the error", () => {
+  const text = source("ui/components/SessionRecordings.tsx");
+  assert.match(text, /prev\.state === "ok" \? \{ \.\.\.prev, stale: true \} : \{ state: "error" \}/);
+  assert.match(text, /if \(notAvailable\(error\)\) setValue\(\{ state: "unavailable" \}\)/, "not_available stays final");
+});
+
+test("Runs: the highlighted row says aria-current; a Resume refused as impossible shuts the dialog's Resume; Recorded shows the first start", () => {
+  const text = source("ui/components/SessionRecordings.tsx");
+  assert.match(text, /aria-current=\{lit \? "true" : undefined\}/);
+  assert.match(text, /blocked: isImpossibleResume\(error\)/);
+  assert.match(text, /confirmDisabled=\{resuming\.blocked\}/);
+  assert.match(text, /<TimeAgo since=\{recordedAt\(row\)\} \/>/);
+  assert.match(source("ui/runs.css"), /\.os-runs-rec__row\.is-highlighted \{[^}]*margin-inline: calc\(-1 \* var\(--os-sp-3\)\);[^}]*padding-inline: var\(--os-sp-3\);/, "the hairline is padded away from the text inside the row");
+});
+
+test("Help: it starts at its top when it opens, and every section has an h2 (Promises had none)", () => {
+  const text = source("pages/HelpPage.tsx");
+  assert.match(text, /useEffect\(\(\) => \{\s*window\.scrollTo\(0, 0\);\s*\}, \[\]\)/);
+  const sections = text.match(/<section className="os-help-section"[\s\S]*?<\/section>/g) || [];
+  assert.equal(sections.length, 4);
+  for (const section of sections) assert.match(section, /<h2 /);
+  assert.match(text, /aria-labelledby="os-help-promises"/);
+});
+
+test("Agents: no New session or Open session until the shared sessions list has been read", () => {
+  const page = source("pages/AgentsPage.tsx");
+  assert.match(page, /sessionsKnown=\{sessionsList\.source\.state === "ok"\}/);
+  const bay = source("ui/components/AgentBay.tsx");
+  assert.match(bay, /sessionsAvailable && sessionsKnown && found !== "missing"/);
 });

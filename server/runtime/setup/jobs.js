@@ -665,12 +665,21 @@ export async function getSetupJob(id) {
 
 // Answered, and saved, as failed with a plain sentence, so the card stops
 // waiting and offers Apply again (Review Focus 5). Plan jobs only: every other
-// job keeps today's answer. The sentence goes on the step that never finished:
-// the one saved as running, else the first one not succeeded. currentStepIndex
-// can still point at a step that succeeded (runConfigureJobSteps saves step i
-// as succeeded before step i + 1 as running), so it is only the fallback for a
-// job whose every step succeeded (Agent OS quit while writing the receipt).
+// job keeps today's answer.
 async function markPlanJobInterrupted(job) {
+  return failPlanJob(job, PLAN_JOB_INTERRUPTED);
+}
+
+// Ends a plan job with `message` on the step that did not finish, and saves
+// it. The sentence goes on the one saved as running, else the first one not
+// succeeded. currentStepIndex can still point at a step that succeeded
+// (runConfigureJobSteps saves step i as succeeded before step i + 1 as
+// running), so it is only the fallback for a job whose every step succeeded
+// (Agent OS quit, or the receipt could not be saved, after the last step).
+// Used for a job Agent OS quit during (PLAN_JOB_INTERRUPTED) and for a job
+// whose runner failed outside any step (that error's own message), so the
+// second is never read back as the first.
+async function failPlanJob(job, message, status = "failed") {
   const steps = Array.isArray(job.steps) ? job.steps : [];
   let current = steps.findIndex((step) => step.status === "running");
   if (current < 0) current = steps.findIndex((step) => step.status !== "succeeded");
@@ -680,9 +689,9 @@ async function markPlanJobInterrupted(job) {
   const step = steps[current];
   if (step) {
     step.status = "failed";
-    step.error = PLAN_JOB_INTERRUPTED;
+    step.error = message;
   }
-  job.status = "failed";
+  job.status = status;
   job.endedAt = job.endedAt || new Date().toISOString();
   await persistJob(job).catch(() => {});
   return job;
@@ -1482,6 +1491,13 @@ async function runConfigureJobSteps(job, apiKey) {
     job.status = "succeeded";
     job.endedAt = new Date().toISOString();
     await persistJob(job);
+  } catch (error) {
+    // The runner failed outside any step (the system check, a save, the
+    // receipt). A plan job still running is ended here with this error's own
+    // message and saved, so a later read never takes it for a job Agent OS
+    // quit during (getSetupJob). Any other job keeps today's behaviour.
+    if (!job.plan || job.status !== "running") throw error;
+    await failPlanJob(job, error?.message || "Configure step failed.", job.cancelRequested ? "cancelled" : "failed");
   } finally {
     activeJobs.delete(job.id);
     if (runningJobId === job.id) runningJobId = null;
@@ -1819,6 +1835,55 @@ async function checkClaudePlanRuntime(job, check) {
   if (!claudeCliPinned(config, job.model)) throw jobError("configure_failed", RUNTIME_CHECK_FAILED);
 }
 
+// How many of the newest saved jobs are looked through for an earlier ChatGPT plan job.
+const EARLIER_JOBS_LOOKED_AT = 50;
+
+// The newest saved ChatGPT plan job other than `exceptId`, or null. Job ids
+// start with the time they were made (generateJobId), so by name is by age.
+async function newestChatgptPlanJob(exceptId) {
+  let names;
+  try {
+    names = (await fs.readdir(jobsDir())).filter((name) => name.startsWith("job_") && name.endsWith(".json"));
+  } catch {
+    return null;
+  }
+  names.sort().reverse();
+  for (const name of names.slice(0, EARLIER_JOBS_LOOKED_AT)) {
+    const id = name.slice(0, -".json".length);
+    if (id === exceptId) continue;
+    const job = await loadJob(id);
+    if (job && job.kind === "configure" && job.plan === "chatgpt") return job;
+  }
+  return null;
+}
+
+// Did this earlier ChatGPT plan job leave OpenClaw on its model? It did when it
+// ended badly (failed, or saved as running with nothing in this process
+// running it, which is what a quit leaves) after `models set` was reached:
+// the model step ran or finished, or it was the step Agent OS quit in.
+function leftItsModelSet(job) {
+  const endedBadly = job.status === "failed" || (job.status === "running" && !activeJobs.has(job.id));
+  const modelStep = Array.isArray(job.steps) ? job.steps.find((step) => step.id === "openclaw-plan-model") : null;
+  if (!endedBadly || !modelStep) return false;
+  return modelStep.status === "succeeded" || modelStep.status === "running" || (modelStep.status === "failed" && modelStep.error === PLAN_JOB_INTERRUPTED);
+}
+
+// The model a ChatGPT Apply records as the earlier one (the one a failed
+// readiness check puts back). Normally that is OpenClaw's current model. But
+// when the newest earlier ChatGPT job was interrupted, or failed after `models
+// set`, and OpenClaw is still on that job's own openai/<model>, the current
+// model is the half-applied one, not the person's: this Apply reuses the
+// earlier job's own record of what OpenClaw had before it (which may be none).
+// A saved record that is not a plain model reference is never reused.
+async function earlierPrimaryOfApply(job, primary) {
+  if (typeof primary !== "string") return primary;
+  const earlier = await newestChatgptPlanJob(job.id);
+  if (!earlier || primary !== `openai/${earlier.model}` || !leftItsModelSet(earlier)) return primary;
+  const before = earlier.previousPrimary;
+  if (before === null || (typeof before === "string" && MODEL_ID_PATTERN.test(before))) return before;
+  return primary;
+}
+
 // `openclaw models set <provider>/<model>`. For the ChatGPT plan the current
 // model is read first, so a failed readiness check can put it back.
 async function setOpenclawPlanModel(job, step, check, manager) {
@@ -1842,7 +1907,7 @@ async function setOpenclawPlanModel(job, step, check, manager) {
     if (current.ok && primary === null && !configTextIsUnset(current.stdout)) {
       throw jobError("configure_failed", CURRENT_MODEL_NOT_RESTORABLE);
     }
-    job.previousPrimary = primary;
+    job.previousPrimary = await earlierPrimaryOfApply(job, primary);
     await persistJob(job);
   }
   await runConfigureCommand(

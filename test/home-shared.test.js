@@ -3,7 +3,9 @@
 // TypeScript types itself (decision P14), so the .ts file is imported directly.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import * as home from "../src/ui/homeShared.ts";
+import * as ss from "../src/ui/sessionsShared.ts";
 
 // 3 pm LOCAL time, so "today" means the same day in every time zone.
 const NOW = new Date(2026, 9, 13, 15, 0, 0).getTime();
@@ -267,6 +269,39 @@ test("sessions: the open ones are counted, and each agent's newest one is found"
   assert.equal(home.openSessionByAgent(sessions).claude.id, "new");
   assert.equal(home.openSessionByAgent(sessions).codex, undefined);
   assert.equal(home.openSessionByAgent(sessions).hermes, undefined);
+});
+
+// Minor sweep, Group B item 4: "open session" is one rule. Home's count, the lede, the agent rows and Agents' button
+// (openSessions here), and the menu's "N running" (runningSessionCount in sessionsShared.ts) must never disagree. The
+// old Home rule counted a setup session (OpenClaw's ChatGPT sign-in) and a status it does not know; the menu counted
+// neither.
+test("open sessions are one rule: Home's list and the menu's count agree for every kind and status", () => {
+  const statuses = ["starting", "live", "waiting", "idle", "held", "exited", "something-new"];
+  for (const kind of ["agent", "update", "setup", "something-new"]) {
+    for (const status of statuses) {
+      const one = [sess({ kind, status })];
+      assert.equal(home.openSessions(one).length, ss.runningSessionCount(one), `${kind} / ${status}`);
+      assert.equal(home.openSessions(one).length === 1, ss.isOpenAgentSession(one[0]), `${kind} / ${status}: the shared test`);
+    }
+  }
+  const sessions = [
+    sess({ id: "a", status: "idle" }),
+    sess({ id: "b", kind: "setup", agentId: "openclaw", status: "live" }),
+    sess({ id: "c", status: "something-new" }),
+    sess({ id: "d", kind: "update", status: "live" }),
+    sess({ id: "e", status: "exited" })
+  ];
+  assert.deepEqual(home.openSessions(sessions).map((s) => s.id), ["a"]);
+  assert.equal(home.openSessions(sessions).length, ss.runningSessionCount(sessions));
+  assert.equal(home.openSessionByAgent(sessions).openclaw, undefined, "a sign-in terminal is not the agent's open session");
+  assert.equal(home.nothingRunningKnown(true, sessions.slice(1)), true, "with only a sign-in terminal, an update and an ended session open, nothing is running");
+  assert.equal(home.nothingRunningKnown(true, sessions), false);
+});
+
+test("homeShared imports the open-session test from sessionsShared instead of keeping a copy of it", () => {
+  const text = readFileSync(new URL("../src/ui/homeShared.ts", import.meta.url), "utf8");
+  assert.match(text, /import \{[^}]*\bisOpenAgentSession\b[^}]*\} from "\.\/sessionsShared\.ts"/);
+  assert.doesNotMatch(text, /status !== "exited"/, "no second copy of the rule");
 });
 
 test("each agent's line with a session: live, starting, idle; an unknown sessions list never says Nothing running", () => {

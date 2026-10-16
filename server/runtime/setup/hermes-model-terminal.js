@@ -7,7 +7,7 @@
 // the Agents page reads what Hermes saved afterwards (readAgentModel).
 import { spawn } from "node:child_process";
 import { ADAPTERS } from "../agents/index.js";
-import { openCommandInTerminal } from "./signin.js";
+import { absoluteBinPath, openCommandInTerminal } from "./signin.js";
 
 export const HERMES_MODEL_ARGS = Object.freeze(["model"]);
 export const HERMES_TERMINAL_NAME = "hermes-model";
@@ -28,5 +28,5 @@ export async function openHermesModelTerminal({ platform = process.platform, spa
     error.code = "agent_not_installed";
     throw error;
   }
-  return openCommandInTerminal(detected.path, HERMES_MODEL_ARGS, { name: HERMES_TERMINAL_NAME, platform, spawnFn });
+  return openCommandInTerminal(absoluteBinPath(detected.path, platform), HERMES_MODEL_ARGS, { name: HERMES_TERMINAL_NAME, platform, spawnFn });
 }

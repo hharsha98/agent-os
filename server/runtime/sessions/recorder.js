@@ -359,7 +359,17 @@ async function isEndedNow(sessionId, dir, isLive) {
   return meta === null || !liveFor(sessionId, meta);
 }
 
-function summary(sessionId, meta, bytes, live) {
+// When the recording itself began, as an ISO time, or null when no header can be read. A resume does not change it
+// (the recorder keeps the first header and appends on the same timeline), unlike meta.startedAt, which a resume
+// resets to the latest start. Both segments keep the recording's start, so the newest one is read first.
+async function recordingStart(dir) {
+  const header = (await readHeader(path.join(dir, CAST_FILE))) ?? (await readHeader(path.join(dir, PREV_CAST_FILE)));
+  return header ? new Date(header.timestamp * 1000).toISOString() : null;
+}
+
+// `firstStartedAt` is additive: startedAt keeps meaning "the latest start" (the sort order and the Sessions list use
+// it), and Runs shows firstStartedAt as Recorded and measures Length from it.
+function summary(sessionId, meta, bytes, live, firstStartedAt) {
   const folder = text(meta.folder);
   return {
     sessionId,
@@ -370,6 +380,7 @@ function summary(sessionId, meta, bytes, live) {
     folderName: text(meta.folderName) || (folder ? path.basename(folder) : ""),
     folderShown: meta.folderShown !== false,
     startedAt: meta.startedAt,
+    firstStartedAt,
     endedAt: text(meta.endedAt) || null,
     bytes,
     live
@@ -394,7 +405,9 @@ export async function listRecordings({ isLive } = {}) {
     if (!meta || !text(meta.startedAt)) continue;
     const bytes = await recordingBytes(dir);
     if (bytes === null) continue;
-    recordings.push(summary(name, meta, bytes, liveFor(name, meta, isLive)));
+    // Only a resumed session can differ (meta.resumes above 0): the others skip the extra read.
+    const first = Number(meta.resumes) > 0 ? await recordingStart(dir) : null;
+    recordings.push(summary(name, meta, bytes, liveFor(name, meta, isLive), first ?? meta.startedAt));
   }
   recordings.sort((a, b) => compareText(b.startedAt, a.startedAt) || compareText(a.sessionId, b.sessionId));
   return recordings;

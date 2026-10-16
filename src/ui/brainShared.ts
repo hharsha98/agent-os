@@ -93,3 +93,20 @@ export function formatContext(tokens: number) {
   if (tokens < 1000) return String(tokens);
   return tokens % 1024 === 0 ? `${tokens / 1024}K` : `${Math.round(tokens / 1000)}K`;
 }
+
+// The agents' model answers after a read (useAgentModels). A read of every installed agent replaces the whole map and
+// drops an agent that is not asked about any more; a read of one agent changes only that agent's entry. An agent
+// asked about whose answer is not among `answers` (a newer read of it is on its way) keeps its older entry.
+export function mergeModelReads<T>(
+  previous: Partial<Record<BrainAgentId, T>>,
+  answers: ReadonlyArray<readonly [BrainAgentId, T]>,
+  asked: readonly BrainAgentId[],
+  whole: boolean
+): Partial<Record<BrainAgentId, T>> {
+  const merged: Partial<Record<BrainAgentId, T>> = {};
+  for (const id of Object.keys(previous) as BrainAgentId[]) {
+    if (!whole || asked.includes(id)) merged[id] = previous[id];
+  }
+  for (const [id, info] of answers) merged[id] = info;
+  return merged;
+}

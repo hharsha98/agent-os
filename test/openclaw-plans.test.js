@@ -14,9 +14,10 @@
 // no real one could be found instead. No server process and no session is
 // started. Never a real agent.
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { ADAPTERS } from "../server/runtime/agents/index.js";
 import { setExecutionGateStatus } from "../server/runtime/execution-gate.js";
@@ -27,6 +28,7 @@ import {
   PLAN_JOB_STEPS,
   getSetupJob,
   healthFixLine,
+  resetSetupJobsForTest,
   retrySetupJob,
   startConfigureJob,
   startOpenclawPlanJob
@@ -66,7 +68,8 @@ import {
   readDidNotFinish,
   readinessOf
 } from "../server/runtime/setup/openclaw-plan-rules.js";
-import { readOpenclawModelsConfig, resolvePlanModel } from "../server/runtime/setup/openclaw-plans.js";
+import { readChatgptAuth, readOpenclawModelsConfig, resolvePlanModel } from "../server/runtime/setup/openclaw-plans.js";
+import { readChatgptAuth as readChatgptAuthInModels, readOpenclawModelsConfig as readOpenclawModelsConfigInModels } from "../server/runtime/setup/models.js";
 import { readReceipt } from "../server/runtime/setup/receipt.js";
 import { signInStatus } from "../server/runtime/setup/signin.js";
 import { readFakeAgentState, writeFakeAgentState } from "./helpers/fake-knobs.js";
@@ -76,6 +79,7 @@ import {
   agentEnvLog,
   listFiles,
   openclawRecord,
+  readJsonLines,
   refuseSystemAgent,
   refuseSystemAgentFolders,
   siwcRow,
@@ -93,6 +97,50 @@ const apply = (call, plan, model, extra = {}) =>
   call("POST", "/api/setup/openclaw/plan", { plan, model, confirm: true, acceptOpenClawRisk: true, ...extra });
 const argvLines = async (home) => (await openclawRecord(home)).map((line) => line.argv.join(" "));
 const stepOf = (job, id) => job.steps.find((step) => step.id === id);
+
+// A ChatGPT plan job as it sits in the jobs folder. `statuses` is one status per step of PLAN_JOB_STEPS.chatgpt
+// (model, safe defaults, readiness, hello). The id carries its own time, the way real job ids do, so it sorts
+// by when it started: `minutesAgo` before now.
+function storedChatgptJob({ minutesAgo = 5, status = "running", statuses = ["succeeded", "running", "pending", "pending"], model = "gpt-6.1-sol", previousPrimary = "openrouter/vendor/old", plan = "chatgpt", errors = {} } = {}) {
+  const startedMs = Date.now() - minutesAgo * 60 * 1000;
+  const id = `job_${startedMs.toString(36)}_${(minutesAgo * 7919).toString(16).padStart(12, "0")}`;
+  const stepIds = PLAN_JOB_STEPS[plan === "chatgpt" ? "chatgpt" : "claude"];
+  return {
+    id,
+    kind: "configure",
+    status,
+    plan,
+    mode: plan === "chatgpt" ? "chatgpt-plan" : "claude-plan",
+    model,
+    targets: { hermes: null, openclaw: { mode: plan === "chatgpt" ? "chatgpt-plan" : "claude-plan", model } },
+    scope: ["openclaw"],
+    steps: stepIds.map((stepId, index) => ({
+      id: stepId,
+      agentId: stepId === "services" || stepId === "health" ? null : "openclaw",
+      action: "run",
+      status: statuses[index] ?? "pending",
+      runIds: [],
+      error: errors[stepId] ?? null,
+      log: [],
+      warnings: []
+    })),
+    currentStepIndex: Math.max(0, statuses.findIndex((value) => value === "running")),
+    startedAt: new Date(startedMs).toISOString(),
+    endedAt: status === "running" ? null : new Date(startedMs + 1000).toISOString(),
+    acceptOpenClawRisk: true,
+    acceptOpenClawRiskAt: new Date(startedMs).toISOString(),
+    previousPrimary,
+    readiness: null
+  };
+}
+
+async function putStoredJobs(agentOsHome, jobs) {
+  const jobsDir = path.join(agentOsHome, "setup", "jobs");
+  await rm(jobsDir, { recursive: true, force: true });
+  await mkdir(jobsDir, { recursive: true });
+  for (const job of jobs) await writeFile(path.join(jobsDir, `${job.id}.json`), JSON.stringify(job));
+  return jobsDir;
+}
 
 // =====================================================================
 // 1. The pure rules (no fakes)
@@ -407,6 +455,21 @@ test("signInStatus: method is Claude Code's authMethod word when Agent OS knows 
 // 3. Plan status, the model lists and the model answer
 // =====================================================================
 
+test("The two plan reads live in one place: models.js, which readAgentModel uses, and openclaw-plans.js re-exports the same functions; no other module repeats their commands", async () => {
+  assert.equal(readChatgptAuth, readChatgptAuthInModels);
+  assert.equal(readOpenclawModelsConfig, readOpenclawModelsConfigInModels);
+  const setupDir = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), "server", "runtime", "setup");
+  const authList = '["models", "auth", "list", "--provider", "openai", "--json"]';
+  const modelSettings = '["config", "get", "agents.defaults.models", "--json"]';
+  const found = { authList: [], modelSettings: [] };
+  for (const name of (await readdir(setupDir)).filter((file) => file.endsWith(".js"))) {
+    const code = await readFile(path.join(setupDir, name), "utf8");
+    for (let at = code.indexOf(authList); at >= 0; at = code.indexOf(authList, at + 1)) found.authList.push(name);
+    for (let at = code.indexOf(modelSettings); at >= 0; at = code.indexOf(modelSettings, at + 1)) found.modelSettings.push(name);
+  }
+  assert.deepEqual(found, { authList: ["models.js"], modelSettings: ["models.js"] });
+});
+
 test("GET /api/setup/openclaw/plans: OpenClaw's version is read afresh on every call, so an update shows at once (Review Focus 1)", posixSkip, async () => {
   await withPlanEnv(
     async ({ call, knob }) => {
@@ -603,6 +666,29 @@ test("GET /api/setup/openclaw/plan-models: every list shape the fake can print, 
   });
 });
 
+test("GET /api/setup/openclaw/plan-models with OpenClaw not installed: the dated fallback list for each plan, every model available, and no command is run", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ call, home }) => {
+      for (const plan of OPENCLAW_PLANS) {
+        const answer = await call("GET", `/api/setup/openclaw/plan-models?plan=${plan}`);
+        assert.equal(answer.status, 200, plan);
+        assert.deepEqual(
+          answer.body,
+          {
+            models: PLAN_FALLBACK_MODELS[plan].map((id) => ({ id, name: PLAN_MODEL_NAMES[id], note: isFableModel(id) ? FABLE_NOTE : null, available: true })),
+            source: "fallback",
+            asOf: PLAN_MODELS_AS_OF
+          },
+          plan
+        );
+      }
+      assert.equal((await call("GET", "/api/setup/openclaw/plan-models?plan=claude")).body.models.find((model) => model.id === "claude-fable-5-1").note, FABLE_NOTE);
+      assert.deepEqual(await openclawRecord(home), [], "there was no OpenClaw to run a command");
+    },
+    { openclaw: false }
+  );
+});
+
 test("resolvePlanModel: a listed name in any letter case gives the list's own id; a typed name is accepted only with the fallback; anything else is refused", posixSkip, async () => {
   await withPlanEnv(async ({ knob }) => {
     const detected = await ADAPTERS.openclaw.detect({ refresh: true });
@@ -695,6 +781,34 @@ test("GET /api/setup/agents/openclaw/model: when the read that would confirm a p
     assert.deepEqual(await labelOf("read worked, no ChatGPT sign-in"), [null, "OpenAI"]);
     await writeFakeAgentState(home, { primary: "openai/gpt-6.1-sol", models: null, authRows: [siwcRow()] });
     assert.deepEqual(await labelOf("read worked, signed in with ChatGPT"), ["chatgpt", "ChatGPT plan"]);
+  });
+});
+
+test("GET /api/setup/agents/openclaw/model starts the plan-confirming read beside the primary read, not after it, and waits only for the one it needs", posixSkip, async () => {
+  await withPlanEnv(async ({ call, home, knob }) => {
+    const timingFile = path.join(home, ".fake-openclaw-timing.jsonl");
+    // Every one of these reads takes 1.5 s, and the fake notes when each one started and ended.
+    await knob("FAKE_OPENCLAW_READ_DELAY_MS", "1500");
+    const cases = [
+      ["an anthropic/ model: the per-model settings", { primary: "anthropic/claude-opus-5-5", models: { "anthropic/claude-opus-5-5": CLI }, authRows: [] }, "config get agents.defaults.models --json", "claude", "Claude plan"],
+      ["an openai/ model: the sign-in list", { primary: "openai/gpt-6.1-sol", models: null, authRows: [siwcRow()] }, "models auth list --provider openai --json", "chatgpt", "ChatGPT plan"]
+    ];
+    for (const [why, state, confirming, plan, label] of cases) {
+      await writeFakeAgentState(home, state);
+      await rm(timingFile, { force: true });
+      const answer = await call("GET", "/api/setup/agents/openclaw/model");
+      assert.equal(answer.status, 200, why);
+      assert.deepEqual([answer.body.plan, answer.body.providerLabel], [plan, label], why);
+      const timings = await readJsonLines(timingFile);
+      const primary = timings.find((entry) => entry.argv.join(" ") === "config get agents.defaults.model.primary");
+      const confirm = timings.find((entry) => entry.argv.join(" ") === confirming);
+      assert.ok(primary && confirm, `${why}: both reads ran (${JSON.stringify(timings.map((entry) => entry.argv.join(" ")))})`);
+      assert.ok(confirm.startedAt < primary.endedAt, `${why}: the confirming read started before the primary read had ended`);
+    }
+    // A model that needs no confirming read still answers with only the primary read waited for.
+    await writeFakeAgentState(home, { primary: "openrouter/vendor/old", models: null, authRows: [] });
+    const plain = await call("GET", "/api/setup/agents/openclaw/model");
+    assert.deepEqual([plain.body.plan, plain.body.providerLabel, plain.body.model], [null, "OpenRouter", "vendor/old"]);
   });
 });
 
@@ -1284,6 +1398,154 @@ test("A plan job left running by a quit is answered and saved as failed on the s
       assert.ok((await argvLines(home)).includes("config set tools.exec.mode ask"), "safe defaults ran again");
     },
     { execMode: "full" }
+  );
+});
+
+test("An interrupted ChatGPT plan job is read back as failed on the step that never finished, with the quit sentence, and saved that way", posixSkip, async () => {
+  await withPlanEnv(async ({ call, agentOsHome }) => {
+    // Agent OS quit while the safe defaults ran: the model step had succeeded.
+    const duringDefaults = storedChatgptJob({ minutesAgo: 9, statuses: ["succeeded", "running", "pending", "pending"] });
+    // Agent OS quit during `models set` itself: the model step was the one running.
+    const duringModel = storedChatgptJob({ minutesAgo: 8, statuses: ["running", "pending", "pending", "pending"] });
+    // Agent OS quit between saving one step as succeeded and the next as running.
+    const between = storedChatgptJob({ minutesAgo: 7, statuses: ["succeeded", "succeeded", "pending", "pending"] });
+    const jobsDir = await putStoredJobs(agentOsHome, [duringDefaults, duringModel, between]);
+
+    const first = await call("GET", `/api/setup/jobs/${duringDefaults.id}`);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.status, "failed", "the card never spins forever");
+    assert.deepEqual(first.body.steps.map((step) => step.id), [...PLAN_JOB_STEPS.chatgpt]);
+    assert.deepEqual(first.body.steps.map((step) => step.status), ["succeeded", "failed", "pending", "pending"]);
+    assert.deepEqual(first.body.steps.map((step) => step.error), [null, PLAN_JOB_INTERRUPTED, null, null]);
+    assert.equal(first.body.previousPrimary, "openrouter/vendor/old", "what the job recorded is kept");
+    assert.equal(typeof first.body.endedAt, "string");
+    const saved = JSON.parse(await readFile(path.join(jobsDir, `${duringDefaults.id}.json`), "utf8"));
+    assert.deepEqual([saved.status, saved.steps[1].error], ["failed", PLAN_JOB_INTERRUPTED], "the failed answer is saved");
+    // Read again, it is the same answer (now from the saved copy).
+    assert.deepEqual((await call("GET", `/api/setup/jobs/${duringDefaults.id}`)).body, first.body);
+
+    const model = await getSetupJob(duringModel.id);
+    assert.deepEqual(model.steps.map((step) => step.status), ["failed", "pending", "pending", "pending"]);
+    assert.equal(model.steps[0].error, PLAN_JOB_INTERRUPTED);
+    const betweenAnswer = await getSetupJob(between.id);
+    assert.deepEqual(betweenAnswer.steps.map((step) => step.status), ["succeeded", "succeeded", "failed", "pending"]);
+    assert.deepEqual(betweenAnswer.steps.map((step) => step.error), [null, null, PLAN_JOB_INTERRUPTED, null]);
+
+    const retry = await call("POST", `/api/setup/jobs/${duringDefaults.id}/retry`, {});
+    assert.deepEqual([retry.status, retry.body], [409, { error: "key_required_for_retry" }], "the way back is Apply again");
+  });
+});
+
+test("A plan job whose runner fails outside a step (the receipt can't be saved) is saved as failed with its own error, never as 'Agent OS quit'; a stored running job that no runner owns still gets the quit sentence", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ call, agentOsHome }) => {
+      // The receipt's file is a folder, so adding to the receipt fails once every step has run.
+      await mkdir(path.join(agentOsHome, "setup", "receipt.json"), { recursive: true });
+      const started = await apply(call, "chatgpt", "gpt-6.1-sol");
+      assert.equal(started.status, 200);
+      const done = await waitForPlanJob(started.body.id);
+      assert.equal(done.status, "failed");
+      const errors = done.steps.map((step) => step.error).filter(Boolean);
+      assert.equal(errors.length, 1, JSON.stringify(errors));
+      assert.notEqual(errors[0], PLAN_JOB_INTERRUPTED, "Agent OS did not quit: it ran and the receipt failed");
+      assert.ok(!errors[0].includes("quit"), errors[0]);
+      assert.equal(done.steps.find((step) => step.error).status, "failed");
+      assert.equal(typeof done.endedAt, "string");
+
+      // Saved that way: once nothing in this process owns the job any more, a read still gives the same answer.
+      const jobFile = path.join(agentOsHome, "setup", "jobs", `${started.body.id}.json`);
+      const deadline = Date.now() + 5000;
+      let saved = JSON.parse(await readFile(jobFile, "utf8"));
+      while (saved.status === "running" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        saved = JSON.parse(await readFile(jobFile, "utf8"));
+      }
+      assert.equal(saved.status, "failed", "the failure reached the disk");
+      resetSetupJobsForTest();
+      const later = await call("GET", `/api/setup/jobs/${started.body.id}`);
+      assert.equal(later.status, 200);
+      assert.deepEqual(later.body.steps.map((step) => step.error).filter(Boolean), errors, "a later read says the same thing");
+      assert.equal(later.body.status, "failed");
+
+      // The lock is free again, and Apply works once the receipt can be saved.
+      await rm(path.join(agentOsHome, "setup", "receipt.json"), { recursive: true, force: true });
+      const again = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6.1-sol")).body.id);
+      assert.equal(again.status, "succeeded");
+
+      // A stored running job with no runner in this process is still "Agent OS quit".
+      const orphan = storedChatgptJob({ minutesAgo: 1, statuses: ["succeeded", "running", "pending", "pending"] });
+      await writeFile(path.join(agentOsHome, "setup", "jobs", `${orphan.id}.json`), JSON.stringify(orphan));
+      const orphanAnswer = await getSetupJob(orphan.id);
+      assert.deepEqual([orphanAnswer.status, orphanAnswer.steps[1].error], ["failed", PLAN_JOB_INTERRUPTED]);
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+  );
+});
+
+test("ChatGPT plan Apply after an interrupted or failed Apply: the half-applied openai model is never recorded as the earlier model, and the earlier Apply's own earlier model is put back", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ call, home, agentOsHome, knob }) => {
+      await knob("FAKE_OPENCLAW_STATUS_EXIT", "1"); // readiness fails, so the earlier model is put back
+      const HALF = "openai/gpt-6.1-sol";
+      // Runs one Apply of gpt-6-luna with these jobs stored and this primary; answers what it recorded and put back.
+      const applyWith = async (why, jobs, { primary = HALF } = {}) => {
+        await putStoredJobs(agentOsHome, jobs);
+        await writeFakeAgentState(home, { primary, models: null, authRows: [siwcRow()] });
+        const before = (await argvLines(home)).length;
+        const done = await waitForPlanJob((await apply(call, "chatgpt", "gpt-6-luna")).body.id);
+        assert.equal(done.status, "failed", `${why}: readiness stops it`);
+        const sets = (await argvLines(home)).slice(before).filter((line) => line.startsWith("models set"));
+        return { previousPrimary: done.previousPrimary, sets, primaryAfter: (await readFakeAgentState(home)).primary, step: stepOf(done, "openclaw-plan-readiness") };
+      };
+
+      // 1. Agent OS quit after `models set openai/gpt-6.1-sol`: the job is still saved as running.
+      const quit = await applyWith("quit", [storedChatgptJob({ statuses: ["succeeded", "running", "pending", "pending"] })]);
+      assert.equal(quit.previousPrimary, "openrouter/vendor/old", "the interrupted job's earlier model, not the half-applied one");
+      assert.deepEqual(quit.sets, ["models set openai/gpt-6-luna", "models set openrouter/vendor/old"]);
+      assert.equal(quit.primaryAfter, "openrouter/vendor/old");
+
+      // 2. The same job after a read already saved it as failed with the quit sentence.
+      const marked = storedChatgptJob({ statuses: ["succeeded", "failed", "pending", "pending"], status: "failed", errors: { "openclaw-safe-defaults": PLAN_JOB_INTERRUPTED } });
+      assert.equal((await applyWith("marked", [marked])).previousPrimary, "openrouter/vendor/old");
+
+      // 3. It failed after `models set` (a later step stopped it, and the put-back did not happen).
+      const failed = await applyWith("failed after models set", [
+        storedChatgptJob({ statuses: ["succeeded", "succeeded", "failed", "pending"], status: "failed", errors: { "openclaw-plan-readiness": CHATGPT_NOT_READY } })
+      ]);
+      assert.equal(failed.previousPrimary, "openrouter/vendor/old");
+      assert.equal(failed.primaryAfter, "openrouter/vendor/old");
+
+      // 4. The interrupted job had no earlier model: that is what is recorded, and OpenClaw keeps the new one.
+      const none = await applyWith("no earlier model", [storedChatgptJob({ previousPrimary: null })]);
+      assert.equal(none.previousPrimary, null);
+      assert.deepEqual(none.sets, ["models set openai/gpt-6-luna"]);
+      assert.deepEqual(none.step.warnings, [noEarlierPrimary("openai/gpt-6-luna")]);
+
+      // 5. Only the newest ChatGPT job counts: a newer one that succeeded ends the question.
+      const newerOk = await applyWith("a newer job succeeded", [
+        storedChatgptJob({ minutesAgo: 9 }),
+        storedChatgptJob({ minutesAgo: 3, status: "succeeded", statuses: ["succeeded", "succeeded", "succeeded", "succeeded"] })
+      ]);
+      assert.equal(newerOk.previousPrimary, HALF, "that is the model OpenClaw had before this Apply");
+      assert.deepEqual(newerOk.sets, ["models set openai/gpt-6-luna", `models set ${HALF}`]);
+
+      // 6. A model that is not the interrupted job's own openai model is just what OpenClaw has.
+      const other = await applyWith("another model", [storedChatgptJob()], { primary: "openrouter/vendor/new" });
+      assert.equal(other.previousPrimary, "openrouter/vendor/new");
+
+      // 7. A Claude plan job, or an interrupted job that never reached `models set`, is not asked.
+      assert.equal((await applyWith("a Claude plan job", [storedChatgptJob({ plan: "claude", statuses: ["succeeded", "running"] })])).previousPrimary, HALF);
+      assert.equal(
+        (await applyWith("stopped before models set", [storedChatgptJob({ statuses: ["failed", "pending", "pending", "pending"], status: "failed", errors: { "openclaw-plan-model": CURRENT_MODEL_UNREADABLE } })])).previousPrimary,
+        HALF
+      );
+
+      // 8. A saved earlier model that is not a plain model reference is never put on a command line.
+      const tampered = await applyWith("not a plain reference", [storedChatgptJob({ previousPrimary: "--probe" })]);
+      assert.equal(tampered.previousPrimary, HALF);
+      assert.ok(!tampered.sets.some((line) => line.includes("--probe")), "nothing odd was run");
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
   );
 });
 

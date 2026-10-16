@@ -221,9 +221,36 @@ export function findViolations(
   return violations;
 }
 
+// What the watcher really did about a violation (`violation.stopped`, set by
+// startWatcher before it reports): "sigterm" (it sent SIGTERM), "gone" (the
+// process had already ended), "failed" (the signal could not be sent) or "no"
+// (kill was off). The run-tests.mjs line says exactly this.
+const STOPPED_SENTENCE = Object.freeze({
+  sigterm: "Sent it SIGTERM.",
+  gone: "It had already ended by then.",
+  failed: "Could not stop it, so it may still be running.",
+  no: "Did not stop it."
+});
+
+// The line scripts/run-tests.mjs prints for one violation. `where` is the
+// test file it came from, already shortened for the screen.
+export function violationLine(violation, where) {
+  const what = STOPPED_SENTENCE[violation?.stopped] ?? STOPPED_SENTENCE.no;
+  return (
+    `no-real-agents watcher: a real "${violation.name}" started during the tests ` +
+    `(pid ${violation.pid}, ${violation.binary}, from ${where}). ${what}`
+  );
+}
+
+// "1 check" or "3 checks".
+export function checksPhrase(count) {
+  return `${count} ${count === 1 ? "check" : "checks"}`;
+}
+
 // Polls ps every intervalMs. Resolves once the baseline is taken, so start
 // the tests only after it resolves. Each violation is reported once to
-// onViolation and, unless kill is false, sent SIGTERM.
+// onViolation and, unless kill is false, sent SIGTERM (`killProcess` is for
+// tests: it replaces process.kill).
 // stop() takes one last snapshot (tried up to three times when ps fails) and
 // resolves { checks, failedChecks, finalCheckOk, violations }: checks counts
 // the ps runs that worked, failedChecks the ones that did not, and
@@ -236,6 +263,7 @@ export async function startWatcher({
   allowedRoots = defaultAllowedRoots(),
   names = AGENT_NAMES,
   kill = true,
+  killProcess = (pid, signal) => process.kill(pid, signal),
   readRows = readPsRows
 } = {}) {
   if (!isRunnerPid(rootPid)) throw new Error("startWatcher needs the pid of the test runner it watches");
@@ -269,14 +297,18 @@ export async function startWatcher({
       const key = `${violation.pid}\n${violation.command}`;
       if (reported.has(key)) continue;
       reported.add(key);
-      violations.push(violation);
+      let stopped = "no";
       if (kill) {
         try {
-          process.kill(violation.pid, "SIGTERM");
-        } catch {
-          // already gone
+          killProcess(violation.pid, "SIGTERM");
+          stopped = "sigterm";
+        } catch (error) {
+          // ESRCH: it ended before the signal. Anything else: it could not be signalled.
+          stopped = error?.code === "ESRCH" ? "gone" : "failed";
         }
       }
+      violation.stopped = stopped;
+      violations.push(violation);
       try {
         onViolation(violation);
       } catch {

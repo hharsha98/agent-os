@@ -8,7 +8,8 @@
 // Intel Mac app on an Apple-silicon runner.
 //
 // The copied binaries are never run (a cross-built one could not run here). Each one's file header is
-// read instead, to check it was built for the target's CPU, and macOS's spawn-helper (the small program
+// read instead, to check it is the right kind of file for the target's system (Mach-O for macOS, ELF
+// for Linux, PE for Windows) and was built for the target's CPU, and macOS's spawn-helper (the small program
 // node-pty starts for every terminal) gets mode 0755.
 import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
@@ -105,6 +106,25 @@ export function binaryArches(buffer) {
   return [];
 }
 
+// The kind of binary file, read from its header: "macho" (also universal and 32-bit), "elf" or "pe";
+// null for anything else (a script, a cut-off file, an "MZ" file with no PE header). The CPU does not matter here.
+export function binaryFormat(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 8) return null;
+  const little = buffer.readUInt32LE(0);
+  const big = buffer.readUInt32BE(0);
+  if (little === 0xfeedfacf || little === 0xfeedface || big === 0xcafebabe || big === 0xcafebabf) return "macho";
+  if (buffer[0] === 0x7f && buffer[1] === 0x45 && buffer[2] === 0x4c && buffer[3] === 0x46) return "elf";
+  if (buffer[0] === 0x4d && buffer[1] === 0x5a && buffer.length >= 0x40) {
+    const offset = buffer.readUInt32LE(0x3c);
+    if (offset + 6 <= buffer.length && buffer.readUInt32LE(offset) === 0x00004550) return "pe";
+  }
+  return null;
+}
+
+// What each target system runs, and what to call it in a sentence.
+const SYSTEM_FORMAT = { darwin: "macho", linux: "elf", win32: "pe" };
+const FORMAT_NAME = { macho: "macOS (Mach-O)", elf: "Linux (ELF)", pe: "Windows (PE)" };
+
 async function listFiles(dir) {
   const files = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -120,7 +140,8 @@ const withSlashes = (relative) => relative.split(path.sep).join("/");
 // Copies node-pty from `from` (normally node_modules/node-pty) to `to` for one target computer.
 // Returns { prebuild, files, bytes }: `files` are relative to `to`, with "/" separators, sorted.
 // Throws, with a plain sentence, when node-pty is missing, has no prebuilt binary for the target, misses a
-// file it needs there, or a copied binary was built for another CPU.
+// file it needs there, or a copied binary is the wrong kind of file for the target's system or was built for
+// another CPU.
 export async function copyNodePty({ from, to, platform, arch }) {
   const prebuild = `${platform}-${arch}`;
   if (!existsSync(path.join(from, "package.json")) || !existsSync(path.join(from, "lib"))) {
@@ -148,10 +169,21 @@ export async function copyNodePty({ from, to, platform, arch }) {
   }
   for (const file of await listFiles(target)) {
     if (!/\.(node|dll|exe)$/.test(file) && path.basename(file) !== "spawn-helper") continue;
-    const arches = binaryArches(await readFile(file));
+    const buffer = await readFile(file);
+    const shown = withSlashes(path.relative(to, file));
+    const format = binaryFormat(buffer);
+    const wanted = SYSTEM_FORMAT[platform];
+    if (format !== wanted) {
+      throw new Error(
+        format
+          ? `${shown} is a ${FORMAT_NAME[format]} file, not a ${FORMAT_NAME[wanted]} one.`
+          : `${shown} is not a ${FORMAT_NAME[wanted]} file.`
+      );
+    }
+    const arches = binaryArches(buffer);
     if (!arches.includes(arch)) {
       const built = arches.length > 0 ? arches.join(" and ") : "an unknown CPU";
-      throw new Error(`${withSlashes(path.relative(to, file))} is built for ${built}, not ${arch}.`);
+      throw new Error(`${shown} is built for ${built}, not ${arch}.`);
     }
   }
   if (platform === "darwin") {

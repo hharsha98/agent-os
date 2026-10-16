@@ -369,29 +369,60 @@ function describeModel(agentId, provider, model) {
   return { agentId, installed: true, provider: provider || null, providerLabel, model: model || null, isPreset: Boolean(presetSlug), presetSlug };
 }
 
+// ---- OpenClaw's plan reads (spec 2026-10-15, sections 2 and 5) ------------------------------------
+// The two reads that tell which plan OpenClaw's model runs on, kept here, in one
+// place, for readAgentModel below, the plan status and model lists
+// (openclaw-plans.js, which re-exports them) and the plan jobs (jobs.js). They go
+// through OpenClaw's own commands, never its files.
+
+// `config get agents.defaults.models --json`: the per-model settings, where the
+// claude-cli runtime pins live. Answers { value, confirmed }: `value` is a plain
+// object or null; `confirmed: false` means the read failed or came back garbled
+// (it says nothing about pins), while a command that ran and printed nothing
+// says "no per-model settings" (value null, confirmed).
+export async function readOpenclawModelsConfigState(detected) {
+  if (!detected?.installed) return { value: null, confirmed: false };
+  const result = await runCommand(detected.path, ["config", "get", "agents.defaults.models", "--json"], CONFIG_GET_TIMEOUT_MS);
+  if (!result.ok) return { value: null, confirmed: false };
+  const value = parseJsonOutput(result.stdout);
+  const readable = value !== null && typeof value === "object" && !Array.isArray(value);
+  return { value: readable ? value : null, confirmed: readable || result.stdout === "" };
+}
+
+// The per-model settings as a plain object, or null (not installed, failed, nothing printed, or not an object).
+export async function readOpenclawModelsConfig(detected) {
+  return (await readOpenclawModelsConfigState(detected)).value;
+}
+
+// Signed in with ChatGPT? Only each saved sign-in's method and token sharing
+// are kept; the command's output goes no further than this function.
+// `signedIn: null` means the list could not be read.
+export async function readChatgptAuth(detected) {
+  if (!detected?.installed) return { signedIn: null, sharing: null };
+  const result = await runCommand(detected.path, ["models", "auth", "list", "--provider", "openai", "--json"], PLAN_READ_TIMEOUT_MS);
+  return chatgptSignIn(result.ok ? parseAuthRows(parseJsonOutput(result.stdout)) : null);
+}
+
 // Which plan OpenClaw's model runs on (spec 2026-10-15, section 5), checked the
 // way OpenClaw itself decides, through its own commands (never its files): an
 // anthropic/ model pinned to the claude-cli runtime is the Claude plan, an
 // openai/ model with a Sign in with ChatGPT profile is the ChatGPT plan. Only
 // each sign-in's method is kept from `models auth list`; its output is never
 // logged or returned.
+// `reads` holds the two possible confirming reads, already started (readAgentModel
+// starts both beside the primary read); only the one this primary needs is waited for.
 // Answers { plan, confirmed }. `confirmed: false` means the read that would have
 // confirmed a plan failed (or came back garbled), so the label must not claim
 // how the model is billed (openclawProviderLabel).
-async function openclawPlanOf(detected, primary) {
+async function openclawPlanOf(primary, reads) {
   if (typeof primary !== "string" || primary.includes("@")) return { plan: null, confirmed: true };
   if (primary.startsWith("anthropic/")) {
-    const result = await runCommand(detected.path, ["config", "get", "agents.defaults.models", "--json"], CONFIG_GET_TIMEOUT_MS);
-    const value = result.ok ? parseJsonOutput(result.stdout) : null;
-    // A command that ran and printed nothing says "no per-model settings", so
-    // there is no pin; a failed command or unreadable output says nothing.
-    const readable = value !== null && typeof value === "object" && !Array.isArray(value);
-    return { plan: planOfPrimary(primary, value, false), confirmed: result.ok && (readable || result.stdout === "") };
+    const settings = await reads.settings;
+    return { plan: planOfPrimary(primary, settings.value, false), confirmed: settings.confirmed };
   }
   if (primary.startsWith("openai/")) {
-    const result = await runCommand(detected.path, ["models", "auth", "list", "--provider", "openai", "--json"], PLAN_READ_TIMEOUT_MS);
-    const rows = result.ok ? parseAuthRows(parseJsonOutput(result.stdout)) : null;
-    return { plan: planOfPrimary(primary, null, chatgptSignIn(rows).signedIn), confirmed: rows !== null };
+    const auth = await reads.signIn;
+    return { plan: planOfPrimary(primary, null, auth.signedIn), confirmed: auth.signedIn !== null };
   }
   return { plan: null, confirmed: true };
 }
@@ -426,12 +457,17 @@ export async function readAgentModel(agentId, detected) {
     const [provider, model] = await Promise.all([read("model.provider"), read("model.default")]);
     return withKnown(describeModel("hermes", provider.value, model.value), model.ok);
   }
-  // OpenClaw keeps one "provider/model" reference.
+  // OpenClaw keeps one "provider/model" reference. Which confirming read is needed
+  // depends on that reference, but neither read depends on its value, so both start
+  // now, beside the primary read, and only the one that is needed is waited for (the
+  // plan status does the same). An unneeded one finishes quietly on its own.
+  const reads = { settings: readOpenclawModelsConfigState(detected), signIn: readChatgptAuth(detected) };
+  for (const pending of Object.values(reads)) pending.catch(() => {});
   const read = await get(["config", "get", OPENCLAW_MODEL_PATH]);
   const primary = read.value;
   const slash = primary ? primary.indexOf("/") : -1;
   const info = slash > 0 ? describeModel("openclaw", primary.slice(0, slash), primary.slice(slash + 1)) : describeModel("openclaw", null, primary);
-  const { plan, confirmed } = await openclawPlanOf(detected, primary);
+  const { plan, confirmed } = await openclawPlanOf(primary, reads);
   return withKnown({ ...info, providerLabel: openclawProviderLabel(info.provider, plan, confirmed) ?? info.providerLabel, plan }, read.ok);
 }
 

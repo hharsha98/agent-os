@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { binaryArches, copyNodePty, parseTargetArgs } from "../scripts/node-pty-bundle.mjs";
+import { binaryArches, binaryFormat, copyNodePty, parseTargetArgs } from "../scripts/node-pty-bundle.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const realNodePty = path.join(root, "node_modules", "node-pty");
@@ -90,6 +90,23 @@ test("binaryArches reads the CPU from Mach-O, universal Mach-O, ELF and PE heade
   }
 });
 
+test("binaryFormat tells Mach-O (also universal), ELF and PE apart, whatever their CPU, and nothing else", () => {
+  assert.equal(binaryFormat(machO(X64)), "macho");
+  assert.equal(binaryFormat(machO(ARM64)), "macho");
+  assert.equal(binaryFormat(universalMachO([X64, ARM64])), "macho");
+  assert.equal(binaryFormat(elf(62)), "elf");
+  assert.equal(binaryFormat(elf(183)), "elf");
+  assert.equal(binaryFormat(elf(3)), "elf", "a 32-bit Intel ELF is still an ELF file");
+  assert.equal(binaryFormat(pe(0x8664)), "pe");
+  assert.equal(binaryFormat(pe(0xaa64)), "pe");
+  // A shell script, cut-off files, an "MZ" file with no PE header, and empty input are none of the three.
+  const dosOnly = Buffer.alloc(256);
+  dosOnly.write("MZ", 0, "latin1");
+  for (const other of [Buffer.alloc(0), Buffer.from("#!/bin/sh\necho hi\n"), Buffer.from("MZ"), Buffer.from([0x7f, 0x45, 0x4c, 0x46]), dosOnly]) {
+    assert.equal(binaryFormat(other), null);
+  }
+});
+
 test("node-pty ships a prebuilt binary for every computer the app and the Docker image are built for, each for the CPU its folder names", async () => {
   const pkg = JSON.parse(await readFile(path.join(realNodePty, "package.json"), "utf8"));
   assert.equal(pkg.version, "1.2.0-beta.14", "the approved exact pin");
@@ -165,6 +182,57 @@ test("copyNodePty stops with a plain sentence: node-pty missing, no prebuild for
     const done = await copyNodePty({ from: fake, to: path.join(tmp, "out4"), platform: "darwin", arch: "x64" });
     assert.deepEqual(done.files, ["lib/index.js", "package.json", "prebuilds/darwin-x64/pty.node", "prebuilds/darwin-x64/spawn-helper"]);
     if (!isWindows) assert.equal((await stat(path.join(tmp, "out4", "prebuilds", "darwin-x64", "spawn-helper"))).mode & 0o777, 0o755);
+  });
+});
+
+test("copyNodePty stops with a plain sentence when a binary is the wrong kind of file for the target system, even with the right CPU", async () => {
+  await withTemp(async (tmp) => {
+    // One made-up node-pty with a prebuild folder for each system; each test below swaps one file.
+    const fake = path.join(tmp, "fake-node-pty");
+    await mkdir(path.join(fake, "lib"), { recursive: true });
+    await writeFile(path.join(fake, "package.json"), JSON.stringify({ name: "node-pty", main: "./lib/index.js" }));
+    await writeFile(path.join(fake, "lib", "index.js"), "module.exports = {};\n");
+    const right = { darwin: machO(X64), linux: elf(62), win32: pe(0x8664) };
+    const folders = { darwin: ["pty.node", "spawn-helper"], linux: ["pty.node"], win32: ["conpty.node", "conpty_console_list.node"] };
+    for (const [platform, names] of Object.entries(folders)) {
+      await mkdir(path.join(fake, "prebuilds", `${platform}-x64`), { recursive: true });
+      for (const name of names) await writeFile(path.join(fake, "prebuilds", `${platform}-x64`, name), right[platform]);
+    }
+    const copy = (platform, out) => copyNodePty({ from: fake, to: path.join(tmp, out), platform, arch: "x64" });
+    const put = (platform, name, buffer) => writeFile(path.join(fake, "prebuilds", `${platform}-x64`, name), buffer);
+
+    // Each system's own kind of file copies.
+    for (const platform of ["darwin", "linux", "win32"]) assert.ok((await copy(platform, `ok-${platform}`)).files.length > 0, platform);
+
+    // The right CPU (x64) in the wrong kind of file: a Linux file in the macOS app, and so on.
+    await put("darwin", "pty.node", elf(62));
+    await assert.rejects(copy("darwin", "bad1"), /^Error: prebuilds\/darwin-x64\/pty\.node is a Linux \(ELF\) file, not a macOS \(Mach-O\) one\.$/);
+    await put("darwin", "pty.node", right.darwin);
+    await put("darwin", "spawn-helper", pe(0x8664));
+    await assert.rejects(copy("darwin", "bad2"), /^Error: prebuilds\/darwin-x64\/spawn-helper is a Windows \(PE\) file, not a macOS \(Mach-O\) one\.$/);
+    await put("darwin", "spawn-helper", right.darwin);
+    await put("linux", "pty.node", machO(X64));
+    await assert.rejects(copy("linux", "bad3"), /^Error: prebuilds\/linux-x64\/pty\.node is a macOS \(Mach-O\) file, not a Linux \(ELF\) one\.$/);
+    await put("linux", "pty.node", right.linux);
+    await put("win32", "conpty.node", elf(62));
+    await assert.rejects(copy("win32", "bad4"), /^Error: prebuilds\/win32-x64\/conpty\.node is a Linux \(ELF\) file, not a Windows \(PE\) one\.$/);
+    await put("win32", "conpty.node", right.win32);
+    // A universal Mach-O is a Mach-O file, so it passes the kind check (and then the CPU check).
+    await put("darwin", "pty.node", universalMachO([X64, ARM64]));
+    assert.ok((await copy("darwin", "ok-universal")).files.includes("prebuilds/darwin-x64/pty.node"));
+    await put("darwin", "pty.node", right.darwin);
+
+    // Not any binary at all (a script, or a cut-off file): said plainly, not as "an unknown CPU".
+    await put("linux", "pty.node", Buffer.from("#!/bin/sh\necho hi\n"));
+    await assert.rejects(copy("linux", "bad5"), /^Error: prebuilds\/linux-x64\/pty\.node is not a Linux \(ELF\) file\.$/);
+    await put("linux", "pty.node", right.linux);
+    await put("win32", "conpty_console_list.node", Buffer.from("MZ"));
+    await assert.rejects(copy("win32", "bad6"), /^Error: prebuilds\/win32-x64\/conpty_console_list\.node is not a Windows \(PE\) file\.$/);
+    await put("win32", "conpty_console_list.node", right.win32);
+
+    // The CPU check still comes after, with its own sentence.
+    await put("linux", "pty.node", elf(183));
+    await assert.rejects(copy("linux", "bad7"), /^Error: prebuilds\/linux-x64\/pty\.node is built for arm64, not x64\.$/);
   });
 });
 

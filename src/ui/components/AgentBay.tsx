@@ -42,7 +42,8 @@ export default function AgentBay({
   brainsFailed = false,
   onBrainsChanged,
   session = null,
-  sessionsAvailable = true
+  sessionsAvailable = true,
+  sessionsKnown = true
 }: {
   agentId: string;
   agent: AgentSummary | undefined;
@@ -57,6 +58,9 @@ export default function AgentBay({
   session?: SessionSummary | null;
   // false where sessions do not run (the public demo, a shared server): no session button at all.
   sessionsAvailable?: boolean;
+  // false until the shared sessions list has been read (loading, or the first read failed): no session button either,
+  // because "New session" could be shown for an agent that already has an open session.
+  sessionsKnown?: boolean;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [detailError, setDetailError] = useState("");
@@ -163,7 +167,7 @@ export default function AgentBay({
               Open session
             </button>
           </div>
-        ) : sessionsAvailable && found !== "missing" ? (
+        ) : sessionsAvailable && sessionsKnown && found !== "missing" ? (
           <div className="os-agent-head__actions">
             <button type="button" className="os-btn os-btn--secondary" onClick={() => openNewSession({ agentId })}>
               <Plus size={17} aria-hidden="true" />

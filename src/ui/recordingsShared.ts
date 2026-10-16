@@ -12,7 +12,11 @@ export interface RecordingRow {
   folder: string;
   folderName: string;
   folderShown: boolean;
+  // The LATEST start: a resume resets it. It still orders the list (newest first).
   startedAt: string;
+  // When the recording itself began: a resumed session's first start. Recorded shows it and Length runs from it. An
+  // answer without it (an older server) falls back to startedAt.
+  firstStartedAt: string;
   endedAt: string | null;
   bytes: number | null;
   live: boolean;
@@ -50,6 +54,7 @@ export function readRecordings(answer: unknown): RecordingsBody | null {
     const r = item as Record<string, unknown>;
     const sessionId = text(r.sessionId);
     if (!sessionId) continue;
+    const startedAt = text(r.startedAt);
     rows.push({
       sessionId,
       kind: r.kind === "update" ? "update" : "agent",
@@ -58,7 +63,8 @@ export function readRecordings(answer: unknown): RecordingsBody | null {
       folder: text(r.folder),
       folderName: text(r.folderName),
       folderShown: r.folderShown !== false,
-      startedAt: text(r.startedAt),
+      startedAt,
+      firstStartedAt: text(r.firstStartedAt) || startedAt,
       endedAt: text(r.endedAt) || null,
       bytes: typeof r.bytes === "number" && Number.isFinite(r.bytes) ? r.bytes : null,
       live: r.live === true
@@ -107,9 +113,21 @@ export function durationWords(fromIso: string | null | undefined, toMs: number):
   return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")} m`;
 }
 
-// How long a recording runs: "so far" while it is live; "—" when an ended one has no end time.
-export function recordingLength(row: Pick<RecordingRow, "startedAt" | "endedAt" | "live">, now: number): { value: string; soFar: boolean } {
-  if (row.live) return { value: durationWords(row.startedAt, now), soFar: true };
+// How long a recording runs: "so far" while it is live; "—" when an ended one has no end time. It runs from the
+// recording's first start to the end of its last part, so a resumed session's Length covers all its parts (on the
+// recording's own clock, which keeps counting while the session was ended). A row without firstStartedAt measures
+// from startedAt.
+export function recordingLength(
+  row: Pick<RecordingRow, "startedAt" | "endedAt" | "live"> & { firstStartedAt?: string },
+  now: number
+): { value: string; soFar: boolean } {
+  const from = recordedAt(row);
+  if (row.live) return { value: durationWords(from, now), soFar: true };
   const end = row.endedAt ? Date.parse(row.endedAt) : NaN;
-  return { value: Number.isFinite(end) ? durationWords(row.startedAt, end) : "—", soFar: false };
+  return { value: Number.isFinite(end) ? durationWords(from, end) : "—", soFar: false };
+}
+
+// The time the Recorded column shows: when the recording first started.
+export function recordedAt(row: Pick<RecordingRow, "startedAt"> & { firstStartedAt?: string }): string {
+  return row.firstStartedAt || row.startedAt;
 }

@@ -824,7 +824,12 @@ function fakeSpawn(outcome, calls) {
     calls.push({ command, args, options });
     const child = new EventEmitter();
     child.unref = () => {};
-    setImmediate(() => (outcome === "spawn" ? child.emit("spawn") : child.emit("error", new Error("could not start"))));
+    // A real `open` exits 0 as soon as Terminal has been asked; openCommandInTerminal waits for that exit.
+    setImmediate(() => {
+      if (outcome !== "spawn") return child.emit("error", new Error("could not start"));
+      child.emit("spawn");
+      return child.emit("exit", 0, null);
+    });
     return child;
   };
 }

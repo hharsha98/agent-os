@@ -3,6 +3,7 @@
 // the Home strip, the top-bar badge, desktop notifications and hand-offs arrive later, so this page does not show them
 // (the prototype's Lane B, its hand-off item and its "Review guide" button are left out). What closing the window does
 // depends on where Agent OS runs (lifeSection, helpShared.ts). The diagrams are the prototype's SVGs on the app's tokens.
+import { useEffect } from "react";
 import type { CSSProperties } from "react";
 import { CircleHelp, CircleStop, History, Lock, Maximize, Power, SquareTerminal, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -197,6 +198,11 @@ function Timeline() {
 
 export default function HelpPage() {
   const life = lifeSection({ desktop: isDesktopApp(), isMac: IS_MAC });
+  // The page scrolls as a whole, so Help opened from a page that was scrolled (Safety's "How stopping works", the
+  // Sessions page's link) would keep that place. It starts at its own top, with its title on screen.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
   return (
     <section className="os-help" aria-labelledby="os-help-title">
       <PageHeader titleId="os-help-title" title={HELP_TITLE} lede={HELP_LEDE} />
@@ -261,7 +267,11 @@ export default function HelpPage() {
         ) : null}
       </section>
 
-      <section className="os-help-section" aria-label="Promises">
+      <section className="os-help-section" aria-labelledby="os-help-promises">
+        {/* Read aloud only, so the page looks as it did: the outline needs an h2 over the three promise titles. */}
+        <h2 id="os-help-promises" className="os-visually-hidden">
+          Promises
+        </h2>
         <div className="os-help-pair">
           {PROMISES.map((promise) => {
             const Icon = PROMISE_ICON[promise.id] || CircleHelp;

@@ -19,6 +19,10 @@
 //     both take "timeout" (the program ends killed by SIGTERM, which is the answer
 //     runCommand gives for a timeout), "fail" (exit 1) or, for the model settings
 //     only, "garbage" (exit 0 and text that isn't JSON); unset: the normal answer
+//   FAKE_OPENCLAW_READ_DELAY_MS  milliseconds `config get agents.defaults.model.primary`,
+//     `config get agents.defaults.models` and `models auth list` wait before they answer; each
+//     then adds { argv, startedAt, endedAt } (epoch milliseconds) to $HOME/.fake-openclaw-timing.jsonl,
+//     so a test can tell whether two reads overlapped (unset: no wait, no timing line)
 //   FAKE_OPENCLAW_VANISH_AFTER  an argv prefix such as "gateway status": the first call that
 //     starts with it answers as usual and, as it exits, deletes the program's launcher
 //     (<home>/.npm-global/bin/openclaw), so the next call cannot run at all (runCommand's
@@ -58,6 +62,15 @@ try {
 function knob(name) {
   if (process.env[name] !== undefined) return process.env[name];
   try { return readFileSync(path.join(home, ".fake-knobs", name), "utf8").trim(); } catch { return undefined; }
+}
+const startedAt = Date.now();
+const readDelayMs = Number(knob("FAKE_OPENCLAW_READ_DELAY_MS") ?? "0") || 0;
+async function slowRead() {
+  if (!readDelayMs) return;
+  await new Promise((resolve) => setTimeout(resolve, readDelayMs));
+  try {
+    appendFileSync(path.join(home, ".fake-openclaw-timing.jsonl"), JSON.stringify({ argv: args, startedAt, endedAt: Date.now() }) + "\\n");
+  } catch {}
 }
 const vanishAfter = knob("FAKE_OPENCLAW_VANISH_AFTER");
 if (vanishAfter && args.join(" ").startsWith(vanishAfter)) {
@@ -132,6 +145,7 @@ if (args[0] === "models" && args[1] === "list") {
   process.exit(0);
 }
 if (args[0] === "models" && args[1] === "auth" && args[2] === "list") {
+  await slowRead();
   const shaped = knob("FAKE_OPENCLAW_AUTH_JSON");
   if (shaped === "fail") { process.stderr.write("simulated auth list failure\\n"); process.exit(1); }
   print(shaped !== undefined ? shaped : JSON.stringify(readState().authRows));
@@ -178,6 +192,7 @@ if (args[0] === "config" && args[1] === "get") {
     process.exit(0);
   }
   if (args[2] === "agents.defaults.model.primary") {
+    await slowRead();
     const bad = knob("FAKE_OPENCLAW_GET_PRIMARY");
     if (bad === "timeout") { process.kill(process.pid, "SIGTERM"); await new Promise(() => setInterval(() => {}, 1000)); }
     if (bad === "fail") { process.stderr.write("simulated config get failure\\n"); process.exit(1); }
@@ -185,6 +200,7 @@ if (args[0] === "config" && args[1] === "get") {
     process.exit(0);
   }
   if (args[2] === "agents.defaults.models") {
+    await slowRead();
     const bad = knob("FAKE_OPENCLAW_GET_MODEL_SETTINGS");
     if (bad === "timeout") { process.kill(process.pid, "SIGTERM"); await new Promise(() => setInterval(() => {}, 1000)); }
     if (bad === "fail") { process.stderr.write("simulated config get failure\\n"); process.exit(1); }

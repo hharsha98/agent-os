@@ -15,7 +15,7 @@ import { ApiError } from "../../api";
 import { getSession, sessionProblem, stopSession } from "../../sessionsApi";
 import type { SessionStateFrame } from "../../types";
 import { isDesktopApp } from "../desktop";
-import { SIGNIN_POLL_MS, SIGNIN_TERMINAL_LABEL } from "../planBrainsShared";
+import { SIGNIN_POLL_MS, SIGNIN_TERMINAL_LABEL, asksSessionAtOnce, signInSessionEnded } from "../planBrainsShared";
 import { parseTerminalPrefs, TERMINAL_PREFS_KEY, type TerminalPrefs } from "../sessionsPageShared";
 import SessionTerminal, { type TerminalConnection } from "./SessionTerminal";
 import { useInterval } from "./useInterval";
@@ -41,18 +41,23 @@ export default function PlanSignInTerminal({
   sessionId,
   onEnded,
   onClose,
-  autoFocus = false
+  autoFocus = false,
+  onFocused
 }: {
   sessionId: string;
   // The session ended by itself (the sign-in finished, failed, or Ctrl+C stopped it): the card closes the panel and
   // reads the sign-in again.
   onEnded(): void;
   // Close stopped it (or it was already gone): the card closes the panel and asks once for a live sign-in.
-  // `gone` is true when the stop answered 404, so the session was not live: a sign-in still before its spawn answers
-  // that too (Task B1a), and the card then stops whichever sign-in it finds running (B1a carry-forward).
+  // `gone` is true when the stop answered 404: usually the session had ended, but a sign-in still before its spawn
+  // answers that too (Task B1a), so the card stops the live sign-in it then finds only if it is this same session
+  // (B1a carry-forward); another window's sign-in is left running and shown.
   onClose(gone?: boolean): void;
   // Take the keys at once: only right after the person pressed Sign in, never when a page load finds the session again.
   autoFocus?: boolean;
+  // The terminal took the keys because of autoFocus, once, when it first connected: the card then clears autoFocus,
+  // so a remount of this panel (the card showing a job, then the plans again) never takes the keys a second time.
+  onFocused?(): void;
 }) {
   const [prefs] = useState(readPrefs);
   const [ended, setEnded] = useState(false);
@@ -62,8 +67,9 @@ export default function PlanSignInTerminal({
   // The card is told once: either onEnded or onClose, never both.
   const told = useRef(false);
   const asking = useRef(false);
-  const latest = useRef({ onEnded, onClose });
-  latest.current = { onEnded, onClose };
+  const focused = useRef(false);
+  const latest = useRef({ onEnded, onClose, onFocused, autoFocus });
+  latest.current = { onEnded, onClose, onFocused, autoFocus };
 
   useEffect(() => {
     alive.current = true;
@@ -84,9 +90,9 @@ export default function PlanSignInTerminal({
     asking.current = true;
     try {
       const summary = await getSession(sessionId);
-      if (alive.current && summary?.status === "exited") setEnded(true);
+      if (alive.current && signInSessionEnded(summary, false)) setEnded(true);
     } catch (error) {
-      if (alive.current && isGone(error)) setEnded(true);
+      if (alive.current && signInSessionEnded(null, isGone(error))) setEnded(true);
     } finally {
       asking.current = false;
     }
@@ -105,8 +111,17 @@ export default function PlanSignInTerminal({
   const opened = useRef(false);
   const onConnection = useCallback((connection: TerminalConnection) => {
     if (connection === "ended") setEnded(true);
-    else if (connection === "open") opened.current = true;
-    else if ((connection === "reconnecting" || connection === "lost") && !opened.current) void latestAsk.current();
+    else if (connection === "open") {
+      opened.current = true;
+      // Connected again: what the line said about the time it was not (typed text that was not sent) is out of date.
+      setNotice("");
+      // The terminal takes the keys right after this call when asked to (autoFocus). Once: the card clears the flag
+      // on this word, and the terminal reads it again only after this block, so this first time still gets the keys.
+      if (latest.current.autoFocus && !focused.current) {
+        focused.current = true;
+        latest.current.onFocused?.();
+      }
+    } else if (asksSessionAtOnce(connection, opened.current)) void latestAsk.current();
   }, []);
   const onNotice = useCallback((text: string) => setNotice(text), []);
 
@@ -118,10 +133,11 @@ export default function PlanSignInTerminal({
     try {
       await stopSession(sessionId);
     } catch (error) {
-      // A session that is already gone counts as closed: the card only ever holds the id of a session that had
-      // started (from the 201 or from GET /api/setup/openclaw/signin-terminal), so a 404 here means it ended, and
-      // the card asks that GET once more after every Close anyway (and stops what it finds after a 404, because a
-      // sign-in still before its spawn answers 404 too). Anything else says why and keeps the panel.
+      // A 404 usually means the session already ended, and a session that is gone counts as closed. It can also be a
+      // sign-in that was still before its spawn (it answers 404 to a stop too), so `gone` is passed up: the card asks
+      // GET /api/setup/openclaw/signin-terminal after every Close, and after a 404 it stops the live sign-in it finds
+      // only when that is this very session (another window's sign-in is left alone). Anything else says why and
+      // keeps the panel.
       if (!isGone(error)) {
         if (alive.current) {
           setNotice(sessionProblem(error));

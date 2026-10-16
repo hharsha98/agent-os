@@ -931,6 +931,18 @@ export function createSessionManager({
     return startNew({ kind: "update", agentId, folder });
   }
 
+  // Throws 409 setup_running (with the sessionId and setupAction of the one
+  // that is in the way) while a setup session is starting or running. The
+  // sign-in route asks this before it reads OpenClaw's version, so a second
+  // press is refused at once; createSetupSession asks it again at the moment
+  // it takes the place.
+  function assertNoSetupRunning() {
+    const running = runningSetup();
+    if (running) {
+      throw sessionError(409, "setup_running", SETUP_RUNNING_MESSAGE, { sessionId: running.id, setupAction: running.action });
+    }
+  }
+
   // The setup kind (plan-brains spec §1): OpenClaw's ChatGPT sign-in, which
   // needs a real terminal. Made only by POST /api/setup/openclaw/signin-terminal
   // (server/runtime/setup/routes.js), never by POST /api/sessions. `action`
@@ -944,10 +956,7 @@ export function createSessionManager({
     if (!setup) throw sessionError(400, "unknown_kind", UNKNOWN_KIND_MESSAGE);
     // The id first, so a second start is always told which session to attach to.
     const id = crypto.randomUUID();
-    const running = runningSetup();
-    if (running) {
-      throw sessionError(409, "setup_running", SETUP_RUNNING_MESSAGE, { sessionId: running.id, setupAction: running.action });
-    }
+    assertNoSetupRunning();
     reservedSetup = { id, action };
     const releaseSlot = () => {
       if (reservedSetup?.id === id) reservedSetup = null;
@@ -1424,6 +1433,7 @@ export function createSessionManager({
     create,
     createUpdateSession,
     createSetupSession,
+    assertNoSetupRunning,
     liveSetupSession,
     list,
     get,

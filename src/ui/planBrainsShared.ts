@@ -1,11 +1,13 @@
 // Plan brains (spec docs/superpowers/specs/2026-10-15-plan-brains-design.md; Task B2): the words and the pure rules
 // of OpenClaw's "Your plan" card (BrainPlanCard.tsx), its ChatGPT sign-in terminal (PlanSignInTerminal.tsx) and
-// Hermes's "Choose in Hermes" (ChooseInHermes.tsx). Every sentence here is the spec's, word for word. The ones the
+// Hermes's "Choose in Hermes" (ChooseInHermes.tsx). Every sentence here is the spec's, word for word (the one name
+// that is not, TYPED_MODEL_CHOICE_LABEL, is only read aloud, never drawn). The ones the
 // server says too (the Claude Code readiness sentences, the two OpenClaw version sentences, the ChatGPT readiness
 // sentences and the typed-name refusal), and the typed-name rule itself, are checked against the server's own
 // constants by test/plan-brains-ui-logic.test.js. Only `import type` here, so that test loads this file straight
 // from src/ (Node strips the types itself, decision P14).
 import type { OpenclawPlan, OpenclawPlansInfo, PlanModelList, TerminalLaunch } from "../setupApi";
+import type { SessionSummary } from "../types";
 
 // ---- words ---------------------------------------------------------------------------------------------------
 
@@ -46,6 +48,9 @@ export const CHATGPT_PLAN_WORDS = {
 export const FALLBACK_LIST_NOTE = "Agent OS couldn't read your account's model list, so this list may be out of date.";
 export const NOT_ON_PLAN_NOTE = "Not available on your plan in this OpenClaw yet";
 export const TYPED_MODEL_LABEL = "Type a model name";
+// The fallback row's radio is named apart from its text field (which keeps the spec's "Type a model name"): the
+// two controls are never announced with the same name. Only read aloud, never drawn.
+export const TYPED_MODEL_CHOICE_LABEL = "Use the model name you type";
 export const INVALID_PLAN_MODEL = "That doesn't look like a model name.";
 
 // The two quiet lines next to "Choose in Hermes", shown before anything opens (spec section 4), in this order.
@@ -183,4 +188,49 @@ export function planProblem(error: unknown, friendly: (error: unknown) => string
     return error instanceof Error && error.message === TIMEOUT_WORDS ? TIMEOUT_WORDS : NO_ANSWER_WORDS;
   }
   return friendly(error);
+}
+
+// ---- what the card does next (the pure parts of BrainPlanCard and PlanSignInTerminal) ---------------------------
+
+// A Sign in that was refused with 409 setup_running (a sign-in is already starting or open, maybe in another window),
+// or that got no answer at all (it timed out: the server may have started it all the same), looks for the running
+// sign-in for up to SETUP_RUNNING_WAIT_MS, asked every SETUP_RUNNING_POLL_MS, and attaches to it if one appears.
+// Any other refusal carries its own sentence and there is nothing to find: null. Told apart by name, like
+// gotNoAnswer, so this file needs no runtime import.
+export function signInLookupWait(error: unknown): number | null {
+  if (!(error instanceof Error && error.name === "ApiError")) return SETUP_RUNNING_WAIT_MS;
+  return error.message === "setup_running" ? SETUP_RUNNING_WAIT_MS : null;
+}
+
+type SeenSession = Pick<SessionSummary, "id" | "status"> | null | undefined;
+
+// After Close, the card has closed the panel and read the plans, and asks GET /api/setup/openclaw/signin-terminal for
+// the live sign-in. What it does with the answer (Task B1a carry-forward):
+//   the session just closed          never shown again (its stop may still be finishing); when Close's stop answered
+//                                    404 (`gone`), a sign-in still before its spawn answers that too, so it is stopped;
+//   a different session              another window's sign-in: left running and shown here, never stopped;
+//   nothing live, or an ended one    nothing to do.
+export function signInAfterClose(closedId: string, gone: boolean, found: SeenSession): { stop: string | null; show: string | null } {
+  if (!found || typeof found.id !== "string" || !found.id || found.status === "exited") return { stop: null, show: null };
+  if (found.id === closedId) return { stop: gone ? found.id : null, show: null };
+  return { stop: null, show: found.id };
+}
+
+// A terminal that has never been open and fails its first try asks its session at once, instead of waiting for the next
+// 5 s tick: a sign-in that ends before any window attaches leaves no trace, so the first attach is refused.
+export function asksSessionAtOnce(connection: string, everOpened: boolean): boolean {
+  return !everOpened && (connection === "reconnecting" || connection === "lost");
+}
+
+// The session's answer says the sign-in is over: it is exited, or the question got a 404 (`gone`), which is how a
+// setup session answers once it ended.
+export function signInSessionEnded(summary: { status?: string } | null | undefined, gone: boolean): boolean {
+  return gone || summary?.status === "exited";
+}
+
+// An answer about the plan job (the poll's, or Cancel's). Once a job reached a final state on this card, no later
+// answer about it counts, so the card handles the job's end once: "ignore", "running" (show it), "final" (show it, once).
+export function takeJobAnswer(finalJobId: string | null, next: { id: string; status: string }): "ignore" | "running" | "final" {
+  if (next.id === finalJobId) return "ignore";
+  return next.status === "running" ? "running" : "final";
 }

@@ -28,6 +28,8 @@ const STATUS_TIMEOUT_MS = 10 * 1000;
 const SHOWN_LINES = 12;
 const MAX_LINE_CHARS = 300;
 const TERMINAL_FILE_MAX_AGE_MS = 60 * 60 * 1000;
+// How long openCommandInTerminal waits for `open` to end before it calls the window opened.
+export const TERMINAL_OPEN_WAIT_MS = 5000;
 
 // Verified against each CLI's own --help and the vendor's docs on 2026-10-04:
 //   claude  `claude auth login` / `claude auth status` (JSON; exit 0 when signed in)
@@ -349,10 +351,38 @@ const TERMINAL_NAME_RE = /^[a-z0-9-]{1,40}$/;
 // is handed back to be copied. `command` is always returned, for either path.
 // Used by the sign-in fallback below and by Hermes's model picker
 // (hermes-model-terminal.js).
-export async function openCommandInTerminal(binPath, args, { name, platform = process.platform, spawnFn = spawn } = {}) {
+//
+// `opened` follows the exit of `open`, not only its start: it waits for `open`
+// to end for up to TERMINAL_OPEN_WAIT_MS (`exitWaitMs` is for tests). A clean
+// exit is opened, any other exit (an exit code, or a signal) is spawn_failed,
+// and still running when the wait is over counts as opened.
+//
+// One launch at a time per name: while one is in flight, another call with the
+// same name gets the same answer and opens no second window (a double click).
+const launchesInFlight = new Map(); // name -> the promise of the launch in flight
+
+export async function openCommandInTerminal(binPath, args, { name, platform = process.platform, spawnFn = spawn, exitWaitMs = TERMINAL_OPEN_WAIT_MS } = {}) {
+  // Checked first, so a bad call throws before anything is written or started.
   if (typeof name !== "string" || !TERMINAL_NAME_RE.test(name)) {
     throw new TypeError("openCommandInTerminal: name must be 1 to 40 lower-case letters, digits or dashes.");
   }
+  const isAbsolute = platform === "win32" ? path.win32.isAbsolute : path.posix.isAbsolute;
+  if (typeof binPath !== "string" || binPath === "" || !isAbsolute(binPath)) {
+    throw new TypeError("openCommandInTerminal: binPath must be a non-empty absolute path.");
+  }
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
+    throw new TypeError("openCommandInTerminal: args must be an array of strings.");
+  }
+  const inFlight = launchesInFlight.get(name);
+  if (inFlight) return inFlight;
+  const launch = launchInTerminal(binPath, args, { name, platform, spawnFn, exitWaitMs }).finally(() => {
+    if (launchesInFlight.get(name) === launch) launchesInFlight.delete(name);
+  });
+  launchesInFlight.set(name, launch);
+  return launch;
+}
+
+async function launchInTerminal(binPath, args, { name, platform, spawnFn, exitWaitMs }) {
   const command = loginCommandLine(binPath, args, platform);
   if (platform !== "darwin") return { opened: false, reason: "copy", command };
 
@@ -370,13 +400,28 @@ export async function openCommandInTerminal(binPath, args, { name, platform = pr
       resolve(false);
       return;
     }
-    child.once("error", () => resolve(false));
+    let timer = null;
+    const settle = (ok) => {
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    child.once("error", () => settle(false));
+    child.once("exit", (code) => settle(code === 0));
     child.once("spawn", () => {
       child.unref?.();
-      resolve(true);
+      // Still running after the wait: Terminal has been asked, so it counts as opened.
+      timer = setTimeout(() => settle(true), exitWaitMs);
     });
   });
   return opened ? { opened: true, command } : { opened: false, reason: "spawn_failed", command };
+}
+
+// A detected program path as an absolute one. Detection can return a relative
+// path when PATH holds a relative entry; openCommandInTerminal refuses those
+// (on purpose), so its callers resolve the path first instead of failing with 500.
+export function absoluteBinPath(binPath, platform = process.platform) {
+  const flavour = platform === "win32" ? path.win32 : path.posix;
+  return flavour.isAbsolute(binPath) ? binPath : flavour.resolve(binPath);
 }
 
 // The sign-in fallback: the agent's own login command, in Terminal.app on macOS.
@@ -384,7 +429,7 @@ export async function openSignInInTerminal(agentId, { platform = process.platfor
   const def = definition(agentId);
   const detected = await ADAPTERS[agentId].detect({ refresh: true });
   if (!detected.installed) throw signInError("agent_not_installed", `${def.label} isn't installed on this computer yet.`);
-  return openCommandInTerminal(detected.path, def.loginArgs, { name: `${agentId}-login`, platform, spawnFn });
+  return openCommandInTerminal(absoluteBinPath(detected.path, platform), def.loginArgs, { name: `${agentId}-login`, platform, spawnFn });
 }
 
 // ---- tests only ---------------------------------------------------------------------

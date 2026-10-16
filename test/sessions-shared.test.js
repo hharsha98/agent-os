@@ -90,6 +90,31 @@ test("the menu counts running agent sessions only: not ended ones, not update se
   assert.equal(ss.isSessionRunning({ status: "exited" }), false);
 });
 
+test("one test for an open agent session, shared by the menu and Home", () => {
+  assert.equal(ss.isOpenAgentSession(session({ status: "starting" })), true);
+  assert.equal(ss.isOpenAgentSession(session({ status: "idle" })), true);
+  assert.equal(ss.isOpenAgentSession(session({ status: "exited" })), false);
+  assert.equal(ss.isOpenAgentSession(session({ kind: "update", status: "live" })), false);
+  assert.equal(ss.isOpenAgentSession(session({ kind: "setup", status: "live" })), false, "a sign-in terminal is not an agent session");
+  assert.equal(ss.isOpenAgentSession(session({ status: "something-new" })), false, "an unknown status is not counted");
+});
+
+// Minor sweep, Group B item 7: the server refuses a Resume it knows can never work right now with 409 session_live
+// (it runs again) or 409 not_resumable (an update session, or the agent's resume rules say no). Pressing Resume again
+// cannot change that answer; every other refusal (a busy double click, Look only, a time-out) can.
+test("a Resume refused as impossible is told apart from one that may work on another try", () => {
+  const refused = (code, detail = "words") => Object.assign(new Error(code), { name: "ApiError", detail, status: 409 });
+  assert.equal(ss.isImpossibleResume(refused("session_live")), true);
+  assert.equal(ss.isImpossibleResume(refused("not_resumable")), true);
+  for (const code of ["session_busy", "execution_gate_off", "unknown_session", "pty_unavailable", "start_failed"]) {
+    assert.equal(ss.isImpossibleResume(refused(code)), false, code);
+  }
+  assert.equal(ss.isImpossibleResume(new Error("session_live")), false, "an error that is not Agent OS's own answer");
+  assert.equal(ss.isImpossibleResume(new SyntaxError("not json")), false);
+  assert.equal(ss.isImpossibleResume(null), false);
+  assert.equal(ss.isImpossibleResume("session_live"), false);
+});
+
 test("the side panel's line for each state, SP3 versions (spec, Session activity states)", () => {
   assert.equal(ss.sessionPanelLine(session({ status: "starting" }), NOW), "Starting Claude Code…");
   assert.equal(ss.sessionPanelLine(session({ status: "live" }), NOW), "Working.");

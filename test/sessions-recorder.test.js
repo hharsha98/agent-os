@@ -594,6 +594,7 @@ test("listRecordings lists every session that has a recording, newest first, wit
         folderName: "hermes-agent",
         folderShown: true,
         startedAt: "2026-10-14T11:00:00.000Z",
+        firstStartedAt: "2026-10-14T11:00:00.000Z",
         endedAt: "2026-10-14T11:05:00.000Z",
         bytes: 10,
         live: false
@@ -607,6 +608,7 @@ test("listRecordings lists every session that has a recording, newest first, wit
         folderName: "app",
         folderShown: true,
         startedAt: "2026-10-14T10:00:00.000Z",
+        firstStartedAt: "2026-10-14T10:00:00.000Z",
         endedAt: null,
         bytes: 100,
         live: true
@@ -620,6 +622,7 @@ test("listRecordings lists every session that has a recording, newest first, wit
         folderName: "api",
         folderShown: true,
         startedAt: "2026-10-14T09:00:00.000Z",
+        firstStartedAt: "2026-10-14T09:00:00.000Z",
         endedAt: "2026-10-14T09:30:00.000Z",
         bytes: 120,
         live: false
@@ -636,6 +639,67 @@ test("listRecordings lists every session that has a recording, newest first, wit
         [ended, true]
       ]
     );
+  });
+});
+
+// Minor sweep, Group B item 9: a resumed session's meta.json says when its LATEST part started (startedAt is reset on
+// every resume, and the Sessions list and the sort order use it), so the Recorded and Length columns of Runs need the
+// recording's own start: the header every segment keeps, which a resume does not change. It is read only for a session
+// that was resumed (meta.resumes above 0), so a long list of untouched recordings costs no extra reads.
+test("listRecordings: firstStartedAt is when the recording itself began, so a resumed session shows its first start", async () => {
+  await withTempHome(async (home) => {
+    const header = (seconds) => `${JSON.stringify({ version: 2, width: 80, height: 24, timestamp: seconds })}\n`;
+    const isoOf = (seconds) => new Date(seconds * 1000).toISOString();
+    const byId = async () => Object.fromEntries((await listRecordings()).map((recording) => [recording.sessionId, recording]));
+
+    // Never resumed: its start is the recording's start, and no header is needed to say so.
+    const plain = await makeSession(home, { meta: { startedAt: "2026-10-14T09:00:00.000Z" }, cast: "not a header" });
+
+    // Resumed, with real recorders: the second recorder appends to the first one's recording on the same timeline.
+    const resumed = await makeSession(home, { meta: { startedAt: "2026-10-14T09:00:00.000Z" } });
+    const dir = sessionDir(home, resumed);
+    const clock = makeClock();
+    const first = createRecorder({ dir, cols: 80, rows: 24, now: clock.now });
+    clock.tick(1500);
+    first.output("before\r\n");
+    await first.close();
+    clock.tick(3 * 3600 * 1000);
+    const second = createRecorder({ dir, cols: 80, rows: 24, append: true, now: clock.now });
+    clock.tick(500);
+    second.output("after\r\n");
+    await second.close();
+    const resumedAt = new Date(clock.now() - 500).toISOString();
+    await writeFile(
+      path.join(dir, "meta.json"),
+      JSON.stringify({
+        id: resumed, kind: "agent", agentId: "claude", agentLabel: "Claude Code", folder: "/Users/you/projects/app",
+        folderName: "app", folderShown: true, status: "exited", createdAt: new Date(START).toISOString(),
+        startedAt: resumedAt, endedAt: new Date(clock.now()).toISOString(), resumes: 1
+      })
+    );
+
+    // Resumed after the 25 MB rotation: the older segment is the one that still holds the recording's first header.
+    const rotated = await makeSession(home, { meta: { startedAt: "2026-10-14T12:00:00.000Z", resumes: 2 } });
+    await writeFile(path.join(sessionDir(home, rotated), PREV_CAST_FILE), header(1_760_000_100));
+    await writeFile(path.join(sessionDir(home, rotated), CAST_FILE), header(1_760_000_100));
+
+    // Resumed after its recording was removed: the new recording began at the resume, and says so.
+    const renewed = await makeSession(home, { meta: { startedAt: "2026-10-14T13:00:00.000Z", resumes: 1 } });
+    await writeFile(path.join(sessionDir(home, renewed), CAST_FILE), header(Date.parse("2026-10-14T13:00:00.000Z") / 1000));
+
+    // Resumed, but no header can be read: the latest start is the honest fallback (what was always shown).
+    const unreadable = await makeSession(home, { meta: { startedAt: "2026-10-14T14:00:00.000Z", resumes: 3 }, cast: "x".repeat(40) });
+
+    const list = await byId();
+    assert.equal(list[plain].firstStartedAt, "2026-10-14T09:00:00.000Z");
+    assert.equal(list[plain].startedAt, "2026-10-14T09:00:00.000Z");
+    assert.equal(list[resumed].firstStartedAt, new Date(START).toISOString(), "the first start, not the latest one");
+    assert.equal(list[resumed].startedAt, resumedAt, "startedAt keeps meaning the latest start");
+    assert.ok(Date.parse(list[resumed].startedAt) > Date.parse(list[resumed].firstStartedAt));
+    assert.equal(list[rotated].firstStartedAt, isoOf(1_760_000_100));
+    assert.equal(list[renewed].firstStartedAt, "2026-10-14T13:00:00.000Z");
+    assert.equal(list[unreadable].firstStartedAt, "2026-10-14T14:00:00.000Z");
+    for (const recording of Object.values(list)) assert.equal(typeof recording.firstStartedAt, "string");
   });
 });
 

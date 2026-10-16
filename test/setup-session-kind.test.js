@@ -1078,6 +1078,57 @@ test("one sign-in at a time over HTTP (Review Focus 2): a second POST answers 40
   });
 });
 
+test("POST signin-terminal looks for a running or starting sign-in first: a second POST answers 409 setup_running at once and runs no openclaw --version", POSIX_ONLY, async () => {
+  await withSetupEnv(async ({ home, log }) => {
+    await setFakeKnob(home, "FAKE_AGENT_VERSION", "OpenClaw 2026.9.7");
+    const world = fakeWorld();
+    // How many times OpenClaw was asked its version: W1's fake logs each quick answer as a "probe".
+    const versionReads = async () =>
+      (await readFakeLog(log)).filter((entry) => entry.event === "probe" && entry.name === "openclaw" && entry.argv.join(" ") === "--version").length;
+    await withSetupApp(world.manager, async ({ call }) => {
+      let release;
+      world.spawnGate = new Promise((resolve) => {
+        release = resolve;
+      });
+      const firstPost = call("POST", SIGNIN_PATH, { confirm: true });
+      firstPost.catch(() => {}); // a failed assertion below must show itself, not this request closing with the server
+      await waitFor(() => world.spawnCalls === 1);
+      const readByFirst = await versionReads();
+      assert.ok(readByFirst >= 1, "the first POST read the version fresh, before its sign-in was reserved");
+
+      // While the first one is still starting (reserved, not yet running).
+      const whileStarting = await call("POST", SIGNIN_PATH, { confirm: true });
+      assert.equal(whileStarting.status, 409);
+      assert.deepEqual(Object.keys(whileStarting.body).sort(), ["error", "message", "sessionId", "setupAction"]);
+      assert.equal(whileStarting.body.error, "setup_running");
+      assert.equal(whileStarting.body.message, SETUP_RUNNING);
+      assert.equal(whileStarting.body.setupAction, OPENCLAW_SIGNIN_ACTION);
+      assert.match(whileStarting.body.sessionId, UUID);
+      assert.equal(await versionReads(), readByFirst, "the 409 came before any new openclaw --version");
+
+      release();
+      const first = await firstPost;
+      assert.equal(first.status, 201);
+      assert.equal(first.body.session.id, whileStarting.body.sessionId, "the 409 named the session that was starting");
+
+      // While it runs.
+      const whileLive = await call("POST", SIGNIN_PATH, { confirm: true });
+      assert.deepEqual(whileLive, {
+        status: 409,
+        body: { error: "setup_running", message: SETUP_RUNNING, sessionId: first.body.session.id, setupAction: OPENCLAW_SIGNIN_ACTION }
+      });
+      assert.equal(await versionReads(), readByFirst, "no openclaw --version for the second refusal either");
+      assert.equal(world.ptys.length, 1, "the refused starts spawned nothing");
+
+      // The order after the check is unchanged: once it is stopped, the next POST reads the version again, then starts.
+      assert.equal((await call("POST", `/api/sessions/${first.body.session.id}/stop`, {})).status, 200);
+      const next = await call("POST", SIGNIN_PATH, { confirm: true });
+      assert.equal(next.status, 201, JSON.stringify(next.body));
+      assert.equal(await versionReads(), readByFirst + 1, "a free place reads the version fresh again");
+    });
+  });
+});
+
 // =====================================================================
 // 5. One real sign-in in a PTY, against W1's fake `openclaw`
 // =====================================================================

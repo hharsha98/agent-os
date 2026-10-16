@@ -74,6 +74,7 @@ const INSTALL_TIMEOUT_MS = 30 * 60 * 1000;
 // place cancel() finds the live AbortController for an in-process step.
 const activeJobs = new Map(); // id -> { job, controller }
 let runningJobId = null;
+let persistHookForTest = null; // see setPersistHookForTest
 
 function jobError(code, message) {
   const error = new Error(message);
@@ -86,14 +87,34 @@ function jobError(code, message) {
 // system check) let two requests that arrive together both pass the check and
 // both start a job. A placeholder claim stands in until the real job id
 // replaces it (`runningJobId = id`), and it is released if setup throws.
-function claimJobLock() {
-  if (runningJobId) throw jobError("job_already_running", "A setup job is already running.");
+//
+// One holder is waited for rather than refused: a job that has just ended (its
+// in-memory status is final) keeps the lock until its last save has reached the
+// disk, and a poll already shows it as ended. A person who presses Apply the
+// moment it ends must not be told a job is running, so such a start waits for
+// the job to settle and then claims. A job still "running", or a placeholder
+// (a start in progress), is refused at once. The claim after the wait is one
+// synchronous step with the re-check, so two starts that both waited cannot
+// both win; the loser, and any start that outlasts the wait, gets the same
+// refusal as before. When the lock is free the claim is still made before the
+// first await: an async function runs up to its first await at once.
+async function claimJobLock(busyMessage = "A setup job is already running.") {
+  const holderId = runningJobId;
+  if (holderId && jobHasEnded(holderId)) await waitForJobToSettle(holderId);
+  if (runningJobId) throw jobError("job_already_running", busyMessage);
   const claim = `pending_${crypto.randomBytes(6).toString("hex")}`;
   runningJobId = claim;
   return claim;
 }
 
-// How long a retry waits for a job that has just ended to finish saving.
+// True for a job that is still in memory with a final status: it is only
+// finishing its last save (a placeholder claim is in no map, so never this).
+function jobHasEnded(id) {
+  const active = activeJobs.get(id);
+  return Boolean(active) && active.job.status !== "running";
+}
+
+// How long a start or retry waits for a job that has just ended to finish saving.
 const JOB_SETTLE_TIMEOUT_MS = 5000;
 
 // A job that has just ended keeps its in-memory entry (and the job lock) until
@@ -109,7 +130,7 @@ async function waitForJobToSettle(id) {
 }
 
 async function withJobLock(start) {
-  const claim = claimJobLock();
+  const claim = await claimJobLock();
   try {
     return await start();
   } finally {
@@ -135,6 +156,7 @@ function generateJobId() {
 }
 
 async function persistJob(job) {
+  if (persistHookForTest) await persistHookForTest(job);
   await fs.mkdir(jobsDir(), { recursive: true });
   const { controllers: _ignored, ...serializable } = job;
   await writeJson(jobFile(job.id), serializable);
@@ -732,11 +754,10 @@ export async function cancelSetupJob(id) {
 export async function retrySetupJob(id) {
   // This job may have just ended and still be saving its final status.
   if (runningJobId === id) await waitForJobToSettle(id);
-  if (runningJobId && runningJobId !== id) {
-    throw jobError("job_already_running", "A different setup job is already running.");
-  }
-  // Claim the lock before the first await (unless this very job holds it).
-  const claim = runningJobId === id ? null : claimJobLock();
+  // Claim the lock before the next await (unless this very job holds it). A
+  // different job that has just ended is waited for inside claimJobLock; one
+  // still running is refused.
+  const claim = runningJobId === id ? null : await claimJobLock("A different setup job is already running.");
   try {
     return await retrySetupJobLocked(id);
   } finally {
@@ -2089,4 +2110,13 @@ async function startOllamaPullLocked(name) {
 export function resetSetupJobsForTest() {
   activeJobs.clear();
   runningJobId = null;
+  persistHookForTest = null;
+}
+
+// Test-only: `hook(job)` is awaited before every save of a job, so a suite can
+// hold a job's last save open and see what a start does in that window. The
+// hook gets the job being saved: the live job, except a pull job's last save,
+// which saves a copy carrying its final status.
+export function setPersistHookForTest(hook) {
+  persistHookForTest = typeof hook === "function" ? hook : null;
 }

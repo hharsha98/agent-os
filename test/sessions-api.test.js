@@ -547,3 +547,50 @@ test("quitCheckOrNone: where sessions do not exist (404 not_available) nothing c
     removeFakes();
   }
 });
+
+// ---------------------------------------------------------------------------
+// One session's summary (Task B2): the plan card's sign-in terminal asks it every 5 s
+// ---------------------------------------------------------------------------
+
+test("getSession: GET /api/sessions/:id with its own time limit; a gone session is a 404 unknown_session the caller counts as ended", async () => {
+  const summary = { id: SID, kind: "setup", agentId: "openclaw", status: "live" };
+  try {
+    const calls = fakeFetch(() => jsonAnswer(200, summary));
+    assert.deepEqual(await api.getSession(SID), summary);
+    assert.deepEqual(calls, [{ url: `/api/sessions/${SID}`, method: "GET" }]);
+    const encoded = fakeFetch(() => jsonAnswer(200, summary));
+    await api.getSession("a b/c");
+    assert.equal(encoded[0].url, "/api/sessions/a%20b%2Fc", "the id is encoded");
+    fakeFetch(() => jsonAnswer(404, { error: "unknown_session", message: "That session doesn't exist anymore." }));
+    const gone = await api.getSession(SID).catch((error) => error);
+    assert.ok(gone instanceof ApiError, "a refusal is an ApiError");
+    assert.equal(gone.status, 404);
+    assert.equal(gone.message, "unknown_session");
+  } finally {
+    removeFakes();
+  }
+
+  assert.equal(api.SESSION_LIMITS_MS.get, 8000);
+  const clock = fakeClock();
+  try {
+    globalThis.fetch = () => new Promise(() => {});
+    let outcome = null;
+    void api.getSession(SID).then(
+      () => {
+        outcome = "answered";
+      },
+      (error) => {
+        outcome = error.message;
+      }
+    );
+    clock.tick(7999);
+    await flush();
+    assert.equal(outcome, null, "still waiting just before 8 s");
+    clock.tick(1);
+    await flush();
+    assert.equal(outcome, "Agent OS did not answer in time.");
+  } finally {
+    clock.restore();
+    removeFakes();
+  }
+});

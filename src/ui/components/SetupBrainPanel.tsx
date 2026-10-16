@@ -2,6 +2,8 @@
 // brain for Hermes and OpenClaw. Two cards side by side (stacked on narrow
 // screens): OpenRouter (free to start, one-click connect) and Local (Ollama).
 // Each agent can take a different brain; by default both take the same one.
+// OpenClaw also gets a third card, "Your plan" (BrainPlanCard), outside the
+// per-agent ticks: it applies through its own route.
 //
 // This panel owns the whole trip: choose -> press "Give it to ..." -> the
 // configure job runs (progress shown) -> a result per agent from its tiny
@@ -10,20 +12,22 @@
 // No API key is ever held here for the one-click path -- only a flow id. The
 // "use an existing key" path keeps the pasted key in the OpenRouter card's
 // state until it is sent once.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import BrainLocalCard from "./BrainLocalCard";
 import BrainModelActions from "./BrainModelActions";
 import BrainOpenRouterCard, { type OpenRouterGive } from "./BrainOpenRouterCard";
+import BrainPlanCard from "./BrainPlanCard";
 import SetupInstallPanel from "./SetupInstallPanel";
 import StatusMark from "./StatusMark";
 import { useAgentModels } from "./useAgentModels";
 import { useInterval } from "./useInterval";
 import type { BrainAgentId, BrainOptionsResponse, BrainTarget, SetupJob } from "../../setupApi";
 import { cancelSetupJob, friendlyError, getSetupJob, postConfigure, recallJobId, rememberJobId } from "../../setupApi";
-import { CONFIGURE_STEP_LABEL, type BrainAgentLine } from "../brainShared";
+import { BRAIN_MODE_LABEL, CONFIGURE_STEP_LABEL, type BrainAgentLine } from "../brainShared";
 import { withTimeout } from "../homeShared";
 import { gotNoAnswer, noAnswerWords } from "../setupGroupShared";
+import { useSessionsList } from "../useSessionsList";
 import "../brain.css";
 
 export type { BrainAgentLine } from "../brainShared";
@@ -49,7 +53,8 @@ export default function SetupBrainPanel({
   onContinue,
   continueLabel = "Continue",
   initialAgents,
-  showModelActions = true
+  showModelActions = true,
+  showPlanCard = true
 }: {
   brain: BrainOptionsResponse;
   agents: BrainAgentLine[];
@@ -62,6 +67,8 @@ export default function SetupBrainPanel({
   initialAgents?: BrainAgentId[];
   // "Change model" / "Choose on OpenRouter" buttons; off where the parent already shows them.
   showModelActions?: boolean;
+  // OpenClaw's "Your plan" card; off where the parent already shows it (OpenClaw's Brain card on the Agents page).
+  showPlanCard?: boolean;
 }) {
   // "Choose for me" is ALWAYS OpenRouter: a local model with the 64K working
   // memory agents need is a stretch even for a 24 GB computer. Local is always
@@ -86,6 +93,8 @@ export default function SetupBrainPanel({
   const [actionError, setActionError] = useState("");
   // What each agent uses now, from the agents themselves (shown next to each name below).
   const { models, reload: reloadModels } = useAgentModels(agents);
+  // The plan routes exist only where Agent OS runs in local mode, as sessions do (spec 2026-10-15 section 7).
+  const { available: localMode } = useSessionsList();
   // False once the panel is gone: a late answer must not update a screen that is not there.
   const alive = useRef(true);
   const pollBusy = useRef(false);
@@ -327,6 +336,16 @@ export default function SetupBrainPanel({
           onGive={(payload) => void give("local", payload)}
           error={errors.local}
         />
+        {showPlanCard && localMode && agents.some((agent) => agent.id === "openclaw" && agent.installed) ? (
+          <BrainPlanCard
+            where="setup"
+            currentPlan={null}
+            onChanged={() => {
+              onChanged();
+              void reloadModels();
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -334,7 +353,8 @@ export default function SetupBrainPanel({
 
 // ---- the result: one honest line per agent ---------------------------------------
 
-function BrainResult({
+// Also shown by BrainPlanCard for a plan job.
+export function BrainResult({
   job,
   agents,
   onBack,
@@ -357,6 +377,8 @@ function BrainResult({
   const skippedNote = scope.map((id) => job.health?.[id]).find((entry) => entry?.skipped)?.hint;
   const finishedOk = job.status === "succeeded";
   const log = job.steps.flatMap((step) => (step.log || []).map((line) => `[${CONFIGURE_STEP_LABEL[step.id] || step.id}] ${line}`));
+  // Two results can be on one page (the plan card's and Change brain's), so the heading's id is this one's own.
+  const titleId = useId();
 
   const heading =
     job.status === "cancelled"
@@ -370,10 +392,10 @@ function BrainResult({
             : "Set up, but not every agent answered.";
 
   return (
-    <section className="os-panel os-brain-result" aria-labelledby="os-brain-result-title">
+    <section className="os-panel os-brain-result" aria-labelledby={titleId}>
       <header className="os-brain-result__head">
         <StatusMark kind={finishedOk && allHello ? "ok" : job.status === "cancelled" ? "warn" : finishedOk ? "warn" : "error"} />
-        <h3 id="os-brain-result-title">{heading}</h3>
+        <h3 id={titleId}>{heading}</h3>
       </header>
 
       {job.status === "failed" && failedStep ? (
@@ -399,7 +421,7 @@ function BrainResult({
                   {target ? (
                     <span className="os-brain-result__brain">
                       {" "}
-                      · {target.mode === "openrouter" ? "OpenRouter" : "Local"} · <span className="os-mono">{target.model}</span>
+                      · {BRAIN_MODE_LABEL[target.mode] ?? target.mode} · <span className="os-mono">{target.model}</span>
                     </span>
                   ) : null}
                 </p>

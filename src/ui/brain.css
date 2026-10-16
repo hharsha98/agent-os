@@ -518,3 +518,268 @@
     min-height: 40px;
   }
 }
+
+/* ---- Plan brains (SP3 addition, Task B2) -------------------------------------------------------------------
+   "Your plan" (BrainPlanCard): OpenClaw's Claude plan and ChatGPT plan, on OpenClaw's Brain card and as Setup's
+   third AI brain card; its ChatGPT sign-in terminal (PlanSignInTerminal); and Hermes's "Choose in Hermes"
+   (ChooseInHermes). Only .os-plan-* and .os-hermes-pick* selectors, and tokens only. */
+.os-plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-4);
+  min-width: 0;
+}
+/* On the Agents page the card sits inside the Brain panel: a hairline box, not a second panel. */
+.os-agent-brain .os-plan-card {
+  padding: var(--os-sp-4);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+}
+.os-plan-card__head h3,
+.os-plan-card__head h4 {
+  margin: 0;
+  font-size: var(--os-fs-16);
+  font-weight: 600;
+  color: var(--os-text-1);
+}
+.os-plan-card__consent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-plan-card__notice {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  background: var(--os-warn-wash);
+  border: 1px solid var(--os-warn-line);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+  line-height: var(--os-lh-body);
+}
+.os-plan-card__notice svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  color: var(--os-warn);
+}
+/* The two plans side by side when there is room (the Agents page), one under the other in Setup's narrower card. */
+.os-plan-card__plans {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: var(--os-sp-4);
+  align-items: start;
+}
+.os-plan-card__plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  min-width: 0;
+  padding: var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  border: 1px solid var(--os-line-1);
+  background: var(--os-surface-1);
+}
+.os-plan-card__plan-title {
+  margin: 0;
+  font-size: var(--os-fs-14);
+  font-weight: 600;
+  color: var(--os-text-1);
+}
+.os-plan-card__state,
+.os-plan-card__hint,
+.os-plan-card__error {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  line-height: var(--os-lh-body);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-plan-card__state {
+  color: var(--os-text-1);
+}
+.os-plan-card__error {
+  color: var(--os-danger);
+}
+.os-plan-card__state .os-mark,
+.os-plan-card__hint .os-mark,
+.os-plan-card__error .os-mark {
+  flex: 0 0 auto;
+  margin-top: 5px;
+}
+.os-plan-card__row {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  flex-wrap: wrap;
+}
+
+/* One plan's models: one row each; the picked one (its radio is checked) gets the accent edge, as Setup's
+   model rows do (.os-brain-model). */
+.os-plan-models {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+}
+.os-plan-model {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--os-sp-3);
+  row-gap: 2px;
+  align-items: center;
+  min-width: 0;
+  min-height: 32px;
+  padding: var(--os-sp-2) var(--os-sp-3);
+  border-radius: var(--os-r-md);
+  border: 1px solid var(--os-line-2);
+  background: var(--os-surface-2);
+  cursor: pointer;
+  transition: border-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-plan-model:has(input[type="radio"]:checked) {
+  border-color: var(--os-accent);
+  box-shadow: 0 0 0 1px var(--os-accent-line);
+}
+.os-plan-model--off {
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.os-plan-model--typed {
+  cursor: default;
+}
+.os-plan-model input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--os-accent);
+}
+.os-plan-model__main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--os-sp-1) var(--os-sp-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.os-plan-model__main strong {
+  font-size: var(--os-fs-13);
+  font-weight: 600;
+  color: var(--os-text-1);
+  overflow-wrap: anywhere;
+}
+.os-plan-model__id {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-plan-model__note {
+  grid-column: 2;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+  line-height: 1.4;
+  color: var(--os-text-2);
+}
+.os-plan-model__note .os-mark {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+.os-plan-model__typed {
+  min-width: 0;
+}
+.os-plan-model__typed input {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-13);
+}
+
+/* The ChatGPT sign-in's terminal: the Sessions page's frame (.os-sess-term), at a fixed height. */
+.os-plan-signin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  min-width: 0;
+}
+.os-plan-term {
+  position: relative;
+  height: 280px;
+  overflow: hidden;
+  background: var(--os-term-bg);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  transition: border-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-plan-term:focus-within {
+  border-color: var(--os-accent);
+}
+.os-plan-term__notice {
+  margin: 0;
+  min-height: 1.4em;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+
+/* A finished plan job's result sits inside the card: no second panel. */
+.os-plan-card .os-panel.os-brain-result {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The plan note under the Brain card's model line. */
+.os-plan-note {
+  max-width: 100ch;
+}
+
+/* Hermes: the two quiet lines, Choose in Hermes and its result. */
+.os-hermes-pick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  min-width: 0;
+}
+.os-hermes-pick__lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  max-width: 100ch;
+}
+.os-hermes-pick__line,
+.os-hermes-pick__result {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  line-height: var(--os-lh-body);
+  color: var(--os-text-2);
+}
+.os-hermes-pick__result {
+  color: var(--os-text-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .os-plan-term,
+  .os-plan-model {
+    transition: none;
+  }
+}
+
+@media (max-width: 599px) {
+  .os-plan-card .os-btn,
+  .os-hermes-pick .os-btn,
+  .os-plan-model {
+    min-height: 40px;
+  }
+  .os-plan-term {
+    height: 240px;
+  }
+}

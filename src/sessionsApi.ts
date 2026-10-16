@@ -41,7 +41,9 @@ export const SESSION_LIMITS_MS = {
   folders: 10000,
   quitCheck: 8000,
   recordings: 10000,
-  signedIn: 5000
+  signedIn: 5000,
+  // One session's summary (the plan card's sign-in terminal asks every 5 s whether its session has ended).
+  get: 8000
 } as const;
 
 const TIMEOUT_WORDS = "Agent OS did not answer in time.";
@@ -54,6 +56,12 @@ export async function listSessions(): Promise<SessionListResponse> {
   const body = await withTimeout(request<SessionListResponse>("/api/sessions"), SESSION_LIMITS_MS.list);
   if (!body || !Array.isArray(body.sessions)) throw new Error(UNREADABLE);
   return body;
+}
+
+// One session's summary. Once a session is gone the server answers 404 unknown_session (a setup session leaves no
+// folder behind, so that is its answer after it ends), and the caller counts that 404 as ended.
+export function getSession(sessionId: string): Promise<SessionSummary> {
+  return withTimeout(request<SessionSummary>(sessionPath(sessionId)), SESSION_LIMITS_MS.get);
 }
 
 // `folder` is null for OpenClaw, which picks its own folder until spike S5. The server checks the folder

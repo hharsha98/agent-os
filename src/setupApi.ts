@@ -4,7 +4,7 @@
 // Nothing here ever stores an API key past the moment it's POSTed (see
 // SetupBrainPanel.tsx): this module only shapes requests/responses.
 import { request } from "./api";
-import type { AgentDetected, AgentServiceStatus } from "./types";
+import type { AgentDetected, AgentServiceStatus, SessionSummary } from "./types";
 
 // Server error codes -> plain English. request() throws Error(<server error
 // text or code>), so a non-expert never sees "openclaw_risk_not_accepted".
@@ -46,9 +46,15 @@ export function friendlyError(error: unknown, fallback = "Something went wrong. 
 // A job id is not a secret, so it may live in sessionStorage. That lets a
 // reload (or a trip to Home and back) re-attach to a job that is still
 // running on the server instead of showing an empty Install step.
-const JOB_STORAGE_KEY = { install: "agentos.setup.installJob", configure: "agentos.setup.configureJob" } as const;
+// "plan" is OpenClaw's plan brain job (BrainPlanCard). It has its own key, so Setup never lands on its AI brain
+// step for it, and the plan card finds its own job again wherever it is shown.
+const JOB_STORAGE_KEY = {
+  install: "agentos.setup.installJob",
+  configure: "agentos.setup.configureJob",
+  plan: "agentos.setup.planJob"
+} as const;
 
-export function rememberJobId(kind: "install" | "configure", id: string | null) {
+export function rememberJobId(kind: "install" | "configure" | "plan", id: string | null) {
   try {
     if (id) sessionStorage.setItem(JOB_STORAGE_KEY[kind], id);
     else sessionStorage.removeItem(JOB_STORAGE_KEY[kind]);
@@ -57,7 +63,7 @@ export function rememberJobId(kind: "install" | "configure", id: string | null) 
   }
 }
 
-export function recallJobId(kind: "install" | "configure") {
+export function recallJobId(kind: "install" | "configure" | "plan") {
   try {
     return sessionStorage.getItem(JOB_STORAGE_KEY[kind]);
   } catch {
@@ -198,7 +204,9 @@ export interface HealthEntry {
   skipped?: boolean;
 }
 
-export type BrainMode = "openrouter" | "ollama";
+// "claude-plan" and "chatgpt-plan" are OpenClaw's plan brains. Only POST /api/setup/openclaw/plan sets them; the
+// configure route keeps refusing them.
+export type BrainMode = "openrouter" | "ollama" | "claude-plan" | "chatgpt-plan";
 export interface BrainTarget {
   mode: BrainMode;
   model: string;
@@ -232,6 +240,11 @@ export interface SetupJob {
   agentId?: BrainAgentId;
   preset?: string | null;
   previous?: { provider: string | null; model: string | null } | null;
+  // plan jobs (OpenClaw's Claude plan or ChatGPT plan): which plan, the model OpenClaw had before (put back when
+  // the ChatGPT readiness check stops the job), and that check's answer.
+  plan?: OpenclawPlan;
+  previousPrimary?: string | null;
+  readiness?: "ready" | "expiring" | "not_ready" | null;
 }
 
 export function startInstallJob(payload: { steps: string[]; acceptOpenClawRisk?: boolean }) {
@@ -555,6 +568,9 @@ export interface AgentModelInfo {
   // false = the agent could not be asked (its `config get` failed): the model is unknown, which is not the
   // same as "no model set". Absent when the answer was read.
   known?: boolean;
+  // OpenClaw only: the plan its model runs on, confirmed by OpenClaw's own config (spec 2026-10-15 section 5), or
+  // null. Absent from Hermes's answer.
+  plan?: OpenclawPlan | null;
 }
 
 export function getAgentModel(agentId: BrainAgentId) {
@@ -580,6 +596,81 @@ export function applyAgentPreset(agentId: BrainAgentId, payload: { slug: string 
   return request<SetupJob>(`/api/setup/agents/${encodeURIComponent(agentId)}/preset`, {
     method: "POST",
     body: JSON.stringify({ ...payload, confirm: true })
+  });
+}
+
+// ---- plan brains for OpenClaw, and Hermes's own model picker (spec 2026-10-15 section 7) -------------------
+// Each answer comes from the agents' own commands on the server. Like the rest of this file, no function here has
+// a time limit: callers wrap each call in withTimeout (src/ui/planBrainsShared.ts PLAN_LIMITS_MS).
+
+export type OpenclawPlan = "claude" | "chatgpt";
+
+export interface OpenclawPlansInfo {
+  // OpenClaw's version: the ChatGPT sign-in needs 2026.9.7 or newer. null when it can't be read.
+  version: { have: string | null; need: "2026.9.7"; newEnough: boolean | null };
+  // Claude Code, from its own `claude auth status`. `method` is how it is signed in, or null when it can't say.
+  claude: { installed: boolean; status: "signed_in" | "not_signed_in" | "unknown"; method: string | null; note: string };
+  // OpenClaw's saved ChatGPT sign-in. `readiness` is set only while OpenClaw is on the ChatGPT plan; null when unknown.
+  chatgpt: { signedIn: boolean | null; sharing: boolean | null; readiness: "ready" | "expiring" | "not_ready" | null };
+}
+
+export interface PlanModel {
+  // Without the provider prefix.
+  id: string;
+  name: string;
+  // The Fable usage-credits sentence, or null.
+  note: string | null;
+  // false only for a Claude plan model OpenClaw would run on an API key in this version.
+  available: boolean;
+}
+
+export interface PlanModelList {
+  models: PlanModel[];
+  // "fallback": the account's list could not be read, so this is the dated list.
+  source: "account" | "fallback";
+  asOf: "2026-10-15" | null;
+}
+
+// The same answer as the Claude Code sign-in's Terminal button: opened on macOS, else the command to copy.
+export interface TerminalLaunch {
+  opened: boolean;
+  command: string;
+  reason?: "copy" | "spawn_failed";
+}
+
+export function getOpenclawPlans(): Promise<OpenclawPlansInfo> {
+  return request<OpenclawPlansInfo>("/api/setup/openclaw/plans");
+}
+
+export function getOpenclawPlanModels(plan: OpenclawPlan): Promise<PlanModelList> {
+  return request<PlanModelList>(`/api/setup/openclaw/plan-models?plan=${encodeURIComponent(plan)}`);
+}
+
+// The server reads the sign-in and the model list again before anything runs, and refuses with its own sentence.
+export function applyOpenclawPlan(payload: { plan: OpenclawPlan; model: string; acceptOpenClawRisk: boolean }): Promise<SetupJob> {
+  return request<SetupJob>("/api/setup/openclaw/plan", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, confirm: true })
+  });
+}
+
+// OpenClaw's ChatGPT sign-in, as a setup session the card shows in its own terminal (it keeps nothing).
+export function startOpenclawSignInTerminal(): Promise<{ session: SessionSummary }> {
+  return request<{ session: SessionSummary }>("/api/setup/openclaw/signin-terminal", {
+    method: "POST",
+    body: JSON.stringify({ confirm: true })
+  });
+}
+
+export function getOpenclawSignInTerminal(): Promise<{ session: SessionSummary | null }> {
+  return request<{ session: SessionSummary | null }>("/api/setup/openclaw/signin-terminal");
+}
+
+// Opens `hermes model` (Hermes's own picker) in its own Terminal.app window; nothing typed there passes through Agent OS.
+export function openHermesModelTerminal(): Promise<TerminalLaunch> {
+  return request<TerminalLaunch>("/api/setup/hermes/model-terminal", {
+    method: "POST",
+    body: JSON.stringify({ confirm: true })
   });
 }
 

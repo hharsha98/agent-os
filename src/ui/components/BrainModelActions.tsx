@@ -20,7 +20,8 @@ export default function BrainModelActions({
   models,
   initialAgents,
   onChanged,
-  extraActions
+  extraActions,
+  onChangeModel
 }: {
   agents: BrainAgentLine[];
   // What each agent uses now (see useAgentModels).
@@ -31,6 +32,9 @@ export default function BrainModelActions({
   onChanged: () => void;
   // More buttons for the same row (the Brain card's "Change brain").
   extraActions?: ReactNode;
+  // When given, Change model calls this instead of opening the OpenRouter picker (OpenClaw on a plan brain: its
+  // model list is on the plan card, spec 2026-10-15 section 6). Setup never passes it.
+  onChangeModel?: () => void;
 }) {
   const [mode, setMode] = useState<Mode>("none");
   if (!agents.some((agent) => agent.installed)) return extraActions ? <div className="os-mp-actions">{extraActions}</div> : null;
@@ -38,7 +42,12 @@ export default function BrainModelActions({
   return (
     <>
       <div className="os-mp-actions">
-        <button type="button" className="os-btn os-btn--secondary" onClick={() => setMode("picker")} aria-haspopup="dialog">
+        <button
+          type="button"
+          className="os-btn os-btn--secondary"
+          onClick={() => (onChangeModel ? onChangeModel() : setMode("picker"))}
+          aria-haspopup={onChangeModel ? undefined : "dialog"}
+        >
           Change model
         </button>
         <button

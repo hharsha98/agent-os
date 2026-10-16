@@ -446,6 +446,9 @@ planTest("B1b, Safety 4: no command of these flows gets another HOME or any agen
 //      HOME the temp home and no H1 name set), and the detection fakes answer
 //      --version and --help without an env log. The spawn function below logs
 //      that inherited environment at the moment of the spawn.
+// "Add a sign-in in Hermes" (`hermes auth`) lives in the same module and
+// goes through the same Terminal helper, so the same test runs the same four
+// checks over its launch too, and the module's scan above covers its code.
 // Safety 2's Hermes part (the exact `open` argv, the file's content, no
 // session) is in test/hermes-model-terminal.test.js. Two names come from the
 // part above: `test`, and NEW_SERVER_MODULES (B1a's list of the feature's new
@@ -458,7 +461,7 @@ planTest("B1b, Safety 4: no command of these flows gets another HOME or any agen
 NEW_SERVER_MODULES.push("server/runtime/setup/hermes-model-terminal.js");
 
 test(
-  "Safety 1, 3 and 4 (B1c): Choose in Hermes opens the picker without an agent file, a forbidden flag or an environment of its own",
+  "Safety 1, 3 and 4 (B1c): Choose in Hermes and Add a sign-in in Hermes open their windows without an agent file, a forbidden flag or an environment of their own",
   { skip: process.platform === "win32" ? "POSIX only: the fake agents are sh scripts" : false },
   async () => {
     const { default: assert } = await import("node:assert/strict");
@@ -468,7 +471,9 @@ test(
     const { default: path } = await import("node:path");
     const { fileURLToPath } = await import("node:url");
     const { clearDetectCaches } = await import("../server/runtime/agents/detect.js");
-    const { HERMES_MODEL_ARGS, openHermesModelTerminal } = await import("../server/runtime/setup/hermes-model-terminal.js");
+    const { HERMES_AUTH_ARGS, HERMES_MODEL_ARGS, openHermesAuthTerminal, openHermesModelTerminal } = await import(
+      "../server/runtime/setup/hermes-model-terminal.js"
+    );
     const { FAKE_LOGIN_SHELL, makeFakeAgentBin } = await import("./helpers/fake-agents.js");
     const { H1_ENV_NAMES, agentFileAccess, argvProblems, sourceProblems, spyOnFileAccess } = await import(
       "./helpers/plan-brains-safety.js"
@@ -568,6 +573,38 @@ test(
       assert.deepEqual(calls[0].inherited, { HOME: home, h1Set: [] }, "HOME unchanged and no H1 name set");
       assert.deepEqual(Object.fromEntries(H1_ENV_NAMES.map((name) => [name, process.env[name]])), h1Before);
       assert.equal(process.env.HOME, home);
+
+      // The same four checks over "Add a sign-in in Hermes": `<hermes> auth`, its own file, the same `open`.
+      const seenAuth = [];
+      const restoreAuth = spyOnFileAccess(seenAuth);
+      let authResult;
+      try {
+        authResult = await openHermesAuthTerminal({ platform: "darwin", spawnFn });
+      } finally {
+        restoreAuth();
+      }
+      assert.deepEqual(authResult, { opened: true, command: `${hermes} auth` });
+      assert.ok(seenAuth.includes(hermes), "the spy saw Hermes being looked up (a control)");
+      assert.ok(
+        seenAuth.some((p) => p.startsWith(path.join(agentOsHome, "setup", "terminal"))),
+        "the spy saw the .command file being written (a control)"
+      );
+      assert.deepEqual(agentFileAccess(seenAuth, { allowed: [] }), [], "no agent file, not even ~/.openclaw/openclaw.json");
+      assert.equal(calls.length, 2, "one more `open` call, for the sign-in helper");
+      const authFileText = await readFile(calls[1].args[2], "utf8");
+      assert.equal(authFileText, `${hermes} auth\n`);
+      const authWords = authFileText.trim().split(" ");
+      assert.deepEqual(authWords, [hermes, ...HERMES_AUTH_ARGS]);
+      assert.deepEqual(argvProblems([[calls[1].command, ...calls[1].args], authWords]), []);
+      const loggedAfterAuth = (await readFile(agentLog, "utf8").catch(() => ""))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.event === "start");
+      assert.deepEqual(loggedAfterAuth, [], "nothing ran `hermes auth` inside Agent OS");
+      assert.deepEqual(calls[1].options, { stdio: "ignore", detached: true, shell: false });
+      assert.deepEqual(calls[1].inherited, { HOME: home, h1Set: [] }, "HOME unchanged and no H1 name set");
+      assert.deepEqual(Object.fromEntries(H1_ENV_NAMES.map((name) => [name, process.env[name]])), h1Before);
     } finally {
       setEnv(previous);
       clearDetectCaches();

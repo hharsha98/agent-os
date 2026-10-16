@@ -49,6 +49,7 @@ import {
   UNREADABLE_WORDS,
   chatgptPlanState,
   claudePlanState,
+  offersSignInAgain,
   planApplyModel,
   planProblem,
   signInAfterClose,
@@ -128,6 +129,9 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
   const claudeTitle = useRef<HTMLHeadingElement>(null);
   const chatgptTitle = useRef<HTMLHeadingElement>(null);
   const chatgptSection = useRef<HTMLElement>(null);
+  // The job whose result is on screen now, for signInAgain to tell whether the person left it while the sign-in started.
+  const shownJob = useRef<SetupJob | null>(null);
+  shownJob.current = job;
   const latestOnChanged = useRef(onChanged);
   latestOnChanged.current = onChanged;
   const latestOnAvailable = useRef(onAvailable);
@@ -355,12 +359,16 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
   }
 
   // Back to the plans: the job is forgotten and the tick is cleared, so a new Apply asks again.
-  function backToPlans() {
+  function leaveResult() {
     rememberJobId("plan", null);
     setJob(null);
     setJobError("");
     setErrors({});
     setRiskAccepted(false);
+  }
+
+  function backToPlans() {
+    leaveResult();
     // The result's buttons are gone: keep the keyboard on the card.
     cardTitle.current?.focus();
   }
@@ -410,6 +418,22 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
     } finally {
       if (alive.current) setBusy(null);
     }
+  }
+
+  // "Sign in again" on the result of a ChatGPT plan job that stopped at its sign-in check: the same sign-in as
+  // "Sign in with ChatGPT" (startSignIn, no second path), and then the result is left exactly as Back to the plans
+  // leaves it, so the terminal (or the refusal's own sentence) is in the ChatGPT section. The result stays on screen
+  // while the sign-in starts, so its button can say "Starting…"; and it is only left if it is still the one shown (the
+  // person may have pressed Done meanwhile, and a second Back would clear what they did since). The start can take
+  // many seconds, so the keyboard moves to the card's title only when it is still in the card or nowhere (P26), never
+  // away from a field the person went to meanwhile (the terminal takes it itself when the sign-in opens).
+  async function signInAgain() {
+    if (busy !== null || !job) return;
+    const resultId = job.id;
+    await startSignIn();
+    if (!alive.current || shownJob.current?.id !== resultId) return;
+    keepKeysInCard();
+    leaveResult();
   }
 
   // The sign-in ended (it finished, Ctrl+C in the terminal ended it, or Close stopped it): close the panel and read
@@ -671,7 +695,20 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
           {jobError ? errorLine(jobError) : null}
         </>
       ) : (
-        <BrainResult job={job} agents={OPENCLAW_LINE} onBack={backToPlans} continueLabel="Done" />
+        <BrainResult
+          job={job}
+          agents={OPENCLAW_LINE}
+          onBack={backToPlans}
+          continueLabel="Done"
+          // Only once the plans are read: the sign-in terminal lives in the ChatGPT section, which the plans body draws.
+          extraAction={
+            info && offersSignInAgain(job) ? (
+              <button type="button" className="os-btn os-btn--secondary" onClick={() => void signInAgain()} disabled={locked}>
+                {busy === "signin" ? "Starting…" : "Sign in again"}
+              </button>
+            ) : undefined
+          }
+        />
       );
   } else if (plans.state === "loading") {
     body = <p className="os-plan-card__hint">Checking…</p>;

@@ -15,7 +15,7 @@ import { systemCheck } from "./system-check.js";
 import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
 import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS } from "./recipes.js";
 import { SIGNIN_AGENT_IDS, cancelSignIn, openSignInInTerminal, signInOverview, startSignIn } from "./signin.js";
-import { openHermesModelTerminal } from "./hermes-model-terminal.js";
+import { openHermesAuthTerminal, openHermesModelTerminal } from "./hermes-model-terminal.js";
 import {
   cancelSetupJob,
   getSetupJob,
@@ -817,6 +817,27 @@ export function createSetupRouter({ sessionManager = null } = {}) {
         return;
       }
       res.json(await openHermesModelTerminal());
+    } catch (error) {
+      if (error?.code === "agent_not_installed") {
+        res.status(400).json({ error: "agent_not_installed", message: error.message });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // ---- Hermes's own credential helper ("Add a sign-in in Hermes") ----
+  // The same as the model picker above, for `<detected hermes> auth`: its
+  // own Terminal.app window on macOS, the command to copy elsewhere, the same
+  // local-mode, confirm and not-installed answers. Nothing from the request
+  // reaches the command or the file, and it never starts a session.
+  router.post("/hermes/auth-terminal", requireLocalMode, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      res.json(await openHermesAuthTerminal());
     } catch (error) {
       if (error?.code === "agent_not_installed") {
         res.status(400).json({ error: "agent_not_installed", message: error.message });

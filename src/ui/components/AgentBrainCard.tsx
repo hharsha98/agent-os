@@ -3,7 +3,9 @@
 // model ID, or use a preset), and "Change brain", which opens the same
 // two-card panel used in Setup with only this agent ticked. OpenClaw's card
 // also holds "Your plan" (BrainPlanCard: Claude plan and ChatGPT plan), and
-// Hermes's card "Choose in Hermes" (ChooseInHermes: Hermes's own picker).
+// Hermes's card "Choose in Hermes" and "Add a sign-in in Hermes" (ChooseInHermes:
+// Hermes's own model picker, `hermes model`, and its own credential helper,
+// `hermes auth`, each in a Terminal window of its own).
 //
 // Honesty: Agent OS never reads an agent's own config files. The model shown
 // is what the agent itself reports (its own `config get`); when that can't be

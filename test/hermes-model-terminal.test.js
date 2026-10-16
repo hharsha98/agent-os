@@ -15,6 +15,11 @@
 // run inside Agent OS would show up; the tests check there is none. Nothing in
 // this file runs `hermes model` itself (spec Testing): the one control starts
 // the fake with a neutral argv, `picker-control`.
+//
+// Section 5 does the same for "Add a sign-in in Hermes": Hermes's own
+// credential helper, `hermes auth`, in its own Terminal window through the
+// same helper and route guards (POST /api/setup/hermes/auth-terminal). Its
+// control starts the fake with the neutral argv `auth-control`.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -26,8 +31,11 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
 import {
+  HERMES_AUTH_ARGS,
+  HERMES_AUTH_TERMINAL_NAME,
   HERMES_MODEL_ARGS,
   HERMES_TERMINAL_NAME,
+  openHermesAuthTerminal,
   openHermesModelTerminal
 } from "../server/runtime/setup/hermes-model-terminal.js";
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
@@ -43,6 +51,7 @@ const SYSTEM_PATH_DIRS = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 const OPEN_OPTIONS = { stdio: "ignore", detached: true, shell: false };
 const HOUR_MS = 60 * 60 * 1000;
 const PICKER_FILE = /^hermes-model-[0-9a-f]{8}\.command$/;
+const AUTH_FILE = /^hermes-auth-[0-9a-f]{8}\.command$/;
 const SIGNIN_FILE = /^claude-login-[0-9a-f]{8}\.command$/;
 const CONFIRM_REQUIRED = { ok: false, error: "confirm must be true" };
 const HERMES_NOT_INSTALLED = { error: "agent_not_installed", message: "Hermes isn't installed on this computer yet." };
@@ -186,7 +195,7 @@ async function withLaunchEnv(fn, { hermes = true } = {}) {
 // The real Setup router on a real port, with a session manager that records
 // every property the router reads from it. The Hermes route must read none,
 // so it can never start a session.
-async function withSetupApp(fn) {
+async function withSetupApp(fn, { route = "model-terminal" } = {}) {
   const touched = [];
   const sessionManager = new Proxy(
     {},
@@ -208,7 +217,7 @@ async function withSetupApp(fn) {
   touched.length = 0;
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
-  const url = `http://127.0.0.1:${server.address().port}/api/setup/hermes/model-terminal`;
+  const url = `http://127.0.0.1:${server.address().port}/api/setup/hermes/${route}`;
   const post = async (body) => {
     const response = await fetch(url, {
       method: "POST",
@@ -338,7 +347,7 @@ test("openCommandInTerminal(): the name is only lower-case letters, digits and d
     }
     assert.equal(calls.length, 0);
     assert.equal(await exists(path.join(agentOsHome, "setup")), false);
-    for (const name of ["a", "a".repeat(40), "claude-login", "cursor-login", HERMES_TERMINAL_NAME]) {
+    for (const name of ["a", "a".repeat(40), "claude-login", "cursor-login", HERMES_TERMINAL_NAME, HERMES_AUTH_TERMINAL_NAME]) {
       const answer = await openCommandInTerminal("/opt/fake/bin/hermes", ["model"], {
         name,
         platform: "linux",
@@ -481,11 +490,11 @@ test("waitForOpenLine: a second open that follows the first one a moment later i
   }
 });
 
-test("openCommandInTerminal(): .command files older than an hour are swept first, the picker's and the sign-in's alike", posixSkip, async () => {
+test("openCommandInTerminal(): .command files older than an hour are swept first, the picker's, the sign-in helper's and the sign-in's alike", posixSkip, async () => {
   await withLaunchEnv(async ({ terminalDir }) => {
     await mkdir(terminalDir, { recursive: true });
     const old = new Date(Date.now() - 2 * HOUR_MS);
-    for (const name of ["claude-login-00000000.command", "hermes-model-11111111.command", "notes.txt"]) {
+    for (const name of ["claude-login-00000000.command", "hermes-model-11111111.command", "hermes-auth-33333333.command", "notes.txt"]) {
       await writeFile(path.join(terminalDir, name), "x\n");
       await utimes(path.join(terminalDir, name), old, old);
     }
@@ -776,4 +785,269 @@ test("absoluteBinPath: a relative detected path becomes absolute, so the Termina
   assert.ok(path.posix.isAbsolute(absoluteBinPath("./hermes", "linux")));
   assert.equal(absoluteBinPath("C:\\Tools\\hermes.exe", "win32"), "C:\\Tools\\hermes.exe");
   assert.ok(path.win32.isAbsolute(absoluteBinPath("tools\\hermes.exe", "win32")));
+});
+
+// =====================================================================
+// 5. "Add a sign-in in Hermes": `hermes auth` in its own Terminal window
+//    (the same helper, guards and promises as the model picker above)
+// =====================================================================
+
+test("HERMES_AUTH_ARGS is exactly [\"auth\"] and frozen; HERMES_AUTH_TERMINAL_NAME is hermes-auth, apart from the picker's name", () => {
+  assert.deepEqual(HERMES_AUTH_ARGS, ["auth"]);
+  // `hermes auth add` needs a <provider> (Hermes's own help: "usage: hermes auth add [...] provider"), so with none it
+  // exits with a usage error and no helper opens. Bare `hermes auth` is Hermes's interactive wizard; it must stay bare
+  // unless a provider is chosen on purpose.
+  assert.ok(!HERMES_AUTH_ARGS.includes("add"), "never `auth add` without a provider");
+  assert.ok(Object.isFrozen(HERMES_AUTH_ARGS));
+  assert.throws(() => HERMES_AUTH_ARGS.push("--yolo"), TypeError);
+  assert.equal(HERMES_AUTH_TERMINAL_NAME, "hermes-auth");
+  assert.notEqual(HERMES_AUTH_TERMINAL_NAME, HERMES_TERMINAL_NAME, "its own file names and its own one-launch-at-a-time guard");
+  assert.deepEqual(HERMES_MODEL_ARGS, ["model"], "the picker's words are unchanged");
+});
+
+test("openHermesAuthTerminal(): opens `<detected hermes> auth` in Terminal.app; `hermes auth` never runs inside Agent OS and no session is made", posixSkip, async () => {
+  await withLaunchEnv(async ({ agentOsHome, fakeBin, agentLog, terminalDir }) => {
+    const hermes = path.join(fakeBin, "hermes");
+    const calls = [];
+    const result = await openHermesAuthTerminal({ platform: "darwin", spawnFn: fakeSpawn("spawn", calls) });
+    assert.deepEqual(result, { opened: true, command: `${hermes} auth` });
+    assert.equal(calls.length, 1, "exactly one program was asked for");
+    const file = calls[0].args[2];
+    assert.deepEqual(calls[0], { command: "open", args: ["-a", "Terminal", file], options: OPEN_OPTIONS });
+    assert.equal(path.dirname(file), terminalDir);
+    assert.match(path.basename(file), AUTH_FILE);
+    assert.equal(await readFile(file, "utf8"), `${hermes} auth\n`, "the file holds only <hermes path> auth, on one line");
+    assert.equal((await stat(file)).mode & 0o777, 0o700);
+    // No PTY session: nothing started the fake as a program (detection's
+    // --version and --help answers log nothing).
+    assert.deepEqual(await startedFakes(agentLog), []);
+    assert.equal(await exists(path.join(agentOsHome, "sessions")), false);
+
+    // Control: a fake started as a program does log a start, so the check above can fail.
+    spawnSync(hermes, ["auth-control"], { input: "", env: process.env, timeout: 10000 });
+    assert.deepEqual(
+      (await startedFakes(agentLog)).map((entry) => entry.argv),
+      [["auth-control"]]
+    );
+  });
+});
+
+test("openHermesAuthTerminal(): Hermes not installed is agent_not_installed with its sentence; a Hermes installed a moment later is found at once", posixSkip, async () => {
+  await withLaunchEnv(
+    async ({ agentOsHome, fakeBin }) => {
+      // No fake hermes here, so detection would find and run a real one in a system folder: stop first.
+      await refuseSystemAgent("hermes");
+      const calls = [];
+      await assert.rejects(openHermesAuthTerminal({ platform: "darwin", spawnFn: fakeSpawn("spawn", calls) }), (error) => {
+        assert.equal(error.code, "agent_not_installed");
+        assert.equal(error.message, "Hermes isn't installed on this computer yet.");
+        return true;
+      });
+      assert.equal(calls.length, 0);
+      assert.equal(await exists(path.join(agentOsHome, "setup")), false);
+
+      // Installed a moment later, well inside the 30 s detect cache: a fresh look finds it.
+      await makeFakeAgentBin(fakeBin, { names: ["hermes"] });
+      const result = await openHermesAuthTerminal({ platform: "darwin", spawnFn: fakeSpawn("spawn", calls) });
+      assert.deepEqual(result, { opened: true, command: `${path.join(fakeBin, "hermes")} auth` });
+      assert.equal(calls.length, 1);
+    },
+    { hermes: false }
+  );
+});
+
+test("openHermesAuthTerminal(): spawn_failed and the copy answer carry the same fixed command", posixSkip, async () => {
+  await withLaunchEnv(async ({ agentOsHome, fakeBin }) => {
+    const command = `${path.join(fakeBin, "hermes")} auth`;
+    const calls = [];
+    for (const platform of ["linux", "win32"]) {
+      const copy = await openHermesAuthTerminal({ platform, spawnFn: fakeSpawn("spawn", calls) });
+      assert.deepEqual(copy, { opened: false, reason: "copy", command });
+    }
+    assert.equal(calls.length, 0);
+    assert.equal(await exists(path.join(agentOsHome, "setup")), false, "the copy answer writes no file");
+    const failed = await openHermesAuthTerminal({ platform: "darwin", spawnFn: fakeSpawn("error", calls) });
+    assert.deepEqual(failed, { opened: false, reason: "spawn_failed", command });
+  });
+});
+
+test("openHermesAuthTerminal(): nothing a caller passes reaches the command, the file name or the argv", posixSkip, async () => {
+  await withLaunchEnv(async ({ fakeBin }) => {
+    const hermes = path.join(fakeBin, "hermes");
+    const calls = [];
+    const result = await openHermesAuthTerminal({
+      platform: "darwin",
+      spawnFn: fakeSpawn("spawn", calls),
+      name: "evil",
+      args: ["--yolo"],
+      command: "delete everything",
+      binPath: "/tmp/evil",
+      path: "/tmp/evil"
+    });
+    assert.deepEqual(result, { opened: true, command: `${hermes} auth` });
+    const file = calls[0].args[2];
+    assert.deepEqual(calls[0].args, ["-a", "Terminal", file]);
+    assert.match(path.basename(file), AUTH_FILE);
+    assert.equal(await readFile(file, "utf8"), `${hermes} auth\n`);
+  });
+});
+
+test("the picker and the sign-in helper are independent: each has its own file and window, and one never waits for the other", posixSkip, async () => {
+  await withLaunchEnv(async ({ fakeBin, terminalDir }) => {
+    const hermes = path.join(fakeBin, "hermes");
+    const pickerCalls = [];
+    const pickerChildren = [];
+    const authCalls = [];
+
+    // The picker's window is still being opened (its `open` has not ended)...
+    const picker = openHermesModelTerminal({ platform: "darwin", spawnFn: fakeSpawn("hang", pickerCalls, pickerChildren) });
+    await waitUntil(() => pickerChildren.length === 1, "the picker's launch to start Terminal");
+    // ...the sign-in helper still opens its own window at once (its own name, its own guard),
+    const auth = await openHermesAuthTerminal({ platform: "darwin", spawnFn: fakeSpawn("spawn", authCalls) });
+    assert.deepEqual(auth, { opened: true, command: `${hermes} auth` });
+    assert.equal(authCalls.length, 1, "the sign-in helper did not wait for the picker");
+    // ...and the picker's own window then finishes opening, unaffected.
+    pickerChildren[0].finish(0);
+    assert.deepEqual(await picker, { opened: true, command: `${hermes} model` });
+    assert.equal(pickerCalls.length, 1);
+
+    // Two files, each with its own one line.
+    const files = (await readdir(terminalDir)).sort();
+    assert.equal(files.length, 2);
+    const authFile = files.find((name) => AUTH_FILE.test(name));
+    const pickerFile = files.find((name) => PICKER_FILE.test(name));
+    assert.ok(authFile && pickerFile, files.join(", "));
+    assert.equal(await readFile(path.join(terminalDir, authFile), "utf8"), `${hermes} auth\n`);
+    assert.equal(await readFile(path.join(terminalDir, pickerFile), "utf8"), `${hermes} model\n`);
+  });
+});
+
+test("POST /api/setup/hermes/auth-terminal: 200 { opened, command, reason? } with only the fixed command, whatever the request carries; no session", posixSkip, async () => {
+  await withLaunchEnv(async ({ agentOsHome, fakeBin, agentLog, terminalDir, openLog }) => {
+    const hermes = path.join(fakeBin, "hermes");
+    await withSetupApp(
+      async ({ post, touched }) => {
+        if (process.platform === "darwin") {
+          // The route uses the real spawn, so prove first that PATH finds the fake `open`.
+          assert.equal(process.env.PATH.split(path.delimiter)[0], fakeBin);
+          assert.ok((await stat(path.join(fakeBin, "open"))).mode & 0o100, "the fake open is executable");
+        }
+        const answer = await post({ confirm: true, command: "delete everything", args: ["--yolo"], path: "/tmp/evil", name: "evil" });
+        assert.equal(answer.status, 200);
+        if (process.platform === "darwin") {
+          assert.deepEqual(answer.json, { opened: true, command: `${hermes} auth` });
+          const line = await waitForOpenLine(openLog);
+          assert.ok(line.startsWith("-a Terminal "), line);
+          const file = line.slice("-a Terminal ".length);
+          assert.equal(path.dirname(file), terminalDir);
+          assert.match(path.basename(file), AUTH_FILE);
+          assert.equal(await readFile(file, "utf8"), `${hermes} auth\n`);
+        } else {
+          assert.deepEqual(answer.json, { opened: false, reason: "copy", command: `${hermes} auth` });
+          assert.equal(await exists(path.join(agentOsHome, "setup")), false);
+        }
+        assert.deepEqual(touched, [], "the route never reads the session manager");
+      },
+      { route: "auth-terminal" }
+    );
+    assert.deepEqual(await startedFakes(agentLog), []);
+    assert.equal(await exists(path.join(agentOsHome, "sessions")), false);
+  });
+});
+
+test("POST /api/setup/hermes/auth-terminal: when Terminal can't open the window, the answer is still 200 { opened: false, reason: spawn_failed, command }", { skip: process.platform === "darwin" ? false : "only macOS opens a Terminal window; elsewhere the command is handed back to copy" }, async () => {
+  await withLaunchEnv(async ({ fakeBin, openLog }) => {
+    const hermes = path.join(fakeBin, "hermes");
+    // The fake `open` logs its call and then fails, the way `open` ends when it can't start Terminal.
+    await writeFile(path.join(fakeBin, "open"), '#!/bin/sh\necho "$@" >> "$HOME/.fake-open-calls.log"\nexit 1\n');
+    await chmod(path.join(fakeBin, "open"), 0o755);
+    await withSetupApp(
+      async ({ post, touched }) => {
+        assert.equal(process.env.PATH.split(path.delimiter)[0], fakeBin, "PATH finds the fake open first");
+        const answer = await post({ confirm: true });
+        assert.equal(answer.status, 200);
+        assert.deepEqual(answer.json, { opened: false, reason: "spawn_failed", command: `${hermes} auth` });
+        assert.ok((await waitForOpenLine(openLog)).startsWith("-a Terminal "), "the fake open was asked once");
+        assert.deepEqual(touched, [], "the route never reads the session manager");
+      },
+      { route: "auth-terminal" }
+    );
+  });
+});
+
+test("POST /api/setup/hermes/auth-terminal: 400 without confirm: true, and nothing is launched", posixSkip, async () => {
+  await withLaunchEnv(async ({ agentOsHome, openLog }) => {
+    await withSetupApp(
+      async ({ post, touched }) => {
+        for (const body of [undefined, {}, { confirm: "true" }, { confirm: 1 }, { confirm: false }, { confirm: [true] }]) {
+          const answer = await post(body);
+          assert.equal(answer.status, 400, JSON.stringify(body));
+          assert.deepEqual(answer.json, CONFIRM_REQUIRED);
+        }
+        assert.deepEqual(touched, []);
+      },
+      { route: "auth-terminal" }
+    );
+    assert.equal(await exists(path.join(agentOsHome, "setup")), false);
+    assert.equal(await exists(openLog), false);
+  });
+});
+
+test("POST /api/setup/hermes/auth-terminal: Hermes not installed is 400 agent_not_installed, written by the route (not mapJobError's 409)", posixSkip, async () => {
+  await withLaunchEnv(
+    async ({ agentOsHome, openLog }) => {
+      // No fake hermes here, so detection would find and run a real one in a system folder: stop first.
+      await refuseSystemAgent("hermes");
+      await withSetupApp(
+        async ({ post }) => {
+          const answer = await post({ confirm: true });
+          assert.equal(answer.status, 400);
+          assert.deepEqual(answer.json, HERMES_NOT_INSTALLED);
+        },
+        { route: "auth-terminal" }
+      );
+      assert.equal(await exists(path.join(agentOsHome, "setup")), false);
+      assert.equal(await exists(openLog), false);
+    },
+    { hermes: false }
+  );
+});
+
+test("POST /api/setup/hermes/auth-terminal: 404 not_available outside local mode, before anything else", posixSkip, async () => {
+  await withLaunchEnv(async ({ agentOsHome, openLog }) => {
+    await withSetupApp(
+      async ({ post }) => {
+        for (const mode of NOT_LOCAL_MODES) {
+          await withEnv({ ...LOCAL_MODE, ...mode }, async () => {
+            for (const body of [{ confirm: true }, {}]) {
+              const answer = await post(body);
+              assert.equal(answer.status, 404, JSON.stringify(mode));
+              assert.deepEqual(answer.json, NOT_AVAILABLE);
+            }
+          });
+        }
+      },
+      { route: "auth-terminal" }
+    );
+    assert.equal(await exists(path.join(agentOsHome, "setup")), false);
+    assert.equal(await exists(openLog), false);
+  });
+});
+
+test("the sign-in helper's code stays in the one reviewed module and route: no new imports, no session, no spawn of its own, and the route passes nothing from the request", async () => {
+  const code = await codeOf("server", "runtime", "setup", "hermes-model-terminal.js");
+  const imports = [...code.matchAll(/^import [^;]*? from "([^"]+)";$/gm)].map((match) => match[1]);
+  assert.deepEqual(imports.sort(), ["../agents/index.js", "./signin.js", "node:child_process"], "the same three imports as before the sign-in helper");
+  // Both launches go through the one function that looks Hermes up and calls the Terminal helper.
+  assert.equal((code.match(/openCommandInTerminal\(/g) || []).length, 1, "one call into the Terminal helper");
+  assert.equal((code.match(/ADAPTERS\.hermes\.detect\(/g) || []).length, 1, "one lookup of Hermes");
+  assert.ok(code.includes("openHermesTerminal(HERMES_AUTH_ARGS, HERMES_AUTH_TERMINAL_NAME, { platform, spawnFn })"), "fixed words and a fixed name");
+  assert.ok(code.includes("openHermesTerminal(HERMES_MODEL_ARGS, HERMES_TERMINAL_NAME, { platform, spawnFn })"), "the picker is untouched");
+  assert.doesNotMatch(code, /\bspawn\(/, "it never starts a program itself");
+
+  const routes = await codeOf("server", "runtime", "setup", "routes.js");
+  assert.ok(routes.includes('router.post("/hermes/auth-terminal", requireLocalMode, async (req, res, next) => {'));
+  assert.equal((routes.match(/openHermesAuthTerminal\(/g) || []).length, 1);
+  assert.ok(routes.includes("await openHermesAuthTerminal()"), "called with no argument: nothing from the request");
+  assert.ok(routes.includes('router.post("/hermes/model-terminal", requireLocalMode, async (req, res, next) => {'), "the picker's route is unchanged");
 });

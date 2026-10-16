@@ -48,7 +48,7 @@ const listOf = (source, models) => ({ source, asOf: source === "fallback" ? "202
 const model = (id, available = true) => ({ id, name: id, note: null, available });
 const apiError = (code, detail, status) => Object.assign(new Error(code), { name: "ApiError", detail, status });
 
-test("every sentence the cards show is the spec's, word for word, in straight quotes and with no em dash", () => {
+test("every sentence the spec gives the cards is shown word for word, in straight quotes and with no em dash (the Hermes sign-in helper's own sentences are pinned apart, further down)", () => {
   const sentences = [
     shared.OPENCLAW_SECURITY_NOTICE,
     shared.PLAN_LABEL.claude,
@@ -248,6 +248,7 @@ test("the new client calls: their routes, methods and bodies (confirm: true), an
     await setupApi.startOpenclawSignInTerminal();
     await setupApi.getOpenclawSignInTerminal();
     await setupApi.openHermesModelTerminal();
+    await setupApi.openHermesAuthTerminal();
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -257,7 +258,8 @@ test("the new client calls: their routes, methods and bodies (confirm: true), an
     { url: "/api/setup/openclaw/plan", method: "POST", body: { plan: "claude", model: "claude-opus-5-5", acceptOpenClawRisk: true, confirm: true } },
     { url: "/api/setup/openclaw/signin-terminal", method: "POST", body: { confirm: true } },
     { url: "/api/setup/openclaw/signin-terminal", method: "GET", body: null },
-    { url: "/api/setup/hermes/model-terminal", method: "POST", body: { confirm: true } }
+    { url: "/api/setup/hermes/model-terminal", method: "POST", body: { confirm: true } },
+    { url: "/api/setup/hermes/auth-terminal", method: "POST", body: { confirm: true } }
   ]);
 
   const store = new Map();
@@ -281,7 +283,7 @@ test("the new client calls: their routes, methods and bodies (confirm: true), an
 });
 
 test("wiring: every request of the new cards has a time limit, Hermes never gets a session, the cards keep and log nothing, and the labels and hides are in place", () => {
-  const names = "getOpenclawPlans|getOpenclawPlanModels|applyOpenclawPlan|startOpenclawSignInTerminal|getOpenclawSignInTerminal|openHermesModelTerminal|getSetupJob|cancelSetupJob";
+  const names = "getOpenclawPlans|getOpenclawPlanModels|applyOpenclawPlan|startOpenclawSignInTerminal|getOpenclawSignInTerminal|openHermesModelTerminal|openHermesAuthTerminal|getSetupJob|cancelSetupJob";
   for (const file of ["src/ui/components/BrainPlanCard.tsx", "src/ui/components/ChooseInHermes.tsx"]) {
     const text = read(file);
     const all = text.match(new RegExp(`\\b(${names})\\(`, "g"))?.length ?? 0;
@@ -523,4 +525,186 @@ test("the fallback row's radio and its text field have different accessible name
   // name is "Apply · Claude plan" or "Starting… · Claude plan".
   assert.doesNotMatch(card, /aria-label=\{`Apply/);
   assert.match(card, /\{busy === plan \? "Starting…" : "Apply"\}\s*<span className="os-visually-hidden"> · \{PLAN_LABEL\[plan\]\}<\/span>/);
+});
+
+// ---- "Sign in again" on a plan job that stopped at its ChatGPT sign-in check ----------------------------------------
+
+// A plan job as the card gets it: one step per id, the ones before `failed` done, `failed` failed (with `error` as its
+// sentence), the rest waiting.
+const READINESS_STEP = "openclaw-plan-readiness";
+const CHATGPT_STEPS = ["openclaw-plan-model", "openclaw-safe-defaults", READINESS_STEP, "health"];
+function planJob({ plan = "chatgpt", status = "failed", ids = CHATGPT_STEPS, failed = READINESS_STEP, error = rules.CHATGPT_NOT_READY } = {}) {
+  const failedAt = ids.indexOf(failed);
+  return {
+    id: "job_x",
+    kind: "configure",
+    status,
+    plan,
+    steps: ids.map((id, index) => ({
+      id,
+      status: failedAt === -1 ? "succeeded" : index < failedAt ? "succeeded" : index === failedAt ? "failed" : "pending",
+      error: index === failedAt ? error : null
+    }))
+  };
+}
+
+test("offersSignInAgain: only a failed ChatGPT plan job whose failed step is the sign-in check offers 'Sign in again' (full truth table)", () => {
+  const offers = shared.offersSignInAgain;
+  // The one case that offers it.
+  assert.equal(offers(planJob()), true);
+  // Another plan, whatever step failed: the Claude plan has no ChatGPT sign-in, and a job with no plan is not a plan job.
+  for (const plan of ["claude", "other", "", undefined, null]) assert.equal(offers({ ...planJob(), plan }), false, `plan ${String(plan)}`);
+  // Another failed step: the model, the safe defaults, the hello check, and steps of other jobs.
+  for (const failed of ["openclaw-plan-model", "openclaw-safe-defaults", "health", "openclaw-plan-runtime-check", "services"]) {
+    assert.equal(offers(planJob({ ids: [...CHATGPT_STEPS, "services", "openclaw-plan-runtime-check"], failed })), false, `failed at ${failed}`);
+  }
+  // Not failed: still running, finished well, or cancelled (even with the check's step marked failed).
+  for (const status of ["running", "succeeded", "cancelled", "", undefined]) assert.equal(offers({ ...planJob(), status }), false, `status ${String(status)}`);
+  // The right step with another sentence: Agent OS quitting during the sign-in check fails that same step, and its
+  // sentence tells the person to apply the plan again, so "Sign in again" would sit beside words that say otherwise.
+  assert.equal(offers(planJob({ error: rules.PLAN_JOB_INTERRUPTED })), false, "Agent OS quit during the check");
+  for (const error of [null, "", "A setup step failed.", `${rules.CHATGPT_NOT_READY} `]) {
+    assert.equal(offers(planJob({ error })), false, `error ${JSON.stringify(error)}`);
+  }
+  const noError = planJob();
+  delete noError.steps[2].error;
+  assert.equal(offers(noError), false, "a failed step with no error field");
+  assert.equal(offers(planJob({ error: shared.CHATGPT_PLAN_WORDS.not_ready })), true, "the client's mirror of the server's sentence");
+  // A failed job with no failed step names no step to sign in again for.
+  assert.equal(offers(planJob({ failed: "nothing" })), false);
+  // The failed step is the first one (the one BrainResult shows the error of): the check failing after another step did is not it.
+  const twoFailed = planJob({ failed: "openclaw-plan-model" });
+  twoFailed.steps[2].status = "failed";
+  assert.equal(offers(twoFailed), false);
+  // No job, or something that is not one.
+  for (const nothing of [null, undefined, {}, { plan: "chatgpt", status: "failed" }, { plan: "chatgpt", status: "failed", steps: null }, { plan: "chatgpt", status: "failed", steps: "x" }, { plan: "chatgpt", status: "failed", steps: [] }]) {
+    assert.equal(offers(nothing), false, JSON.stringify(nothing));
+  }
+  // The step name is the server's own (the ChatGPT plan job's steps) and has a label.
+  assert.match(read("server/runtime/setup/jobs.js"), /chatgpt: Object\.freeze\(\[[^\]]*"openclaw-plan-readiness"/);
+  assert.equal(brain.CONFIGURE_STEP_LABEL[READINESS_STEP], "Check your ChatGPT sign-in");
+});
+
+test("wiring: 'Sign in again' is drawn only through offersSignInAgain and starts the card's one sign-in (startSignIn), then leaves the result like Back", () => {
+  const card = read("src/ui/components/BrainPlanCard.tsx");
+  const panel = read("src/ui/components/SetupBrainPanel.tsx");
+  // The rule is imported from the shared file, used once, and is the only thing that decides whether the button shows.
+  assert.match(card, /offersSignInAgain,\s*\n\s*planApplyModel,/);
+  assert.equal(card.match(/offersSignInAgain\(/g)?.length, 1, "one use");
+  assert.match(card, /extraAction=\{\s*info && offersSignInAgain\(job\) \? \(/);
+  // The button: exactly that label, secondary, disabled like the other sign-in button (locked), "Starting…" while starting.
+  assert.equal(card.match(/: "Sign in again"\}/g)?.length, 1, "one label, drawn once");
+  assert.match(
+    card,
+    /<button type="button" className="os-btn os-btn--secondary" onClick=\{\(\) => void signInAgain\(\)\} disabled=\{locked\}>\s*\{busy === "signin" \? "Starting…" : "Sign in again"\}\s*<\/button>/
+  );
+  // No second sign-in path: the card still starts a sign-in in exactly one place, and the button reaches it only through
+  // signInAgain, which leaves the result the way Back does and only if that result is still the one shown.
+  assert.equal(card.match(/startOpenclawSignInTerminal\(\)/g)?.length, 1, "one start call");
+  assert.equal(card.match(/await startSignIn\(\)/g)?.length, 1);
+  assert.equal(card.match(/void startSignIn\(\)/g)?.length, 1, "Sign in with ChatGPT");
+  assert.match(
+    card,
+    /async function signInAgain\(\) \{\s*if \(busy !== null \|\| !job\) return;\s*const resultId = job\.id;\s*await startSignIn\(\);\s*if \(!alive\.current \|\| shownJob\.current\?\.id !== resultId\) return;\s*keepKeysInCard\(\);\s*leaveResult\(\);\s*\}/
+  );
+  // Back to the plans is the state clearing plus the title's focus; "Sign in again" waits for a start that can take
+  // many seconds, so it clears the same state but moves the keys only when they are still in the card or nowhere (P26).
+  assert.match(card, /function leaveResult\(\) \{\s*rememberJobId\("plan", null\);\s*setJob\(null\);\s*setJobError\(""\);\s*setErrors\(\{\}\);\s*setRiskAccepted\(false\);\s*\}/);
+  assert.match(card, /function backToPlans\(\) \{\s*leaveResult\(\);\s*\/\/ The result's buttons are gone: keep the keyboard on the card\.\s*cardTitle\.current\?\.focus\(\);\s*\}/);
+  assert.equal(card.match(/leaveResult\(\);/g)?.length, 2, "backToPlans and signInAgain only");
+  assert.equal(card.match(/cardTitle\.current\?\.focus\(\)/g)?.length, 2, "keepKeysInCard and backToPlans only: signInAgain never focuses by itself");
+  assert.match(card, /shownJob\.current = job;/);
+  // BrainResult only draws what it is given, first in its actions row, and nobody else passes anything.
+  assert.match(panel, /extraAction\?: ReactNode;/);
+  assert.match(panel, /<div className="os-brain-result__actions">\s*\{extraAction\}/);
+  assert.equal(panel.match(/extraAction=/g)?.length ?? 0, 0, "Setup's own result passes none");
+});
+
+// ---- "Add a sign-in in Hermes": Hermes's own credential helper (`hermes auth`), beside "Choose in Hermes" ----------
+
+test("Add a sign-in in Hermes: the owner's sentence word for word, one sentence per launch answer, and the picker's sentences untouched", () => {
+  const words = shared.HERMES_AUTH_TERMINAL_WORDS;
+  assert.equal(words.opened, "Terminal opened with Hermes's sign-in helper. Add your sign-in there, then press Refresh.");
+  assert.deepEqual(Object.keys(words), ["opened", "copy", "spawn_failed"]);
+  const command = "/x/hermes auth";
+  assert.equal(shared.hermesAuthLaunchWords({ opened: true, command }), words.opened);
+  assert.equal(shared.hermesAuthLaunchWords({ opened: false, reason: "copy", command }), words.copy);
+  assert.equal(shared.hermesAuthLaunchWords({ opened: false, reason: "spawn_failed", command }), words.spawn_failed);
+  assert.equal(shared.hermesAuthLaunchWords({ opened: false, command }), words.copy, "no reason: the copy words");
+  // Plain English, sentence case, straight quotes, no em dash, and each one ends by saying what to do next.
+  for (const sentence of Object.values(words)) {
+    assert.doesNotMatch(sentence, /\u2014/, "no em dash");
+    assert.doesNotMatch(sentence, /[\u2018\u2019\u201c\u201d]/, "straight quotes");
+    assert.ok(sentence.endsWith("then press Refresh."), sentence);
+    assert.doesNotMatch(sentence, /model/i, "it is about a sign-in, not a model");
+  }
+  assert.match(words.spawn_failed, /^Terminal didn't open\. Run this command in your own terminal, /);
+  // The picker's three sentences (the spec's own set) and their count are exactly as before.
+  assert.deepEqual(shared.HERMES_TERMINAL_WORDS, {
+    opened: "Terminal opened with Hermes's model picker. Choose there, then press Refresh.",
+    copy: "Run this command in your own terminal, choose a model, then press Refresh.",
+    spawn_failed: "Terminal didn't open. Run this command in your own terminal, choose a model, then press Refresh."
+  });
+  assert.equal(shared.hermesLaunchWords({ opened: true, command }), shared.HERMES_TERMINAL_WORDS.opened, "the picker still says its own sentence");
+});
+
+test("Add a sign-in in Hermes: a failed press drops the other helper's copy-the-command answer and nothing else", () => {
+  const answer = (opened) => ({ opened, command: "/x/hermes", ...(opened ? {} : { reason: "copy" }) });
+  const model = (opened) => ({ which: "model", answer: answer(opened) });
+  const auth = (opened) => ({ which: "auth", answer: answer(opened) });
+  // Linux: the picker showed its command to copy; the sign-in press then failed. That command must go.
+  assert.equal(shared.launchAfterFailure(model(false), "auth"), null);
+  assert.equal(shared.launchAfterFailure(auth(false), "model"), null);
+  // The other helper's window did open: that sentence is still true, so it stays (with Refresh).
+  const opened = model(true);
+  assert.equal(shared.launchAfterFailure(opened, "auth"), opened);
+  // The same helper failing again keeps its own earlier answer, as before.
+  const own = model(false);
+  assert.equal(shared.launchAfterFailure(own, "model"), own);
+  // Nothing on screen: nothing to keep.
+  assert.equal(shared.launchAfterFailure(null, "auth"), null);
+});
+
+test("wiring: 'Add a sign-in in Hermes' is a second secondary button beside 'Choose in Hermes', through the same launcher, busy flag, time limit and error path", () => {
+  const hermes = read("src/ui/components/ChooseInHermes.tsx");
+  // Exactly one of each label, drawn as button text.
+  assert.equal(hermes.match(/>\s*Choose in Hermes\s*</g)?.length, 1);
+  assert.equal(hermes.match(/>\s*Add a sign-in in Hermes\s*</g)?.length, 1);
+  // Each button: secondary, its own request inside the time limit, disabled by the one busy flag.
+  const button = (which, call, label) =>
+    new RegExp(
+      `<button\\s+type="button"\\s+className="os-btn os-btn--secondary"\\s+onClick=\\{\\(\\) => void open\\("${which}", \\(\\) => withTimeout\\(${call}\\(\\), PLAN_LIMITS_MS\\.action\\)\\)\\}\\s+disabled=\\{busy\\}\\s*>\\s*${label}\\s*</button>`
+    );
+  assert.match(hermes, button("model", "openHermesModelTerminal", "Choose in Hermes"));
+  assert.match(hermes, button("auth", "openHermesAuthTerminal", "Add a sign-in in Hermes"));
+  // In the row, in this order: Choose in Hermes, Add a sign-in in Hermes, then Refresh (only after something opened).
+  const at = (needle) => hermes.indexOf(needle);
+  assert.ok(at("Choose in Hermes\n") > 0 && at("Choose in Hermes\n") < at("Add a sign-in in Hermes\n"));
+  assert.ok(at("Add a sign-in in Hermes\n") < at("{launch ? (\n          <button"), "Refresh follows both buttons");
+  // The two caution lines stay above both buttons, drawn from the same two sentences.
+  assert.ok(at("HERMES_PICKER_LINES.map(") > 0 && at("HERMES_PICKER_LINES.map(") < at("Choose in Hermes\n"));
+  assert.equal(hermes.match(/HERMES_PICKER_LINES/g)?.length, 2, "imported once, drawn once");
+  // One launcher and one busy flag for both: a second press waits, and the busy state always ends.
+  assert.equal(hermes.match(/async function open\(/g)?.length, 1, "one launcher");
+  assert.equal(hermes.match(/setBusy\(true\)/g)?.length, 1);
+  assert.match(hermes, /async function open\(which: HermesHelper, send: \(\) => Promise<TerminalLaunch>\) \{\s*if \(busy\) return;/);
+  assert.match(hermes, /\} finally \{\s*if \(alive\.current\) setBusy\(false\);\s*\}/);
+  // Errors take the one path that both use, and an unreadable answer is refused the same way.
+  assert.equal(hermes.match(/planProblem\(error, friendlyError\)/g)?.length, 1);
+  assert.match(hermes, /typeof answer\.opened !== "boolean" \|\| typeof answer\.command !== "string"\) throw new Error\(UNREADABLE_WORDS\)/);
+  // The status line follows the last answer's own helper: its sentence, and the command to copy when nothing opened.
+  assert.match(hermes, /\{launch\.which === "auth" \? hermesAuthLaunchWords\(launch\.answer\) : hermesLaunchWords\(launch\.answer\)\}/);
+  assert.match(hermes, /\{launch && !launch\.answer\.opened \? <SetupCommand command=\{launch\.answer\.command\} label="Copy the command" \/> : null\}/);
+  assert.match(hermes, /setLaunch\(\{ which, answer \}\);/);
+  // A failed press goes through launchAfterFailure (its rule is checked in the test above).
+  assert.equal(hermes.match(/launchAfterFailure\(previous, which\)/g)?.length, 1);
+  assert.match(hermes, /\} catch \(error\) \{\s*if \(alive\.current\) \{\s*setProblem\(planProblem\(error, friendlyError\)\);\s*setLaunch\(\(previous\) => launchAfterFailure\(previous, which\)\);/);
+  // Refresh and the re-read on window focus are the ones from before: nothing about them depends on which helper opened.
+  assert.match(hermes, /latestFocus\.current\(\);/);
+  assert.match(hermes, /function refresh\(\) \{\s*lastRead\.current = Date\.now\(\);\s*latest\.current\(\);/);
+  // The new request is the client's own call, never a session, a terminal or a request of the component's own.
+  assert.equal(hermes.match(/\bopenHermesAuthTerminal\b/g)?.length, 2, "imported once, called once");
+  assert.doesNotMatch(hermes, /\bfetch\(|sessionsApi|SessionTerminal|createSession|signin-terminal/);
+  // The answer words are the shared ones; the sentence is not written out a second time in the component.
+  assert.doesNotMatch(hermes, /Add your sign-in there|Terminal opened with/);
 });

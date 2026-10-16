@@ -13,7 +13,7 @@
 // "use an existing key" path keeps the pasted key in the OpenRouter card's
 // state until it is sent once.
 import { useEffect, useId, useRef, useState } from "react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { AlertTriangle } from "lucide-react";
 import BrainLocalCard from "./BrainLocalCard";
 import BrainModelActions from "./BrainModelActions";
@@ -363,13 +363,17 @@ export function BrainResult({
   agents,
   onBack,
   onContinue,
-  continueLabel
+  continueLabel,
+  extraAction
 }: {
   job: SetupJob;
   agents: BrainAgentLine[];
   onBack: () => void;
   onContinue?: () => void;
   continueLabel: string;
+  // A button the caller wants beside the result's own controls (the plan card's "Sign in again"); it comes first,
+  // so the way forward is the first thing the keyboard reaches.
+  extraAction?: ReactNode;
 }) {
   const scope = (job.scope && job.scope.length ? job.scope : (["hermes", "openclaw"] as BrainAgentId[])).filter((id) =>
     agents.some((a) => a.id === id && a.installed)
@@ -476,6 +480,7 @@ export function BrainResult({
       ) : null}
 
       <div className="os-brain-result__actions">
+        {extraAction}
         {finishedOk && onContinue ? (
           <button type="button" className="os-btn os-btn--primary" onClick={onContinue}>
             {continueLabel}

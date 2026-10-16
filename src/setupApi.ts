@@ -674,6 +674,14 @@ export function openHermesModelTerminal(): Promise<TerminalLaunch> {
   });
 }
 
+// Opens `hermes auth` (Hermes's own credential helper) the same way, in its own Terminal.app window.
+export function openHermesAuthTerminal(): Promise<TerminalLaunch> {
+  return request<TerminalLaunch>("/api/setup/hermes/auth-terminal", {
+    method: "POST",
+    body: JSON.stringify({ confirm: true })
+  });
+}
+
 // Opens an OpenRouter page in the person's own browser (the server does it,
 // and only for OpenRouter's addresses). `opened:false` comes with the address,
 // so the screen can show it as a link instead.

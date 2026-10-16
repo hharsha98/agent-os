@@ -65,6 +65,16 @@ export const HERMES_TERMINAL_WORDS = {
   spawn_failed: "Terminal didn't open. Run this command in your own terminal, choose a model, then press Refresh."
 } as const;
 
+// The same three answers for "Add a sign-in in Hermes" (`hermes auth`). The owner's sentence for the opened case is
+// verbatim; the other two follow the model picker's wording and are not in the plan-brains spec yet (they wait for the
+// owner's OK, then all three go into spec section 4 and the pinned set). Kept apart from HERMES_TERMINAL_WORDS, which is
+// the spec's own set word for word.
+export const HERMES_AUTH_TERMINAL_WORDS = {
+  opened: "Terminal opened with Hermes's sign-in helper. Add your sign-in there, then press Refresh.",
+  copy: "Run this command in your own terminal, add your sign-in there, then press Refresh.",
+  spawn_failed: "Terminal didn't open. Run this command in your own terminal, add your sign-in there, then press Refresh."
+} as const;
+
 // The sign-in terminal's accessible name: the setup session's own title (sessionTitle in sessionsShared.ts, Task
 // B1a), so it adds no new words; the test compares the two.
 export const SIGNIN_TERMINAL_LABEL = "OpenClaw · ChatGPT sign-in";
@@ -169,6 +179,19 @@ export function hermesLaunchWords(launch: TerminalLaunch): string {
   return launch.reason === "spawn_failed" ? HERMES_TERMINAL_WORDS.spawn_failed : HERMES_TERMINAL_WORDS.copy;
 }
 
+// The sentence after "Add a sign-in in Hermes", from its launch answer.
+export function hermesAuthLaunchWords(launch: TerminalLaunch): string {
+  if (launch.opened) return HERMES_AUTH_TERMINAL_WORDS.opened;
+  return launch.reason === "spawn_failed" ? HERMES_AUTH_TERMINAL_WORDS.spawn_failed : HERMES_AUTH_TERMINAL_WORDS.copy;
+}
+
+// What stays on Hermes's card after the request of button `which` failed. The other button's earlier "run this command
+// yourself" answer goes (else its command would be the only one on screen under this button's error); an answer that did
+// open a window says nothing wrong and stays, and so does this button's own.
+export function launchAfterFailure<T extends { which: string; answer: { opened: boolean } }>(previous: T | null, which: string): T | null {
+  return previous && previous.which !== which && !previous.answer.opened ? null : previous;
+}
+
 // The sentence the server wrote for a refusal (ApiError.detail), or null. Told apart by name, like gotNoAnswer, so
 // this file needs no runtime import.
 export function serverSentence(error: unknown): string | null {
@@ -233,4 +256,18 @@ export function signInSessionEnded(summary: { status?: string } | null | undefin
 export function takeJobAnswer(finalJobId: string | null, next: { id: string; status: string }): "ignore" | "running" | "final" {
   if (next.id === finalJobId) return "ignore";
   return next.status === "running" ? "running" : "final";
+}
+
+// A ChatGPT plan job that stopped at its sign-in check: the failed result then offers "Sign in again" right there,
+// instead of making the person go back first. It is that one failure and nothing else: another plan, another failed
+// step, a job that is still running, was cancelled or succeeded, or no job at all, offers nothing. The failed step is
+// the first one, the same one BrainResult shows the error of. The step's id alone is not enough: Agent OS quitting
+// during that same step fails it too, with a sentence that says to apply the plan again, so the step's own sentence
+// must be the "can't use your ChatGPT plan yet, sign in again" one (the server's CHATGPT_NOT_READY).
+export function offersSignInAgain(
+  job: { plan?: string; status?: string; steps?: ReadonlyArray<{ id: string; status: string; error?: string | null }> } | null | undefined
+): boolean {
+  if (!job || job.plan !== "chatgpt" || job.status !== "failed" || !Array.isArray(job.steps)) return false;
+  const failed = job.steps.find((step) => step.status === "failed");
+  return failed?.id === "openclaw-plan-readiness" && failed.error === CHATGPT_PLAN_WORDS.not_ready;
 }

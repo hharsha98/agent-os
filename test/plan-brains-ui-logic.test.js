@@ -48,7 +48,7 @@ const listOf = (source, models) => ({ source, asOf: source === "fallback" ? "202
 const model = (id, available = true) => ({ id, name: id, note: null, available });
 const apiError = (code, detail, status) => Object.assign(new Error(code), { name: "ApiError", detail, status });
 
-test("every sentence the spec gives the cards is shown word for word, in straight quotes and with no em dash (the Hermes sign-in helper's own sentences are pinned apart, further down)", () => {
+test("every sentence the spec gives the cards is shown word for word, in straight quotes and with no em dash", () => {
   const sentences = [
     shared.OPENCLAW_SECURITY_NOTICE,
     shared.PLAN_LABEL.claude,
@@ -62,9 +62,10 @@ test("every sentence the spec gives the cards is shown word for word, in straigh
     shared.TYPED_MODEL_LABEL,
     shared.INVALID_PLAN_MODEL,
     ...shared.HERMES_PICKER_LINES,
-    ...Object.values(shared.HERMES_TERMINAL_WORDS)
+    ...Object.values(shared.HERMES_TERMINAL_WORDS),
+    ...Object.values(shared.HERMES_AUTH_TERMINAL_WORDS)
   ];
-  assert.equal(sentences.length, 22);
+  assert.equal(sentences.length, 25);
   for (const sentence of sentences) {
     assert.ok(SPEC.includes(sentence), `the spec says this, word for word: ${sentence}`);
     assert.doesNotMatch(sentence, /\u2014/, "no em dash");
@@ -617,10 +618,11 @@ test("readiness 'unknown': no sentence, no Sign in with ChatGPT button and no Si
 test("wiring: 'Sign in again' is drawn only through offersSignInAgain and starts the card's one sign-in (startSignIn), then leaves the result like Back", () => {
   const card = read("src/ui/components/BrainPlanCard.tsx");
   const panel = read("src/ui/components/SetupBrainPanel.tsx");
-  // The rule is imported from the shared file, used once, and is the only thing that decides whether the button shows.
+  // The rule is imported from the shared file and used once. Besides it, the button needs the plans read (info) and the
+  // ChatGPT section's own sign-in on screen: not while OpenClaw is too old or its version unreadable (versionBlocked).
   assert.match(card, /offersSignInAgain,\s*\n\s*planApplyModel,/);
   assert.equal(card.match(/offersSignInAgain\(/g)?.length, 1, "one use");
-  assert.match(card, /extraAction=\{\s*info && offersSignInAgain\(job\) \? \(/);
+  assert.match(card, /extraAction=\{\s*info && !versionBlocked && offersSignInAgain\(job\) \? \(/);
   // The button: exactly that label, secondary, disabled like the other sign-in button (locked), "Starting…" while starting.
   assert.equal(card.match(/: "Sign in again"\}/g)?.length, 1, "one label, drawn once");
   assert.match(

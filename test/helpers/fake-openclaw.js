@@ -57,6 +57,9 @@
 //     `config get agents.defaults.models`, `models auth list` and `onboard --help` wait before they answer; each
 //     then adds { argv, startedAt, endedAt } (epoch milliseconds) to $HOME/.fake-openclaw-timing.jsonl,
 //     so a test can tell whether two reads overlapped (unset: no wait, no timing line)
+//   FAKE_OPENCLAW_AGENT_HANG    any text: `agent exec` (after reading its input) and `agent -m` (the hello check) wait
+//     (up to a minute) instead of answering, so a test can press Cancel while the hello is running. Killed, as Cancel
+//     does it, the program just ends
 //   FAKE_OPENCLAW_VANISH_AFTER  an argv prefix such as "gateway status": the first call that
 //     starts with it answers as usual and, as it exits, deletes the program's launcher
 //     (<home>/.npm-global/bin/openclaw), so the next call cannot run at all (runCommand's
@@ -303,6 +306,7 @@ if (args[0] === "agent" && args[1] === "exec" && args.includes("--help")) {
 if (args[0] === "agent" && args[1] === "exec") {
   let input = "";
   try { input = readFileSync(0, "utf8"); } catch {}
+  if (knob("FAKE_OPENCLAW_AGENT_HANG")) await new Promise((resolve) => setTimeout(resolve, 60000));
   if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
     process.stderr.write("simulated agent failure\\n");
     process.exit(2);
@@ -311,6 +315,7 @@ if (args[0] === "agent" && args[1] === "exec") {
   process.exit(0);
 }
 if (args[0] === "agent" && args[1] === "-m") {
+  if (knob("FAKE_OPENCLAW_AGENT_HANG")) await new Promise((resolve) => setTimeout(resolve, 60000));
   if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
     process.stderr.write("simulated agent failure\\n");
     process.exit(2);

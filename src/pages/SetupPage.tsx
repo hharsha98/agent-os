@@ -250,9 +250,11 @@ export default function SetupPage() {
   const movedRef = useRef(false);
   // The plan on screen, for the link listener below (it is set up once, so it cannot see the newest `plan` itself).
   const planRef = useRef<SetupPlan | null>(null);
-  // Counts the AI-brain reads: only the newest one's answer goes on screen, so a slow first read can't
-  // overwrite what a later re-read (after a job) already showed.
+  // Counts the AI-brain reads, and remembers which read's answer is on screen. An answer goes on screen only if it
+  // is newer than the one already shown, so a slow first read can't overwrite what a later re-read (after a job)
+  // already showed, yet it still shows if that later re-read fails and puts nothing on screen.
   const brainReadSeq = useRef(0);
+  const shownBrainSeq = useRef(0);
   const alive = useRef(true);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const focusOnStepChange = useRef(false);
@@ -354,7 +356,8 @@ export default function SetupPage() {
     const planRead = settled(withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS));
     const brainSeq = ++brainReadSeq.current;
     const brainShown = settled(withTimeout(getBrainOptions(refresh), BRAIN_READ_LIMIT_MS)).then((brainRes) => {
-      if (alive.current && brainSeq === brainReadSeq.current) {
+      if (alive.current && brainSeq > shownBrainSeq.current) {
+        shownBrainSeq.current = brainSeq;
         if (brainRes.status === "fulfilled") {
           setBrain(brainRes.value);
           setBrainError("");
@@ -434,7 +437,8 @@ export default function SetupPage() {
       // Each message is about the data it came with: new data from a good answer ends it.
       setCheck(checkRes);
       setCheckError("");
-      if (brainSeq === brainReadSeq.current) {
+      if (brainSeq > shownBrainSeq.current) {
+        shownBrainSeq.current = brainSeq;
         setBrain(brainRes);
         setBrainError("");
       }

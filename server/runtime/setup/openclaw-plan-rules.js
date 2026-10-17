@@ -166,7 +166,8 @@ export function chatgptSignIn(rows) {
 }
 
 // `models status --check --plain`, from runCommand's answer: the exit code only.
-// A timeout is { ok: false, code: 0, signal: "SIGTERM" }, so it is not ready.
+// A timeout is { ok: false, code: 0, signal: "SIGTERM" }, which this reads as not ready;
+// readChatgptReadiness answers "unknown" for a read that did not finish before it gets here.
 // Since live check S-B3 (2026-10-16) this is only the answer for an OpenClaw whose
 // `models status --json` has no auth block (readChatgptReadiness): 2026.10.4's
 // `--check` judges the WHOLE model setup (default, fallbacks, image and utility

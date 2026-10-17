@@ -65,10 +65,9 @@ export const HERMES_TERMINAL_WORDS = {
   spawn_failed: "Terminal didn't open. Run this command in your own terminal, choose a model, then press Refresh."
 } as const;
 
-// The same three answers for "Add a sign-in in Hermes" (`hermes auth`). The owner's sentence for the opened case is
-// verbatim; the other two follow the model picker's wording and are not in the plan-brains spec yet (they wait for the
-// owner's OK, then all three go into spec section 4 and the pinned set). Kept apart from HERMES_TERMINAL_WORDS, which is
-// the spec's own set word for word.
+// The same three answers for "Add a sign-in in Hermes" (`hermes auth`). All three are in the plan-brains spec (section 4)
+// and in the test that pins the spec's sentences word for word. Kept apart from HERMES_TERMINAL_WORDS, which is the model
+// picker's set.
 export const HERMES_AUTH_TERMINAL_WORDS = {
   opened: "Terminal opened with Hermes's sign-in helper. Add your sign-in there, then press Refresh.",
   copy: "Run this command in your own terminal, add your sign-in there, then press Refresh.",

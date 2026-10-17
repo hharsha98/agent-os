@@ -701,8 +701,9 @@ const BrainPlanCard = forwardRef<BrainPlanCardHandle, BrainPlanCardProps>(functi
           onBack={backToPlans}
           continueLabel="Done"
           // Only once the plans are read: the sign-in terminal lives in the ChatGPT section, which the plans body draws.
+          // And not while that section hides its own sign-in (OpenClaw too old or its version unreadable): the server refuses it then.
           extraAction={
-            info && offersSignInAgain(job) ? (
+            info && !versionBlocked && offersSignInAgain(job) ? (
               <button type="button" className="os-btn os-btn--secondary" onClick={() => void signInAgain()} disabled={locked}>
                 {busy === "signin" ? "Starting…" : "Sign in again"}
               </button>

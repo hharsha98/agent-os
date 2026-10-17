@@ -1007,6 +1007,14 @@ test("readChatgptReadiness: the older --check read shares the one read budget, s
   assert.equal(spent, "unknown");
   assert.deepEqual(calls.map((call) => call.args), ["models status --json"], "no second read");
 
+  // The second read was started but did not finish (stopped by the time limit, runCommand's timeout shape): unknown,
+  // not "not ready". Only a real exit code is judged: exit 1 is still not ready, as before.
+  const stopped = { ok: false, code: 0, signal: "SIGTERM" };
+  assert.equal(await readChatgptReadiness(detected, { timeoutMs: 5000, run: slowThenCheck(300, stopped) }), "unknown", "the --check read was stopped");
+  assert.equal(await readChatgptReadiness(detected, { timeoutMs: 5000, run: slowThenCheck(300, { ok: false, code: "ENOENT", signal: null }) }), "unknown", "the --check read could not run");
+  assert.equal(await readChatgptReadiness(detected, { timeoutMs: 5000, run: slowThenCheck(300, { ok: false, code: 1, signal: null }) }), "not_ready", "a real exit 1 is unchanged");
+  assert.equal(await readChatgptReadiness(detected, { timeoutMs: 5000, run: slowThenCheck(300, { ok: true, code: 0, signal: null }) }), "ready", "exit 0 is unchanged");
+
   // A JSON answer with an auth block never asks for the second read at all.
   calls.length = 0;
   const answered = await readChatgptReadiness(detected, {
@@ -1815,6 +1823,35 @@ test("Cancel during the Claude plan Apply's onboard --help: onboard never runs",
       assert.deepEqual([done.status, stepOf(done, "openclaw-plan-onboard").status, stepOf(done, "openclaw-plan-onboard").error], ["cancelled", "failed", "Cancelled."]);
       assert.deepEqual(done.steps.slice(1).map((step) => step.status), ["pending", "pending", "pending", "pending", "pending"]);
       assert.deepEqual(await readReceipt(), []);
+    },
+    { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
+  );
+});
+
+// putBackAfterFailedHello puts the earlier model back only when the hello failed because of the plan. A hello that ended
+// because the person pressed Cancel did not, and a cancelled job leaves everything finished as it is: the Apply's model
+// stays, and no second models set runs. (Every other hello-failure test makes the hello fail on its own.)
+test("Cancel during the ChatGPT Apply's hello, after a readiness that gave no answer: the earlier model is not put back, and the job ends cancelled with the Apply's one models set", posixSkip, async () => {
+  await withPlanEnv(
+    async ({ home, knob }) => {
+      await knob("FAKE_OPENCLAW_STATUS_JSON", "garbage");
+      await knob("FAKE_OPENCLAW_AGENT_HANG", "1");
+      const job = await startOpenclawPlanJob({ plan: "chatgpt", model: "gpt-6.1-sol", acceptOpenClawRisk: true });
+      // The hello is the one `agent exec` that reads a message (--message-file); the fake never answers it.
+      await waitForAnotherCall(home, "agent exec --message-file", 0);
+      assert.equal((await cancelSetupJob(job.id)).status, "cancelled");
+      await new Promise((resolve) => setTimeout(resolve, AFTER_CANCEL_MS));
+      const done = await waitForPlanJob(job.id);
+      assert.deepEqual([done.status, done.readiness, done.previousPrimary], ["cancelled", "unknown", "openrouter/vendor/old"]);
+      assert.deepEqual(
+        (await argvLines(home)).filter((line) => line.startsWith("models set")),
+        ["models set openai/gpt-6.1-sol"],
+        "only the Apply's own models set: nothing put the earlier model back after Cancel"
+      );
+      assert.equal((await readFakeAgentState(home)).primary, "openai/gpt-6.1-sol", "left as the Apply finished it");
+      assert.notEqual(stepOf(done, "health").error, CHATGPT_HELLO_FAILED_PUT_BACK);
+      assert.equal(stepOf(done, "health").runIds.length, 1, "the hello only: no put-back run");
+      assert.deepEqual(await readReceipt(), [], "a cancelled job writes no receipt");
     },
     { state: { primary: "openrouter/vendor/old", authRows: [siwcRow()] } }
   );

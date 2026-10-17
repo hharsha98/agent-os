@@ -190,6 +190,20 @@ test("SetupPage: loadAll puts each read on screen when it arrives and lands thro
   assert.match(load, /withTimeout\(getBrainOptions\(refresh\), BRAIN_READ_LIMIT_MS\)/, "the brain read keeps its own limit");
 });
 
+test("SetupPage: an AI-brain answer goes on screen unless a newer one is already shown (an older good answer is not lost when the newer read fails)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(new URL("../src/pages/SetupPage.tsx", import.meta.url), "utf8");
+  // The counter numbers each read when it starts; the other ref remembers which read's answer is on screen.
+  assert.match(page, /const brainReadSeq = useRef\(0\);\s*const shownBrainSeq = useRef\(0\);/);
+  assert.equal(page.match(/brainReadSeq\.current/g)?.length, 2, "the counter is only bumped, once per read (loadAll and refreshServerState)");
+  assert.equal(page.match(/\+\+brainReadSeq\.current/g)?.length, 2);
+  // Both places that put a brain answer on screen check against the shown one and then record theirs.
+  assert.equal(page.match(/if \(alive\.current && brainSeq > shownBrainSeq\.current\) \{\s*shownBrainSeq\.current = brainSeq;/g)?.length, 1, "loadAll's answer, good or failed");
+  assert.equal(page.match(/if \(brainSeq > shownBrainSeq\.current\) \{\s*shownBrainSeq\.current = brainSeq;\s*setBrain\(brainRes\);\s*setBrainError\(""\);/g)?.length, 1, "refreshServerState's answer, only once all its reads succeeded");
+  // The old rule (only the newest read's answer) is gone: it dropped a good answer when the newest read then failed.
+  assert.doesNotMatch(page, /brainSeq === brainReadSeq\.current/);
+});
+
 // ---- words for a request that got no answer ----------------------------------------
 
 test("gotNoAnswer: only a refusal Agent OS sent itself (an ApiError) is an answer", () => {

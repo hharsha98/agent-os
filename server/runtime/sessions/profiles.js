@@ -274,7 +274,8 @@ export async function buildSessionProfile({
     // asks for one first and keeps it (the same way Claude Code's --session-id
     // is kept). When that call fails, or for a session saved before this
     // change, there is no id: the picker and the folder rules of a fallback
-    // resume stay as they were. No new option is added, so H3 holds.
+    // resume stay as they were. `--resume` is Cursor's own resume option, so no new
+    // kind of option is added; spec H3 names this use at a new session's start.
     if (resuming) agentSessionId = isSessionId(resume.agentSessionId) ? resume.agentSessionId : null;
     else agentSessionId = await cursorCreateChat(command, { cwd, env });
     if (agentSessionId) {

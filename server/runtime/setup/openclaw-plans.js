@@ -30,6 +30,7 @@ import {
   isFableModel,
   planModelRows,
   planOfPrimary,
+  readDidNotFinish,
   readinessOf
 } from "./openclaw-plan-rules.js";
 import { signInStatus } from "./signin.js";
@@ -75,7 +76,8 @@ export const OLDER_CHECK_MIN_MS = 1000;
 //     the plan works; the card shows no readiness sentence.
 //   - JSON with no auth block at all (an older OpenClaw): `models status --check
 //     --plain`, exit code only, with its three answers (readinessOf: "ready",
-//     "expiring", "not_ready").
+//     "expiring", "not_ready"). If that read did not finish (it ran out of its
+//     share of the budget and was stopped, or could not run): "unknown".
 // The two reads share ONE PLAN_READ_TIMEOUT_MS budget, so the whole check never outlasts it:
 // Cancel on a plan job waits for the step in progress for just over that long
 // (PLAN_CANCEL_SETTLE_MS in jobs.js), and the card's request has a limit of its own. When
@@ -91,6 +93,8 @@ export async function readChatgptReadiness(detected, { timeoutMs = PLAN_READ_TIM
   const left = deadline - Date.now();
   if (left < OLDER_CHECK_MIN_MS) return "unknown";
   const older = await run(detected.path, ["models", "status", "--check", "--plain"], left);
+  // Stopped by the time limit (or could not run) says nothing about the sign-in; only a real exit code is judged.
+  if (readDidNotFinish(older)) return "unknown";
   return readinessOf({ ok: older.ok, code: older.code, signal: older.signal });
 }
 

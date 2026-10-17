@@ -178,7 +178,7 @@ This project has no UI test runner. Every visual and behavioural check in SP1 ru
   - `node <scratchpad>/sp1/audit.mjs <mode>` where `<mode>` is `pages`, `fonts`, `deeplinks` or `hold`;
   - it prints one `PASS <name>` or `FAIL <name>: <why>` line per check, and exits non-zero if any check fails;
   - screenshots go to `<scratchpad>/sp1/shots/<mode>/<width>x<height>/<page>.png`.
-- Consumes: the built app in `dist/` (run `npm run build` first), Google Chrome at `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, and the existing `playwright-core` at `/Users/harsha/.npm/_npx/a80a913f4f8f2557/node_modules/playwright-core` (borrowed, nothing installed).
+- Consumes: the built app in `dist/` (run `npm run build` first), Google Chrome at `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, and the existing `playwright-core` at `~/.npm/_npx/a80a913f4f8f2557/node_modules/playwright-core` (borrowed, nothing installed).
 
 - [ ] **Step 1: Write the fake agent.** It is one script, linked under all five names. It answers `--version`, sleeps when started as a headless run (so a run stays "running"), and exits at once for anything else. Write `<scratchpad>/sp1/fake-bin/fake-agent`:
 
@@ -210,9 +210,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { chromium } = require(process.env.PLAYWRIGHT_CORE || "/Users/harsha/.npm/_npx/a80a913f4f8f2557/node_modules/playwright-core");
+const { chromium } = require(process.env.PLAYWRIGHT_CORE || "~/.npm/_npx/a80a913f4f8f2557/node_modules/playwright-core");
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = "/Users/harsha/agent-os/.claude/worktrees/epic-vaughan-c2e6ef";
+const REPO = "~/agent-os/.claude/worktrees/epic-vaughan-c2e6ef";
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 8791;
 const TOKEN = "audit" + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
@@ -289,7 +289,7 @@ process.exit(failures ? 1 : 0);
 
 - [ ] **Step 3: Take the "before" baseline.**
 
-Run: `cd /Users/harsha/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && npm run build >/dev/null && node <scratchpad>/sp1/audit.mjs pages | grep -c PASS; ls <scratchpad>/sp1/shots/pages/1470x956 | wc -l`
+Run: `cd ~/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && npm run build >/dev/null && node <scratchpad>/sp1/audit.mjs pages | grep -c PASS; ls <scratchpad>/sp1/shots/pages/1470x956 | wc -l`
 Expected:
 - a PASS count is printed;
 - 10 screenshots per size;
@@ -320,7 +320,7 @@ No commit: this task only creates scratch files outside the repo.
 
 - [ ] **Step 2: Install with an exact version, and uninstall Inter.**
 
-Run: `cd /Users/harsha/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && npm install --save-exact @fontsource-variable/archivo && npm uninstall @fontsource-variable/inter && ls node_modules/@fontsource-variable/archivo/`
+Run: `cd ~/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && npm install --save-exact @fontsource-variable/archivo && npm uninstall @fontsource-variable/inter && ls node_modules/@fontsource-variable/archivo/`
 Expected:
 - `package.json` lists `"@fontsource-variable/archivo": "<exact version>"` and no longer lists Inter;
 - the folder contains `index.css`, and ideally `wdth.css`.
@@ -373,7 +373,7 @@ Expected:
 
 - [ ] **Step 1: Write the check that fails first.**
 
-Run: `cd /Users/harsha/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && grep -rn -e "--os-glow" -e "--os-glass-bg" -e "--os-glass-blur" -e "--os-dur-deliberate" -e "--os-ease-pulse" -e "--os-ease-inout" src | wc -l`
+Run: `cd ~/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && grep -rn -e "--os-glow" -e "--os-glass-bg" -e "--os-glass-blur" -e "--os-dur-deliberate" -e "--os-ease-pulse" -e "--os-ease-inout" src | wc -l`
 Expected: a number above 0 (today 21).
 
 - [ ] **Step 2: Replace `src/ui/tokens.css` with the Cobalt values.** Notes on this file:
@@ -1353,7 +1353,7 @@ S=/private/tmp/claude-501/-Users-harsha-agent-os--claude-worktrees-epic-vaughan-
 Then run the suite:
 
 ```bash
-cd /Users/harsha/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && env -u HERMES_HOME npm test 2>&1 | grep -E '^# (tests|pass|fail|skipped)'
+cd ~/agent-os/.claude/worktrees/epic-vaughan-c2e6ef && env -u HERMES_HOME npm test 2>&1 | grep -E '^# (tests|pass|fail|skipped)'
 ```
 
 Expected:

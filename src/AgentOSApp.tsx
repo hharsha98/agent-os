@@ -38,11 +38,20 @@ import {
   XCircle,
   Zap
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ApiGuidePage, { type ApiIntegration, type CodexApiStatus } from "./ApiGuidePage";
+import AgentConfirmModal from "./ui/components/AgentConfirmModal";
 
 type AgentId = "openclaw" | "hermes";
 type Page = "home" | "builder" | "apis" | AgentId;
+
+// A yes/no question shown in the page's own dialog (see askConfirm in AgentOSApp).
+interface ConfirmAsk {
+  title: string;
+  question: string;
+  confirmLabel: string;
+  danger?: boolean;
+}
 
 interface RuntimeModule {
   id: string;
@@ -994,8 +1003,34 @@ export default function AgentOSApp() {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  // The question the page is asking the person right now (null: none). The desktop window replaces the
+  // browser's own confirm box with one that returns a Promise, so a yes/no here would never stop anything;
+  // the page asks with its own dialog and waits for the answer.
+  const [confirmAsk, setConfirmAsk] = useState<ConfirmAsk | null>(null);
+  const confirmResolve = useRef<((answer: boolean) => void) | null>(null);
   const codexPresentation = Boolean(codex.presentationMode && !codex.configured);
   const codexDisplayReady = codex.configured || codexPresentation;
+
+  function askConfirm(ask: ConfirmAsk): Promise<boolean> {
+    confirmResolve.current?.(false);
+    return new Promise<boolean>((resolve) => {
+      confirmResolve.current = resolve;
+      setConfirmAsk(ask);
+    });
+  }
+
+  function answerConfirm(answer: boolean) {
+    const resolve = confirmResolve.current;
+    confirmResolve.current = null;
+    setConfirmAsk(null);
+    resolve?.(answer);
+  }
+
+  // Leaving the page with a question open counts as "no".
+  useEffect(() => () => {
+    confirmResolve.current?.(false);
+    confirmResolve.current = null;
+  }, []);
 
   async function refresh() {
     try {
@@ -1138,7 +1173,12 @@ export default function AgentOSApp() {
     }
     if (mode === "native" && !executionGate.enabled) {
       const runtime = workflow.runtime === "openclaw" ? "OpenClaw" : "Hermes";
-      if (!window.confirm(`Enable trusted local execution and run this workflow with ${runtime}? Native tools may access the configured workspace and services.`)) return;
+      const confirmed = await askConfirm({
+        title: "Enable trusted local execution?",
+        question: `Enable trusted local execution and run this workflow with ${runtime}? Native tools may access the configured workspace and services.`,
+        confirmLabel: "Enable & run"
+      });
+      if (!confirmed) return;
       setBusy("enabling-native");
       try {
         const next = await api<ExecutionGate>("/api/admin/execution-gate", {
@@ -1212,7 +1252,13 @@ export default function AgentOSApp() {
 
   async function deleteCurrent() {
     if (!workflow || workflow.id === "blank-open-agent-builder") return;
-    if (!window.confirm(`Delete “${workflow.name}”?`)) return;
+    const confirmed = await askConfirm({
+      title: "Delete this workflow?",
+      question: `Delete “${workflow.name}”?`,
+      confirmLabel: "Delete",
+      danger: true
+    });
+    if (!confirmed) return;
     setBusy("deleting");
     try {
       await api(`/api/workflows/${workflow.id}`, { method: "DELETE" });
@@ -1254,6 +1300,17 @@ export default function AgentOSApp() {
         {busy === "loading" ? <div className="aos-full-loader"><Loader2 className="aos-spin" size={32} /><span>Opening workflow…</span></div> : null}
       </section>
       {menuOpen ? <button className="aos-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
+      {confirmAsk ? (
+        <AgentConfirmModal
+          title={confirmAsk.title}
+          confirmLabel={confirmAsk.confirmLabel}
+          danger={confirmAsk.danger}
+          onConfirm={() => answerConfirm(true)}
+          onClose={() => answerConfirm(false)}
+        >
+          <p>{confirmAsk.question}</p>
+        </AgentConfirmModal>
+      ) : null}
     </div>
   );
 }

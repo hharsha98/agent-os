@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentDetail,
   AgentListResponse,
-  AgentRunPreview,
   AgentSafetyActionResult,
   AgentServiceStatus,
   RunListResponse,
   RunMeta,
   RunStreamEvent,
   StartTeamRoomInput,
+  StartTeamRoomResponse,
   TeamAction,
   TeamProposalDecisionResult,
   TeamRoom,
@@ -95,6 +95,21 @@ import type {
   DemoTimelineResult
 } from "./demo";
 
+// An error from the server. `message` stays the short code (what every screen
+// has always matched on); `detail` is the plain sentence the server wrote for
+// the person, when it sent one (the coding agents' brain refusals do).
+export class ApiError extends Error {
+  detail: string;
+  status: number;
+
+  constructor(message: string, detail: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.detail = detail;
+    this.status = status;
+  }
+}
+
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -106,7 +121,11 @@ export async function request<T>(url: string, options?: RequestInit): Promise<T>
     if (response.status === 401 && body?.error === "session_required") {
       window.dispatchEvent(new CustomEvent("agentos:locked"));
     }
-    throw new Error(body?.error || `${response.status} ${response.statusText}`);
+    throw new ApiError(
+      body?.error || `${response.status} ${response.statusText}`,
+      typeof body?.message === "string" ? body.message : "",
+      response.status
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -969,20 +988,16 @@ export function getAgentDetail(id: string) {
   return request<AgentDetail>(`/api/agents/${encodeURIComponent(id)}`);
 }
 
-export interface AgentRunOptions {
-  allowEdits?: boolean;
+// A brain picked for ONE run (Claude Code and Codex: plan, OpenRouter or a local
+// model; Cursor: plan, with an optional model). Left out, the saved setting applies.
+export interface RunBrain {
+  mode: "plan" | "openrouter" | "local";
+  model?: string | null;
 }
 
-// Dry preview only: spawns nothing, just returns the exact command/folder
-// the real launch would use.
-export function previewAgentRun(
-  id: string,
-  payload: { prompt: string; folder?: string; options?: AgentRunOptions }
-) {
-  return request<AgentRunPreview>(`/api/agents/${encodeURIComponent(id)}/runs/preview`, {
-    method: "POST",
-    body: JSON.stringify(payload)
-  });
+export interface AgentRunOptions {
+  allowEdits?: boolean;
+  brain?: RunBrain;
 }
 
 // The only call that actually starts an agent; confirm:true is required by
@@ -1040,7 +1055,7 @@ export function stopRun(id: string) {
 // server/runtime/runs/run-manager.js and server/runtime/agents/*.js).
 const RUN_STREAM_EVENT_TYPES = [
   "system", "line", "text", "thinking", "tool", "tool_result",
-  "usage", "result", "setup", "error"
+  "usage", "result", "setup", "error", "limit"
 ];
 
 export function useRunStream(runId: string | null) {
@@ -1152,7 +1167,7 @@ export function getTeamRoom(id: string) {
 }
 
 export function startTeamRoom(input: StartTeamRoomInput) {
-  return teamRoomRequest<TeamRoom>("/api/team-rooms", {
+  return teamRoomRequest<StartTeamRoomResponse>("/api/team-rooms", {
     method: "POST",
     body: JSON.stringify({ ...input, confirm: true })
   });
@@ -1189,7 +1204,7 @@ export function undoTeamAction(roomId: string, actionId: string) {
 // Every event type the moderator emits (see server/runtime/team-room/).
 const TEAM_ROOM_EVENT_TYPES: TeamRoomEventType[] = [
   "room_started", "turn_started", "turn_ended", "note", "proposal", "agreement",
-  "disagreement", "proposal_status", "proposal_decided", "protocol_note",
+  "disagreement", "proposal_status", "proposal_decided", "protocol_note", "room_hint",
   "action", "action_undone", "limits_extended", "status"
 ];
 

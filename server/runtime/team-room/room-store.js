@@ -121,11 +121,24 @@ export async function createRoom({ task, limits }) {
     turnsDone: 0,
     clockStartedAt: nowIso,
     currentTurn: null,
+    // Set while the room is paused for the person's decision (the id of the
+    // file proposal that waits), and the time the room had used when it
+    // paused. Both are null otherwise. The status is still needs_you.
+    pausedFor: null,
+    clockUsedMs: null,
     // null until a turn reports a cost; unknown costs are counted apart,
     // never added as 0 (see costUnknownTurns).
     costUsd: null,
     costKnownTurns: 0,
     costUnknownTurns: 0,
+    // The same facts in the shape the screen shows: what is known, and how
+    // many turns reported no cost at all (those are never counted as $0).
+    cost: { knownUsd: 0, unknownTurns: 0 },
+    // A plain-English note when the cost cap can't see every turn's cost.
+    costWarning: null,
+    // Plain-English hints for the user (for example "this model can't follow
+    // the room's reply format"). Never contains agent text.
+    hints: [],
     endReason: null,
     folder: roomShort(id)
   };
@@ -182,6 +195,7 @@ export function summarizeRoom(meta, decision) {
     id: meta.id,
     task: meta.task,
     status: meta.status,
+    pausedFor: meta.pausedFor || null,
     createdAt: meta.createdAt,
     endedAt: meta.endedAt,
     endReason: meta.endReason,
@@ -189,6 +203,7 @@ export function summarizeRoom(meta, decision) {
     turnsAllowed: meta.turnsAllowed,
     costUsd: meta.costUsd,
     costUnknownTurns: meta.costUnknownTurns,
+    cost: meta.cost || { knownUsd: meta.costUsd || 0, unknownTurns: meta.costUnknownTurns || 0 },
     openProposals: proposals.filter((p) => p.status === "open").length,
     needsApproval: proposals.filter((p) => p.status === "needs_approval").length,
     actions: (decision?.actions || []).length

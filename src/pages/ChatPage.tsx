@@ -413,6 +413,10 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
         ? `${DEMO_BADGE}. Demo plans and the multi-agent timeline are simulated. Your real Claude, Cursor, Codex, and Hermes are not connected.`
         : "Dry-run stays available. With the toggle off and AGENT_OS_LIVE_CHAT=1, Send calls OmniRoute, the OpenClaw gateway, or a native CLI when that backend exists."}
     >
+      {/* Two panes on a laptop (laptop.css): the settings on the left, the conversation and
+          its Send button on the right. Stacked, as before, on a narrow window. */}
+      <div className="aos-chat-layout">
+      <div className="aos-chat-side">
       <div className="aos-product-banner" role="status">
         <ShieldCheck size={18} />
         <div>
@@ -458,6 +462,8 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
       ) : (
         <p className="aos-honest-note">No Loop briefing yet. Save one on Loop so later chat can start from those notes.</p>
       )}
+      </div>
+      <div className="aos-chat-main">
       <div className="aos-chat-log">
         {messages.length === 0 ? (
           <div className="aos-empty small">
@@ -520,6 +526,8 @@ export default function ChatPage({ localAgents }: { localAgents: LocalAgentRecor
           </button>
         </div>
         {notice ? <p className="aos-honest-note">{notice}</p> : null}
+      </div>
+      </div>
       </div>
     </PageFrame>
   );

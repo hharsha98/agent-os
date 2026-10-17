@@ -14,6 +14,7 @@ import { containsBlockedFlag } from "../server/runtime/agent-flags.js";
 import { ADAPTERS } from "../server/runtime/agents/index.js";
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
 import { createRunManager } from "../server/runtime/runs/run-manager.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -850,6 +851,7 @@ function baseEnv(home, port, extra = {}) {
     USERPROFILE: home,
     AGENT_OS_TOKEN: TOKEN,
     HERMES_AGENT_OS_SCHEDULER: "0",
+    SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
     PATH: isolatedPath(shimDir)
   };
   for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {

@@ -7,10 +7,12 @@ import { assertAdminRequest, authRequired, clearAdminCookie, requireAdminWhenPub
 import {
   claimSessionHandler,
   hostAllowlistMiddleware,
+  isLocalMode,
   localSessionGate,
   localSessionStatusHandler,
   loginLine,
   originCheckMiddleware,
+  requireLocalMode,
   securityHeadersMiddleware
 } from "./runtime/local-session.js";
 import {
@@ -190,6 +192,16 @@ import { createAgentsRouter } from "./runtime/agents/routes.js";
 import { createTeamRoomsRouter } from "./runtime/team-room/routes.js";
 import { recoverStaleRooms } from "./runtime/team-room/moderator.js";
 import { createSetupRouter } from "./runtime/setup/routes.js";
+import { createBuildersRouter } from "./runtime/builders/routes.js";
+import { createOnboardingRouter } from "./runtime/onboarding.js";
+import { createSecretsRouter } from "./runtime/secrets/routes.js";
+import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
+import { setServerPort } from "./runtime/server-info.js";
+import { getSessionManager } from "./runtime/sessions/manager.js";
+import { enforceRecordingCap } from "./runtime/sessions/recorder.js";
+import { createRecordingsRouter, createSessionsRouter } from "./runtime/sessions/routes.js";
+import { excludeFromSessionEnv, getLoginShellEnv } from "./runtime/sessions/shell-env.js";
+import { attachSessionsUpgrade } from "./runtime/sessions/ws.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -200,9 +212,15 @@ const dist = process.env.AGENT_OS_STATIC_DIR
   ? path.resolve(process.env.AGENT_OS_STATIC_DIR)
   : path.join(root, "dist");
 const envFile = loadLocalEnv({ root });
+// The keys the local .env file just added to process.env are Agent OS's own
+// configuration, not the person's environment: they are kept out of the login
+// shell sessions read their environment from, and out of its fallback
+// (decision Q11a).
+excludeFromSessionEnv(envFile.applied);
 const app = express();
-// "/api/runs" and "/API/runs" must not be the same address: a route only
-// answers to the exact lower-case path the session gate protects.
+// "/API/runs" and "/api/runs" are different addresses. (Express's default
+// treats them as the same, which once let the session gate be skipped by
+// changing a letter's case; the gate also compares lower-cased paths.)
 app.set("case sensitive routing", true);
 const isPackaged = process.env.AGENT_OS_PACKAGED === "1";
 function parsePort(raw) {
@@ -215,7 +233,16 @@ function parsePort(raw) {
 }
 // Reassigned once listen() resolves the real port (relevant when PORT=0);
 // every closure below reads this variable live instead of a snapshot.
-let port = parsePort(process.env.PORT);
+// The desktop shell passes AGENT_OS_PORT=0 (Task D1, decision Q11a). An
+// un-prefixed PORT would reach every session through the login shell, and an
+// agent's own dev server would then bind a random port. PORT still works for
+// `npm start`, Docker and the tests.
+// An empty or blank AGENT_OS_PORT (a shell that exports it with no value) counts
+// as not set, so PORT still applies; "??" alone would let "" win over it.
+if (process.env.AGENT_OS_PORT !== undefined && process.env.AGENT_OS_PORT.trim() === "") {
+  delete process.env.AGENT_OS_PORT;
+}
+let port = parsePort(process.env.AGENT_OS_PORT ?? process.env.PORT);
 function bindAddress() {
   // Loopback unless HOST is set. Containers set HOST=0.0.0.0 so a published
   // host port can reach the process; publish that port on 127.0.0.1.
@@ -242,6 +269,16 @@ app.use(localSessionGate(() => port));
 
 app.get("/api/session", localSessionStatusHandler(() => port));
 app.post("/api/session/claim", claimSessionHandler(() => port));
+
+// Where OpenRouter sends the person's normal browser back to after they press
+// Authorize. That browser has no Agent OS session cookie, so this ONE path is
+// the only /oauth/ address localSessionGate lets through; the host and origin
+// checks above still ran, and the one-time `state` is the real proof.
+app.get("/oauth/openrouter/callback", createOpenRouterCallbackHandler());
+// The one-time address the person's browser is opened on first: it hands that
+// browser its own cookie, then redirects to OpenRouter. Also session-free (the
+// gate lets exactly this shape through); the single-use nonce is the proof.
+app.get("/oauth/openrouter/start/:nonce", createOpenRouterStartHandler());
 
 app.get("/api/admin/session", (req, res) => {
   res.json(sessionStatus(req));
@@ -1015,6 +1052,24 @@ app.use("/api/team-rooms", requireAdminWhenPublic, createTeamRoomsRouter());
 // (provider onboarding) -- no sub-path here collides with those.
 app.use("/api/setup", requireAdminWhenPublic, createSetupRouter());
 
+// Which brain (the person's plan, OpenRouter, or a local model) Claude Code,
+// Codex and Cursor use, and the saved OpenRouter key they use it with. Both are
+// under /api/, so the local session gate covers them; the key is never returned.
+app.use("/api/builders", requireAdminWhenPublic, createBuildersRouter());
+app.use("/api/secrets", requireAdminWhenPublic, createSecretsRouter());
+
+// The "Get started" checklist on Home: real state (what is installed, set up,
+// signed in, run) plus the person's skip/hide choices. Under /api/, so the
+// local session gate covers it like every other route.
+app.use("/api/onboarding", requireAdminWhenPublic, createOnboardingRouter());
+
+// Sessions (SP3): each agent's own terminal, in a folder the person picks, and
+// their recordings. Local mode only: in the public demo and the admin-token
+// public mode every one of these addresses answers 404 not_available.
+const sessionManager = getSessionManager();
+app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager }));
+app.use("/api/recordings", requireLocalMode, createRecordingsRouter({ manager: sessionManager }));
+
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {
     res.json(await getModuleSessions(req.params.id));
@@ -1342,7 +1397,7 @@ app.get("/api/workspace/raw", requireAdminWhenPublic, async (req, res, next) => 
 
 app.post("/api/workspace/files", requireAdminWhenPublic, async (req, res, next) => {
   try {
-    res.status(201).json(await writeWorkspaceText(req.body || {}));
+    res.status(201).json(await writeWorkspaceText(req.body || {}, { savedBy: "you" }));
   } catch (error) {
     next(error);
   }
@@ -1804,10 +1859,32 @@ app.use((error, _req, res, _next) => {
   });
 });
 
+// Sessions (planning decision Q13): a session still marked live on disk
+// belonged to a server that is gone now. Mark it "ended (Agent OS quit)"
+// BEFORE listening, so no request (and no reopened window) ever sees it as
+// running; then keep the recordings under their 1 GB cap. A failure is logged
+// and the server still starts. Local mode only: sessions do not exist in the
+// public demo or the admin-token public mode, so nothing there rewrites a
+// meta.json or removes a recording.
+if (isLocalMode()) {
+  try {
+    await sessionManager.recoverStaleSessions();
+  } catch (error) {
+    console.error(error);
+  }
+  try {
+    await enforceRecordingCap();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 const server = app.listen(port, bindHost, () => {
   // With PORT=0 the OS just picked a free port; every later reader of
   // `port` (closures above, and this callback) sees this updated value.
   port = server.address().port;
+  // The OpenRouter sign-in needs the real port to build its callback address.
+  setServerPort(port);
   console.log(`AGENT_OS_READY:${port}`);
   const demoPublic = isDemoPublic();
   console.log(
@@ -1824,6 +1901,16 @@ const server = app.listen(port, bindHost, () => {
   getRunManager().recoverStaleRuns().catch((error) => console.error(error));
   // Same for Team Rooms that were mid-discussion when the last process died.
   recoverStaleRooms().catch((error) => console.error(error));
+  // Planning decision Q23: start reading the login shell's environment now,
+  // in the background. It never delays AGENT_OS_READY (printed above); the
+  // first new session waits for it (10 s at most). Sessions exist only in
+  // local mode, so nothing runs in the public demo or public mode.
+  if (isLocalMode()) getLoginShellEnv().catch((error) => console.error(error));
 });
+
+// The sessions WebSocket (/api/sessions/:id/attach). Express middleware never
+// runs for an upgrade request, so ws.js makes its own checks (spec Security 1)
+// and refuses every other upgrade with 403.
+attachSessionsUpgrade(server, { getPort: () => port, manager: sessionManager });
 
 installShutdownHandlers(server);

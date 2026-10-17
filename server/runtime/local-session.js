@@ -7,7 +7,15 @@ import { isDemoPublic } from "./demo-public.js";
 
 const DEFAULT_ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 // "/agent-builder-source" has no trailing slash so the bare proxy path is gated too.
-const GATED_PREFIXES = ["/api/", "/agent-builder-source", "/_next/"];
+// "/oauth/" is gated too, so the ONE address below that is let through stays
+// the only one: any other /oauth/ path needs the session like /api/ does.
+const GATED_PREFIXES = ["/api/", "/agent-builder-source", "/_next/", "/oauth/"];
+// OpenRouter's sign-in sends the person's normal browser (which has no Agent
+// OS session cookie) back to exactly this address.
+const OAUTH_CALLBACK_PATH = "/oauth/openrouter/callback";
+// The one-time local address the person's browser opens first ("/oauth/
+// openrouter/start/<single-use nonce>"). Exactly this shape, nothing else.
+const OAUTH_START_PATH = /^\/oauth\/openrouter\/start\/[a-f0-9]{64}$/;
 const CLAIM_WINDOW_MS = 60000;
 const CLAIM_MAX_FAILURES = 20;
 
@@ -90,7 +98,9 @@ export function securityHeadersMiddleware() {
   };
 }
 
-function parseCookieHeader(header = "") {
+// Exported so the sessions WebSocket (sessions/ws.js) reads the cookie by the
+// very same rule as this gate: the LAST cookie with a name wins.
+export function parseCookieHeader(header = "") {
   return Object.fromEntries(
     String(header)
       .split(";")
@@ -116,8 +126,23 @@ function providedSessionToken(req, cookieName) {
   return cookies[cookieName] || req.get("x-agent-os-token") || "";
 }
 
-function isLocalMode() {
+// Local mode: neither the public demo (DEMO_PUBLIC=1) nor the admin-token
+// public mode (HERMES_AGENT_OS_REQUIRE_AUTH=1 or HERMES_AGENT_OS_PUBLIC_MODE=1).
+// Sessions (real agent terminals) exist only here.
+export function isLocalMode() {
   return !isDemoPublic() && !authRequired();
+}
+
+// Every sessions and recordings address answers as if it did not exist
+// outside local mode (spec Security 1). The sessions WebSocket makes the same
+// check itself (server/runtime/sessions/ws.js), because Express middleware
+// never runs for an upgrade request.
+export function requireLocalMode(_req, res, next) {
+  if (!isLocalMode()) {
+    res.status(404).json({ error: "not_available" });
+    return;
+  }
+  next();
 }
 
 // `port` may be a number or a () => number getter. With PORT=0 the real port
@@ -145,14 +170,18 @@ export function localSessionGate(port) {
       return;
     }
     // The few session-free addresses must be written EXACTLY as they really
-    // are (lower case): "/API/health" is a different address and stays behind
-    // the session.
+    // are (lower case): "/OAUTH/openrouter/callback" is a different address
+    // and stays behind the session.
     const exactPath = String(req.path);
     if (req.method === "GET" && (exactPath === "/api/health" || exactPath === "/api/session")) {
       next();
       return;
     }
     if (req.method === "POST" && exactPath === "/api/session/claim") {
+      next();
+      return;
+    }
+    if (req.method === "GET" && (exactPath === OAUTH_CALLBACK_PATH || OAUTH_START_PATH.test(exactPath))) {
       next();
       return;
     }

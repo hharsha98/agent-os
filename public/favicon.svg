@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="Agent OS">
+  <title>Agent OS</title>
+  <g transform="translate(-0.9 0)"><mask id="aos-cut" maskUnits="userSpaceOnUse" x="-2" y="-2" width="28" height="28"><rect x="-2" y="-2" width="28" height="28" fill="#fff"/><circle cx="19.99" cy="9.4" r="4" fill="#000"/></mask><circle cx="12" cy="12" r="8.4" fill="none" stroke="#E6E9EF" stroke-width="1.8" mask="url(#aos-cut)"/><circle cx="12" cy="3.6" r="1.85" fill="#E6E9EF"/><circle cx="16.94" cy="18.8" r="1.85" fill="#E6E9EF"/><circle cx="7.06" cy="18.8" r="1.85" fill="#E6E9EF"/><circle cx="4.01" cy="9.4" r="1.85" fill="#E6E9EF"/><circle cx="19.99" cy="9.4" r="3" fill="#3866EE"/></g>
+</svg>

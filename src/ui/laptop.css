@@ -1,0 +1,137 @@
+/* The 13-14" laptop pass. Loaded last, so these rules win over the page files
+   at equal specificity. Sizes this is checked at: 1280x720 (the smallest that
+   must be fully usable), 1440x900, 1470x956 and 1512x982.
+
+   Rules it keeps, on every page at 901px and wider:
+   - no sideways scrolling of the page;
+   - at most two content columns at 1440px and below;
+   - the page's main action is on screen at 720px tall, without scrolling;
+   - long lists and tables scroll inside their panel, not the page;
+   - text is never cut off: long names and paths end in "…" and carry a title.
+   The icon rail (sidebar) and the header live in shell.css. */
+
+/* --- Width: 901-1440px ------------------------------------------------------ */
+@media (min-width: 901px) and (max-width: 1440px) {
+  .os-shell .aos-phase2-content {
+    padding: var(--os-sp-5) var(--os-sp-6) var(--os-sp-8);
+  }
+
+  /* Page titles: one step down from the 44px desk size. */
+  .os-runs__header h1 {
+    font-size: var(--os-fs-32);
+  }
+
+  /* The older pages (Labs, Chat, Workspace) pad their sections with 5vw on each
+     side, on top of the padding the shell already gives them. */
+  .os-content .aos-section {
+    max-width: none;
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+/* The Agent Builder's top bar: on a narrow laptop its buttons wrap onto a second
+   line instead of running off the right edge (Run is the one that was cut off). */
+@media (min-width: 901px) and (max-width: 1280px) {
+  .os-content .aos-builder-header {
+    height: auto;
+    min-height: 64px;
+    flex-wrap: wrap;
+    gap: var(--os-sp-2);
+    padding: var(--os-sp-2) var(--os-sp-4);
+  }
+  .os-content .aos-builder-actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* The card grids of the older pages (Labs): two across instead of four or five,
+   up to 1600px because at 1512px a four-across card is too narrow for its own
+   labels. (Their rows of three small readouts, .aos-status-grid, stay as one row.) */
+@media (min-width: 901px) and (max-width: 1600px) {
+  .os-content .aos-mission-grid,
+  .os-content .aos-layer-grid,
+  .os-content .aos-v1-agent-grid,
+  .os-content .aos-setup-grid,
+  .os-content .aos-studio-grid,
+  .os-content .aos-swarm-grid,
+  .os-content .aos-ops-strip,
+  .os-content .aos-template-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .os-content .aos-provider-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* --- Height: 800px and under ------------------------------------------------- */
+@media (min-width: 901px) and (max-height: 800px) {
+  .os-shell .aos-phase2-content {
+    padding-top: var(--os-sp-4);
+    padding-bottom: var(--os-sp-7);
+  }
+
+  /* Older pages: a 58px gap above every section, and a tall heading block. */
+  .os-content .aos-section {
+    padding-top: var(--os-sp-2);
+  }
+  .os-content .aos-section-head {
+    margin-bottom: var(--os-sp-3);
+  }
+  .os-content .aos-section-head > div > p {
+    margin-top: var(--os-sp-1);
+  }
+  .os-content .aos-honest-note {
+    margin-bottom: var(--os-sp-2);
+  }
+  /* The big page intro (AI APIs, Capability map) keeps its look, one size down. */
+  .os-content .aos-page-intro {
+    margin-bottom: var(--os-sp-4);
+  }
+  .os-content .aos-page-intro h1 {
+    margin: var(--os-sp-2) 0 var(--os-sp-2);
+    font-size: clamp(32px, 4vw, 44px);
+  }
+}
+
+/* --- Older list pages (Loop, Journal, Notebook...): the main button first ------- */
+@media (min-width: 901px) {
+  .os-content .aos-side-list > .aos-list-label {
+    order: -2;
+  }
+  .os-content .aos-side-list > .aos-primary {
+    order: -1;
+  }
+}
+
+/* --- Chat: settings on the left, the conversation and Send on the right --------- */
+@media (min-width: 901px) {
+  .aos-chat-layout {
+    display: grid;
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+    gap: var(--os-sp-5);
+    align-items: start;
+  }
+  .aos-chat-agents {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* The conversation scrolls inside its panel; the message box stays under it. */
+  .aos-chat-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    height: calc(100svh - 290px);
+    min-height: 340px;
+  }
+  .aos-chat-main .aos-chat-actions {
+    align-items: center;
+  }
+  .aos-chat-main .aos-chat-log {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .aos-chat-main .aos-chat-compose textarea {
+    min-height: 64px;
+  }
+}

@@ -7,7 +7,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import { ADAPTERS } from "../agents/index.js";
 import { runCommand, which } from "../safety.js";
-import { nodeSatisfiesOpenClaw } from "./managed-node.js";
+import { nodeSatisfiesCodex, nodeSatisfiesOpenClaw } from "./managed-node.js";
+import { applyMirror } from "./recipes.js";
 
 const CACHE_TTL_MS = 60 * 1000;
 const NETWORK_HOSTS = [
@@ -16,7 +17,10 @@ const NETWORK_HOSTS = [
   "nodejs.org",
   "openrouter.ai",
   "ollama.com",
-  "github.com"
+  "github.com",
+  // Where the Claude Code and Cursor installer scripts are served from.
+  "claude.ai",
+  "cursor.com"
 ];
 const NETWORK_TIMEOUT_MS = 5000;
 
@@ -42,7 +46,9 @@ async function probeHost(host) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NETWORK_TIMEOUT_MS);
   try {
-    const url = `https://${host}/`;
+    // Through the test mirror when one is set, so a test run never touches the
+    // real hosts (openrouter.ai included); unchanged in real use.
+    const url = applyMirror(`https://${host}/`);
     try {
       await fetch(url, { method: "HEAD", signal: controller.signal, redirect: "follow" });
     } catch {
@@ -111,7 +117,7 @@ async function computeSystemCheck() {
 
   const emptyTool = { found: false, path: "", version: "" };
 
-  const [osVersion, git, node, python3, uv, docker, brew, xcodeClt, distro, hermes, openclaw, ollama, network] =
+  const [osVersion, git, node, python3, uv, docker, brew, xcodeClt, distro, hermes, openclaw, claude, codex, cursor, ollama, network] =
     await Promise.all([
       isMac ? safeCall(macOsVersion, "") : Promise.resolve(os.release()),
       safeCall(() => probeTool("git"), emptyTool),
@@ -124,6 +130,9 @@ async function computeSystemCheck() {
       safeCall(linuxDistro, null),
       safeCall(() => agentReport(ADAPTERS.hermes), { detected: { installed: false }, service: null }),
       safeCall(() => agentReport(ADAPTERS.openclaw), { detected: { installed: false }, service: null }),
+      safeCall(() => agentReport(ADAPTERS.claude), { detected: { installed: false }, service: null }),
+      safeCall(() => agentReport(ADAPTERS.codex), { detected: { installed: false }, service: null }),
+      safeCall(() => agentReport(ADAPTERS.cursor), { detected: { installed: false }, service: null }),
       safeCall(() => probeTool("ollama"), emptyTool),
       Promise.all(NETWORK_HOSTS.map((host) => probeHost(host)))
     ]);
@@ -140,7 +149,11 @@ async function computeSystemCheck() {
     freeDiskGb: await safeCall(freeDiskGb, null),
     tools: {
       git,
-      node: { ...node, nodeOkForOpenClaw: node.found ? nodeSatisfiesOpenClaw(node.version) : false },
+      node: {
+        ...node,
+        nodeOkForOpenClaw: node.found ? nodeSatisfiesOpenClaw(node.version) : false,
+        nodeOkForCodex: node.found ? nodeSatisfiesCodex(node.version) : false
+      },
       python3,
       uv,
       docker,
@@ -148,7 +161,7 @@ async function computeSystemCheck() {
       xcodeCltInstalled: xcodeClt
     },
     linuxDistro: distro,
-    agents: { hermes, openclaw },
+    agents: { hermes, openclaw, claude, codex, cursor },
     ollama,
     network
   };

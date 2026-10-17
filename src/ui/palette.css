@@ -1,0 +1,123 @@
+/* The ⌘K command palette in Cobalt: a raised surface-2 panel (--os-e3) on a
+   dimmed window, centred high so the list has room to grow downward. Hairlines
+   (--os-line-2) separate the search row, the groups and the key hints; the
+   selected row is surface-3. Only .os-palette* selectors. */
+
+.os-palette__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: min(12vh, 96px) var(--os-sp-4) var(--os-sp-4);
+  background: rgba(5, 7, 11, 0.6);
+}
+
+.os-palette {
+  display: flex;
+  flex-direction: column;
+  width: min(600px, 100%);
+  max-height: min(70vh, 520px);
+  background: var(--os-surface-2);
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e3);
+  overflow: hidden;
+}
+
+.os-palette__search {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-3) var(--os-sp-4);
+  border-bottom: 1px solid var(--os-line-2);
+  color: var(--os-text-3);
+}
+.os-palette__search input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--os-sp-2) 0;
+  background: transparent;
+  border: 0;
+  color: var(--os-text-1);
+  font-family: var(--os-font-ui);
+  font-size: var(--os-fs-16);
+}
+.os-palette__search input::placeholder {
+  color: var(--os-text-3);
+}
+/* The ring is on the whole search row instead of the bare input. */
+.os-shell .os-palette__search input:focus-visible {
+  outline: none;
+}
+.os-palette__search:focus-within {
+  box-shadow: inset 0 -2px 0 var(--os-accent-strong);
+}
+
+.os-palette__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--os-sp-2);
+}
+.os-palette__group {
+  padding: var(--os-sp-3) var(--os-sp-3) var(--os-sp-1);
+}
+/* A hairline between one group and the next. */
+.os-palette__list > [role="group"] + [role="group"] {
+  margin-top: var(--os-sp-2);
+  border-top: 1px solid var(--os-line-2);
+}
+.os-palette__option {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  min-height: 40px;
+  padding: 0 var(--os-sp-3);
+  border-radius: var(--os-r-sm);
+  color: var(--os-text-2);
+  font-size: var(--os-fs-14);
+  font-weight: 500;
+  cursor: pointer;
+}
+.os-palette__option.is-active {
+  background: var(--os-surface-3);
+  color: var(--os-text-1);
+}
+.os-palette__option svg {
+  flex: 0 0 auto;
+  color: var(--os-text-3);
+}
+.os-palette__option.is-active svg {
+  color: var(--os-text-1);
+}
+.os-palette__icon-gap {
+  flex: 0 0 16px;
+}
+.os-palette__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.os-palette__hint {
+  flex: 0 0 auto;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+/* surface-3 is too light for the faint ink (4.2:1), so the selected row's hint steps up. */
+.os-palette__option.is-active .os-palette__hint {
+  color: var(--os-text-2);
+}
+.os-palette__empty {
+  margin: 0;
+  padding: var(--os-sp-5) var(--os-sp-4);
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+}
+.os-palette__foot {
+  margin: 0;
+  padding: var(--os-sp-2) var(--os-sp-4);
+  border-top: 1px solid var(--os-line-2);
+}

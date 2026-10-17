@@ -1,0 +1,389 @@
+// The fake OpenClaw CLI of the Setup tests, moved here from test/setup-brain.test.js
+// (SP3 Task B1b) so the plan-brains tests can install the same one. It is a
+// helper, not a test file: the runner only runs test/*.test.js.
+//
+// Every call appends one JSON line to $HOME/.fake-openclaw-record.jsonl:
+// { argv, OPENROUTER_API_KEY, home, setVars }, where `home` is the HOME it saw
+// and `setVars` names which of XDG_CONFIG_HOME, CLAUDE_CONFIG_DIR, CODEX_HOME,
+// HERMES_HOME and any OPENCLAW_* variable reached it (spec Safety 4).
+//
+// Knobs (contract "Fakes and knobs"): FAKE_X is read from the environment, else
+// from the trimmed text of $HOME/.fake-knobs/FAKE_X, because the commands Agent
+// OS runs through childEnv never see FAKE_* variables.
+//   FAKE_AGENT_VERSION          the whole --version line (unset: "openclaw 9.9.9-test")
+//   FAKE_OPENCLAW_MODELS_JSON   what `models list --provider <p> --json` prints ("fail": exit 1). Unset: the
+//     OpenClaw 2026.10.4 answer (live check S-B3, 2026-10-16): { count, models: [row, ...] } (made-up values). An
+//     openai row holds eight keys (available, contextTokens, contextWindow, input, key, local, name, tags); an
+//     anthropic row holds seven, the same without contextTokens. The tags differ from row to row, as the live ones do
+//     (anthropic: "default", "configured", "alias:opus", one to three of them; openai: "configured" on one row, none
+//     on the other). The openai list always has rows; the anthropic list is { count: 0, models: [] } until the
+//     fake's `onboard --auth-choice anthropic-cli` has run (until its state holds a claude-cli pin), then it has rows
+//   FAKE_OPENCLAW_AUTH_JSON     what `models auth list --provider openai --json` prints ("fail": exit 1);
+//     unset: the 2026.10.4 answer, { agentDir, agentId, authStatePath, provider: "openai", profiles },
+//     where profiles are the state's authRows ([] when signed out)
+//   FAKE_OPENCLAW_AUTH_SHAPE    "legacy": with AUTH_JSON unset, answers the older bare array of the authRows instead
+//   FAKE_OPENCLAW_STATUS_EXIT   the exit code of `models status --check --plain` (0, 1 or 2; unset 0, except 1 while
+//     FAKE_OPENCLAW_STATUS_JSON is "claude-cli-indeterminate": the real `--check` judges the whole setup, so the
+//     Claude plan's utility model makes it exit 1 although the ChatGPT sign-in is fine). That is the older path:
+//     Agent OS asks it only when `models status --json` has no auth block ("no-auth" below)
+//   FAKE_OPENCLAW_STATUS_JSON   what `models status --json` prints, in the OpenClaw 2026.10.4 shape (live check S-B3,
+//     2026-10-16): an object with configPath, agentDir, defaultModel, resolvedDefault, fallbacks, imageModel,
+//     imageFallbacks, utilityModel, aliases, allowed and auth. auth holds storePath, shellEnvFallback,
+//     providersWithOAuth, missingProvidersInUse, modelRouteIssues, runtimeAuthRoutes, providers, unusableProfiles and
+//     oauth { warnAfterMs, profiles, providers }. Built from the state: each signed-in authRow is one oauth profile
+//     { profileId, provider "openai", type "oauth", source, label, status, expiresAt, remainingMs } and one oauth
+//     provider entry; a sign-in without token sharing (tokenSharing false) gets a profileId that is not a token-sharing
+//     one. Unset: the signed-in openai profile is "expiring" (as the real one is: its access token lives about an hour
+//     and OpenClaw renews it by itself). The output also holds FAKE_SECRET and the e-mail (the real one has neither),
+//     so a test can prove it never leaves Agent OS. One word per knob:
+//       claude-cli-indeterminate  adds an anthropic modelRouteIssue "indeterminate" and an anthropic/claude-cli
+//                                 runtime route "indeterminate" (the Claude plan's utility model); must NOT change
+//                                 the openai answer
+//       codex-unavailable         adds an openai/codex runtime route "unavailable"; must NOT change it
+//       openai-expired            the openai profile's status is "expired" (as the real one reads an hour after the
+//                                 last use; OpenClaw renews it on the next use, so this is still READY)
+//       openai-missing            the openai token-sharing profile's status is "missing" (not ready)
+//       openai-incompatible       adds an openai modelRouteIssue "incompatible"
+//       no-auth                   JSON without an auth block (an older OpenClaw): the --check --plain path decides
+//       garbage                   exit 0 and text that is not JSON
+//       slow                      waits 8 s before it answers, so a short test timeout ends it
+//       fail                      exit 1, with FAKE_SECRET on its error line
+//   FAKE_OPENCLAW_GET_PRIMARY         makes `config get agents.defaults.model.primary` misbehave
+//   FAKE_OPENCLAW_GET_MODEL_SETTINGS  makes `config get agents.defaults.models` misbehave
+//     both take "timeout" (the program ends killed by SIGTERM, which is the answer
+//     runCommand gives for a timeout), "fail" (exit 1) or, for the model settings
+//     only, "garbage" (exit 0 and text that isn't JSON); unset: the normal answer
+//   FAKE_OPENCLAW_READ_DELAY_MS  milliseconds `config get agents.defaults.model.primary`,
+//     `config get agents.defaults.models`, `models auth list` and `onboard --help` wait before they answer; each
+//     then adds { argv, startedAt, endedAt } (epoch milliseconds) to $HOME/.fake-openclaw-timing.jsonl,
+//     so a test can tell whether two reads overlapped (unset: no wait, no timing line)
+//   FAKE_OPENCLAW_AGENT_HANG    any text: `agent exec` (after reading its input) and `agent -m` (the hello check) wait
+//     (up to a minute) instead of answering, so a test can press Cancel while the hello is running. Killed, as Cancel
+//     does it, the program just ends
+//   FAKE_OPENCLAW_VANISH_AFTER  an argv prefix such as "gateway status": the first call that
+//     starts with it answers as usual and, as it exits, deletes the program's launcher
+//     (<home>/.npm-global/bin/openclaw), so the next call cannot run at all (runCommand's
+//     answer for that has a word such as "ENOENT" as its code). Tests that use it call
+//     refuseSystemAgentFolders("openclaw") first, because which() would then look in
+//     /opt/homebrew/bin and /usr/local/bin. Put the launcher back with installFakeOpenclawShim.
+// State: $HOME/.fake-agent-state.json = { primary, models, authRows } (`config get`
+// reads it; `onboard` and `models set` write it; authRows are the profile rows
+// `models auth list` prints, see fakeSiwcProfile in fake-knobs.js), and tools.exec.mode stays in
+// $HOME/.fake-openclaw-exec-mode (missing means "full", empty means unset).
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+// The models `onboard --auth-choice anthropic-cli` pins to the claude-cli
+// runtime, as 2026.9.6 does for its own list (and no "anthropic/*" entry), so
+// tests see both a pinned and an unpinned Claude model. (The real 2026.10.4
+// pins eleven; the owner is asked separately whether this fake may follow.)
+// The same onboard writes an "alias" word on the opus-5-5 entry, which is pinned. (On the real program every Claude
+// entry with an alias is pinned too, so the fake gives no alias to a model it does not pin.)
+export const FAKE_CLAUDE_CLI_PINS = Object.freeze(["claude-opus-5-5", "claude-fable-5-1"]);
+// Printed by `models status`, and carried by the auth rows tests write, so a
+// test can prove the output never reaches a log, a file or an answer.
+export const FAKE_SECRET = "SECRET-fake-0000";
+
+export const FAKE_OPENCLAW_CLI_SOURCE = `
+import { existsSync, writeFileSync, appendFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+const home = process.env.HOME || process.env.USERPROFILE;
+function print(t) { process.stdout.write(t + "\\n"); }
+const H1_NAMES = ["XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME"];
+const setVars = Object.keys(process.env).filter((key) => H1_NAMES.includes(key) || key.startsWith("OPENCLAW_")).sort();
+try {
+  appendFileSync(
+    path.join(home, ".fake-openclaw-record.jsonl"),
+    JSON.stringify({ argv: args, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || null, home: process.env.HOME || null, setVars }) + "\\n"
+  );
+} catch {}
+
+function knob(name) {
+  if (process.env[name] !== undefined) return process.env[name];
+  try { return readFileSync(path.join(home, ".fake-knobs", name), "utf8").trim(); } catch { return undefined; }
+}
+const startedAt = Date.now();
+const readDelayMs = Number(knob("FAKE_OPENCLAW_READ_DELAY_MS") ?? "0") || 0;
+async function slowRead() {
+  if (!readDelayMs) return;
+  await new Promise((resolve) => setTimeout(resolve, readDelayMs));
+  try {
+    appendFileSync(path.join(home, ".fake-openclaw-timing.jsonl"), JSON.stringify({ argv: args, startedAt, endedAt: Date.now() }) + "\\n");
+  } catch {}
+}
+const vanishAfter = knob("FAKE_OPENCLAW_VANISH_AFTER");
+if (vanishAfter && args.join(" ").startsWith(vanishAfter)) {
+  process.on("exit", () => { try { unlinkSync(path.join(home, ".npm-global", "bin", "openclaw")); } catch {} });
+}
+const PINS = ${JSON.stringify(FAKE_CLAUDE_CLI_PINS)};
+const SECRET = ${JSON.stringify(FAKE_SECRET)};
+const stateFile = path.join(home, ".fake-agent-state.json");
+function readState() {
+  let state = {};
+  try { state = JSON.parse(readFileSync(stateFile, "utf8")) || {}; } catch {}
+  return {
+    primary: typeof state.primary === "string" ? state.primary : null,
+    models: state.models && typeof state.models === "object" && !Array.isArray(state.models) ? state.models : null,
+    authRows: Array.isArray(state.authRows) ? state.authRows : []
+  };
+}
+function writeState(state) { writeFileSync(stateFile, JSON.stringify(state)); }
+// [id, name, tags]: the tags differ from row to row, as the live ones do (S-B3).
+const DEFAULT_MODELS = {
+  anthropic: [
+    ["claude-opus-5-5", "Opus 5.5", ["default", "configured", "alias:opus"]],
+    ["claude-sonnet-5-5", "Sonnet 5.5", ["configured"]],
+    ["claude-fable-5-1", "Fable 5.1", ["configured"]]
+  ],
+  openai: [["gpt-6.1-sol", "GPT-6.1 Sol", ["configured"]], ["gpt-6-luna", "GPT-6 Luna", []]]
+};
+// The word OpenClaw 2026.10.4 writes as "alias" on a Claude entry in agents.defaults.models (made up here). The
+// entry is pinned to claude-cli as well: on the real program every Claude entry with an alias is.
+const ALIASES = { "claude-opus-5-5": "opus" };
+// One row of "models list --json" as 2026.10.4 prints it (live check S-B3): an openai row has eight keys, an
+// anthropic row seven (no contextTokens). The numbers are made up.
+function modelRow(provider, id, name, tags) {
+  const row = { available: true, contextTokens: 100000, contextWindow: 128000, input: "text+image", key: provider + "/" + id, local: false, name, tags };
+  if (provider === "anthropic") delete row.contextTokens;
+  return row;
+}
+// Has an Anthropic sign-in been set up through OpenClaw? The real anthropic list is empty until its Claude
+// onboard has run, and that onboard leaves claude-cli pins in agents.defaults.models.
+function claudeOnboardRan(models) {
+  return Boolean(models) && Object.values(models).some((entry) => entry && entry.agentRuntime && entry.agentRuntime.id === "claude-cli");
+}
+
+const openclawDir = path.join(home, ".openclaw");
+const configFile = path.join(openclawDir, "openclaw.json");
+const execModeFile = path.join(home, ".fake-openclaw-exec-mode");
+const runningMarker = path.join(home, ".fake-openclaw-gateway-running");
+
+if (args.includes("--version")) { print(knob("FAKE_AGENT_VERSION") ?? "openclaw 9.9.9-test"); process.exit(0); }
+
+if (args[0] === "onboard" && args.includes("--help")) {
+  await slowRead();
+  print(
+    "Usage: openclaw onboard [--non-interactive] [--accept-risk] [--auth-choice CHOICE]\\n" +
+    "  --openrouter-api-key KEY --custom-base-url URL\\n" +
+    "  --skip-health --skip-channels --skip-skills --skip-ui --install-daemon --skip-daemon"
+  );
+  process.exit(0);
+}
+if (args[0] === "onboard") {
+  if (existsSync(path.join(home, ".fake-openclaw-onboard-fail"))) {
+    process.stderr.write("simulated onboard failure\\n");
+    process.exit(1);
+  }
+  if (!args.includes("--non-interactive") || !args.includes("--accept-risk") || !args.includes("--auth-choice")) {
+    process.stderr.write("missing required flags\\n");
+    process.exit(1);
+  }
+  mkdirSync(openclawDir, { recursive: true });
+  writeFileSync(configFile, JSON.stringify({ onboarded: true }));
+  if (args.includes("--install-daemon")) writeFileSync(runningMarker, "1");
+  if (args[args.indexOf("--auth-choice") + 1] === "anthropic-cli") {
+    const state = readState();
+    const models = { ...(state.models || {}) };
+    for (const id of PINS) models["anthropic/" + id] = { agentRuntime: { id: "claude-cli" } };
+    // The alias goes on an entry that is pinned (opus-5-5): on the real program every Claude entry with an alias is.
+    // claude-sonnet-5-5 is not one of this fake's pins, so it has no entry and stays "not pinned".
+    for (const [id, alias] of Object.entries(ALIASES)) models["anthropic/" + id] = { ...(models["anthropic/" + id] || {}), alias };
+    writeState({ ...state, models });
+  }
+  print(JSON.stringify({ ok: true }));
+  process.exit(0);
+}
+if (args[0] === "models" && args[1] === "set") {
+  writeState({ ...readState(), primary: args[2] || null });
+  print("ok");
+  process.exit(0);
+}
+if (args[0] === "models" && args[1] === "list") {
+  const provider = args[args.indexOf("--provider") + 1];
+  const shaped = knob("FAKE_OPENCLAW_MODELS_JSON");
+  if (shaped === "fail") { process.stderr.write("simulated models list failure\\n"); process.exit(1); }
+  if (shaped !== undefined) { print(shaped); process.exit(0); }
+  const listed = provider === "anthropic" && !claudeOnboardRan(readState().models) ? [] : DEFAULT_MODELS[provider] || [];
+  const rows = listed.map(([id, name, tags]) => modelRow(provider, id, name, tags));
+  print(JSON.stringify({ count: rows.length, models: rows }));
+  process.exit(0);
+}
+if (args[0] === "models" && args[1] === "auth" && args[2] === "list") {
+  await slowRead();
+  const shaped = knob("FAKE_OPENCLAW_AUTH_JSON");
+  if (shaped === "fail") { process.stderr.write("simulated auth list failure\\n"); process.exit(1); }
+  if (shaped !== undefined) { print(shaped); process.exit(0); }
+  const profiles = readState().authRows;
+  if (knob("FAKE_OPENCLAW_AUTH_SHAPE") === "legacy") { print(JSON.stringify(profiles)); process.exit(0); }
+  const agentDir = path.join(openclawDir, "agents", "main", "agent");
+  print(JSON.stringify({ agentDir, agentId: "main", authStatePath: path.join(agentDir, "auth-state.json"), provider: "openai", profiles }));
+  process.exit(0);
+}
+if (args[0] === "models" && args[1] === "status" && args.includes("--json")) {
+  const shaped = knob("FAKE_OPENCLAW_STATUS_JSON") ?? "";
+  if (shaped === "fail") { process.stderr.write("simulated models status failure " + SECRET + "\\n"); process.exit(1); }
+  if (shaped === "garbage") { print("this is not json " + SECRET + " {"); process.exit(0); }
+  if (shaped === "slow") await new Promise((resolve) => setTimeout(resolve, 8000));
+  const agentDir = path.join(openclawDir, "agents", "main", "agent");
+  const state = readState();
+  const profiles = [];
+  for (const row of state.authRows) {
+    if (!row || typeof row !== "object" || (row.provider !== undefined && row.provider !== "openai")) continue;
+    if (!(row.type === "oauth" || row.type === "siwc" || row.method === "siwc")) continue;
+    const sharing = row.tokenSharing !== false;
+    const profileId = !sharing ? "openai:oauth:agentos-test" : typeof row.id === "string" ? row.id : "openai:token-sharing:agentos-test";
+    const expired = shaped === "openai-expired";
+    const missing = shaped === "openai-missing";
+    profiles.push({
+      profileId,
+      provider: "openai",
+      type: "oauth",
+      source: "store",
+      label: profileId + " (" + (row.email || "someone@example.com") + ")",
+      status: missing ? "missing" : expired ? "expired" : "expiring",
+      expiresAt: new Date(Date.now() + (expired ? -60000 : 55 * 60000)).toISOString(),
+      remainingMs: expired ? -60000 : 55 * 60000,
+      accessToken: SECRET
+    });
+  }
+  const providers = profiles.length
+    ? [{ provider: "openai", status: profiles[0].status, profiles: profiles.length, effectiveProfiles: profiles.length, expiresAt: profiles[0].expiresAt, remainingMs: profiles[0].remainingMs }]
+    : [];
+  const modelRouteIssues = [];
+  const runtimeAuthRoutes = [];
+  if (shaped === "claude-cli-indeterminate") {
+    modelRouteIssues.push({ kind: "indeterminate", provider: "anthropic", model: "claude-haiku-5-5", evidence: "claude-cli runtime", message: "anthropic/claude-haiku-5-5 runs on the claude-cli runtime and can't be checked without a call." });
+    runtimeAuthRoutes.push({ provider: "anthropic", runtime: "claude-cli", authProvider: "claude-cli", status: "indeterminate", effective: false });
+  }
+  if (shaped === "codex-unavailable") {
+    runtimeAuthRoutes.push({ provider: "openai", runtime: "codex", authProvider: "openai", status: "unavailable", effective: false });
+  }
+  if (shaped === "openai-incompatible") {
+    modelRouteIssues.push({ kind: "incompatible", provider: "openai", model: "gpt-6.1-sol", evidence: "route", message: "openai/gpt-6.1-sol can't use this sign-in." });
+  }
+  const out = {
+    configPath: configFile,
+    agentDir,
+    defaultModel: state.primary,
+    resolvedDefault: state.primary,
+    fallbacks: [],
+    imageModel: null,
+    imageFallbacks: [],
+    utilityModel: shaped === "claude-cli-indeterminate" ? "anthropic/claude-haiku-5-5" : null,
+    aliases: {},
+    allowed: [],
+    auth: {
+      storePath: path.join(agentDir, "auth-profiles.json"),
+      shellEnvFallback: { enabled: false, appliedKeys: [] },
+      providersWithOAuth: profiles.length ? ["openai"] : [],
+      missingProvidersInUse: [],
+      modelRouteIssues,
+      runtimeAuthRoutes,
+      providers: profiles.length ? [{ provider: "openai", effective: { kind: "profiles" }, profiles: { count: profiles.length } }] : [],
+      unusableProfiles: [],
+      oauth: { warnAfterMs: 24 * 60 * 60 * 1000, profiles, providers }
+    }
+  };
+  if (shaped === "no-auth") delete out.auth;
+  print(JSON.stringify(out));
+  process.exit(0);
+}
+if (args[0] === "models" && args[1] === "status") {
+  print("openai:default token " + SECRET + " checked");
+  // The real 2026.10.4 judges the WHOLE setup here, not the ChatGPT sign-in: with the Claude plan's utility model
+  // (anthropic on the claude-cli runtime, "indeterminate") it exits 1 although the ChatGPT sign-in is fine (live
+  // check S-B3). An explicit FAKE_OPENCLAW_STATUS_EXIT still wins.
+  const code = Number(knob("FAKE_OPENCLAW_STATUS_EXIT") ?? (knob("FAKE_OPENCLAW_STATUS_JSON") === "claude-cli-indeterminate" ? "1" : "0"));
+  process.exit(code === 1 || code === 2 ? code : 0);
+}
+
+if (args[0] === "agent" && args[1] === "exec" && args.includes("--help")) {
+  print("Usage\\n --message-file PATH\\n --cwd DIR\\n --json");
+  process.exit(0);
+}
+if (args[0] === "agent" && args[1] === "exec") {
+  let input = "";
+  try { input = readFileSync(0, "utf8"); } catch {}
+  if (knob("FAKE_OPENCLAW_AGENT_HANG")) await new Promise((resolve) => setTimeout(resolve, 60000));
+  if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
+    process.stderr.write("simulated agent failure\\n");
+    process.exit(2);
+  }
+  print(JSON.stringify({ ok: true, final: "ready: " + input.slice(0, 20) }));
+  process.exit(0);
+}
+if (args[0] === "agent" && args[1] === "-m") {
+  if (knob("FAKE_OPENCLAW_AGENT_HANG")) await new Promise((resolve) => setTimeout(resolve, 60000));
+  if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
+    process.stderr.write("simulated agent failure\\n");
+    process.exit(2);
+  }
+  print(JSON.stringify({ ok: true, final: "ready" }));
+  process.exit(0);
+}
+if (args[0] === "doctor") {
+  const ok = existsSync(configFile);
+  print(JSON.stringify({ ok, findings: ok ? [] : [{ message: "not onboarded" }] }));
+  process.exit(0);
+}
+if (args[0] === "config" && args[1] === "get") {
+  if (args[2] === "tools.exec.mode") {
+    let value = "full";
+    try { value = readFileSync(execModeFile, "utf8").trim(); } catch {}
+    print(value);
+    process.exit(0);
+  }
+  if (args[2] === "agents.defaults.model.primary") {
+    await slowRead();
+    const bad = knob("FAKE_OPENCLAW_GET_PRIMARY");
+    if (bad === "timeout") { process.kill(process.pid, "SIGTERM"); await new Promise(() => setInterval(() => {}, 1000)); }
+    if (bad === "fail") { process.stderr.write("simulated config get failure\\n"); process.exit(1); }
+    print(readState().primary || "");
+    process.exit(0);
+  }
+  if (args[2] === "agents.defaults.models") {
+    await slowRead();
+    const bad = knob("FAKE_OPENCLAW_GET_MODEL_SETTINGS");
+    if (bad === "timeout") { process.kill(process.pid, "SIGTERM"); await new Promise(() => setInterval(() => {}, 1000)); }
+    if (bad === "fail") { process.stderr.write("simulated config get failure\\n"); process.exit(1); }
+    if (bad === "garbage") { print("this is not json {"); process.exit(0); }
+    const models = readState().models;
+    print(models ? JSON.stringify(models) : "");
+    process.exit(0);
+  }
+  print("");
+  process.exit(0);
+}
+if (args[0] === "config" && args[1] === "set") {
+  if (args[2] === "tools.exec.mode") writeFileSync(execModeFile, args[3]);
+  print("ok");
+  process.exit(0);
+}
+if (args[0] === "gateway" && args[1] === "status") {
+  print(JSON.stringify({ running: existsSync(runningMarker) }));
+  process.exit(0);
+}
+if (args[0] === "gateway" && args[1] === "start") {
+  writeFileSync(runningMarker, "1");
+  print("ok");
+  process.exit(0);
+}
+print("fake-openclaw: " + JSON.stringify(args));
+process.exit(0);
+`;
+
+// Puts the fake at <home>/.npm-global/bin/openclaw, where detection's fallback
+// folders (and which()) find it. Same signature as before the move.
+export async function installFakeOpenclawShim(home) {
+  const jsDir = path.join(home, ".fake-cli");
+  await mkdir(jsDir, { recursive: true });
+  const jsPath = path.join(jsDir, "openclaw.mjs");
+  await writeFile(jsPath, FAKE_OPENCLAW_CLI_SOURCE);
+  const binDir = path.join(home, ".npm-global", "bin");
+  await mkdir(binDir, { recursive: true });
+  const shimPath = path.join(binDir, "openclaw");
+  await writeFile(shimPath, `#!/bin/sh\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
+  await chmod(shimPath, 0o755);
+}

@@ -20,6 +20,25 @@ export function eventsFile(dir, id) {
   return path.join(dir, `${id}.jsonl`);
 }
 
+// The task text a run was started with, kept apart from the metadata (which is
+// listed over HTTP) so a run that hits a plan limit can be continued. Its name
+// does not end in ".json", so listRunIds() never mistakes it for a run.
+export function promptFile(dir, id) {
+  return path.join(dir, `${id}.prompt.txt`);
+}
+
+export async function writeRunPrompt(dir, id, text) {
+  await fs.writeFile(promptFile(dir, id), String(text ?? ""), { mode: 0o600 });
+}
+
+export async function readRunPrompt(dir, id) {
+  try {
+    return await fs.readFile(promptFile(dir, id), "utf8");
+  } catch {
+    return null;
+  }
+}
+
 export async function writeRunMeta(dir, meta) {
   return writeJson(metaFile(dir, meta.id), meta);
 }

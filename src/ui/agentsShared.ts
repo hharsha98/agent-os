@@ -1,6 +1,7 @@
 // Small helpers shared by the Agents screen ("the hangar") and its
 // components. Kept separate from fleetShared.ts (Home's helpers) so this
 // worker's files never touch that one.
+import { ApiError } from "../api";
 
 // Fixed order + copy, matching FleetPage's "mixing desk" layout so the two
 // screens read as one system.
@@ -19,23 +20,25 @@ export const AGENT_ROLE: Record<string, string> = {
   codex: "Coding agent",
   cursor: "Coding agent"
 };
-export const AGENT_MONOGRAM: Record<string, string> = {
-  hermes: "H",
-  openclaw: "OC",
-  claude: "CC",
-  codex: "CX",
-  cursor: "CU"
+// Who makes each agent (shown under its name on Agents).
+export const AGENT_MAKER: Record<string, string> = {
+  hermes: "Nous Research",
+  openclaw: "Open source",
+  claude: "Anthropic",
+  codex: "OpenAI",
+  cursor: "Cursor"
 };
 // Agents with an always-on background gateway (Fleet's "gateways" count).
 export const SERVICE_AGENT_SET = new Set(["hermes", "openclaw"]);
-// Only these adapters' buildRun() reads options.allowEdits at all (see
-// claude.js / codex.js); cursor.js throws allow_edits_not_supported (400)
-// and hermes/openclaw ignore it, so the toggle would lie there.
-export const ALLOW_EDITS_AGENT_SET = new Set(["claude", "codex"]);
 // hermes/openclaw are installed via Agent OS Setup, not a system package
 // manager, so their "not installed" state points at Setup instead of a
 // homepage + "press Re-check" flow.
 export const SETUP_INSTALLED_AGENT_SET = new Set(["hermes", "openclaw"]);
+// Agent OS Setup can install all five agents (Hermes, OpenClaw and the three coding agents), so every
+// "not installed" message points at Setup. A link to a vendor's website opens in the person's browser from the
+// desktop app only for the addresses listed in desktop/src-tauri/capabilities/default.json (otherwise it shows
+// the address with a Copy button), so Setup is the way forward that always works there.
+export const SETUP_CAN_INSTALL_AGENT_SET = new Set(["hermes", "openclaw", "claude", "codex", "cursor"]);
 
 // A path returned by the server (e.g. runs/preview's `cwd`) is a raw,
 // uncollapsed absolute path — unlike commandPreview/versionFull, which the
@@ -73,25 +76,8 @@ export function friendlyError(error: unknown): string {
   const code = error instanceof Error ? error.message : String(error || "");
   // fetch() rejects with the browser's own wording when the server is down.
   if (/failed to fetch|networkerror|load failed/i.test(code)) return "Couldn't reach Agent OS.";
-  return ERROR_MESSAGES[code] || code || "Something went wrong.";
-}
-
-// The rail's per-agent status mark + word: the same shape+colour states as
-// FleetPage's cards (see FleetPage.tsx's FleetCard), reused here so a given
-// agent reads the same way on both screens.
-export function agentStatusWord(
-  installed: boolean | undefined,
-  resolved: boolean,
-  timedOut: boolean,
-  failed: boolean,
-  liveCount: number
-): { mark: "unknown" | "ok" | "error" | "live"; word: string } {
-  // A failed fetch leaves `resolved` false too, so check it first or the rail
-  // would say "Checking…" forever instead of the real error.
-  if (failed && !resolved) return { mark: "error", word: "Couldn't check" };
-  if (!resolved) return { mark: "unknown", word: timedOut ? "Timed out" : "Checking…" };
-  if (failed) return { mark: "error", word: "Couldn't check" };
-  if (liveCount > 0) return { mark: "live", word: `Running ×${liveCount}` };
-  if (installed) return { mark: "ok", word: "Ready" };
-  return { mark: "unknown", word: "Not installed" };
+  if (ERROR_MESSAGES[code]) return ERROR_MESSAGES[code];
+  // A refusal the server explained in a sentence (a coding agent's brain, for example).
+  const detail = error instanceof ApiError ? error.detail : "";
+  return detail || code || "Something went wrong.";
 }

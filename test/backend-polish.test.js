@@ -20,6 +20,7 @@ import {
   setMachineControlStatus
 } from "../server/runtime/execution-gate.js";
 import { runVoiceCommand } from "../server/runtime/voice-control.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const isDarwin = process.platform === "darwin";
@@ -532,8 +533,15 @@ function baseEnv(home, port) {
     AGENT_OS_HOME: home,
     AGENT_OS_TOKEN: TOKEN,
     HERMES_AGENT_OS_SCHEDULER: "0",
+    SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
     FAKE_OPENCLAW_GATEWAY_STATE_FILE: gatewayStateFile,
-    PATH: `${httpShimDir}${path.delimiter}${process.env.PATH || ""}`
+    // Agent detection looks on PATH and under the user's home. An empty temp
+    // HOME and a PATH of only the fake shims + system folders keep the
+    // developer's REAL agents (codex, openclaw, ...) out of reach of this
+    // server (same approach as commit 3bcf9f2 for the other test servers).
+    HOME: home,
+    USERPROFILE: home,
+    PATH: [httpShimDir, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter)
   };
   for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {
     delete env[key];

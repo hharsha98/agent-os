@@ -15,10 +15,13 @@ export default function AgentSafetyPanel({
   agentId,
   safety,
   notes,
-  onFixed
+  onFixed,
+  failed = false
 }: {
   agentId: string;
   safety: AgentSafetyStatus | null;
+  // The detail could not be read (and nothing was read before): the panel says "—", not "…" (still loading).
+  failed?: boolean;
   // Calm advisories from the adapter (e.g. OpenClaw's loopback gateway):
   // informational, so they get no warning mark.
   notes: string[];
@@ -33,8 +36,16 @@ export default function AgentSafetyPanel({
   if (!safety) {
     return (
       <section className="os-panel os-agent-safety">
-        <h2 className="os-agent-safety__title">Safety</h2>
-        <p>…</p>
+        <h3 className="os-agent-safety__title">Safeguards</h3>
+        {failed ? (
+          <p className="os-agent-safety__finding">
+            <StatusMark kind="unknown" label="Not known" />
+            <span aria-hidden="true">—</span>
+            <span className="os-visually-hidden">Could not be read right now.</span>
+          </p>
+        ) : (
+          <p>…</p>
+        )}
       </section>
     );
   }
@@ -56,11 +67,21 @@ export default function AgentSafetyPanel({
 
   return (
     <section className="os-panel os-agent-safety">
-      <h2 className="os-agent-safety__title">Safety</h2>
-      <p className="os-agent-safety__finding">
-        <StatusMark kind={safety.permissive ? "warn" : "ok"} />
-        {safety.summary}
-      </p>
+      <h3 className="os-agent-safety__title">Safeguards</h3>
+      {safety.known === false ? (
+        // Agent OS could not read this setting (the read failed, timed out or printed nothing), so
+        // the panel shows "—" and an unknown mark instead of a finding it never saw.
+        <p className="os-agent-safety__finding" title={safety.summary}>
+          <StatusMark kind="unknown" label="Not known" />
+          <span aria-hidden="true">—</span>
+          <span className="os-visually-hidden">{safety.summary || "Could not be read right now."}</span>
+        </p>
+      ) : (
+        <p className="os-agent-safety__finding">
+          <StatusMark kind={safety.permissive ? "warn" : "ok"} />
+          {safety.summary}
+        </p>
+      )}
 
       {notes.map((note, index) => (
         <p key={index} className="os-agent-safety__note">

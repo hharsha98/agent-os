@@ -7,8 +7,11 @@ import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import express from "express";
+import { builderErrorResponse, resolveBrainForRun } from "../builders/resolve.js";
+import { watchForLimit } from "../builders/continue.js";
 import { isExecutionEnabled } from "../execution-gate.js";
 import { buildCommandPreview, getRunManager } from "../runs/run-manager.js";
+import { withTaskLine } from "../runs/task-line.js";
 import { runtimePaths } from "../store.js";
 import { getAdapter, ADAPTERS } from "./index.js";
 
@@ -71,6 +74,8 @@ function validatePrompt(body) {
 
 // Only a boolean allowEdits is ever read; any other key in body.options
 // (or a non-boolean allowEdits) is silently ignored rather than forwarded.
+// (options.brain, a brain picked for this one run, is read separately by
+// resolveBrain() below and only ever reaches an adapter after it is resolved.)
 function validateOptions(body) {
   const raw = body?.options;
   const options = {};
@@ -79,6 +84,38 @@ function validateOptions(body) {
   }
   return options;
 }
+
+// The brain for a run of Claude Code, Codex or Cursor: the saved setting
+// (/api/builders/brains), or the one-run choice in body.options.brain
+// ({ mode: "plan" | "openrouter" | "local", model }). Adds it to `options` only
+// when it changes something; "plan" adds nothing, so a plan run is exactly what
+// it always was. Answers false (after sending the 4xx) when the brain is refused.
+async function resolveBrain(adapterId, body, options, res, { prepare }) {
+  try {
+    const brain = await resolveBrainForRun(adapterId, body?.options?.brain, { prepare });
+    if (brain) options.brain = brain;
+    return true;
+  } catch (error) {
+    if (sendBuilderError(error, res)) return false;
+    throw error;
+  }
+}
+
+// Brain refusals (no saved OpenRouter key, a model that isn't downloaded,
+// Cursor with OpenRouter...) are plain 4xx answers: { error, message }.
+function sendBuilderError(error, res) {
+  const mapped = builderErrorResponse(error);
+  if (!mapped) return false;
+  res.status(mapped.status).json(mapped.body);
+  return true;
+}
+
+// What the "continue after a plan limit" code needs from this file.
+export function continueDeps(manager = getRunManager()) {
+  return { manager, resolveRunCwd, makeRunDir };
+}
+
+const BUILDER_IDS = new Set(["claude", "codex", "cursor"]);
 
 function requireAdapter(req, res, next) {
   const adapter = getAdapter(req.params.id);
@@ -168,8 +205,10 @@ export function createAgentsRouter() {
         throw error;
       }
       const detected = await adapter.detect();
-      const runDir = await makeRunDir(adapter.id);
       const options = validateOptions(req.body);
+      // A preview changes nothing, so a local model's 64K copy is named, not made.
+      if (!(await resolveBrain(adapter.id, req.body, options, res, { prepare: false }))) return;
+      const runDir = await makeRunDir(adapter.id);
       let plan;
       try {
         plan = await adapter.buildRun({ prompt, cwd, detected, runDir, options });
@@ -178,16 +217,19 @@ export function createAgentsRouter() {
           res.status(400).json({ error: error.code, message: error.message });
           return;
         }
+        if (sendBuilderError(error, res)) return;
         throw error;
       } finally {
         // Preview spawns nothing; drop whatever buildRun wrote (e.g. Hermes's
-        // query file) instead of leaving it behind for no run.
+        // query file, a Claude settings file) instead of leaving it behind for no run.
         await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
       }
       res.json({
         commandPreview: buildCommandPreview(plan),
         cwd,
         transport: plan.title || "",
+        // Which brain this run would use ({ mode, model }; plan when nothing is changed).
+        brain: plan.meta?.brain || null,
         gate: { enabled: await isExecutionEnabled() }
       });
     } catch (error) {
@@ -222,23 +264,30 @@ export function createAgentsRouter() {
         throw error;
       }
       const detected = await adapter.detect();
-      const runDir = await makeRunDir(adapter.id);
       const options = validateOptions(req.body);
+      if (!(await resolveBrain(adapter.id, req.body, options, res, { prepare: true }))) return;
+      const runDir = await makeRunDir(adapter.id);
       let plan;
       try {
         plan = await adapter.buildRun({ prompt, cwd, detected, runDir, options });
       } catch (error) {
+        await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
         if (error?.code === "allow_edits_not_supported") {
-          await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
           res.status(400).json({ error: error.code, message: error.message });
           return;
         }
+        if (sendBuilderError(error, res)) return;
         throw error;
       }
       try {
-        const run = await getRunManager().startRun(plan);
+        const run = await getRunManager().startRun(withTaskLine(plan, prompt));
+        // A Claude Code / Codex / Cursor run that ends at a plan limit may be
+        // continued by itself, if the person set "continue automatically".
+        if (BUILDER_IDS.has(adapter.id)) watchForLimit(run.id, continueDeps());
         res.json(run);
       } catch (error) {
+        // Nothing started, so drop the private folder (and any settings file in it).
+        await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
         mapStartRunError(error, res, next);
       }
     } catch (error) {
@@ -268,7 +317,9 @@ export function createAgentsRouter() {
         res.status(404).json({ ok: false, error: "unknown service action" });
         return;
       }
-      if (!(await isExecutionEnabled())) {
+      // Stopping only reduces what runs, the same reasoning as "Hold to stop all",
+      // so Stop works at Look only too. Start and Restart stay behind the gate.
+      if (action !== "stop" && !(await isExecutionEnabled())) {
         res.status(403).json({ error: "execution_gate_off" });
         return;
       }

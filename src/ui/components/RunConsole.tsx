@@ -1,27 +1,36 @@
-// The flight recorder's run detail: header, flight plan, stop control and
+// The run detail: header, command and folder, stop control and
 // the live transcript. Reused in `compact` mode as the small inline
 // mini-console for a service/safety action (Agents screen), where there is
-// no Stop button and no flight-plan disclosure — just "is it still going".
+// no Stop button and no command-and-folder disclosure — just "is it still going".
 import { useEffect, useRef, useState } from "react";
 import { getRun, stopRun, useRunStream } from "../../api";
-import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runStatusMark } from "../fleetShared";
+import { AGENT_MONOGRAM, costLabel, durationLabel, firstLine, runMarkFor } from "../fleetShared";
 import { collapseHomePath, friendlyError } from "../agentsShared";
-import { codexConfigHint, groupTranscript, statusLabel } from "../runsShared";
+import { codexConfigHint, groupTranscript } from "../runsShared";
+import { stateOf } from "../runsBoard";
 import type { RunMeta } from "../../types";
+import Banner from "./Banner";
 import RelativeTime from "./RelativeTime";
 import StatusMark from "./StatusMark";
 import RunTranscript from "./RunTranscript";
 import AgentConfirmModal from "./AgentConfirmModal";
+import BuilderBrainBadge from "./BuilderBrainBadge";
+import RunLimitBanner from "./RunLimitBanner";
+import { isBuilderId } from "../builderShared";
+import { navigateTo } from "../../nav";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 
 export default function RunConsole({
   runId,
   compact = false,
+  focusTitle = false,
   onEnded
 }: {
   runId: string;
   compact?: boolean;
+  // Put keyboard focus on the run's title once it has loaded (the Runs page sets it when the person opened the run).
+  focusTitle?: boolean;
   onEnded?: (status: string) => void;
 }) {
   const [meta, setMeta] = useState<RunMeta | null>(null);
@@ -39,6 +48,8 @@ export default function RunConsole({
   const lastPulseRef = useRef(0);
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
+  const titleRef = useRef<HTMLElement>(null);
+  const focusedFor = useRef("");
 
   async function refreshMeta() {
     const asked = runId;
@@ -88,6 +99,14 @@ export default function RunConsole({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta?.status]);
 
+  // Opened by a keyboard press (Start run, or Enter on a Board row): the pressed control is gone, so focus would fall
+  // to the page. Once per run, never again on each refresh.
+  useEffect(() => {
+    if (!focusTitle || !meta || focusedFor.current === runId) return;
+    focusedFor.current = runId;
+    titleRef.current?.focus();
+  }, [focusTitle, meta, runId]);
+
   useEffect(() => {
     if (!events.length) return;
     const now = Date.now();
@@ -126,10 +145,17 @@ export default function RunConsole({
   if (metaError && !meta) {
     return (
       <div className="os-run-console os-run-console--error">
-        <p>{metaError}</p>
-        <button type="button" className="os-btn os-btn--secondary" onClick={() => void refreshMeta()}>
-          Retry
-        </button>
+        <Banner
+          tone="danger"
+          title="Couldn't load this run"
+          actions={
+            <button type="button" className="os-btn os-btn--secondary" onClick={() => void refreshMeta()}>
+              Try again
+            </button>
+          }
+        >
+          {metaError}
+        </Banner>
       </div>
     );
   }
@@ -149,10 +175,19 @@ export default function RunConsole({
       <header className="os-run-console__header">
         <span className="os-run-console__mono os-mono">{AGENT_MONOGRAM[meta.agentId || ""] || "—"}</span>
         <div className="os-run-console__headtext">
-          <strong>{meta.title || firstLine(meta.commandPreview, 60) || "Run"}</strong>
+          <strong ref={titleRef} tabIndex={-1}>
+            {meta.title || firstLine(meta.commandPreview, 60) || "Run"}
+          </strong>
           <span className="os-run-console__meta">
-            <StatusMark key={pulseTick} kind={runStatusMark(meta.status)} pulse={isActive && pulseTick > 0} />
-            {stopping && isActive ? "Stopping…" : statusLabel(meta.status)}
+            <StatusMark key={pulseTick} kind={runMarkFor(meta)} pulse={isActive && pulseTick > 0} />
+            {stopping && isActive ? "Stopping…" : meta.limit && !isActive ? "Plan limit reached" : stateOf(meta).label || "—"}
+            {isBuilderId(meta.agentId) && meta.brain ? (
+              <>
+                <BuilderBrainBadge agentId={meta.agentId} brain={meta.brain} />
+                {/* Plan runs name no model in the brain; show the one the agent itself reported. */}
+                {meta.brain.mode === "plan" && meta.model ? <span className="os-mono os-run-console__model">{meta.model}</span> : null}
+              </>
+            ) : null}
           </span>
         </div>
         {!compact ? (
@@ -182,17 +217,32 @@ export default function RunConsole({
 
       {!compact ? (
         <details className="os-run-console__plan">
-          <summary>Flight plan</summary>
+          <summary>Command and folder</summary>
           <code className="os-mono">{meta.commandPreview}</code>
           <p className="os-mono os-run-console__plan-folder">{collapseHomePath(meta.cwd)}</p>
         </details>
       ) : null}
 
+      {!compact && meta.continuedFrom ? (
+        <p className="os-run-console__note">
+          This run carries on from an earlier one that hit its plan limit.{" "}
+          <button type="button" className="os-mp-link" onClick={() => navigateTo("runs", { run: meta.continuedFrom || "" })}>
+            Open it
+          </button>
+        </p>
+      ) : null}
+
+      {!compact && meta.limit && !isActive ? <RunLimitBanner run={meta} /> : null}
+      {!compact && meta.nearLimit && !meta.limit ? (
+        <p className="os-run-console__note">
+          <StatusMark kind="warn" label="note" /> This run got close to your plan&apos;s limit.
+        </p>
+      ) : null}
+
       {showCodexHint ? (
-        <div className="os-run-console__hint">
-          Codex refused its own settings. Check the model in ~/.codex/config.toml, or run <code>codex</code> once in a
-          terminal to sign in and pick a supported model.
-        </div>
+        <Banner tone="warn" title="Codex refused its own settings">
+          Check the model in ~/.codex/config.toml, or run <code className="os-mono">codex</code> once in a terminal to sign in and pick a supported model.
+        </Banner>
       ) : null}
 
       <div className={`os-run-console__transcript${compact ? " os-run-console__transcript--compact" : ""}`} ref={scrollRef} onScroll={onScroll}>

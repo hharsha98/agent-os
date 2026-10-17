@@ -5,22 +5,19 @@
 // pattern before it gets anywhere near the file system.
 import express from "express";
 import { isExecutionEnabled } from "../execution-gate.js";
-import { applyFileProposal, undoAction } from "./actions.js";
-import { getModerator } from "./moderator.js";
+import { undoAction } from "./actions.js";
+import { getModerator, validateOpenclawModel } from "./moderator.js";
 import {
   ACTION_ID_PATTERN,
   PROPOSAL_ID_PATTERN,
-  appendEvent,
   isValidRoomId,
   listRooms,
   readDecision,
   readEvents,
   readNotebook,
   readRoom,
-  roomError,
   scrubPaths,
-  subscribeRoom,
-  updateDecision
+  subscribeRoom
 } from "./room-store.js";
 
 const MAX_TASK_CHARS = 4000;
@@ -59,7 +56,10 @@ export function createTeamRoomsRouter({ moderator = getModerator() } = {}) {
 
   router.get("/", async (_req, res, next) => {
     try {
-      res.json({ rooms: await listRooms() });
+      // `activeRoomId` is the room the moderator holds its one active slot for (null when idle). A room whose
+      // decision was just made still reads "needs_you" on disk until it has checked its agents and is marked
+      // running, so Hold to stop all needs this to find a room that is about to resume.
+      res.json({ rooms: await listRooms(), activeRoomId: moderator.activeRoomId() ?? null });
     } catch (error) {
       next(error);
     }
@@ -86,8 +86,10 @@ export function createTeamRoomsRouter({ moderator = getModerator() } = {}) {
       }
       // Both agents installed and both safeguards on is checked inside
       // startRoom (409 agent_missing / safeguards_off) before any room exists.
-      const { room } = await moderator.startRoom({ task, limits: req.body?.limits });
-      res.json(room);
+      // Anything but a plain model name (letters, digits, . _ : / -) is a 400.
+      const openclawModel = validateOpenclawModel(req.body?.openclawModel);
+      const { room, warnings } = await moderator.startRoom({ task, limits: req.body?.limits, openclawModel });
+      res.json({ ...room, warnings: warnings || [] });
     } catch (error) {
       sendError(error, res, next);
     }
@@ -230,10 +232,12 @@ export function createTeamRoomsRouter({ moderator = getModerator() } = {}) {
     }
   });
 
-  // Approve or reject a decision card. Approving does NOTHING else in this
-  // version: no command is run (the UI can offer to start a normal run). The
-  // one exception is a file proposal that was waiting only because the
-  // execution gate was off: approving it saves the file, if the gate is on now.
+  // Approve or reject a decision card. Approving a file proposal is the only
+  // thing that writes a file (if the execution gate is on; with the gate off it
+  // answers 403 and nothing changes). Approving any other proposal does nothing
+  // else: no command is run (the UI can offer to start a normal run). Deciding
+  // the card the room is paused on also ends the pause and resumes the room
+  // when it can. The moderator does the work, one decision at a time per room.
   router.post("/:id/proposals/:pid", validateRoomId, async (req, res, next) => {
     try {
       const roomId = req.params.id;
@@ -250,35 +254,8 @@ export function createTeamRoomsRouter({ moderator = getModerator() } = {}) {
         notFound(res);
         return;
       }
-      const proposalId = req.params.pid;
-      const before = (await readDecision(roomId)).proposals.find((p) => p.id === proposalId);
-      if (!before) {
-        notFound(res, "proposal_not_found");
-        return;
-      }
-      if (before.status !== "needs_approval") {
-        throw roomError(409, "not_pending", `That proposal is ${before.status}, so it is not waiting for your decision.`);
-      }
-
-      let action = null;
-      if (choice === "approve" && before.kind === "file") {
-        action = await applyFileProposal(roomId, proposalId);
-      }
-      const proposal = await updateDecision(roomId, (decision) => {
-        const found = decision.proposals.find((p) => p.id === proposalId);
-        if (!found) throw roomError(404, "proposal_not_found", "Proposal not found.");
-        if (!action) {
-          if (found.status !== "needs_approval") {
-            throw roomError(409, "not_pending", `That proposal is ${found.status}, so it is not waiting for your decision.`);
-          }
-          found.status = choice === "approve" ? "approved" : "rejected";
-        }
-        found.userDecision = choice;
-        found.decidedAt = new Date().toISOString();
-        return { ...found };
-      });
-      await appendEvent(roomId, { type: "proposal_decided", proposalId, decision: choice, status: proposal.status });
-      res.json({ proposal, action });
+      const { proposal, action, resumed, room } = await moderator.decideProposal(roomId, req.params.pid, choice);
+      res.json({ proposal, action, resumed, room });
     } catch (error) {
       sendError(error, res, next);
     }

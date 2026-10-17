@@ -13,9 +13,17 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { containsBlockedFlag } from "../server/runtime/agent-flags.js";
 import { ADAPTERS } from "../server/runtime/agents/index.js";
-import { runningFromText, warningsFromText } from "../server/runtime/agents/hermes.js";
+import {
+  approvalsSafety,
+  featuresFromHelp,
+  hermesApprovalsAreOff,
+  runningFromText,
+  warningsFromText
+} from "../server/runtime/agents/hermes.js";
+import { eventsFromDocument, gatewayFeaturesFromHelp } from "../server/runtime/agents/openclaw.js";
 import { clearDetectCaches, resolveBinary } from "../server/runtime/agents/detect.js";
 import { createRunManager } from "../server/runtime/runs/run-manager.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 // Fakes first, then only the operating system's own folders. The developer's
 // normal PATH (e.g. ~/.local/bin, Homebrew) holds the REAL agent CLIs, which
@@ -60,6 +68,11 @@ if (args[0] === "chat" && args.includes("--help")) {
   if (process.env.FAKE_HERMES_STREAM_JSON === "1") {
     lines.push("  --format <text|stream-json>");
   }
+  if (process.env.FAKE_HERMES_REAL_HELP === "1") {
+    // Taken from a real Hermes v0.21.5 usage line.
+    lines.push("usage: hermes chat [-h] [-q QUERY] [-t TOOLSETS] [--format {text,stream-json}] [--in DIR]");
+    lines.push("  -t TOOLSETS, --toolsets TOOLSETS");
+  }
   print(lines.join("\\n"));
   process.exit(0);
 }
@@ -74,6 +87,11 @@ if (args[0] === "doctor") {
 }
 
 if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.mode") {
+  if (process.env.FAKE_HERMES_APPROVALS_FAIL === "1") {
+    process.stderr.write("config store is locked\\n");
+    process.exit(1);
+  }
+  if (process.env.FAKE_HERMES_APPROVALS_EMPTY === "1") process.exit(0);
   print(process.env.FAKE_HERMES_APPROVALS || "on");
   process.exit(0);
 }
@@ -97,6 +115,12 @@ if (args[0] === "chat") {
   }
   if (process.env.FAKE_HERMES_SLEEP === "1" || prompt.trim() === "__SLEEP_FOREVER__") {
     setInterval(() => {}, 1000);
+  } else if (process.env.FAKE_HERMES_REAL_STREAM === "1" && args.includes("--format")) {
+    // The three lines a real Hermes v0.21.5 printed (subscription model, so no cost).
+    print(JSON.stringify({ type: "system", subtype: "init", model: "cursor-subscription", session_id: "20261003_092047_de1073", timestamp: 1791012047865 }));
+    print(JSON.stringify({ type: "text", text: "OK", timestamp: 1791012052297 }));
+    print(JSON.stringify({ type: "result", session_id: "20261003_092047_de1073", exit_code: 0, text: "OK", tokens: { input: 0, output: 0, total: 0, cache_read: 0, cache_write: 0 }, duration_ms: 4730, timestamp: 1791012052595 }));
+    process.exit(0);
   } else if (args.includes("--format") && args.includes("stream-json")) {
     print(JSON.stringify({ type: "system", subtype: "init" }));
     print(JSON.stringify({ type: "text", text: \`echo: \${prompt.trim()}\` }));
@@ -115,7 +139,7 @@ if (args[0] === "chat") {
 `;
 
 const FAKE_OPENCLAW_SOURCE = `
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 
@@ -147,6 +171,22 @@ if (args.includes("--version")) {
 
 if (args[0] === "agent" && args[1] === "exec" && args.includes("--help")) {
   print(["Usage: openclaw agent exec [message] [options]", "  --message-file PATH", "  --cwd DIR", "  --json"].join("\\n"));
+  process.exit(0);
+}
+
+if (args[0] === "agent" && args.includes("--help") && args[1] !== "exec") {
+  // Options listed by a real OpenClaw 2026.9.6 \`openclaw agent --help\`.
+  print([
+    "Usage: openclaw agent [options]",
+    "  --session-id <id>   Use an explicit session id",
+    "  --session-key <key>",
+    "  --message-file <path>   Read the message from a file (max 4 MiB)",
+    "  --json              Output result as JSON",
+    "  --model <id>        Model override for this run",
+    "  --thinking <level>",
+    "  --timeout <seconds>",
+    "  --local             Run the embedded agent"
+  ].join("\\n"));
   process.exit(0);
 }
 
@@ -188,6 +228,33 @@ if (args[0] === "gateway" && args[1] === "status") {
 
 if (args[0] === "gateway" && (args[1] === "start" || args[1] === "stop")) {
   print(\`gateway \${args[1]}ped\`);
+  process.exit(0);
+}
+
+if (args[0] === "agent" && args.includes("--session-id")) {
+  recordArgv();
+  const file = args[args.indexOf("--message-file") + 1];
+  const message = readFileSync(file, "utf8");
+  // Noise a real OpenClaw prints on stderr, then ONE pretty-printed document.
+  process.stderr.write("(node:123) ExperimentalWarning: SQLite is an experimental feature\\n");
+  process.stderr.write("openclaw: Retrying with the fallback model\\n");
+  const reply = process.env.FAKE_OPENCLAW_REPLY || "echo: " + message.trim();
+  print(JSON.stringify({
+    runId: "5c46", status: process.env.FAKE_OPENCLAW_STATUS || "ok", summary: "completed",
+    result: {
+      payloads: [{ text: reply }],
+      meta: {
+        durationMs: 52982,
+        agentMeta: {
+          sessionId: args[args.indexOf("--session-id") + 1], provider: "ollama", model: args.includes("--model") ? args[args.indexOf("--model") + 1].split("/").pop() : "llama3.2:3b",
+          usage: { input: 80530, output: 187, cost: { total: 0 } }, costUsd: 0
+        },
+        finalAssistantVisibleText: reply,
+        toolSummary: { calls: 13, tools: ["message", "tool_call", "ask_user", "exec"], failures: 13 },
+        stopReason: "stop"
+      }
+    }
+  }, null, 2));
   process.exit(0);
 }
 
@@ -583,6 +650,326 @@ test(
 );
 
 // =====================================================================
+// W12c. Real formats: Hermes stream-json + toolsets, OpenClaw gateway JSON
+// =====================================================================
+
+const REAL_HERMES_LINES = [
+  { type: "system", subtype: "init", model: "cursor-subscription", session_id: "20261003_092047_de1073", timestamp: 1791012047865 },
+  { type: "text", text: "OK", timestamp: 1791012052297 },
+  {
+    type: "result",
+    session_id: "20261003_092047_de1073",
+    exit_code: 0,
+    text: "OK",
+    tokens: { input: 0, output: 0, total: 0, cache_read: 0, cache_write: 0 },
+    duration_ms: 4730,
+    timestamp: 1791012052595
+  }
+].map((line) => JSON.stringify(line));
+
+test("hermes featuresFromHelp(): the real v0.21.5 usage line turns on streamJson and toolsets", () => {
+  const real = "usage: hermes chat [-h] [-q QUERY] [-t TOOLSETS] [--format {text,stream-json}] [--in DIR]";
+  const features = featuresFromHelp(real);
+  assert.equal(features.streamJson, true);
+  assert.equal(features.toolsets, true);
+  assert.equal(features.inDir, true);
+  assert.equal(features.helpFailed, undefined);
+});
+
+test("hermes featuresFromHelp(): a wrapped help line still counts, and v0.20.6 (no --format) does not", () => {
+  // argparse can wrap inside the hyphenated word, or between the flag and its choices.
+  assert.equal(featuresFromHelp("  --format {text,stream-\n  json}\n").streamJson, true);
+  assert.equal(featuresFromHelp("  --format\n      {text,stream-json}\n").streamJson, true);
+  const old = featuresFromHelp("Usage: hermes chat\n  --query-file PATH\n  --oneshot\n  -Q, --quiet\n  --in DIR");
+  assert.equal(old.streamJson, false);
+  assert.equal(old.toolsets, false);
+  // Mentioning stream-json somewhere without a --format flag is not enough.
+  assert.equal(featuresFromHelp("see the stream-json docs").streamJson, false);
+  // `-t TOOLSETS, --toolsets TOOLSETS` and the long form alone both count.
+  assert.equal(featuresFromHelp("  -t TOOLSETS, --toolsets TOOLSETS").toolsets, true);
+  assert.equal(featuresFromHelp("  --toolsets TOOLSETS").toolsets, true);
+  // Empty help means the call failed: flagged so it is not cached.
+  assert.equal(featuresFromHelp("").helpFailed, true);
+});
+
+test("hermes.parseLine(): the three real stream-json lines give system(model), text, result and token usage with NO cost", () => {
+  const ctx = { streamJson: true };
+  const [init, text, result] = REAL_HERMES_LINES.map((line) => hermes.parseLine(line, "stdout", ctx));
+  assert.deepEqual(init, [{ type: "system", text: "Model: cursor-subscription", model: "cursor-subscription" }]);
+  assert.deepEqual(text, [{ type: "text", text: "OK" }]);
+  assert.deepEqual(result[0], { type: "result", text: "OK", data: { exit_code: 0, session_id: "20261003_092047_de1073" } });
+  assert.deepEqual(result[1], { type: "usage", inputTokens: 0, outputTokens: 0 });
+  assert.equal("costUsd" in result[1], false, "a subscription model reports no cost: it is unknown, not 0");
+
+  // A future version that does send a cost is still read.
+  const withCost = hermes.parseLine(JSON.stringify({ type: "result", exit_code: 0, text: "x", total_cost_usd: 0.03, tokens: { input: 5, output: 2 } }), "stdout", ctx);
+  assert.equal(withCost[1].costUsd, 0.03);
+  assert.equal(withCost[1].inputTokens, 5);
+});
+
+test("hermes.buildRun(): talkOnly adds -t todo when toolsets are supported, and warns when they are not", async () => {
+  await withTempHome(async () => {
+    await withEnv({ HERMES_HOME: undefined }, async () => {
+      await withTempDir("agents-rundir-", async (runDir) => {
+        const supported = {
+          installed: true,
+          path: "/fake/hermes",
+          features: { queryFile: true, oneshot: true, quiet: true, inDir: true, streamJson: true, toolsets: true }
+        };
+        const talk = await hermes.buildRun({ prompt: "hi", cwd: "/proj", detected: supported, runDir, options: { talkOnly: true } });
+        const queryFile = path.join(runDir, "query.txt");
+        assert.deepEqual(talk.args, ["chat", "--oneshot", "-Q", "--query-file", queryFile, "--in", "/proj", "--format", "stream-json", "-t", "todo"]);
+        for (const bad of ["terminal", "file", "code_execution", "browser", "computer_use"]) {
+          assert.ok(!talk.args.includes(bad));
+        }
+        assert.equal(talk.notices, undefined);
+
+        // Without talkOnly nothing changes.
+        const normal = await hermes.buildRun({ prompt: "hi", cwd: "/proj", detected: supported, runDir });
+        assert.ok(!normal.args.includes("-t"));
+
+        const old = { installed: true, path: "/fake/hermes", features: { inDir: true } };
+        const warned = await hermes.buildRun({ prompt: "hi", cwd: "/proj", detected: old, runDir, options: { talkOnly: true } });
+        assert.ok(!warned.args.includes("-t"), "an unsupported flag is never passed");
+        assert.deepEqual(warned.notices, ["This Hermes version can't limit its tools for this turn."]);
+      });
+    });
+  });
+});
+
+test(
+  "hermes run with the real stream-json sample: result OK, model on the run, tokens but no costUsd, talk-only warning recorded",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    await withTempHome(async () => {
+      await withEnv({ HERMES_HOME: undefined }, async () => {
+        await withTempDir("agents-rundir-", async (runDir) => {
+          const detected = {
+            installed: true,
+            path: hermesShim,
+            features: { queryFile: true, oneshot: true, quiet: true, inDir: true, streamJson: true, toolsets: false }
+          };
+          const plan = await hermes.buildRun({ prompt: "say OK", cwd: runDir, detected, runDir, options: { talkOnly: true } });
+          // A run's child only gets an allow-listed environment, plus plan.env: steer the fake through that.
+          plan.env = { ...plan.env, FAKE_HERMES_REAL_STREAM: "1" };
+          const manager = createRunManager();
+          const started = await manager.startRun(plan);
+          const finished = await manager.waitForRun(started.id, { timeoutMs: 15000 });
+          assert.equal(finished.status, "succeeded");
+          assert.equal(finished.model, "cursor-subscription");
+          assert.equal(finished.usage.costUsd, undefined, "unknown cost stays unknown");
+          assert.equal(finished.usage.inputTokens, 0);
+          const events = await manager.readEvents(started.id);
+          assert.equal(events.find((event) => event.type === "result").text, "OK");
+          assert.ok(events.some((event) => event.type === "system" && /can't limit its tools/.test(event.text)));
+        });
+      });
+    });
+  }
+);
+
+test(
+  "openclaw.detect(): `agent --help` options become sessionId / messageFileGateway / jsonGateway / modelOverride",
+  { skip: isWindows ? "spawns a shebang fake CLI via a PATH shim (POSIX-only)" : false },
+  async () => {
+    await withEnv({ PATH: [shimDir, ...SYSTEM_PATH_DIRS].join(path.delimiter) }, async () => {
+      clearDetectCaches();
+      const detected = await openclaw.detect({ refresh: true });
+      assert.equal(detected.features.sessionId, true);
+      assert.equal(detected.features.messageFileGateway, true);
+      assert.equal(detected.features.jsonGateway, true);
+      assert.equal(detected.features.modelOverride, true);
+    });
+    assert.deepEqual(gatewayFeaturesFromHelp("Usage: openclaw agent\n  -m, --message <text>"), {
+      sessionId: false,
+      messageFileGateway: false,
+      jsonGateway: false,
+      modelOverride: false
+    });
+  }
+);
+
+const GATEWAY_FEATURES = { agentExec: true, messageFile: true, cwd: true, json: true, sessionId: true, messageFileGateway: true, jsonGateway: true, modelOverride: true };
+
+test("openclaw.buildRun(): the gateway plan uses --session-id, --message-file and --json (+ --model), and the prompt never touches argv", async () => {
+  await withTempDir("agents-rundir-", async (runDir) => {
+    const detected = { installed: true, path: "/fake/openclaw", features: GATEWAY_FEATURES };
+    const secret = "a long room prompt that must not be on argv";
+    const plan = await openclaw.buildRun({
+      prompt: secret,
+      cwd: "/proj",
+      detected,
+      runDir,
+      options: { sessionId: "agentos-room-room-20261003-092047-ab12", model: "ollama/phi4" },
+      checkService: stubService(true)
+    });
+    const messageFile = path.join(runDir, "message.txt");
+    assert.deepEqual(plan.args, [
+      "agent",
+      "--session-id",
+      "agentos-room-room-20261003-092047-ab12",
+      "--message-file",
+      messageFile,
+      "--json",
+      "--model",
+      "ollama/phi4"
+    ]);
+    assert.ok(!plan.args.some((arg) => arg.includes("long room prompt")));
+    assert.equal(await readFile(messageFile, "utf8"), secret);
+    if (!isWindows) assert.equal((await stat(messageFile)).mode & 0o777, 0o600);
+    assert.equal(typeof plan.parseLine, "function");
+    assert.equal(typeof plan.onOutputEnd, "function");
+    await plan.onExit({});
+    await assert.rejects(() => readFile(messageFile, "utf8"));
+
+    // No options: the default session, no model flag.
+    const plain = await openclaw.buildRun({ prompt: "x", cwd: "/proj", detected, runDir, checkService: stubService(true) });
+    assert.deepEqual(plain.args.slice(0, 3), ["agent", "--session-id", "agentos-runs"]);
+    assert.ok(!plain.args.includes("--model"));
+
+    // A bad session id or model is never passed (a model may not look like a flag).
+    const bad = await openclaw.buildRun({
+      prompt: "x",
+      cwd: "/proj",
+      detected,
+      runDir,
+      options: { sessionId: "../../etc", model: "--yolo" },
+      checkService: stubService(true)
+    });
+    assert.deepEqual(bad.args.slice(0, 3), ["agent", "--session-id", "agentos-runs"]);
+    assert.ok(!bad.args.includes("--model") && !bad.args.includes("--yolo"));
+    assert.match(bad.notices.join(" "), /switch models/);
+  });
+});
+
+test("openclaw.buildRun(): -m stays only for versions without --message-file, with a warning notice", async () => {
+  await withTempDir("agents-rundir-", async (runDir) => {
+    const old = { installed: true, path: "/fake/openclaw", features: { agentExec: true, sessionId: true } };
+    const plan = await openclaw.buildRun({ prompt: "do it", cwd: "/proj", detected: old, runDir, checkService: stubService(true) });
+    assert.deepEqual(plan.args, ["agent", "-m", "do it"]);
+    assert.match(plan.notices[0], /can't read the prompt from a file/);
+    // A version WITH the option never falls back, even if it lacks --session-id.
+    const noSession = { installed: true, path: "/fake/openclaw", features: { messageFileGateway: true } };
+    const file = await openclaw.buildRun({ prompt: "do it", cwd: "/proj", detected: noSession, runDir, checkService: stubService(true) });
+    assert.ok(!file.args.includes("-m") && !file.args.includes("do it"));
+    assert.ok(!file.args.includes("--session-id"));
+    assert.match(file.notices[0], /separate conversation/);
+  });
+});
+
+// A trimmed copy of a real OpenClaw 2026.9.6 `agent --json` document (field paths kept).
+const REAL_OPENCLAW_DOC = {
+  runId: "5c46",
+  status: "ok",
+  summary: "completed",
+  result: {
+    payloads: [{ text: "First part." }, { text: "NOTE: second part." }],
+    meta: {
+      durationMs: 52982,
+      agentMeta: {
+        sessionId: "agentos-format-probe",
+        provider: "ollama",
+        model: "llama3.2:3b",
+        usage: { input: 80530, output: 187, cost: { total: 0 } },
+        costUsd: 0
+      },
+      finalAssistantVisibleText: "First part. NOTE: second part.",
+      toolSummary: { calls: 13, tools: ["message", "tool_call", "ask_user", "exec"], failures: 13 },
+      stopReason: "stop"
+    }
+  }
+};
+
+test("openclaw eventsFromDocument(): result, model, tool summary and a real $0 cost, from the document's field paths", () => {
+  const events = eventsFromDocument(REAL_OPENCLAW_DOC);
+  assert.deepEqual(events[0], { type: "system", text: "Model: ollama/llama3.2:3b", model: "ollama/llama3.2:3b" });
+  assert.deepEqual(events[1], {
+    type: "system",
+    text: "OpenClaw tried 13 tool calls; 13 failed.",
+    data: { toolCalls: 13, toolFailures: 13 }
+  });
+  const result = events.find((event) => event.type === "result");
+  assert.equal(result.text, "First part.\n\nNOTE: second part.");
+  assert.deepEqual(result.data, { ok: true, status: "ok" });
+  const usage = events.find((event) => event.type === "usage");
+  assert.equal(usage.costUsd, 0, "a real 0 stays 0 (known and free)");
+  assert.equal(usage.inputTokens, 80530);
+  assert.equal(usage.outputTokens, 187);
+
+  // No payloads: the final visible text is used. No cost field: unknown.
+  const fallback = eventsFromDocument({ status: "ok", result: { payloads: [], meta: { finalAssistantVisibleText: "only this", agentMeta: { provider: "p", model: "m" } } } });
+  assert.equal(fallback.find((event) => event.type === "result").text, "only this");
+  assert.equal(fallback.find((event) => event.type === "usage"), undefined);
+
+  // A status other than ok adds an error event.
+  const failed = eventsFromDocument({ status: "error", summary: "model unavailable", result: {} });
+  assert.ok(failed.some((event) => event.type === "error" && /error/.test(event.text)));
+  assert.equal(failed.find((event) => event.type === "result").data.ok, false);
+});
+
+test("openclaw gateway plan: many stdout lines are collected and parsed once at the end; stderr noise stays stderr", async () => {
+  await withTempDir("agents-rundir-", async (runDir) => {
+    const detected = { installed: true, path: "/fake/openclaw", features: GATEWAY_FEATURES };
+    const plan = await openclaw.buildRun({ prompt: "x", cwd: "/proj", detected, runDir, checkService: stubService(true) });
+    const lines = JSON.stringify(REAL_OPENCLAW_DOC, null, 2).split("\n");
+    assert.ok(lines.length > 10);
+    for (const line of lines) assert.equal(plan.parseLine(line, "stdout"), false, "stdout lines are held back, not logged raw");
+    assert.equal(plan.parseLine("(node:1) ExperimentalWarning: SQLite is experimental", "stderr"), null);
+    const events = await plan.onOutputEnd();
+    assert.equal(events.find((event) => event.type === "result").text, "First part.\n\nNOTE: second part.");
+    assert.deepEqual(await plan.onOutputEnd(), null, "nothing is emitted twice");
+
+    // Not JSON at all: the printed lines are kept as plain lines instead of being lost.
+    const broken = await openclaw.buildRun({ prompt: "x", cwd: "/proj", detected, runDir, checkService: stubService(true) });
+    broken.parseLine("something went wrong", "stdout");
+    assert.deepEqual(await broken.onOutputEnd(), [{ type: "line", text: "something went wrong" }]);
+  });
+});
+
+test(
+  "openclaw gateway run (fake CLI): reply, model, tool summary and cost 0 are recorded; the room's session id and model reach argv",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    await withTempHome(async (home) => {
+      await withTempDir("agents-rundir-", async (runDir) => {
+        const argvFile = path.join(home, "argv.jsonl");
+        {
+          const detected = { installed: true, path: openclawShim, features: GATEWAY_FEATURES };
+          const plan = await openclaw.buildRun({
+            prompt: "hello gateway",
+            cwd: runDir,
+            detected,
+            runDir,
+            options: { sessionId: "agentos-room-r1", model: "ollama/phi4" },
+            checkService: stubService(true)
+          });
+          plan.env = { ...plan.env, FAKE_OPENCLAW_RECORD_ARGV: argvFile };
+          const manager = createRunManager();
+          const started = await manager.startRun(plan);
+          const finished = await manager.waitForRun(started.id, { timeoutMs: 15000 });
+          assert.equal(finished.status, "succeeded");
+          assert.equal(finished.model, "ollama/phi4");
+          assert.equal(finished.usage.costUsd, 0);
+          assert.equal(finished.usage.inputTokens, 80530);
+          const events = await manager.readEvents(started.id);
+          assert.equal(events.find((event) => event.type === "result").text, "echo: hello gateway");
+          assert.ok(events.some((event) => event.type === "system" && /13 tool calls; 13 failed/.test(event.text)));
+          // The 30-odd JSON lines are not logged raw; the stderr noise is, as stderr lines.
+          assert.ok(!events.some((event) => event.stream === "stdout" && event.type === "line"));
+          assert.ok(events.some((event) => event.stream === "stderr" && event.type === "line" && /ExperimentalWarning/.test(event.text)));
+          assert.ok(!events.some((event) => event.type === "text"));
+
+          const argv = JSON.parse((await readFile(argvFile, "utf8")).trim().split("\n")[0]);
+          assert.deepEqual(argv.slice(0, 3), ["agent", "--session-id", "agentos-room-r1"]);
+          assert.equal(argv[argv.indexOf("--model") + 1], "ollama/phi4");
+          assert.ok(!argv.includes("hello gateway"));
+        }
+      });
+    });
+  }
+);
+
+// =====================================================================
 // 6 + 7. safetyStatus / configStatus against the fake CLIs directly
 // =====================================================================
 
@@ -656,6 +1043,131 @@ test(
   }
 );
 
+test(
+  "hermes.safetyStatus(): a setting it could not read is known: false, never 'approvals are on' (fake CLI)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.20.6", features: {} };
+    const clean = { FAKE_HERMES_APPROVALS: undefined, FAKE_HERMES_APPROVALS_FAIL: undefined, FAKE_HERMES_APPROVALS_EMPTY: undefined };
+    // Read fine: "manual" (a real mode) is on, and the answer is known (true, or the field absent).
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "manual" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.permissive, false);
+      assert.notEqual(status.known, false);
+      assert.match(status.summary, /approvals are on/);
+      assert.deepEqual(status.actions, []);
+    });
+    // "off" stays off, and is a known answer.
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "off" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.permissive, true);
+      assert.notEqual(status.known, false);
+      assert.match(status.summary, /YOLO/);
+    });
+    // The read failed (the CLI exited with an error): not known, and the old fields still hold.
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS_FAIL: "1" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.equal(status.permissive, false);
+      assert.deepEqual(status.actions, []);
+      assert.doesNotMatch(status.summary, /approvals are on/i);
+    });
+    // The CLI printed nothing at all: not known.
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS_EMPTY: "1" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.doesNotMatch(status.summary, /approvals are on/i);
+    });
+    // The program could not even start: not known.
+    const gone = await hermes.safetyStatus({ installed: true, path: path.join(os.tmpdir(), "agent-os-no-such-hermes"), version: "0.20.6", features: {} });
+    assert.equal(gone.known, false);
+    assert.doesNotMatch(gone.summary, /approvals are on/i);
+  }
+);
+
+test("hermes approvalsSafety(): success, off, failure, timeout and empty output (no CLI, so the timeout is instant)", () => {
+  const ok = (stdout) => ({ ok: true, stdout, stderr: "", code: 0, signal: null, aborted: false });
+  const on = approvalsSafety(ok("manual"));
+  assert.equal(on.permissive, false);
+  assert.notEqual(on.known, false);
+  assert.match(on.summary, /approvals are on/);
+  assert.equal(approvalsSafety(ok("MANUAL\n")).permissive, false, "case and spaces do not matter");
+  const off = approvalsSafety(ok(" Off "));
+  assert.equal(off.permissive, true);
+  assert.notEqual(off.known, false);
+  // A timeout is execFile's kill: not ok, no output, a signal (code is reported as 0).
+  const timedOut = approvalsSafety({ ok: false, stdout: "", stderr: "", code: 0, signal: "SIGTERM", aborted: false });
+  // An error exit, a program that would not start, an abort and empty output.
+  const failed = approvalsSafety({ ok: false, stdout: "", stderr: "boom", code: 1, signal: null, aborted: false });
+  const spawnError = approvalsSafety({ ok: false, stdout: "", stderr: "", code: "ENOENT", signal: null, aborted: false });
+  const aborted = approvalsSafety({ ok: false, stdout: "", stderr: "", code: 0, signal: null, aborted: true });
+  const empty = approvalsSafety(ok(""));
+  const blank = approvalsSafety(ok("  \n"));
+  const missing = approvalsSafety(undefined);
+  for (const [name, status] of Object.entries({ timedOut, failed, spawnError, aborted, empty, blank, missing })) {
+    assert.equal(status.known, false, name);
+    assert.equal(status.permissive, false, `${name}: the old field is unchanged`);
+    assert.deepEqual(status.actions, [], name);
+    assert.doesNotMatch(status.summary, /approvals are on/i, name);
+    assert.match(status.summary, /could not read/i, name);
+  }
+  // Partial output from a read that then failed is not trusted as "on".
+  assert.equal(approvalsSafety({ ok: false, stdout: "manual", stderr: "", code: 1, signal: null, aborted: false }).known, false);
+  // But an "off" that was printed is never hidden: a warning that is too loud is safer than a missing one.
+  assert.equal(approvalsSafety({ ok: false, stdout: "off", stderr: "", code: 1, signal: null, aborted: false }).permissive, true);
+});
+
+test("hermes approvalsSafety(): every spelling of off is permissive; a notice line before it does not hide it", () => {
+  const ok = (stdout) => ({ ok: true, stdout, stderr: "", code: 0, signal: null, aborted: false });
+  const offSpellings = [
+    "off",
+    "'off'",
+    '"off"',
+    "False",
+    "no",
+    " NO\n",
+    '"False"\n',
+    "Using config from ~/.hermes/config.yaml\noff\n",
+    "update available: run hermes update\n'off'\n\n",
+    // A notice AFTER the value must not turn off into on (that would hide YOLO mode).
+    "off\nDeprecation: approvals.mode will be renamed in v0.30\n",
+    "'off'\nrun hermes update to get the latest\n\n",
+    "A notice\nno\nAnother notice"
+  ];
+  for (const text of offSpellings) {
+    const status = approvalsSafety(ok(text));
+    assert.equal(status.permissive, true, JSON.stringify(text));
+    assert.equal(status.known, true, JSON.stringify(text));
+    assert.match(status.summary, /approvals are off/i, JSON.stringify(text));
+  }
+  // A clean value that is not an off spelling is on, with or without a notice line before it.
+  for (const text of ["manual", "'manual'", "smart", "Using config from ~/.hermes/config.yaml\nmanual\n", "off-hours", "offline"]) {
+    const status = approvalsSafety(ok(text));
+    assert.equal(status.permissive, false, JSON.stringify(text));
+    assert.equal(status.known, true, JSON.stringify(text));
+    assert.match(status.summary, /approvals are on/i, JSON.stringify(text));
+  }
+  // Only one pair of quotes comes off: a doubled pair is not an off spelling.
+  assert.equal(approvalsSafety(ok("''off''")).permissive, false);
+  // Nothing readable is unknown, not on.
+  for (const text of ["", "  \n", "\n\n"]) assert.equal(approvalsSafety(ok(text)).known, false, JSON.stringify(text));
+  // A failed read that still printed an off spelling is never hidden.
+  assert.equal(approvalsSafety({ ok: false, stdout: "'off'", stderr: "", code: 1, signal: null, aborted: false }).permissive, true);
+  assert.equal(approvalsSafety({ ok: false, stdout: "manual", stderr: "", code: 1, signal: null, aborted: false }).known, false);
+});
+
+test("hermesApprovalsAreOff(): the one helper both the Safety check and the Setup warning use", () => {
+  assert.equal(hermesApprovalsAreOff("off"), true);
+  assert.equal(hermesApprovalsAreOff("'Off'\n"), true);
+  assert.equal(hermesApprovalsAreOff("notice\n\"false\""), true);
+  assert.equal(hermesApprovalsAreOff("off\na notice printed after the value"), true, "a notice after the value does not hide off");
+  assert.equal(hermesApprovalsAreOff("manual"), false);
+  assert.equal(hermesApprovalsAreOff("manual\na notice that says nothing about off"), false);
+  assert.equal(hermesApprovalsAreOff(""), false);
+  assert.equal(hermesApprovalsAreOff(undefined), false);
+  assert.equal(hermesApprovalsAreOff(null), false);
+});
+
 // =====================================================================
 // 8 + 9. The /api/agents HTTP surface, against the real server
 // =====================================================================
@@ -726,6 +1238,7 @@ function baseEnv(home, port, extra = {}) {
     AGENT_OS_HOME: home,
     AGENT_OS_TOKEN: TOKEN,
     HERMES_AGENT_OS_SCHEDULER: "0",
+    SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
     PATH: [shimDir, ...SYSTEM_PATH_DIRS].join(path.delimiter),
     // Detection also looks in folders under HOME (~/.local/bin, ...), where
     // the developer's real agents live. Point HOME at the temp folder.
@@ -805,6 +1318,33 @@ test(
       });
       assert.equal(gateOffRes.status, 403);
       assert.equal((await gateOffRes.json()).error, "execution_gate_off");
+
+      // The background service: Start and Restart need the gate, but Stop works at
+      // Look only (stopping only reduces what runs, like Hold to stop all).
+      for (const action of ["start", "restart"]) {
+        const serviceOff = await fetch(`${base}/api/agents/hermes/service/${action}`, {
+          method: "POST",
+          headers: authedJson,
+          body: JSON.stringify({ confirm: true })
+        });
+        assert.equal(serviceOff.status, 403, `service ${action} with the gate off`);
+        assert.equal((await serviceOff.json()).error, "execution_gate_off");
+      }
+      const stopNoConfirm = await fetch(`${base}/api/agents/hermes/service/stop`, {
+        method: "POST",
+        headers: authedJson,
+        body: JSON.stringify({})
+      });
+      assert.equal(stopNoConfirm.status, 400, "stop still needs confirm");
+      const stopAtLookOnly = await fetch(`${base}/api/agents/hermes/service/stop`, {
+        method: "POST",
+        headers: authedJson,
+        body: JSON.stringify({ confirm: true })
+      });
+      assert.equal(stopAtLookOnly.status, 200, "service stop works with the gate off");
+      const stopRun = await stopAtLookOnly.json();
+      assert.equal(stopRun.kind, "service");
+      assert.match(stopRun.commandPreview || "", /gateway stop/);
 
       // enable the gate
       const gateOnRes = await fetch(`${base}/api/admin/execution-gate`, {

@@ -18,3 +18,7 @@ npm-debug.log*
 *.gz
 .DS_Store
 __MACOSX
+# The desktop shell's Rust build output (gigabytes) and local scratch work: the
+# server image needs neither.
+desktop/src-tauri/target
+.superpowers

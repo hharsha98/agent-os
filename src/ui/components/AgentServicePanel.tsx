@@ -25,13 +25,16 @@ export default function AgentServicePanel({
   label,
   service,
   checked,
-  onRefresh
+  onRefresh,
+  failed = false
 }: {
   agentId: string;
   label: string;
   service: AgentServiceStatus | null;
   checked: boolean;
   onRefresh: () => void;
+  // The detail could not be read (and nothing was read before): the state is shown as "—" (not known), not "…" (loading).
+  failed?: boolean;
 }) {
   const [confirming, setConfirming] = useState<Action | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,10 +60,10 @@ export default function AgentServicePanel({
 
   return (
     <section className="os-panel os-service">
-      <h2 className="os-service__title">Background service</h2>
+      <h3 className="os-service__title">Background service</h3>
       {!checked ? (
         <p className="os-service__status">
-          <StatusMark kind="unknown" /> …
+          <StatusMark kind="unknown" label={failed ? "Not known" : undefined} /> {failed ? "—" : "…"}
         </p>
       ) : service?.running ? (
         <p className="os-service__status">
@@ -85,13 +88,16 @@ export default function AgentServicePanel({
             type="button"
             className="os-btn os-btn--secondary"
             onClick={() => setConfirming(action)}
-            disabled={busy || Boolean(activeRunId)}
+            disabled={busy || Boolean(activeRunId) || !checked}
           >
             {ACTION_LABEL[action]}
           </button>
         ))}
       </div>
-      <p className="os-service__note">Keeps running when Agent OS is closed.</p>
+      <p className="os-service__note">
+        Keeps running when Agent OS is closed. Hold to stop all does not stop it: use Stop here.
+        {!checked ? " Start, Stop and Restart wait until Agent OS can read the service's state." : ""}
+      </p>
       {error && !confirming ? <p className="os-launch__error">{error}</p> : null}
 
       {activeRunId ? (

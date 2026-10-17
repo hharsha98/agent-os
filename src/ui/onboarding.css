@@ -1,0 +1,219 @@
+/* The "Get started" checklist: the card on Home and its calm finish state.
+   Only .os- selectors, so no other page is touched. The header pill's own
+   styles live in shell.css (.os-gs-pill) next to the other header controls. */
+
+.os-gs {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-5);
+  background: var(--os-surface-1);
+  border-radius: var(--os-r-lg);
+  box-shadow: var(--os-e1);
+}
+.os-gs:focus-visible {
+  outline: 2px solid var(--os-accent-strong);
+  outline-offset: 2px;
+}
+
+/* The same hairline the instrument bar has. It is also the one thing that
+   animates: once, when the checklist really goes from "to do" to "done". */
+.os-gs__topline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform-origin: left center;
+  background: var(--os-accent-line);
+}
+.os-gs--done.is-fresh .os-gs__topline {
+  animation: os-gs-done var(--os-dur-base) var(--os-ease-out) 1;
+}
+@keyframes os-gs-done {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .os-gs--done.is-fresh .os-gs__topline {
+    animation: none;
+  }
+}
+
+.os-gs__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--os-sp-4);
+}
+.os-gs__head h2 {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-20);
+  font-weight: 600;
+  line-height: var(--os-lh-display);
+  color: var(--os-text-1);
+}
+.os-gs__head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--os-sp-2);
+}
+.os-gs__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  margin-top: var(--os-sp-2);
+}
+.os-gs__count {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-gs__progress .os-gs__count {
+  margin: 0;
+}
+.os-gs__error {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-danger);
+}
+
+/* The one-line strip: shown instead of the card once only one step is left. */
+.os-gs--strip {
+  padding: var(--os-sp-3) var(--os-sp-5);
+}
+.os-gs__strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--os-sp-4);
+  flex-wrap: wrap;
+}
+.os-gs__strip-text {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+.os-gs__strip-text h2 {
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-16);
+  font-weight: 600;
+  line-height: var(--os-lh-display);
+  color: var(--os-text-1);
+}
+.os-gs__strip-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--os-sp-1) var(--os-sp-3);
+  margin: var(--os-sp-1) 0 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-gs__strip-detail .os-gs__count {
+  margin: 0;
+}
+
+/* One row per step: mark, what it is and its real state, then its buttons. */
+.os-gs__steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.os-gs-step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--os-sp-3);
+  padding: var(--os-sp-3) 0;
+  border-top: 1px solid var(--os-line-1);
+}
+.os-gs-step__mark {
+  padding-top: 3px;
+}
+.os-gs-step__text {
+  min-width: 0;
+}
+.os-gs-step__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0;
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+}
+.os-gs-step__state {
+  color: var(--os-text-3);
+}
+.os-gs-step__detail {
+  margin: 2px 0 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-gs-step__note {
+  margin: 2px 0 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+.os-gs-step__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-gs-step--done .os-gs-step__title strong {
+  color: var(--os-text-2);
+}
+/* The step that is not available yet: visibly there, visibly inactive. */
+.os-gs-step--unavailable {
+  opacity: 0.55;
+}
+
+/* Finish state: what is set up, in four short readouts. */
+.os-gs__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--os-sp-4);
+  margin: 0;
+}
+.os-gs__summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-1);
+  min-width: 0;
+}
+.os-gs__summary dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+}
+.os-gs__actions {
+  display: flex;
+  gap: var(--os-sp-2);
+}
+
+@media (max-width: 1100px) {
+  .os-gs__summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .os-gs-step {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+  .os-gs-step__actions {
+    grid-column: 2;
+    margin-top: var(--os-sp-2);
+    flex-wrap: wrap;
+  }
+}

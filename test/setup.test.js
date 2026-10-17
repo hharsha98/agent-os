@@ -19,18 +19,20 @@ import { fileURLToPath } from "node:url";
 import { ADAPTERS } from "../server/runtime/agents/index.js";
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
 import { getRunManager } from "../server/runtime/runs/run-manager.js";
-import { applyMirror, getInstallRecipe } from "../server/runtime/setup/recipes.js";
+import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS, applyMirror, getInstallRecipe } from "../server/runtime/setup/recipes.js";
 import { ensureManagedNode } from "../server/runtime/setup/managed-node.js";
 import { clearSystemCheckCache, systemCheck } from "../server/runtime/setup/system-check.js";
 import { buildSetupPlan } from "../server/runtime/setup/plan.js";
 import {
   cancelSetupJob,
+  checkHermesSafeDefaults,
   getSetupJob,
   resetSetupJobsForTest,
   retrySetupJob,
   startSetupJob
 } from "../server/runtime/setup/jobs.js";
 import { readReceipt } from "../server/runtime/setup/receipt.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -310,7 +312,7 @@ test("systemCheck(): returns every key with sane types and never throws, even wi
       assert.equal(typeof check.tools.git.found, "boolean");
       assert.equal(typeof check.tools.node.nodeOkForOpenClaw, "boolean");
       assert.ok(Array.isArray(check.network));
-      assert.equal(check.network.length, 6);
+      assert.equal(check.network.length, 8);
       for (const entry of check.network) {
         assert.equal(typeof entry.host, "string");
         assert.equal(typeof entry.ok, "boolean");
@@ -356,7 +358,7 @@ test(
 // =====================================================================
 
 test(
-  "buildSetupPlan(): Hermes already installed -> keep (default), update (off), no install step",
+  "buildSetupPlan(): Hermes already installed -> keep (default) and nothing else: no update step, no install step",
   posixSkip,
   async () => {
     await withTempSetupEnv(async ({ home }) => {
@@ -365,16 +367,154 @@ test(
       assert.equal(check.agents.hermes.detected.installed, true);
       const plan = buildSetupPlan(check);
       const hermesSteps = plan.steps.filter((s) => s.agentId === "hermes");
-      const keep = hermesSteps.find((s) => s.action === "keep");
-      const update = hermesSteps.find((s) => s.action === "update");
-      assert.ok(keep);
-      assert.equal(keep.default, true);
-      assert.ok(update);
-      assert.equal(update.default, false);
-      assert.ok(!hermesSteps.some((s) => s.action === "install"));
+      assert.deepEqual(
+        hermesSteps.map((s) => s.action),
+        ["keep"],
+        "until SP5's Hermes clean check, Setup offers no Hermes update step"
+      );
+      assert.equal(hermesSteps[0].default, true);
+      assert.ok(!plan.steps.some((s) => s.id === "hermes-update"));
     });
   }
 );
+
+test("buildSetupPlan(): an installed OpenClaw still gets an update step, and its preview has no --yes", () => {
+  const check = {
+    os: "linux",
+    arch: "x64",
+    tools: { node: { nodeOkForOpenClaw: true }, git: { found: true }, brew: { found: true } },
+    agents: {
+      hermes: { detected: { installed: true, version: "0.99.0", path: "/fake/hermes" } },
+      openclaw: { detected: { installed: true, version: "9.9.9", path: "/fake/openclaw" } }
+    },
+    network: []
+  };
+  const plan = buildSetupPlan(check);
+  assert.deepEqual(plan.steps.filter((s) => s.agentId === "hermes").map((s) => s.action), ["keep"]);
+  assert.deepEqual(plan.steps.filter((s) => s.agentId === "openclaw").map((s) => s.action), ["keep", "update"]);
+  const update = plan.steps.find((s) => s.id === "openclaw-update");
+  assert.equal(update.default, false);
+  assert.equal(update.commandPreview, "/fake/openclaw update --json");
+  for (const step of plan.steps) {
+    assert.ok(!/--yes/.test(`${step.commandPreview} ${step.changes.join(" ")}`), `${step.id} mentions --yes`);
+  }
+});
+
+test("startSetupJob(): a client cannot start a Hermes update by sending the old step id", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    // Without this the test could pass for the wrong reason: if the fake Hermes
+    // were not found, the plan would hold no Hermes step and every id would be rejected.
+    const check = await systemCheck({ refresh: true });
+    assert.equal(check.agents.hermes.detected.installed, true, "the fake Hermes is detected");
+    assert.ok(
+      buildSetupPlan(check).steps.some((s) => s.id === "hermes-keep"),
+      "the plan holds a Hermes keep step, so the missing update step is deliberate"
+    );
+    await assert.rejects(
+      () => startSetupJob({ steps: ["hermes-update"] }),
+      (error) => error.code === "no_valid_steps"
+    );
+  });
+});
+
+// A job saved before this change can hold a Hermes update step, and the Setup
+// page offers Retry on a failed job. Retry resumes the STORED steps (it does not
+// build a fresh plan), so it must refuse the update itself: `hermes update` can
+// overwrite changes a person made in the Hermes checkout.
+test("retrySetupJob(): a stored job with a Hermes update step is refused and never runs hermes update", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home, agentOsHome }) => {
+    // A fake Hermes that records every call it receives (the shared fake does not).
+    const jsPath = path.join(sourceDir, "fake-hermes-cli.mjs");
+    const binDir = path.join(home, ".local", "bin");
+    await mkdir(binDir, { recursive: true });
+    const shim = path.join(binDir, "hermes");
+    await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$HOME/.fake-hermes-calls.log"\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
+    await chmod(shim, 0o755);
+
+    const jobId = "job_legacy_hermes_update";
+    const jobsFolder = path.join(agentOsHome, "setup", "jobs");
+    await mkdir(jobsFolder, { recursive: true });
+    await writeFile(
+      path.join(jobsFolder, `${jobId}.json`),
+      JSON.stringify({
+        id: jobId,
+        kind: "install",
+        status: "failed",
+        steps: [
+          { id: "hermes-update", agentId: "hermes", action: "update", status: "failed", runIds: [], error: "an older failure", log: [] }
+        ],
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+        acceptOpenClawRisk: false,
+        acceptOpenClawRiskAt: null
+      })
+    );
+
+    const check = await systemCheck({ refresh: true });
+    assert.equal(check.agents.hermes.detected.installed, true, "the fake Hermes is detected");
+
+    const retried = await retrySetupJob(jobId);
+    assert.ok(retried, "the stored job was found");
+    const finished = await waitForJob(jobId);
+
+    const message = "Agent OS no longer updates Hermes from Setup, so this step was not run. Nothing was changed.";
+    assert.equal(finished.status, "failed");
+    assert.equal(finished.steps[0].status, "failed");
+    assert.equal(finished.steps[0].error, message);
+    assert.deepEqual(finished.steps[0].runIds, [], "no run was started for the step");
+
+    const calls = (await readFile(path.join(home, ".fake-hermes-calls.log"), "utf8")).trim().split("\n");
+    assert.ok(calls.length > 0 && calls[0] !== "", "the recording fake Hermes was in use (detection called it)");
+    assert.ok(!calls.some((line) => /^update(\s|$)/.test(line)), `hermes update was run: ${calls.join(" | ")}`);
+  });
+});
+
+test("retrySetupJob(): a stored Hermes install step is refused when Hermes is already installed, and its installer never runs", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home, agentOsHome }) => {
+    const jsPath = path.join(sourceDir, "fake-hermes-cli.mjs");
+    const binDir = path.join(home, ".local", "bin");
+    await mkdir(binDir, { recursive: true });
+    const shim = path.join(binDir, "hermes");
+    await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$HOME/.fake-hermes-calls.log"\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
+    await chmod(shim, 0o755);
+
+    // An earlier install that failed, remembered by the Setup page; Hermes has been installed since.
+    const jobId = "job_legacy_hermes_install";
+    const jobsFolder = path.join(agentOsHome, "setup", "jobs");
+    await mkdir(jobsFolder, { recursive: true });
+    await writeFile(
+      path.join(jobsFolder, `${jobId}.json`),
+      JSON.stringify({
+        id: jobId,
+        kind: "install",
+        status: "failed",
+        steps: [
+          { id: "hermes-install", agentId: "hermes", action: "install", status: "failed", runIds: [], error: "an older failure", log: [] }
+        ],
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+        acceptOpenClawRisk: false,
+        acceptOpenClawRiskAt: null
+      })
+    );
+
+    const check = await systemCheck({ refresh: true });
+    assert.equal(check.agents.hermes.detected.installed, true, "the fake Hermes is detected");
+
+    const retried = await retrySetupJob(jobId);
+    assert.ok(retried, "the stored job was found");
+    const finished = await waitForJob(jobId);
+
+    assert.equal(finished.status, "failed");
+    assert.equal(finished.steps[0].status, "failed");
+    assert.equal(
+      finished.steps[0].error,
+      "Hermes is already installed, so Agent OS did not run its installer again. Nothing was changed. Press Check again to see it."
+    );
+    assert.deepEqual(finished.steps[0].runIds, [], "no installer run was started");
+  });
+});
 
 // =====================================================================
 // 4. Intel Mac simulation
@@ -695,6 +835,7 @@ test(
       AGENT_OS_SETUP_MIRROR: `http://127.0.0.1:${mirrorPort}`,
       AGENT_OS_TOKEN: TOKEN,
       HERMES_AGENT_OS_SCHEDULER: "0",
+      SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
       PATH: `${shimDir}${path.delimiter}/usr/bin:/bin:/usr/sbin:/sbin`
     };
     for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {
@@ -752,6 +893,124 @@ test(
       await rm(homeDir, { recursive: true, force: true });
       await rm(agentOsHome, { recursive: true, force: true });
       await rm(managedRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+// =====================================================================
+// Updaters are never answered for the person (SP2 Setup safety)
+// =====================================================================
+
+test("recipes: no updateArgs contains --yes or any other automatic yes, for any agent on any platform", () => {
+  const ANSWERS_FOR_YOU = ["--yes", "-y", "--assume-yes", "--force"];
+  for (const agentId of [...OPERATOR_AGENT_IDS, ...CODING_AGENT_IDS]) {
+    for (const [platform, arch] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"], ["win32", "x64"]]) {
+      const recipe = getInstallRecipe(agentId, platform, arch);
+      assert.equal(recipe.updateArgs[0], "update", `${agentId} on ${platform} runs the agent's own update command`);
+      for (const arg of recipe.updateArgs) {
+        assert.ok(!ANSWERS_FOR_YOU.includes(arg), `${agentId} on ${platform} passes ${arg} to its updater`);
+      }
+    }
+  }
+  assert.deepEqual(getInstallRecipe("hermes", "linux", "x64").updateArgs, ["update"]);
+  assert.deepEqual(getInstallRecipe("openclaw", "linux", "x64").updateArgs, ["update", "--json"]);
+});
+
+test("recipes.js: no updateArgs line in the source mentions --yes", async () => {
+  const source = await readFile(path.join(root, "server", "runtime", "setup", "recipes.js"), "utf8");
+  const lines = source.split("\n").filter((line) => /^\s*updateArgs:/.test(line));
+  assert.equal(lines.length, 5, "one updateArgs line per agent");
+  for (const line of lines) assert.ok(!line.includes("--yes"), line.trim());
+});
+
+// An updater that asks "Continue? [y/N]" and waits for the answer. Agent OS
+// gives an update job no input at all (its stdin is empty), so the question gets
+// end of input and the job fails. It must never be answered with a yes.
+const FAKE_ASKING_UPDATER_SOURCE = `
+import { appendFileSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const home = process.env.HOME;
+if (args.includes("--version")) { process.stdout.write("openclaw 9.9.9-test\\n"); process.exit(0); }
+if (args[0] === "update") {
+  appendFileSync(path.join(home, ".fake-updater-args.log"), JSON.stringify(args) + "\\n");
+  process.stdout.write("Continue with the update? [y/N] ");
+  let answer = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { answer += chunk; });
+  process.stdin.on("end", () => {
+    appendFileSync(path.join(home, ".fake-updater-answer.log"), JSON.stringify(answer) + "\\n");
+    if (/^\\s*y/i.test(answer)) { process.stdout.write("updated\\n"); process.exit(0); }
+    process.stdout.write("\\nNo answer, so nothing was updated.\\n");
+    process.exit(1);
+  });
+} else {
+  process.stdout.write("fake-openclaw: " + JSON.stringify(args) + "\\n");
+}
+`;
+
+test("startSetupJob(): an update that asks a question gets end of input, never an automatic yes", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    const jsPath = path.join(sourceDir, "fake-asking-updater.mjs");
+    await writeFile(jsPath, FAKE_ASKING_UPDATER_SOURCE);
+    const binDir = path.join(home, ".npm-global", "bin");
+    await mkdir(binDir, { recursive: true });
+    const shim = path.join(binDir, "openclaw");
+    await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
+    await chmod(shim, 0o755);
+
+    const check = await systemCheck({ refresh: true });
+    assert.equal(check.agents.openclaw.detected.installed, true);
+    const update = buildSetupPlan(check).steps.find((s) => s.id === "openclaw-update");
+    assert.ok(update, "an installed OpenClaw still offers Update");
+    const job = await startSetupJob({ steps: [update.id] });
+    const finished = await waitForJob(job.id);
+
+    assert.equal(finished.status, "failed", "a question nobody answered fails the update; it is not answered for the person");
+    const args = (await readFile(path.join(home, ".fake-updater-args.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(args, [["update", "--json"]], "the updater was started with no --yes");
+    const answers = (await readFile(path.join(home, ".fake-updater-answer.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(answers, [""], "it saw end of input, not a typed answer");
+
+    // The updater's own last words reach the person: in the step's error (what
+    // the Install panel shows) and in the step's log (the lines it printed).
+    const updaterLastLine = "No answer, so nothing was updated.";
+    const step = finished.steps[0];
+    assert.match(step.error, new RegExp(`Last line: ${updaterLastLine.replace(/\./g, "\\.")}`), "the error ends with the updater's final line");
+    assert.ok(
+      step.log.some((line) => line.includes(updaterLastLine)),
+      `the step log holds the updater's output: ${JSON.stringify(step.log)}`
+    );
+  });
+});
+
+test(
+  "hermes-safe-defaults: every spelling of approvals off warns, and a real 'manual' does not (the same rule Safety uses)",
+  posixSkip,
+  async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-setup-approvals-"));
+    try {
+      const warningsFor = async (printed) => {
+        const shim = path.join(dir, "hermes");
+        // A shell shim that prints exactly what `hermes config get approvals.mode` would.
+        await writeFile(shim, `#!/bin/sh\ncat <<'AGENT_OS_EOF'\n${printed}\nAGENT_OS_EOF\n`);
+        await chmod(shim, 0o755);
+        const step = { warnings: [] };
+        await checkHermesSafeDefaults(step, { agents: { hermes: { detected: { installed: true, path: shim } } } });
+        return step.warnings;
+      };
+      for (const printed of ["off", "'off'", '"off"', "False", "no", "A notice line\noff", "off\nA notice line printed after the value"]) {
+        assert.deepEqual(await warningsFor(printed), ["Hermes approvals are off"], JSON.stringify(printed));
+      }
+      for (const printed of ["manual", "'manual'", "A notice line\nmanual"]) {
+        assert.deepEqual(await warningsFor(printed), [], JSON.stringify(printed));
+      }
+      // Not installed: nothing to check, nothing said.
+      const step = { warnings: [] };
+      await checkHermesSafeDefaults(step, { agents: { hermes: { detected: { installed: false } } } });
+      assert.deepEqual(step.warnings, []);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   }
 );

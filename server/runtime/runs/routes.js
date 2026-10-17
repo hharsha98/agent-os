@@ -1,7 +1,13 @@
 // Read-only + stream + stop HTTP surface for runs. There is deliberately no
-// POST route that starts a run: only server-side adapters call
-// manager.startRun(plan) directly with a plan built from fixed recipes.
+// POST route that starts a run from a request: only server-side adapters call
+// manager.startRun(plan) directly with a plan built from fixed recipes. The one
+// exception is continuing a run that stopped at a plan limit (below): it takes
+// no command or task from the request, only a choice among options the server
+// itself worked out from the finished run.
 import express from "express";
+import { continueDeps } from "../agents/routes.js";
+import { continueOptions, continueRun } from "../builders/continue.js";
+import { builderErrorResponse } from "../builders/resolve.js";
 import { getRunManager } from "./run-manager.js";
 
 const RUN_ID_PATTERN = /^[a-z0-9_-]{6,64}$/;
@@ -150,6 +156,58 @@ export function createRunsRouter(manager = getRunManager()) {
       ping.unref?.();
     } catch (error) {
       next(error);
+    }
+  });
+
+  function fail(error, res, next) {
+    const mapped = builderErrorResponse(error);
+    if (mapped) {
+      res.status(mapped.status).json(mapped.body);
+      return;
+    }
+    next(error);
+  }
+
+  // A run that stopped at its plan's limit carries `limit` ({ kind, message,
+  // resetsAt? }) on its metadata. This lists the ways to carry on:
+  //   { runId, agentId, limit, continuedBy, onLimit, perRunBudgetUsd,
+  //     canContinue, unavailableReason?, auto: { eligible, optionId, reason? },
+  //     options: [{ id, agentId, label, brain: { mode, model }, approach: "fork" | "handoff",
+  //                 available, reason?, estimateUsd (dollars or null), estimateTokens,
+  //                 estimateNote, warnings: [] }] }
+  // estimateUsd is the cost to START carrying on (reading the old conversation or
+  // the summary), not of the whole new work. 404 run_not_found.
+  router.get("/:id/continue-options", validateRunId, async (req, res, next) => {
+    try {
+      res.json(await continueOptions(req.params.id, continueDeps(manager)));
+    } catch (error) {
+      fail(error, res, next);
+    }
+  });
+
+  // Starts the chosen way of carrying on; answers with the NEW run's metadata
+  // (continuedFrom = this run; this run then has continuedBy). The body is
+  // { confirm: true, target: { agentId, brain?: { mode, model? } } } where target
+  // matches one of the options above (brain.model may name another model).
+  // Needs execution switched on, like starting any run.
+  //   400 confirm must be true / invalid_continue_target, 403 execution_gate_off,
+  //   404 run_not_found, 409 not_continuable / continue_in_progress /
+  //   openrouter_key_missing / local_model_missing / agent_not_installed, 429 too_many_runs
+  router.post("/:id/continue", validateRunId, async (req, res, next) => {
+    try {
+      if (req.body?.confirm !== true) {
+        res.status(400).json({ ok: false, error: "confirm must be true" });
+        return;
+      }
+      const target = req.body?.target;
+      if (!target || typeof target !== "object" || typeof target.agentId !== "string") {
+        res.status(400).json({ ok: false, error: "invalid_continue_target", message: "Say which agent to continue with." });
+        return;
+      }
+      const brain = target.brain && typeof target.brain === "object" ? { mode: target.brain.mode, model: target.brain.model } : undefined;
+      res.json(await continueRun(req.params.id, { agentId: target.agentId, brain }, continueDeps(manager)));
+    } catch (error) {
+      fail(error, res, next);
     }
   });
 

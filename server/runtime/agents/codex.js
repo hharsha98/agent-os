@@ -2,8 +2,25 @@
 // --help/--version rather than hard-coded, because Codex releases
 // frequently. Confirmed live against codex-cli 0.154.0's --help; see the
 // deliverable report for any place the real CLI differed from the docs.
+import {
+  brainError,
+  brainNotices,
+  codexBrainArgs,
+  keyHelper,
+  normalizeBrain,
+  runRecord
+} from "../builders/brain-launch.js";
+import { USAGE_LIMIT_TEXT, limitEvent } from "../builders/limits.js";
 import { runCommand } from "../safety.js";
-import { cachedFeatures, resolveBinary, runHelp, runVersion, splitVersion, withDetectCache } from "./detect.js";
+import {
+  cachedFeatures,
+  codexFallbackPaths,
+  resolveBinary,
+  runHelp,
+  runVersion,
+  splitVersion,
+  withDetectCache
+} from "./detect.js";
 
 const LOGIN_STATUS_TIMEOUT_MS = 10 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -20,6 +37,10 @@ async function detectFeatures(binPath) {
     cd: /--cd\b/.test(text),
     skipGitRepoCheck: /--skip-git-repo-check\b/.test(text),
     ephemeral: /--ephemeral\b/.test(text),
+    // Only needed for a run on OpenRouter (-c, -m) or on a local model (--oss).
+    config: /(^|[\s,])-c, --config\b/.test(text),
+    model: /(^|[\s,])-m, --model\b/.test(text),
+    oss: /--oss\b/.test(text) && /--local-provider\b/.test(text),
     // "If not provided as an argument (or if `-` is used), instructions are
     // read from stdin" in the Arguments section of `codex exec --help`.
     stdinDash: /is used\)/i.test(text) && /read from stdin/i.test(text),
@@ -32,7 +53,7 @@ async function detectFeatures(binPath) {
 async function detect({ refresh = false } = {}) {
   return withDetectCache("codex", refresh, async () => {
     try {
-      const binPath = await resolveBinary("codex", []);
+      const binPath = await resolveBinary("codex", codexFallbackPaths());
       if (!binPath) {
         return {
           installed: false,
@@ -94,6 +115,21 @@ async function buildRun({ prompt, cwd, detected, runDir, options = {} }) {
   args.push("--color", "never");
   if (features.cd) args.push("-C", cwd);
 
+  // Which brain pays for the run. `plan` (the default) adds nothing, so the
+  // command line is exactly what it always was. options.brain comes from
+  // trusted server code (see builders/resolve.js). A new Codex session is
+  // always used when a run moves to another brain: resuming across providers
+  // can fail, so builders/continue.js hands the work over as a summary instead.
+  const brain = normalizeBrain(options.brain, "codex");
+  const notices = [];
+  if (brain.mode !== "plan") {
+    if (!(features.config && features.model && (brain.mode === "openrouter" || features.oss))) {
+      throw brainError("brain_not_supported_by_cli", "This version of Codex can't be pointed at another model. Update Codex, then try again.");
+    }
+    args.push(...codexBrainArgs(brain, brain.mode === "openrouter" ? await keyHelper() : null));
+    notices.push(...brainNotices("codex", brain));
+  }
+
   let stdin;
   if (features.stdinDash) {
     args.push("-");
@@ -102,28 +138,43 @@ async function buildRun({ prompt, cwd, detected, runDir, options = {} }) {
     args.push("--", prompt);
   }
 
+  const where = brain.mode === "openrouter" ? ", OpenRouter" : brain.mode === "local" ? ", local model" : "";
+  const parserState = {}; // one per run, so a limit is reported once
   return {
     agentId: "codex",
     kind: "agent",
-    title: `Codex exec (${features.stdinDash ? "stdin" : "argv"} transport, ${allowEdits ? "workspace-write" : "read-only"})`,
+    title: `Codex exec (${features.stdinDash ? "stdin" : "argv"} transport, ${allowEdits ? "workspace-write" : "read-only"}${where})`,
     command: detected.path,
     args,
     cwd: runDir,
     stdin,
     timeoutMs: RUN_TIMEOUT_MS,
-    parseLine
+    ...runRecord({ prompt, cwd, brain, options }),
+    ...(notices.length ? { notices } : {}),
+    parseLine: (line, stream) => parseLine(line, stream, parserState)
   };
 }
 
 // Event shapes follow https://developers.openai.com/codex/noninteractive:
 // thread.started once at start, item.started/updated/completed per work
 // item, turn.completed with usage, and error.
-function parseLine(line) {
+// `ctx` is per-run memory (see buildRun) so a limit is reported once; called
+// without one (as the tests do), every line is judged on its own.
+function parseLine(line, _stream, ctx = {}) {
+  // The plan limit as the agent prints it: {"type":"error","message":"You’ve hit
+  // your usage limit..."} and/or {"type":"turn.failed","error":{"message":...}},
+  // then exit 1 -- or, without --json, as a plain line.
+  const limitFrom = (text) => {
+    if (ctx.limitSeen || !USAGE_LIMIT_TEXT.test(String(text))) return [];
+    ctx.limitSeen = true;
+    return [limitEvent("codex")];
+  };
   let evt;
   try {
     evt = JSON.parse(line);
   } catch {
-    return null;
+    const found = limitFrom(line);
+    return found.length ? [{ type: "line", text: line }, ...found] : null;
   }
   if (!evt || typeof evt !== "object") return null;
   switch (evt.type) {
@@ -155,7 +206,11 @@ function parseLine(line) {
       return [{ type: "usage", inputTokens, outputTokens }];
     }
     case "error":
-      return [{ type: "error", text: String(evt.message ?? "") }];
+      return [{ type: "error", text: String(evt.message ?? "") }, ...limitFrom(evt.message ?? "")];
+    case "turn.failed": {
+      const message = String(evt.error?.message ?? "");
+      return message ? [{ type: "error", text: message }, ...limitFrom(message)] : null;
+    }
     default:
       return null;
   }

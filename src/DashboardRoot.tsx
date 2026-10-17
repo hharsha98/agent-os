@@ -8,6 +8,8 @@ import BrainPage from "./pages/BrainPage";
 import ChatPage from "./pages/ChatPage";
 import AgentsPage from "./pages/AgentsPage";
 import FleetPage from "./pages/FleetPage";
+import HelpPage from "./pages/HelpPage";
+import SessionsPage from "./pages/SessionsPage";
 import RunsPage from "./pages/RunsPage";
 import SafetyPage from "./pages/SafetyPage";
 import TeamRoomPage from "./pages/TeamRoomPage";
@@ -33,15 +35,21 @@ import "./phase2.css";
 import "./ui/fonts";
 import "./ui/tokens.css";
 import "./ui/base.css";
+import "./ui/kit.css";
 import "./ui/shell.css";
+import "./ui/onboarding.css";
+import "./ui/palette.css";
+import "./ui/laptop.css";
 
 type ShellPage =
   | "fleet"
+  | "sessions"
   | "agents"
   | "runs"
   | "team"
   | "setup"
   | "safety"
+  | "help"
   | "mission"
   | "home"
   | "layers"
@@ -66,11 +74,13 @@ type ShellPage =
 const LEGACY_PAGES = new Set<ShellPage>(["home", "builder", "apis"]);
 const ALL_PAGES = new Set<ShellPage>([
   "fleet",
+  "sessions",
   "agents",
   "runs",
   "team",
   "setup",
   "safety",
+  "help",
   "mission",
   "home",
   "layers",
@@ -191,7 +201,7 @@ export default function DashboardRoot() {
   }, []);
 
   useEffect(() => {
-    document.title = demoPublic ? "Agent OS — public demo" : liveChat ? "Agent OS — live" : "Agent OS — local v1";
+    document.title = demoPublic ? "Agent OS · public demo" : liveChat ? "Agent OS · live" : "Agent OS";
   }, [demoPublic, liveChat]);
 
   if (locked) {
@@ -251,6 +261,8 @@ export default function DashboardRoot() {
     <Shell page={page} onNavigate={(next) => go(next as ShellPage)} demoPublic={demoPublic}>
       {page === "fleet" ? (
         <FleetPage />
+      ) : page === "sessions" ? (
+        <SessionsPage />
       ) : page === "agents" ? (
         <AgentsPage />
       ) : page === "runs" ? (
@@ -261,6 +273,8 @@ export default function DashboardRoot() {
         <SetupPage />
       ) : page === "safety" ? (
         <SafetyPage />
+      ) : page === "help" ? (
+        <HelpPage />
       ) : page === "mission" ? (
         <MissionControlPage />
       ) : demoPublic && (page === "builder" || page === "home") ? (

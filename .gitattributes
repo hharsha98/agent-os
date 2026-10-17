@@ -1,0 +1,4 @@
+# Every text file is checked out with LF line endings, on Windows too: the tests
+# read source files and match patterns across lines, which CRLF breaks (seen in
+# Windows CI). Git still detects binary files on its own.
+* text=auto eol=lf

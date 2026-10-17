@@ -1,13 +1,13 @@
 {
   "name": "agent-os-runtime",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "dev": "concurrently \"node --watch server/index.js\" \"vite --host 127.0.0.1\"",
+    "dev": "concurrently \"node --watch scripts/dev-server.mjs\" \"vite --host 127.0.0.1\"",
     "build": "tsc -b && vite build",
     "build:server-bundle": "node scripts/build-server-bundle.mjs",
     "desktop:fetch-node": "node scripts/fetch-node.mjs",
@@ -17,7 +17,7 @@
     "start": "node server/index.js",
     "preview": "vite preview --host 127.0.0.1",
     "check": "tsc -b && vite build",
-    "test": "node --test --test-timeout=180000",
+    "test": "node scripts/run-tests.mjs",
     "smoke:local": "node scripts/local-smoke.js",
     "smoke:public": "node scripts/public-smoke.js",
     "smoke:live": "node scripts/live-smoke.js",
@@ -28,15 +28,29 @@
     "smoke:docker": "node scripts/docker-smoke.js"
   },
   "dependencies": {
-    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/archivo": "5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/plugin-dialog": "2.8.3",
+    "@tauri-apps/plugin-opener": "^2.7.1",
     "@tauri-apps/plugin-process": "^2.4.0",
     "@tauri-apps/plugin-updater": "^2.13.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "@xterm/addon-clipboard": "0.3.0-beta.303",
+    "@xterm/addon-fit": "0.12.0-beta.301",
+    "@xterm/addon-search": "0.17.0-beta.301",
+    "@xterm/addon-serialize": "0.15.0-beta.301",
+    "@xterm/addon-unicode11": "0.10.0-beta.301",
+    "@xterm/addon-web-links": "0.13.0-beta.301",
+    "@xterm/addon-webgl": "0.20.0-beta.300",
+    "@xterm/headless": "6.1.0-beta.303",
+    "@xterm/xterm": "6.1.0-beta.304",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",
+    "node-pty": "1.2.0-beta.14",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "ws": "8.22.0",
     "yaml": "^2.6.1"
   },
   "optionalDependencies": {

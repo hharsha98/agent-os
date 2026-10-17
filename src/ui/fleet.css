@@ -1,120 +1,6 @@
-/* Fleet (Home) page — the hero screen: the instrument bar, five agent
-   channels, and the Flight log. Only .os- selectors, so legacy pages are
-   never affected. */
-
-.os-fleet {
-  max-width: 1360px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-7);
-}
-
-/* Header: a static dot-matrix grid behind the title area only, radial-masked
-   so it fades out. Pure CSS, zero CPU. */
-.os-fleet__header {
-  position: relative;
-  padding-top: var(--os-sp-2);
-}
-.os-fleet__header::before {
-  content: "";
-  position: absolute;
-  inset: -16px -16px auto -16px;
-  height: 420px;
-  background-image: radial-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px);
-  background-size: 24px 24px;
-  -webkit-mask-image: radial-gradient(ellipse 720px 380px at 20% 0%, black 0%, transparent 72%);
-  mask-image: radial-gradient(ellipse 720px 380px at 20% 0%, black 0%, transparent 72%);
-  pointer-events: none;
-  z-index: 0;
-}
-.os-fleet__header > * {
-  position: relative;
-  z-index: 1;
-}
-.os-fleet__header-row {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--os-sp-3) var(--os-sp-5);
-  justify-content: space-between;
-  margin-top: var(--os-sp-2);
-}
-.os-fleet__header h1 {
-  margin: 0;
-  font-size: var(--os-fs-44);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: var(--os-lh-display);
-  color: var(--os-text-1);
-}
-.os-fleet__status-sentence {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  font-size: var(--os-fs-13);
-  color: var(--os-text-2);
-}
-
-.os-fleet__banner {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-3);
-  padding: var(--os-sp-4) var(--os-sp-5);
-  border-radius: var(--os-r-lg);
-  background: rgba(245, 184, 75, 0.08);
-  border: 1px solid rgba(245, 184, 75, 0.3);
-  color: var(--os-text-1);
-}
-.os-fleet__banner svg {
-  color: var(--os-warn);
-  flex: 0 0 auto;
-}
-.os-fleet__banner button {
-  margin-left: auto;
-}
-
-/* --- Instrument bar: the four readouts in one panel ---------------------- */
-.os-instrument {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  background: linear-gradient(180deg, var(--os-surface-1), var(--os-bg-1));
-  border-radius: var(--os-r-lg);
-  box-shadow: var(--os-e1);
-  overflow: hidden;
-}
-.os-instrument::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.35), transparent);
-}
-.os-instrument__cell {
-  padding: var(--os-sp-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-2);
-  border-left: 1px solid var(--os-line-1);
-  min-width: 0;
-}
-.os-instrument__cell:first-child {
-  border-left: 0;
-}
-@media (max-width: 899px) {
-  .os-instrument {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .os-instrument__cell:nth-child(3) {
-    border-left: 0;
-  }
-  .os-instrument__cell:nth-child(n + 3) {
-    border-top: 1px solid var(--os-line-1);
-  }
-}
+/* Home (FleetPage). Shared pieces live in kit.css (header, banner, table,
+   empty state, status words). The Segment meter below stays here because
+   other screens still use it. */
 
 /* Segment meter: one filled/hollow segment per real unit. */
 .os-meter {
@@ -133,310 +19,94 @@
   border-color: var(--os-ok);
 }
 
-/* --- Page body: channel grid + Flight log -------------------------------- */
-.os-fleet__body {
+/* Home (FleetPage). Shared pieces live in kit.css (header, banner, table,
+   empty state, status words). */
+.os-home {
   display: flex;
   flex-direction: column;
   gap: var(--os-sp-6);
+}
+
+.os-home__stage {
+  display: grid;
+  grid-template-columns: 480px minmax(0, 1fr);
+  column-gap: var(--os-sp-8);
+  row-gap: var(--os-sp-6);
   align-items: start;
 }
-/* Five channel cards plus the Flight log as the sixth module: 3×2 on a wide
-   window, 2×3 on a laptop-sized one, one column on a phone. Each module
-   stays at least 300px so names and status never collide. */
-.os-fleet__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-  gap: var(--os-sp-4);
-  width: 100%;
+@media (max-width: 1320px) {
+  .os-home__stage { grid-template-columns: 400px minmax(0, 1fr); column-gap: var(--os-sp-7); }
+  .os-home-agents { --os-table-cols: 126px minmax(0, 1fr) 160px !important; }
 }
-.os-fleet__grid > * {
-  /* Grid items default to min-width:auto, which lets a nowrap-truncated
-     line (version/status text) force the whole track — and the page —
-     wider than the viewport. This is what caused horizontal scroll at 375. */
-  min-width: 0;
-}
-@media (min-width: 900px) {
-  /* The log sizes to its row (set by the cards) and scrolls inside, so a
-     long run history never stretches the neighbouring cards. */
-  .os-fleet__grid > .os-flightlog {
-    height: 0;
-    min-height: 100%;
-    overflow: auto;
-  }
-}
-@media (max-width: 899px) {
-  .os-fleet__grid {
-    grid-template-columns: 1fr;
-  }
-  .os-instrument {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+@media (max-width: 1100px) {
+  .os-home__stage { grid-template-columns: minmax(0, 1fr); }
+  .os-orbit__svg { max-width: 420px; }
 }
 
-/* --- Channel card: an instrument module ---------------------------------- */
-.os-fleet-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-3);
-  height: 100%;
-  border: 1px solid transparent;
-  background:
-    linear-gradient(var(--os-surface-1), var(--os-surface-1)) padding-box,
-    linear-gradient(135deg, rgba(148, 163, 184, 0.22), rgba(148, 163, 184, 0.06)) border-box;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  transition: transform var(--os-dur-quick) var(--os-ease-out), background var(--os-dur-quick) var(--os-ease-out),
-    opacity var(--os-dur-slow) var(--os-ease-out);
-}
-.os-fleet-card:hover {
-  transform: translateY(-1px);
-  background:
-    linear-gradient(var(--os-surface-1), var(--os-surface-1)) padding-box,
-    linear-gradient(135deg, rgba(148, 163, 184, 0.34), rgba(148, 163, 184, 0.1)) border-box;
-}
-
-/* Checking -> resolved: the "fleet comes online" moment. Starts dim, fades
-   to full opacity the instant the real detection result is in hand. The
-   global prefers-reduced-motion reset (tokens.css) collapses this to an
-   effectively instant snap, per the brief. */
-.os-fleet-card--checking {
-  opacity: 0.55;
-}
-.os-fleet-card--resolved {
-  opacity: 1;
-}
-
-.os-fleet-card__topline {
-  position: absolute;
-  top: 0;
-  left: var(--os-r-lg);
-  right: var(--os-r-lg);
-  height: 2px;
-  border-radius: var(--os-r-pill);
-  background: var(--os-card-c, var(--os-line-2));
-  opacity: 0.6;
-}
-.os-fleet-card__topglow {
-  position: absolute;
-  top: -10px;
-  left: 10%;
-  right: 10%;
-  height: 24px;
-  background: var(--os-card-c, transparent);
-  opacity: 0.12;
-  filter: blur(12px);
-  pointer-events: none;
-}
-
-.os-fleet-card__head {
+/* The Orbit: tokens only, no gradients or filters (decision D-C2-7) */
+.os-orbit { margin: 0; }
+.os-orbit__svg { display: block; width: 100%; height: auto; max-width: 470px; }
+.os-orbit__svg text { font-family: var(--os-font-ui); }
+.os-orbit__divider { stroke: var(--os-line-2); stroke-width: 1; stroke-dasharray: 1 5; stroke-linecap: round; }
+.os-orbit__rule { stroke: var(--os-line-2); stroke-width: 1; }
+.os-orbit__ring { fill: none; stroke: var(--os-line-2); stroke-width: 1; }
+.os-orbit__ring--inner { stroke: var(--os-line-1); }
+.os-orbit__connector { stroke: var(--os-line-3); stroke-width: 1.3; stroke-dasharray: 1.6 4.6; stroke-linecap: round; }
+.os-orbit__tick { stroke: var(--os-line-2); stroke-width: 1; }
+.os-orbit__tick--major { stroke: var(--os-line-3); }
+.os-orbit__face { fill: var(--os-surface-2); stroke: var(--os-line-2); stroke-width: 1.25; }
+.os-orbit__face-edge { fill: none; stroke: var(--os-line-1); stroke-width: 1; }
+.os-orbit__port { fill: var(--os-bg-0); stroke: var(--os-line-3); stroke-width: 1.25; }
+.os-orbit__node { fill: var(--os-surface-2); stroke: var(--os-text-3); stroke-width: 1.5; }
+.os-orbit__dot { fill: var(--os-line-2); }
+.os-orbit__group { font-size: var(--os-fs-13); font-weight: 620; fill: var(--os-text-2); font-stretch: 90%; }
+.os-orbit__name { font-size: 14.5px; font-weight: 620; fill: var(--os-text-1); font-stretch: 90%; }
+.os-orbit__maker { font-size: 12.5px; fill: var(--os-text-2); }
+.os-orbit__core { font-size: 14.5px; font-weight: 650; fill: var(--os-text-1); font-stretch: 87.5%; }
+.os-orbit__version { font-family: var(--os-font-mono) !important; font-size: 11px; fill: var(--os-text-3); }
+.os-orbit__state { font-size: var(--os-fs-12); font-weight: 560; fill: var(--os-text-1); }
+.os-orbit__note {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--os-sp-3);
-}
-.os-fleet-card__id {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-3);
-  min-width: 0;
-}
-.os-fleet-card__mono-tile {
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--os-r-md);
-  background: var(--os-surface-3);
-  border: 1px solid var(--os-line-2);
-  display: grid;
-  place-items: center;
-  font-family: var(--os-font-mono);
+  gap: var(--os-sp-2);
+  max-width: 460px;
+  margin-top: var(--os-sp-1);
   font-size: var(--os-fs-13);
-  color: var(--os-text-1);
-}
-.os-fleet-card__head strong {
-  display: block;
-  font-size: var(--os-fs-16);
-  color: var(--os-text-1);
-}
-.os-fleet-card__role {
-  display: block;
-  font-size: var(--os-fs-12);
-  color: var(--os-text-3);
-  margin-top: 2px;
-}
-.os-fleet-card__status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  font-size: var(--os-fs-12);
-  color: var(--os-text-2);
-  white-space: nowrap;
-  flex: 0 0 auto;
-}
-
-.os-fleet-card__version {
-  margin: 0;
-  font-size: var(--os-fs-12);
-  color: var(--os-text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.os-fleet-card__gateway {
-  margin: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  font-size: var(--os-fs-12);
+  line-height: 1.45;
   color: var(--os-text-2);
 }
+.os-orbit__note svg { margin-top: 2px; color: var(--os-text-3); flex: 0 0 auto; }
 
-.os-fleet-card__warning {
-  margin: 0;
-  font-size: var(--os-fs-12);
-  color: var(--os-warn);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* The agent table */
+.os-home-agents .os-table__row { min-height: 58px; }
+.os-home-brain__t { display: block; font-size: var(--os-fs-14); font-weight: 520; line-height: 1.3; }
+.os-home-brain__model { display: block; margin-top: 3px; font-size: 11px; color: var(--os-text-2); overflow-wrap: anywhere; line-height: 1.3; }
+.os-home-agent__where { display: block; margin-top: 3px; font-size: var(--os-fs-13); color: var(--os-text-2); line-height: 1.35; }
 
-/* Footer meta row pinned to the bottom so equal-height cards line up even
-   when one card's body content (e.g. a warning line) is taller. */
-.os-fleet-card__footer {
-  margin-top: auto;
-  padding-top: var(--os-sp-2);
-  border-top: 1px solid var(--os-line-1);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-/* --- Activity trace: visible lane, ticks, dashed baseline at idle -------- */
-.os-trace {
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-1);
-}
-.os-trace__lane {
-  position: relative;
-  background: rgba(5, 7, 11, 0.6);
-  border: 1px solid var(--os-line-1);
-  border-radius: var(--os-r-sm);
-  transition: border-color var(--os-dur-slow) var(--os-ease-out);
-}
-.os-trace--live .os-trace__lane {
-  border-color: rgba(92, 225, 255, 0.35);
-}
-.os-trace__svg {
-  width: 100%;
-  height: 40px;
-  display: block;
-}
-.os-trace__tick {
-  stroke: var(--os-line-1);
-  stroke-width: 1;
-}
-.os-trace__baseline {
-  stroke: var(--os-line-2);
-  stroke-width: 1;
-  stroke-dasharray: 3 3;
-}
-.os-trace__bar {
-  fill: var(--os-surface-3);
-}
-.os-trace__bar--active {
-  fill: var(--os-accent);
-}
-.os-trace__axis {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 2px;
-}
-.os-trace--live .os-trace__label {
-  color: var(--os-accent);
+/* Recent activity */
+.os-home-activity { display: flex; flex-direction: column; gap: var(--os-sp-3); }
+.os-home-activity__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--os-sp-4); flex-wrap: wrap; }
+.os-home-activity__head h2 { margin: 0; font-size: var(--os-fs-20); font-stretch: 87.5%; letter-spacing: -0.02em; }
+.os-home-activity__quiet { display: flex; align-items: center; gap: var(--os-sp-2); flex-wrap: wrap; margin: 0; font-size: var(--os-fs-13); color: var(--os-text-2); }
+.os-home-activity__quiet .os-mono { color: var(--os-text-1); }
+.os-home-activity__quiet a { color: var(--os-accent-strong); }
+.os-home-activity__bar { width: 1px; height: 14px; background: var(--os-line-2); }
+.os-home-activity__status { margin: 0; padding: var(--os-sp-3) 0; }
+.os-home-runs .os-table__row { min-height: 56px; }
+@media (max-width: 1100px) {
+  .os-home-runs { --os-table-cols: 130px minmax(0, 1fr) 70px 70px !important; }
+  .os-home-runs .os-table__cell:nth-child(3),
+  .os-home-runs .os-table__cell:nth-child(6) { display: none; }
 }
 
-/* --- Flight log: vertical timeline rail of the most recent runs --------- */
-.os-flightlog {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-3);
-  width: 100%;
-}
-.os-flightlog::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: var(--os-r-lg);
-  right: var(--os-r-lg);
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(92, 225, 255, 0.35), transparent);
-}
-.os-flightlog__title {
-  margin: 0;
-  font-size: var(--os-fs-16);
-  color: var(--os-text-1);
-}
-.os-flightlog__rail {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  position: relative;
-}
-.os-flightlog__rail::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 4px;
-  bottom: 4px;
-  width: 1px;
-  background: var(--os-line-2);
-}
-.os-flightlog__node {
-  position: relative;
-  list-style: none;
-  padding: 0 0 var(--os-sp-4) var(--os-sp-6);
-}
-.os-flightlog__node:last-child {
-  padding-bottom: 0;
-}
-.os-flightlog__mark {
-  position: absolute;
-  left: -1px;
-  top: 2px;
-}
-.os-flightlog__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-1);
-}
-.os-flightlog__row {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  font-size: var(--os-fs-13);
-}
-.os-flightlog__row--meta {
-  color: var(--os-text-3);
-  font-size: var(--os-fs-12);
-  gap: var(--os-sp-3);
-}
-.os-flightlog__monogram {
-  flex: 0 0 auto;
-  color: var(--os-text-3);
-  font-size: var(--os-fs-11);
-}
-.os-flightlog__run-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--os-text-1);
-}
-.os-flightlog__empty {
-  margin: 0 0 var(--os-sp-3);
-  color: var(--os-text-3);
-  font-size: var(--os-fs-13);
-  max-width: 34ch;
+/* A very narrow window (320 px leaves about 288 px): three columns no longer fit, so
+   the agent table puts the brain under the name and the runs table keeps only Result
+   and Task. Everything dropped here is on the Agents and Runs pages. */
+@media (max-width: 560px) {
+  .os-home-agents { --os-table-cols: minmax(0, 1fr) 124px !important; }
+  .os-home-agents .os-table__head .os-table__cell:nth-child(2) { display: none; }
+  .os-home-agents .os-home-brain { grid-column: 1 / -1; grid-row: 2; }
+  .os-home-agents .os-home-brain + .os-table__cell { grid-column: 2; grid-row: 1; }
+  .os-home-runs { --os-table-cols: 116px minmax(0, 1fr) !important; }
+  .os-home-runs .os-table__cell:nth-child(n + 3) { display: none; }
 }

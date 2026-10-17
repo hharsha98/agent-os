@@ -3,6 +3,7 @@
 // stays trapped inside, and focus returns to whatever opened it.
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { CircleAlert } from "lucide-react";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
 
@@ -13,6 +14,8 @@ export default function SetupModal({
   onConfirm,
   onClose,
   confirmDisabled = false,
+  cancelLabel = "Cancel",
+  confirmTone = "primary",
   busy = false,
   error = ""
 }: {
@@ -22,6 +25,9 @@ export default function SetupModal({
   onConfirm: () => void;
   onClose: () => void;
   confirmDisabled?: boolean;
+  // "Keep going" / "Cancel setup" style pairs read better than two Cancels.
+  cancelLabel?: string;
+  confirmTone?: "primary" | "danger";
   busy?: boolean;
   // A server refusal shown inside the dialog, so the person can read it
   // and fix it without the dialog vanishing first.
@@ -74,14 +80,15 @@ export default function SetupModal({
         <div className="os-setup-modal__body">{children}</div>
         {error ? (
           <p className="os-setup-modal__error" role="alert">
-            {error}
+            <CircleAlert size={16} aria-hidden="true" />
+            <span>{error}</span>
           </p>
         ) : null}
         <div className="os-setup-modal__actions">
           <button type="button" className="os-btn os-btn--ghost" onClick={onClose} disabled={busy}>
-            Cancel
+            {cancelLabel}
           </button>
-          <button type="button" className="os-btn os-btn--primary" onClick={onConfirm} disabled={confirmDisabled || busy}>
+          <button type="button" className={`os-btn os-btn--${confirmTone}`} onClick={onConfirm} disabled={confirmDisabled || busy}>
             {busy ? "Working…" : confirmLabel}
           </button>
         </div>

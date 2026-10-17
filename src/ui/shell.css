@@ -1,18 +1,48 @@
-/* Layout for the new app shell: a 48px status strip across the top, a
-   248px sidebar below it, and content offset to clear both. One
-   breakpoint (900px) governs both the menu button and the off-canvas
-   sidebar — the old shell used two (840 and 900) and they disagreed. */
+/* Layout for the new app shell, as in the approved prototype.
+   901px and wider: the sidebar (--os-side-w wide) runs the full window height
+   from the top, with the logo in its first row; the top bar (48px, 56px above
+   1366px) starts at the sidebar's right edge, so the logo and the search field
+   share one band; the content sits under the bar, to the right of the sidebar.
+   Between 901px and 1366px (a 13-14" laptop) the sidebar is a 64px icon rail
+   instead, and the bar starts at 64px; see the "icon rail" block below.
+   900px and narrower: the bar spans the whole window (menu button, search, ...)
+   and the menu is an off-canvas panel under it. One breakpoint (900px) governs
+   both the menu button and the off-canvas sidebar — the old shell used two
+   (840 and 900) and they disagreed.
 
+   Colour note: base.css sets `.os-shell button { color }` (specificity 0,1,1),
+   which beats a lone class. Every rule here that sets a colour on a button is
+   written with two classes (0,2,0) so its colour really applies. */
+
+/* --os-bar-h is the top bar's height; everything that sits under the bar
+   (content, the off-canvas menu and its backdrop) and the logo row use it. It
+   is 48px in a laptop window (the icon rail range and below) and
+   --os-topbar-h (56px) above 1366px.
+   --os-bar-ctl-h is the height of the controls in the bar: 32px in the 48px
+   bar, 36px in the 56px bar (the approved prototype's size). */
 .os-shell {
+  --os-bar-h: 48px;
+  --os-bar-ctl-h: 32px;
+  --os-rail-w: 64px;
   min-height: 100svh;
 }
+@media (min-width: 1367px) {
+  .os-shell {
+    --os-bar-h: var(--os-topbar-h);
+    --os-bar-ctl-h: 36px;
+  }
+}
 
+/* The top bar: menu button (narrow windows) and search on the left; the
+   "Get started" pill, the safety level and "Hold to stop all" on the right.
+   One row that never wraps, so narrower windows drop pieces instead (see
+   the media queries below). */
 .os-statusbar {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 48px;
+  height: var(--os-bar-h);
   z-index: 40;
   display: flex;
   align-items: center;
@@ -21,43 +51,224 @@
   background: var(--os-bg-1);
   border-bottom: 1px solid var(--os-line-1);
 }
-
-.os-statusbar__chips {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  margin-left: auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.os-statusbar__spacer {
+  flex: 1;
+  min-width: 0;
 }
 
-/* One instrument-style segmented group instead of loose pills: hairline
-   dividers, mono values. */
-.os-statusbar__group {
-  display: flex;
-  align-items: stretch;
-  height: 30px;
-  border-radius: var(--os-r-md);
+/* The search field, the "Get started" pill, the safety level and the hold
+   button share one height (--os-bar-ctl-h). */
+.os-palette-trigger,
+.os-gs-pill,
+.os-statusbar .os-statusbar__level,
+.os-statusbar .os-holdstop {
+  height: var(--os-bar-ctl-h);
+  min-height: var(--os-bar-ctl-h);
+  font-size: var(--os-fs-13);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.os-palette-trigger,
+.os-gs-pill {
+  padding: 0 var(--os-sp-3);
+}
+/* The search trigger is a field: surface-1 with a hairline, its hint in the
+   faint ink the prototype uses for a placeholder. Written with .os-btn too (three
+   classes), so it beats the ghost button's own colours (.os-btn.os-btn--ghost in
+   base.css) whichever stylesheet loads last. */
+.os-statusbar .os-btn.os-palette-trigger {
   background: var(--os-surface-1);
-  border: 1px solid var(--os-line-1);
-  overflow: hidden;
+  border-color: var(--os-line-2);
+  color: var(--os-text-3);
+  font-weight: 400;
 }
-.os-statusbar__seg {
-  display: flex;
+.os-statusbar .os-btn.os-palette-trigger:hover {
+  background: var(--os-surface-1);
+  border-color: var(--os-line-3);
+  color: var(--os-text-2);
+}
+.os-statusbar .os-btn.os-palette-trigger:active {
+  background: var(--os-surface-2);
+}
+/* The search trigger reads as a field: icon and word on the left, the key hint on the right. */
+.os-palette-trigger--field {
+  width: min(340px, 28vw);
+  justify-content: flex-start;
+}
+.os-palette-trigger--field .os-kbd {
+  margin-left: auto;
+}
+.os-gs-pill svg {
+  color: var(--os-text-2);
+}
+
+/* The safety level: a ghost button, the level number in full-strength ink. */
+.os-statusbar .os-statusbar__level {
+  display: inline-flex;
   align-items: center;
   gap: var(--os-sp-2);
   padding: 0 var(--os-sp-3);
-  font-size: var(--os-fs-12);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--os-r-sm);
   color: var(--os-text-2);
-  white-space: nowrap;
-  border-left: 1px solid var(--os-line-1);
+  font-family: var(--os-font-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out);
 }
-.os-statusbar__seg:first-child {
-  border-left: 0;
+.os-statusbar .os-statusbar__level:hover {
+  background: var(--os-surface-2);
+  color: var(--os-text-1);
 }
-.os-statusbar__seg-value {
-  font-family: var(--os-font-mono);
-  font-variant-numeric: tabular-nums;
+.os-statusbar .os-statusbar__level:active {
+  background: var(--os-surface-3);
+}
+.os-statusbar__level b {
+  color: var(--os-text-1);
+  font-weight: 600;
+}
+
+/* "Hold to stop all": a danger ghost button. The fill grows left to right
+   over the 1.2 s hold (HOLD_MS in HoldToStopAll.tsx); letting go drains it. */
+.os-statusbar .os-holdstop {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--os-sp-2);
+  min-width: 152px;
+  padding: 0 var(--os-sp-3);
+  background: transparent;
+  border: 1px solid var(--os-danger-line);
+  border-radius: var(--os-r-sm);
+  color: var(--os-danger);
+  font-family: var(--os-font-ui);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  transition: background var(--os-dur-quick) var(--os-ease-out), border-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-statusbar .os-holdstop:hover:not(:disabled) {
+  background: var(--os-danger-wash);
+  border-color: var(--os-danger);
+}
+/* While held, the words step up to full ink: danger-red words on the filling
+   red measure 3.1:1 at full fill, full ink measures 8.3:1. The icon follows. */
+.os-statusbar .os-holdstop.is-holding {
+  border-color: var(--os-danger);
+  color: var(--os-text-1);
+}
+/* Busy (a stop is in flight): the calm disabled look, with no opacity on the words. */
+.os-statusbar .os-holdstop:disabled {
+  background: var(--os-surface-1);
+  border-color: var(--os-line-1);
+  color: var(--os-disabled);
+  cursor: progress;
+}
+.os-holdstop__fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: left;
+  background: var(--os-danger-line);
+  transition: transform 120ms var(--os-ease-out);
+  pointer-events: none;
+}
+.os-holdstop.is-holding .os-holdstop__fill {
+  transform: scaleX(1);
+  transition: transform 1200ms linear;
+}
+/* The icon and the words sit above the fill. */
+.os-holdstop svg,
+.os-holdstop__label {
+  position: relative;
+}
+
+/* The list in the palette's "Stop all agent work?" dialog (laptop.css rule: long text wraps or ends in "…").
+   A session titled after a folder with one very long name wraps inside the 440px dialog instead of running out of it. */
+.os-stopall__list li {
+  overflow-wrap: anywhere;
+}
+
+/* The result of "Hold to stop all": a short message at the bottom of the window. */
+.os-toast {
+  position: fixed;
+  left: 50%;
+  bottom: var(--os-sp-6);
+  transform: translateX(-50%);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-3);
+  /* left: 50% would limit an auto-width box to about half the window, so size
+     it to its words, then cap it at 520px and at the window minus its margins. */
+  width: max-content;
+  max-width: min(520px, calc(100vw - 2 * var(--os-sp-4)));
+  padding: var(--os-sp-3) var(--os-sp-3) var(--os-sp-3) var(--os-sp-4);
+  background: var(--os-surface-3);
+  border-radius: var(--os-r-md);
+  box-shadow: var(--os-e3);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  animation: os-toast-in var(--os-dur-base) var(--os-ease-out);
+}
+@keyframes os-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+/* The update notice (updateBanner.css) sits at the bottom of the window too:
+   its bar starts var(--os-sp-5) above the edge and is 48px tall (44px in
+   compact density, where its padding is tighter). While it shows, lift the
+   toast above it, with a gap, so the toast never covers it. With the release
+   notes open (a box up to 220px tall, under the bar with a var(--os-sp-2) gap)
+   the toast goes above those as well. */
+.os-shell:has(.os-update__bar) .os-toast {
+  bottom: calc(var(--os-sp-5) + 48px + var(--os-sp-3));
+}
+.os-shell:has(.os-update__notes) .os-toast {
+  bottom: calc(var(--os-sp-5) + 48px + var(--os-sp-2) + 220px + var(--os-sp-3));
+}
+.os-toast > svg {
+  flex: 0 0 auto;
+}
+.os-toast--ok > svg {
+  color: var(--os-ok);
+}
+.os-toast--warn > svg {
+  color: var(--os-warn);
+}
+.os-toast--danger > svg {
+  color: var(--os-danger);
+}
+.os-toast--neutral > svg {
+  color: var(--os-text-2);
+}
+.os-toast__text {
+  flex: 1;
+  min-width: 0;
+}
+.os-toast .os-toast__close {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--os-r-sm);
+  color: var(--os-text-2);
+  cursor: pointer;
+}
+.os-toast .os-toast__close:hover {
+  background: var(--os-line-2);
   color: var(--os-text-1);
 }
 
@@ -67,10 +278,10 @@
 
 .os-sidebar {
   position: fixed;
-  top: 48px;
+  top: var(--os-bar-h);
   left: 0;
   bottom: 0;
-  width: 248px;
+  width: var(--os-side-w);
   background: var(--os-bg-1);
   border-right: 1px solid var(--os-line-1);
   padding: var(--os-sp-5) var(--os-sp-3) var(--os-sp-4);
@@ -84,140 +295,144 @@
   display: flex;
   align-items: center;
   gap: var(--os-sp-3);
-  padding: 0 var(--os-sp-2) var(--os-sp-5);
+  padding: 0 var(--os-sp-2) var(--os-sp-6);
 }
 
-.os-logo-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--os-r-md);
-  background: linear-gradient(135deg, var(--os-accent), var(--os-accent-strong));
-  color: var(--os-accent-ink);
-  display: grid;
-  place-items: center;
-  font-weight: 800;
-  font-size: var(--os-fs-16);
+/* The Orbit mark (Logo.tsx): 24px, drawn in the menu's ink; its lit dot is cobalt. */
+.os-logo__mark {
   flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  color: var(--os-text-1);
 }
 
 .os-logo strong {
   display: block;
-  font-size: var(--os-fs-14);
+  font-size: var(--os-fs-17);
+  font-weight: 600;
+  font-stretch: 87.5%;
+  letter-spacing: -0.012em;
+  line-height: 1;
   color: var(--os-text-1);
 }
 
-.os-logo span {
-  display: block;
-}
-
-.os-logo-mark {
-  position: relative;
-  overflow: hidden;
-}
-.os-logo-mark::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.28), transparent 55%);
-}
-
+/* The menu scrolls when it is taller than the window, and a scroll box clips
+   what sticks out of it. The 4px of padding (undone by the matching negative
+   margin) is room for the focus ring (2px outline + 2px offset) at every edge. */
 .os-nav {
   display: flex;
   flex-direction: column;
-  gap: var(--os-sp-1);
+  gap: 2px;
   flex: 1;
   overflow-y: auto;
+  padding: 4px;
+  margin: -4px;
 }
 
-/* Sidebar bottom: the real execution-gate level (0/1/2), not just a label. */
-.os-sidebar__safety {
-  flex: 0 0 auto;
-  margin-top: var(--os-sp-3);
-  padding-top: var(--os-sp-3);
-  border-top: 1px solid var(--os-line-1);
+/* A menu row: 34px, 16px icon in faint ink, the label in soft ink. Hover lifts
+   it to full ink on surface-1; the current page is surface-2 (a raised row, no
+   coloured edge). Two classes, so these colours beat `.os-shell button`. */
+.os-sidebar .os-nav__item {
   display: flex;
   align-items: center;
   gap: var(--os-sp-2);
-  background: transparent;
-  border-left: 0;
-  border-right: 0;
-  border-bottom: 0;
-  color: var(--os-text-2);
-  font-size: var(--os-fs-13);
-  font-family: var(--os-font-ui);
-  padding-left: var(--os-sp-2);
-  padding-right: var(--os-sp-2);
-  padding-bottom: 0;
-  cursor: pointer;
-  text-align: left;
-  min-height: 32px;
-  border-radius: var(--os-r-md);
-}
-.os-sidebar__safety:hover {
-  color: var(--os-text-1);
-  background: var(--os-surface-2);
-}
-
-.os-nav__section {
-  margin: var(--os-sp-2) var(--os-sp-2) var(--os-sp-1);
-}
-
-.os-nav__item {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  min-height: 36px;
+  min-height: 34px;
   padding: 0 var(--os-sp-3);
-  border-radius: var(--os-r-md);
+  border-radius: var(--os-r-sm);
   color: var(--os-text-2);
   background: transparent;
   border: 0;
   text-align: left;
   cursor: pointer;
   font-size: var(--os-fs-14);
+  font-weight: 500;
   font-family: var(--os-font-ui);
   transition: background var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out);
 }
-.os-nav__item:hover {
+.os-sidebar .os-nav__item > svg {
+  flex: 0 0 auto;
+  color: var(--os-text-3);
+}
+.os-sidebar .os-nav__item:hover {
+  background: var(--os-surface-1);
+  color: var(--os-text-1);
+}
+.os-sidebar .os-nav__item:active {
   background: var(--os-surface-2);
+}
+.os-sidebar .os-nav__item.is-active,
+.os-sidebar .os-nav__item[aria-current="page"] {
+  background: var(--os-surface-2);
+  box-shadow: var(--os-e1);
   color: var(--os-text-1);
 }
-.os-nav__item.is-active {
-  position: relative;
-  background: var(--os-accent-soft);
+.os-sidebar .os-nav__item.is-active > svg,
+.os-sidebar .os-nav__item[aria-current="page"] > svg {
   color: var(--os-text-1);
-}
-.os-nav__item.is-active::before {
-  content: "";
-  position: absolute;
-  left: -1px;
-  top: 6px;
-  bottom: 6px;
-  width: 2px;
-  border-radius: var(--os-r-pill);
-  background: var(--os-accent);
-  box-shadow: 0 0 8px rgba(92, 225, 255, 0.6);
 }
 
-.os-nav__labs-toggle {
+/* "3 of 4" after Setup: at the right edge, quiet. */
+.os-nav__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-1);
+  margin-left: auto;
+  font-size: var(--os-fs-12);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--os-text-3);
+}
+
+/* Labs: the same row as the menu, set apart by one hairline above it. */
+.os-sidebar .os-nav__labs-toggle {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--os-sp-2);
-  margin-top: var(--os-sp-5);
-  min-height: 32px;
+  margin-top: var(--os-sp-6);
+  min-height: 34px;
   padding: 0 var(--os-sp-3);
   background: transparent;
-  border: 1px solid var(--os-line-1);
-  border-radius: var(--os-r-md);
+  border: 0;
+  border-radius: var(--os-r-sm);
   color: var(--os-text-2);
   cursor: pointer;
+  text-align: left;
+  font-size: var(--os-fs-14);
+  font-weight: 500;
   font-family: var(--os-font-ui);
+  transition: background var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out);
 }
-.os-nav__labs-toggle:hover {
-  border-color: var(--os-line-2);
+.os-nav__labs-toggle::before {
+  content: "";
+  position: absolute;
+  left: var(--os-sp-2);
+  right: var(--os-sp-2);
+  top: calc(-1 * var(--os-sp-3));
+  height: 1px;
+  background: var(--os-line-1);
+}
+.os-sidebar .os-nav__labs-toggle > svg:first-child {
+  flex: 0 0 auto;
+  color: var(--os-text-3);
+}
+.os-sidebar .os-nav__labs-toggle:hover {
+  background: var(--os-surface-1);
+  color: var(--os-text-1);
+}
+.os-sidebar .os-nav__labs-toggle:active {
+  background: var(--os-surface-2);
+}
+/* "Labs" is a normal menu label here, not the small caption style. */
+.os-nav__labs-toggle .os-micro {
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: 0;
+  color: inherit;
 }
 .os-nav__chevron {
   margin-left: auto;
+  color: var(--os-text-3);
   transition: transform var(--os-dur-quick) var(--os-ease-out);
 }
 .os-nav__chevron.is-open {
@@ -226,10 +441,35 @@
 .os-nav__labs {
   display: flex;
   flex-direction: column;
-  gap: var(--os-sp-1);
-  margin-top: var(--os-sp-2);
-  padding-left: var(--os-sp-2);
-  border-left: 1px solid var(--os-line-1);
+  gap: 2px;
+  margin-top: 2px;
+  padding-left: var(--os-sp-4);
+}
+
+/* Sidebar bottom: where Agent OS runs, and which version. */
+.os-sidebar__footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin-top: var(--os-sp-4);
+  padding: var(--os-sp-4) var(--os-sp-2) 0;
+  border-top: 1px solid var(--os-line-1);
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-sidebar__footer > svg {
+  flex: 0 0 auto;
+}
+.os-sidebar__version {
+  color: var(--os-text-3);
+  white-space: nowrap;
+}
+/* "On this Mac · v0.3.2": the dot is drawn here, not in the markup (hidden from screen readers). */
+.os-sidebar__version::before {
+  content: "·";
+  content: "·" / "";
+  margin-right: var(--os-sp-2);
 }
 
 .os-menu-backdrop {
@@ -240,12 +480,26 @@
    than phase2.css's plain .aos-phase2-content so this wins regardless of
    import order, without touching that file. */
 .os-shell .aos-phase2-content {
-  margin-top: 48px;
-  margin-left: 248px;
-  width: calc(100% - 248px);
-  min-height: calc(100svh - 48px);
+  margin-top: var(--os-bar-h);
+  margin-left: var(--os-side-w);
+  width: calc(100% - var(--os-side-w));
+  min-height: calc(100svh - var(--os-bar-h));
   padding: var(--os-sp-7) var(--os-sp-7) var(--os-sp-9);
   box-sizing: border-box;
+}
+
+/* The top bar is fixed to the top of the window, so whatever a page scrolls to (scrollIntoView, or
+   keyboard focus moved by code) must stop below it instead of sliding underneath. These are the
+   core-page targets; Workspace and Setup do the same for their own headings in workspace.css and
+   setup.css. Home: the Get started card. Setup and Agents: the OpenRouter card. Team Room: the
+   decisions and their cards. Safety: the level buttons. Workspace: the file rows. */
+.os-shell #os-get-started,
+.os-shell .os-brain-card,
+.os-shell #os-team-decisions,
+.os-shell .os-team__decision,
+.os-shell .os-saf-level,
+.os-shell .os-ws__row {
+  scroll-margin-top: calc(var(--os-bar-h) + var(--os-sp-4));
 }
 
 @media (max-width: 900px) {
@@ -268,7 +522,7 @@
   .os-menu-backdrop {
     display: block;
     position: fixed;
-    top: 48px;
+    top: var(--os-bar-h);
     left: 0;
     right: 0;
     bottom: 0;
@@ -277,17 +531,234 @@
     z-index: 25;
     padding: 0;
   }
-  .os-statusbar__seg {
+}
+
+/* --- Desktop layout: 901px and wider -----------------------------------------
+   The sidebar starts at the very top and its first row is the logo, as tall as
+   the bar. The bar starts at the sidebar's right edge (the rail block below
+   moves that edge to 64px) and is the canvas colour, so its bottom hairline
+   runs only across the content and the sidebar's right hairline runs the whole
+   height. The bar's side padding follows the content's (see laptop.css), so the
+   search field and the page start on one line. */
+@media (min-width: 901px) {
+  .os-statusbar {
+    left: var(--os-side-w);
+    padding: 0 var(--os-sp-6);
+    background: var(--os-bg-0);
+  }
+  .os-sidebar {
+    top: 0;
+    padding: 0 var(--os-sp-3) var(--os-sp-4);
+  }
+  .os-logo {
+    flex: 0 0 auto;
+    height: var(--os-bar-h);
+    padding: 0 var(--os-sp-2);
+    margin-bottom: var(--os-sp-4);
+  }
+}
+@media (min-width: 1441px) {
+  .os-statusbar {
+    padding: 0 var(--os-sp-7);
+  }
+}
+
+/* --- Icon rail: 901-1366px (a 13-14" laptop) ------------------------------
+   The sidebar shrinks to 64px of icons. Labels stay in the page for screen
+   readers (clipped, not removed) and appear as a tooltip on hover or focus.
+   "Expand" opens the full sidebar OVER the page, so the page itself never
+   reflows. Keep 1366px in step with RAIL_BREAKPOINT in Shell.tsx.
+
+   Stacking (low to high): the collapsed rail (30), the bar (40), the dimmed
+   backdrop (44), the expanded sidebar (45). The expanded sidebar is a drawer
+   from the top edge: it covers the left of the bar (the bar itself does not
+   move), and the backdrop dims the bar and the page together, so a click
+   anywhere outside the drawer, or Escape, closes it. */
+.os-rail-toggle,
+.os-rail-backdrop {
+  display: none;
+}
+
+.os-rail-tip {
+  position: fixed;
+  left: 72px;
+  transform: translateY(-50%);
+  z-index: 60;
+  padding: var(--os-sp-1) var(--os-sp-3);
+  background: var(--os-surface-3);
+  border-radius: var(--os-r-sm);
+  box-shadow: var(--os-e2);
+  color: var(--os-text-1);
+  font-size: var(--os-fs-12);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (min-width: 901px) and (max-width: 1366px) {
+  .os-statusbar {
+    left: var(--os-rail-w, 64px);
+  }
+  .os-sidebar {
+    width: var(--os-rail-w, 64px);
+    padding: 0 var(--os-sp-2) var(--os-sp-4);
+    overflow-x: hidden;
+  }
+  .os-sidebar.is-expanded {
+    width: var(--os-side-w);
+    z-index: 45;
+    box-shadow: var(--os-e3);
+    padding: 0 var(--os-sp-3) var(--os-sp-4);
+  }
+  .os-shell .aos-phase2-content {
+    margin-left: var(--os-rail-w, 64px);
+    width: calc(100% - var(--os-rail-w, 64px));
+  }
+  .os-rail-backdrop {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 44;
+    padding: 0;
+    border: 0;
+    background: rgba(5, 7, 11, 0.45);
+    cursor: default;
+  }
+
+  .os-sidebar .os-rail-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--os-sp-2);
+    min-height: 34px;
+    margin: 0 0 var(--os-sp-3);
+    padding: 0 var(--os-sp-3);
+    background: transparent;
+    border: 1px solid var(--os-line-1);
+    border-radius: var(--os-r-sm);
+    color: var(--os-text-2);
+    cursor: pointer;
+    font-family: var(--os-font-ui);
+    font-size: var(--os-fs-13);
+    transition: background var(--os-dur-quick) var(--os-ease-out), border-color var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out);
+  }
+  .os-sidebar .os-rail-toggle:hover {
+    background: var(--os-surface-1);
+    border-color: var(--os-line-2);
+    color: var(--os-text-1);
+  }
+  .os-sidebar .os-rail-toggle:active {
+    background: var(--os-surface-2);
+  }
+
+  /* Collapsed: one icon per row, labels clipped but still read aloud. */
+  .os-sidebar:not(.is-expanded) .os-logo {
+    padding: 0;
+    margin-bottom: var(--os-sp-3);
+    justify-content: center;
+  }
+  .os-sidebar:not(.is-expanded) .os-rail-toggle,
+  .os-sidebar:not(.is-expanded) .os-nav__item,
+  .os-sidebar:not(.is-expanded) .os-nav__labs-toggle {
+    position: relative;
+    justify-content: center;
+    padding: 0;
+  }
+  .os-sidebar:not(.is-expanded) .os-logo__text,
+  .os-sidebar:not(.is-expanded) .os-nav__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .os-sidebar:not(.is-expanded) .os-nav__chevron {
     display: none;
   }
-  .os-statusbar__seg:first-child {
-    display: flex;
-    border-left: 0;
+  .os-sidebar:not(.is-expanded) .os-nav__item {
+    min-height: 40px;
+  }
+  .os-sidebar:not(.is-expanded) .os-nav__labs-toggle {
+    margin-top: var(--os-sp-5);
+    min-height: 36px;
+  }
+  .os-sidebar:not(.is-expanded) .os-nav__labs {
+    padding-left: 0;
+  }
+  /* The footer is just its icon in the rail (the words and version are clipped
+     with the other labels), so it can never be wider than the 64px rail. */
+  .os-sidebar:not(.is-expanded) .os-sidebar__footer {
+    position: relative;
+    justify-content: center;
+    padding: var(--os-sp-3) 0 0;
+    min-height: 32px;
+    margin-top: var(--os-sp-3);
+  }
+}
+
+/* A narrower window drops the optional top bar pieces, least important first.
+   Dropped words stay in the page for screen readers (clipped, not removed). */
+@media (max-width: 1180px) {
+  .os-palette-trigger--field {
+    width: auto;
+  }
+  .os-palette-trigger__text {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .os-statusbar .os-statusbar__level span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+@media (max-width: 520px) {
+  .os-statusbar {
+    gap: var(--os-sp-2);
+    padding: 0 var(--os-sp-3);
+  }
+  .os-palette-trigger .os-kbd,
+  .os-gs-pill span {
+    display: none;
+  }
+  /* "Hold to stop all" drops its word, like the pill and the level button: with the Get started pill showing,
+     the word no longer fits at 320px and the safety control would be cut off. The words stay in the page for
+     screen readers (clipped, not removed), so the button keeps its name; the fill still shows the hold. */
+  .os-statusbar .os-holdstop {
+    min-width: 0;
+    padding: 0 10px;
+  }
+  .os-statusbar .os-holdstop .os-holdstop__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .os-sidebar {
     transition: none;
+  }
+  /* The hold fill cannot grow here, so it shows a steady half fill while the
+     button is held (as the prototype does) instead of jumping to "done". */
+  .os-holdstop__fill,
+  .os-holdstop.is-holding .os-holdstop__fill {
+    transition: none;
+  }
+  .os-holdstop.is-holding .os-holdstop__fill {
+    transform: scaleX(0.5);
   }
 }

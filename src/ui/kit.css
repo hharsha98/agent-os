@@ -1,0 +1,504 @@
+/* Page kit (SP2): the pieces every core page shares. Tokens only (see
+   tokens.css): no colour literals here. Loaded right after base.css, before
+   shell.css and the page files. Motion is 120-200 ms; tokens.css switches all
+   transitions off under prefers-reduced-motion.
+
+   Colour note (same trap as base.css): `.os-shell button` (0,1,1) sets the
+   colour of every button, so the kit's button-like classes are written with two
+   classes or with `.os-shell` in front, to win. */
+
+/* ---- Page header (PageHeader.tsx) ------------------------------------- */
+.os-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--os-sp-4) var(--os-sp-7);
+  margin: 0 0 var(--os-sp-7);
+}
+.os-page-head__text {
+  flex: 1 1 360px;
+  min-width: 0;
+}
+.os-page-head .os-page-head__eyebrow {
+  margin: 0 0 var(--os-sp-2);
+}
+/* Two classes so it beats the old global `h1` (clamp size, 0.98 line height). */
+.os-page-head .os-page-head__title {
+  margin: 0;
+  font-size: var(--os-fs-34);
+  line-height: 1.1;
+  font-weight: 640;
+  font-stretch: 87.5%;
+  letter-spacing: -0.022em;
+  color: var(--os-text-1);
+  text-wrap: balance;
+}
+.os-page-head__lede {
+  max-width: 70ch;
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-15);
+  line-height: var(--os-lh-body);
+  color: var(--os-text-2);
+  text-wrap: pretty;
+}
+.os-page-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding-top: var(--os-sp-1);
+}
+/* The laptop step (laptop.css does the same for the old page headers). */
+@media (min-width: 901px) and (max-width: 1440px) {
+  .os-page-head .os-page-head__title {
+    font-size: var(--os-fs-32);
+  }
+}
+
+/* ---- Banner (Banner.tsx) ---------------------------------------------- */
+.os-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-4);
+  min-width: 0;
+  padding: var(--os-sp-3) var(--os-sp-4);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-1);
+}
+.os-banner__icon {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 1px;
+  color: var(--os-text-2);
+}
+.os-banner__text {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: var(--os-fs-14);
+  line-height: 1.45;
+  color: var(--os-text-1);
+}
+.os-banner__title {
+  margin: 0;
+  font-weight: 620;
+  color: var(--os-text-1);
+}
+.os-banner__body {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-banner__title + .os-banner__body {
+  margin-top: 2px;
+}
+/* A banner with no title: its words are the message, so full ink at 14px. */
+.os-banner__body--plain {
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+}
+.os-banner__body > :first-child {
+  margin-top: 0;
+}
+.os-banner__body > :last-child {
+  margin-bottom: 0;
+}
+.os-banner__actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-banner--info .os-banner__icon {
+  color: var(--os-accent-strong);
+}
+.os-banner--ok {
+  background: var(--os-ok-wash);
+  border-color: var(--os-ok-line);
+}
+.os-banner--ok .os-banner__icon {
+  color: var(--os-ok);
+}
+.os-banner--warn {
+  background: var(--os-warn-wash);
+  border-color: var(--os-warn-line);
+}
+.os-banner--warn .os-banner__icon {
+  color: var(--os-warn);
+}
+.os-banner--danger {
+  background: var(--os-danger-wash);
+  border-color: var(--os-danger-line);
+}
+.os-banner--danger .os-banner__icon {
+  color: var(--os-danger);
+}
+/* Narrow window: the buttons drop under the words, lined up with them. */
+@media (max-width: 720px) {
+  .os-banner {
+    flex-wrap: wrap;
+  }
+  .os-banner__actions {
+    flex-basis: 100%;
+    padding-left: calc(20px + var(--os-sp-4));
+  }
+}
+
+/* ---- Tabs (Tabs.tsx) -------------------------------------------------- */
+.os-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-1);
+}
+.os-tabs .os-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  height: 32px;
+  padding: 0 var(--os-sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--os-r-sm);
+  background: transparent;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-14);
+  font-weight: 540;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out), border-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-tabs .os-tab[aria-selected="true"] {
+  background: var(--os-surface-3);
+  border-color: var(--os-line-2);
+  color: var(--os-text-1);
+  box-shadow: var(--os-e1);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-tabs .os-tab[aria-selected="false"]:hover {
+    background: var(--os-surface-2);
+    color: var(--os-text-1);
+  }
+}
+.os-shell .os-tabs .os-tab:focus-visible {
+  outline-offset: 1px;
+}
+.os-tab__count {
+  font-size: var(--os-fs-12);
+  color: var(--os-text-3);
+}
+/* surface-3 is too light for the faint ink (4.2:1), so the selected count is soft ink. */
+.os-tabs .os-tab[aria-selected="true"] .os-tab__count {
+  color: var(--os-text-2);
+}
+
+/* ---- Meter (Meter.tsx) ------------------------------------------------ */
+/* .os-gauge, not .os-meter: .os-meter is the Home segment meter (fleet.css). */
+.os-gauge {
+  display: block;
+  min-width: 0;
+}
+.os-gauge__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--os-sp-3);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-gauge__value {
+  font-size: var(--os-fs-13);
+  color: var(--os-text-1);
+}
+.os-gauge__track {
+  height: 6px;
+  margin-top: var(--os-sp-2);
+  border-radius: 3px;
+  background: var(--os-line-2);
+  overflow: hidden;
+}
+/* The calm tone is soft ink, as in the prototype: cobalt stays for the primary
+   action, the live state and the focus ring. */
+.os-gauge__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--os-text-2);
+  transition: width var(--os-dur-base) var(--os-ease-out);
+}
+.os-gauge--warn .os-gauge__fill {
+  background: var(--os-warn);
+}
+.os-gauge--danger .os-gauge__fill {
+  background: var(--os-danger);
+}
+.os-gauge__detail {
+  margin: 5px 0 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.4;
+  color: var(--os-text-3);
+}
+
+/* ---- Empty state (EmptyState.tsx) ------------------------------------- */
+.os-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-4);
+  min-height: 80px;
+  padding: var(--os-sp-3) var(--os-sp-4) var(--os-sp-3) var(--os-sp-5);
+  border: 1px dashed var(--os-line-2);
+  border-radius: var(--os-r-sm);
+}
+.os-empty__icon {
+  flex: none;
+  color: var(--os-text-3);
+}
+.os-empty__text {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.os-empty__title {
+  margin: 0;
+  font-size: var(--os-fs-15);
+  font-weight: 600;
+  font-stretch: 90%;
+  color: var(--os-text-1);
+}
+.os-empty__body {
+  max-width: 70ch;
+  margin: 2px 0 0;
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-empty__action {
+  flex: none;
+}
+@media (max-width: 720px) {
+  .os-empty {
+    flex-wrap: wrap;
+  }
+  .os-empty__action {
+    flex-basis: 100%;
+  }
+}
+
+/* ---- Status word (StatusWord.tsx) ------------------------------------- */
+/* The colour is on the icon only. The word is always in full ink. */
+.os-statusword {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  color: var(--os-text-1);
+  font-weight: 520;
+  white-space: nowrap;
+}
+.os-statusword svg {
+  flex: none;
+}
+.os-statusword--ready svg {
+  color: var(--os-ok);
+}
+.os-statusword--live svg {
+  color: var(--os-accent-strong);
+}
+.os-statusword--waiting svg,
+.os-statusword--held svg,
+.os-statusword--stopped svg {
+  color: var(--os-warn);
+}
+.os-statusword--failed svg {
+  color: var(--os-danger);
+}
+.os-statusword--idle svg {
+  color: var(--os-text-3);
+}
+.os-statusword--unknown,
+.os-statusword--loading {
+  color: var(--os-text-3);
+  font-weight: 450;
+}
+
+/* ---- Tables: grid rows, hairlines, no boxes --------------------------- */
+/* Markup (the page writes it; roles keep it a table for screen readers):
+     <div class="os-table" role="table" aria-label="Runs"
+          style="--os-table-cols: 134px minmax(0, 1fr) 138px 120px">
+       <div class="os-table__head" role="row">
+         <span class="os-table__cell" role="columnheader">Agent</span> ...
+       </div>
+       <div class="os-table__row" role="row">
+         <div class="os-table__cell" role="cell">...</div> ...
+       </div>
+     </div>
+   Always write a flexible column as `minmax(0, 1fr)`, never a bare `1fr`, or a
+   long name pushes the page sideways. In React the page sets the variable in
+   `style={{ "--os-table-cols": "..." } as React.CSSProperties}`. */
+.os-table {
+  width: 100%;
+  min-width: 0;
+}
+.os-table__head,
+.os-table__row {
+  display: grid;
+  grid-template-columns: var(--os-table-cols, minmax(0, 1fr));
+  column-gap: var(--os-table-gap, var(--os-sp-4));
+  align-items: center;
+}
+.os-table__head {
+  min-height: 32px;
+  border-bottom: 1px solid var(--os-line-1);
+  font-size: var(--os-fs-12);
+  font-weight: 560;
+  letter-spacing: 0.01em;
+  color: var(--os-text-3);
+}
+.os-table__row {
+  min-height: 52px;
+  padding: var(--os-sp-2) 0;
+  border-top: 1px solid var(--os-line-1);
+}
+.os-table__head + .os-table__row,
+.os-table__group + .os-table__row {
+  border-top: 0;
+}
+.os-table__cell {
+  min-width: 0;
+}
+.os-table__cell--end {
+  text-align: right;
+}
+/* A row that is itself a link or button. */
+a.os-table__row,
+button.os-table__row {
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--os-dur-quick) var(--os-ease-out);
+}
+/* A <button class="os-table__row" role="row"> must not keep the browser's button
+   look (grey fill, outset border, centred text, shrink to fit). It is the same
+   row as the div row: full width, same padding, same hairline on top.
+   Specificity: this is (0,1,1), so `.os-table__head + .os-table__row` and
+   `.os-table__group + .os-table__row` (0,2,0) still win and take the first
+   row's top line away. The colour and font go in the `.os-shell` rule below,
+   because `.os-shell button { color }` (0,1,1) would otherwise tie with it. */
+button.os-table__row {
+  width: 100%;
+  margin: 0;
+  padding: var(--os-sp-2) 0;
+  border: 0;
+  border-top: 1px solid var(--os-line-1);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.os-shell button.os-table__row {
+  color: inherit;
+  font: inherit;
+}
+@media (hover: hover) and (pointer: fine) {
+  a.os-table__row:hover,
+  button.os-table__row:hover {
+    background: var(--os-surface-1);
+  }
+}
+.os-shell a.os-table__row:focus-visible,
+.os-shell button.os-table__row:focus-visible {
+  outline-offset: -2px;
+}
+/* A section label inside a table ("Operators 2"). */
+.os-table__group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--os-sp-3);
+  min-height: 40px;
+  padding-top: var(--os-sp-4);
+  font-size: var(--os-fs-13);
+  font-weight: 620;
+  font-stretch: 90%;
+  color: var(--os-text-2);
+}
+.os-table__group > span {
+  font-size: var(--os-fs-12);
+  font-weight: 450;
+  font-stretch: 100%;
+  color: var(--os-text-3);
+}
+/* Two-line cell: a title, then a quiet line under it. */
+.os-table__title {
+  display: block;
+  font-size: var(--os-fs-15);
+  font-weight: 560;
+  line-height: 1.3;
+  color: var(--os-text-1);
+}
+.os-table__sub {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--os-fs-12);
+  line-height: 1.35;
+  color: var(--os-text-2);
+}
+/* One line that ends in "…". The page also sets title="" with the full text. */
+.os-trunc {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- Pressable chip (a filter that is on or off) ---------------------- */
+/* <button type="button" class="os-chip" aria-pressed={on}>, with a Check icon
+   (size 14) in front while it is on. Wider than a label chip: 32 px tall. */
+.os-shell button.os-chip {
+  height: 32px;
+  color: var(--os-text-2);
+  font-weight: 540;
+  cursor: pointer;
+  transition: background var(--os-dur-quick) var(--os-ease-out), border-color var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-shell button.os-chip:hover {
+    border-color: var(--os-line-3);
+    color: var(--os-text-1);
+  }
+}
+.os-shell button.os-chip[aria-pressed="true"] {
+  background: var(--os-surface-3);
+  border-color: var(--os-text-2);
+  color: var(--os-text-1);
+}
+.os-shell button.os-chip:disabled {
+  color: var(--os-disabled);
+  border-color: var(--os-line-1);
+  cursor: not-allowed;
+}
+
+/* ---- An address to copy (OpenAddress.tsx) -------------------------------- */
+/* In the desktop app a link to another website opens in the person's browser. Only when opening it fails (an
+   address outside the allowed list, or any other reason) is the address shown here, with a Copy button and a
+   plain sentence, so a link is never left doing nothing. */
+.os-addr {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-1) var(--os-sp-2);
+  min-width: 0;
+  max-width: 100%;
+}
+.os-addr__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-shell .os-addr__copy {
+  min-height: 28px;
+  padding: 0 var(--os-sp-2);
+  font-size: var(--os-fs-12);
+}
+.os-addr__fail {
+  font-size: var(--os-fs-12);
+  color: var(--os-warn);
+}

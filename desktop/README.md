@@ -12,16 +12,18 @@ Agent OS.app
   |-- Rust shell (desktop/src-tauri/src/main.rs)
   |     1. picks a random login token (32 bytes, never logged)
   |     2. starts   resources/node/bin/node  resources/server/server.mjs
-  |                   PORT=0                     (the OS picks a free port)
+  |                   AGENT_OS_PORT=0            (the OS picks a free port)
   |                   AGENT_OS_TOKEN=<token>
   |                   AGENT_OS_STATIC_DIR=resources/server/web
   |                   AGENT_OS_PACKAGED=1
+  |                   AGENT_OS_STDIN_SHUTDOWN=1  (stdin stays open: the quit line)
   |                   PATH = your usual tool folders + the inherited PATH
   |     3. waits (max 20 s) for the server to print  AGENT_OS_READY:<port>
   |     4. opens the window at  http://127.0.0.1:<port>/?launch=<token>&desktop=1
   |        (the server turns ?launch= into a secure cookie; you are logged in)
-  |     5. on quit, asks the server to stop (SIGTERM, up to 5 s so it can end
-  |        any agent runs it started), then force-kills it
+  |     5. on quit, asks first when sessions are live (the page shows the
+  |        question), then writes AGENT_OS_SHUTDOWN to the server's stdin and
+  |        waits up to 10 s while it ends every session and run, then forces it
   `-- resources/
         node/    the app's own Node 24 (separate from ~/.agent-os/node, which
                  Setup installs for OpenClaw)
@@ -31,9 +33,31 @@ Agent OS.app
 Your data stays where it always was (`AGENT_OS_HOME` is left unset), so the
 app and `npm start` share the same agents, runs and settings.
 
-The server is stopped on every way of quitting: Cmd+Q, closing the window,
-and a plain `kill <pid>` of the app (a signal thread covers that last one). On
-Windows the whole process tree is ended with `taskkill /T /F`.
+Closing the window does not quit on macOS: the window hides and your sessions
+keep running. Click the Dock icon, or choose Agent OS > Show Agent OS, to bring it
+back. On Windows and Linux there is no tray yet, so closing the window quits.
+
+Quitting (Agent OS > Quit Agent OS, Cmd+Q on a Mac, or closing the window on
+Windows and Linux) asks first when sessions are live. The app shows its window and
+sends the page an event (`agentos://quit-requested`); the page answers
+`agentos://quit-shown` when its question is on screen and `agentos://quit-answer`
+with your choice. While the app is still starting there is no page to ask, so the
+quit goes on at once, and it also goes on when the page has not said within 2
+seconds that its question is on screen. When you quit, the server first records
+every live session as ended by the quit, so you can resume it later, then stops
+the sessions and every run, and exits. The app waits up to 10 seconds, then
+forces it (on Windows with `taskkill /T /F` on the whole tree). The server is
+started with `AGENT_OS_STDIN_SHUTDOWN=1` and asked to stop through its stdin,
+which works on every system.
+
+Some ways of quitting cannot ask: a plain `kill <pid>` of the app, the Dock's
+Quit, the app switcher's Quit, logging out and an update's restart. They run the
+same stop without the question. The update banner's "Install & restart" button
+asks first, in the page.
+
+On Windows and Linux the menu has no keyboard shortcuts, so keys like Ctrl+C,
+Ctrl+R and Ctrl+Z reach the agent's terminal. Copy and paste in text fields are
+left to the web view itself (not yet tried on a Windows or Linux computer).
 
 If something goes wrong at start-up the loading page shows a plain-English
 message (the server crashed, with its last output, or it took longer than 20
@@ -52,7 +76,9 @@ npm run desktop:build
 That runs, in order:
 
 1. `npm run build`, then `npm run build:server-bundle` (UI + single-file server)
-2. copies `build/server` to `desktop/src-tauri/resources/server`
+2. copies `build/server` to `desktop/src-tauri/resources/server`. The bundle
+   carries node-pty's prebuilt terminal binary for the target computer in
+   `build/server/node_modules/node-pty/` (see "Terminals (node-pty)" below)
 3. `npm run desktop:fetch-node` if the bundled Node is missing: downloads Node
    from nodejs.org, **checks its SHA-256 against that release's
    `SHASUMS256.txt`** (aborts on mismatch) and keeps only the `node` binary.
@@ -63,13 +89,30 @@ That runs, in order:
 Output (macOS): `desktop/src-tauri/target/release/bundle/macos/Agent OS.app`
 and `.../bundle/dmg/Agent OS_<version>_<arch>.dmg`.
 
-To build for another machine's CPU, fetch its Node first, for example
-`npm run desktop:fetch-node -- --platform linux --arch x64`, then
-`node scripts/prepare-desktop.mjs --skip-node` so prepare keeps it.
+To build for another machine's CPU (for example the Intel Mac app on an
+Apple-silicon Mac), fetch its Node first:
+`npm run desktop:fetch-node -- --platform darwin --arch x64`, then
+`node scripts/prepare-desktop.mjs --skip-node --platform darwin --arch x64`, so
+prepare keeps that Node and bundles node-pty's binary for that machine. Then
+build with `cd desktop && npx tauri build --target x86_64-apple-darwin` (not
+`npm run desktop:build`, which prepares for this computer again).
 
 Day-to-day development: `npm run desktop:dev`. With no bundled resources it
 falls back to your system `node` and the repo's own `server/index.js` and
 `dist/` (run `npm run build` first).
+
+### Terminals (node-pty)
+
+Sessions run each agent in a real terminal through `node-pty`, a native
+module. esbuild cannot put it inside `server.mjs`, so
+`scripts/build-server-bundle.mjs` copies node-pty's `lib/`, `package.json` and
+the one prebuilt folder for the target (`prebuilds/<platform>-<arch>`, without
+debug symbols) to `build/server/node_modules/node-pty/`, where Node finds it
+from `server.mjs`. The build stops if that prebuilt folder is missing. Every
+copied binary's CPU is checked from its file header (never by running it), and
+macOS's `spawn-helper` gets mode 755. A server without node-pty still starts;
+it only says that sessions cannot start. A future Developer ID notarization
+must sign `node`, `pty.node` and `spawn-helper` under `Contents/Resources`.
 
 ## Tested on
 
@@ -77,6 +120,9 @@ falls back to your system `node` and the repo's own `server/index.js` and
   by hand.
 - Intel Mac, Windows and Linux: built by the release workflow, but **not
   hand-tested** (see Releasing).
+- Every pull request: CI builds the shell (debug, no installer) and runs its
+  unit tests on Linux, macOS and Windows (`.github/workflows/ci.yml`, job
+  `desktop`).
 
 ## Unsigned builds
 
@@ -120,6 +166,52 @@ release workflow then adds the `plugins.updater` block and
 `createUpdaterArtifacts` for you at build time (via a temporary `--config`
 file), so `tauri.conf.json` stays as it is.
 
+## Show in Finder and open links (opener plugin)
+
+`tauri-plugin-opener` is registered in `src/main.rs`. `capabilities/default.json`
+grants it two things and nothing else:
+
+- **`opener:allow-reveal-item-in-dir`**: the Workspace page's "Show in Finder"
+  button shows one file in the file manager. It cannot open or run the file.
+  The button is hidden in a browser tab (`src/ui/desktop.ts`).
+- **`opener:allow-open-url`, with a list of allowed addresses**: a link in the
+  app (`src/ui/components/OpenAddress.tsx`: Open dashboard, Docs, Homepage,
+  the Setup plan's Source and Terms, sign-in pages, OpenRouter pages) opens in
+  the person's own browser instead of doing nothing. The permission is
+  useless without its list, and the list is the whole point: each entry is one
+  exact website (`https://github.com/*`) or one page on this Mac (the Hermes
+  dashboard on `127.0.0.1:9119`, the OpenClaw Control UI on `127.0.0.1:18789`,
+  and Agent OS's own one-time OpenRouter sign-in page). These are the
+  addresses Agent OS links to from its own fixed data. The list has no wildcard
+  host and no scheme other than `https`/`http`, and the broad sets that open any
+  address or any path (`opener:default`, `opener:allow-default-urls`,
+  `opener:allow-open-path`) are not granted. Text an agent writes can never
+  reach the opener with an arbitrary address: the Workspace preview draws no
+  links, and anything outside the list is refused.
+
+If an address is refused (a sign-in page on a host that is not in the list, for
+example), the app shows the address with a Copy button instead. To allow another
+website, add one `https://<host>/*` entry to `capabilities/default.json` **and**
+to the pinned list in `test/release-config.test.js`; that test fails on any
+other change, on purpose. Never add `*.host` entries: Tauri matches the whole
+address as a glob, so `https://*.example.com/*` would also match
+`https://evil.example/x.example.com/y`.
+
+This can only be tried in a real desktop build (`npm run desktop:dev` or an
+installed app), not in a browser: press Open dashboard on an agent's page or a
+Docs link and your default browser should open.
+
+## Folder picker (dialog plugin)
+
+`tauri-plugin-dialog` is registered in `src/main.rs`, and `capabilities/default.json`
+grants only **`dialog:allow-open`**: the system's open dialog, which the New
+session dialog uses for "Choose folder…". It hands the page the path you picked
+and nothing else (no file access; the fs plugin is not installed). The message and
+save dialogs are not granted. In a browser tab there is no picker, so you type the
+folder's full path instead. The page's half is `@tauri-apps/plugin-dialog`, pinned
+to an exact version in `package.json`; `test/release-config.test.js` checks that the
+Rust crate in `Cargo.lock` stays on the same 2.8 line.
+
 ## Releasing
 
 Pushing a tag like `v0.4.0` makes GitHub Actions
@@ -135,8 +227,9 @@ installers to a **draft** GitHub Release:
 
 Each leg downloads the Node for its own target with
 `node scripts/fetch-node.mjs --platform <p> --arch <a>` (SHA-256 checked), then
-runs `node scripts/prepare-desktop.mjs --skip-node` so the runner's own Node is
-never bundled by mistake. The release notes shown on the Release come from
+runs `node scripts/prepare-desktop.mjs --skip-node --platform <p> --arch <a>` so
+the runner's own Node is never bundled by mistake and the server bundle carries
+node-pty's binary for that computer. The release notes shown on the Release come from
 `.github/release-notes.md`; edit that file to change them.
 
 The workflow runs in three stages so there is exactly one draft and one

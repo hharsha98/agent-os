@@ -1,12 +1,14 @@
 /* Desktop-only update notice. A slim floating bar at the bottom of the
-   content area (beside the 248px sidebar), so it never covers page headings.
+   content area, so it never covers page headings. It starts where the content
+   starts: at the sidebar's right edge (--os-side-w above 1366px, the 64px icon
+   rail from 901px to 1366px, the window edge at 900px and below).
    The wrapper ignores the pointer; only the bar itself is clickable. */
 .os-update {
   position: fixed;
-  left: 248px;
+  left: var(--os-side-w);
   right: 0;
   bottom: var(--os-sp-5);
-  z-index: 45;
+  z-index: 43;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -27,18 +29,16 @@
   max-width: 100%;
   min-height: 44px;
   padding: var(--os-sp-2) var(--os-sp-2) var(--os-sp-2) var(--os-sp-4);
-  background: var(--os-glass-bg);
-  backdrop-filter: var(--os-glass-blur);
-  -webkit-backdrop-filter: var(--os-glass-blur);
+  background: var(--os-surface-2);
   border-radius: var(--os-r-pill);
-  box-shadow: var(--os-e2), var(--os-glow);
+  box-shadow: var(--os-e3);
   color: var(--os-text-1);
   font-size: var(--os-fs-13);
   animation: os-update-in var(--os-dur-slow) var(--os-ease-out);
 }
 
 .os-update__icon {
-  color: var(--os-accent);
+  color: var(--os-accent-strong);
   flex: 0 0 auto;
 }
 
@@ -50,7 +50,7 @@
   background: none;
   border: 0;
   padding: 0 var(--os-sp-1);
-  color: var(--os-accent);
+  color: var(--os-accent-strong);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -90,6 +90,12 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1366px) {
+  .os-update {
+    left: var(--os-rail-w, 64px);
   }
 }
 

@@ -10,6 +10,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildCliArgs } from "../server/runtime/modules.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TOKEN = "test-token-123";
@@ -121,6 +122,9 @@ function baseEnv(home, port, extra = {}) {
     HOME: home,
     USERPROFILE: home,
     ...(process.platform === "win32" ? {} : { PATH: "/usr/bin:/bin" }),
+    // The server reads the login shell's environment for sessions (SP3): W1's
+    // stand-in login shell (ruling R15), never the developer's own shell setup.
+    SHELL: FAKE_LOGIN_SHELL,
     HERMES_AGENT_OS_SCHEDULER: "0"
   };
   // Clear these unless the caller explicitly set one via `extra` (e.g. the
@@ -362,6 +366,23 @@ test("13. workspace raw responses carry a sandboxed CSP for html files", async (
   });
   assert.equal(raw.status, 200);
   assert.match(raw.headers.get("content-security-policy") || "", /sandbox/);
+});
+
+test("13b. a note saved through POST /api/workspace/files is listed as saved by You", async () => {
+  const write = await fetch(`${base}/api/workspace/files`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-agent-os-token": TOKEN },
+    body: JSON.stringify({ folder: "notes", name: "saved-by-you-check.md", content: "# mine" })
+  });
+  assert.equal(write.status, 201);
+  const list = await fetch(`${base}/api/workspace?query=saved-by-you-check`, {
+    headers: { "x-agent-os-token": TOKEN }
+  });
+  assert.equal(list.status, 200);
+  const body = await list.json();
+  assert.equal(body.files.length, 1);
+  assert.equal(body.files[0].savedBy.kind, "you");
+  assert.equal(body.files[0].savedBy.label, "You");
 });
 
 test("14. startup stdout prints the login link with the pinned token", () => {

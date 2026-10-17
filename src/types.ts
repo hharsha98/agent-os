@@ -2255,6 +2255,27 @@ export interface WorkspaceFile {
   publicPath: string;
 }
 
+// Who saved a listed file (server/runtime/workspace.js, "Saved by"). Undo this
+// save is offered only for kind "team-room": that is the only kind that carries
+// roomId and actionId.
+export interface WorkspaceSavedBy {
+  kind: "you" | "agent-os" | "team-room" | "unknown";
+  // "You", "Agent OS", the agent's name for a Team Room save, or "—" when unknown.
+  label: string;
+  // When it was saved (ISO time). Absent for "agent-os" and for an "unknown"
+  // file with nothing on record ("—"); present for "Changed outside Agent OS" and
+  // for "Team Room (can't check for later changes)" (a save with nothing to compare the file with).
+  at?: string;
+  roomId?: string;
+  actionId?: string;
+}
+
+// A file as GET /api/workspace lists it. The one-file detail
+// (GET /api/workspace/file) is a plain WorkspaceFile and carries no savedBy.
+export interface WorkspaceListedFile extends WorkspaceFile {
+  savedBy: WorkspaceSavedBy;
+}
+
 export interface WorkspaceListing {
   ok: boolean;
   generatedAt: string;
@@ -2262,13 +2283,17 @@ export interface WorkspaceListing {
     id: string;
     label: string;
     publicPath: string;
+    // The real folder on this machine (used by Show in Finder). null on the public demo.
+    absolutePath?: string | null;
     fileCount: number;
   }>;
-  files: WorkspaceFile[];
+  files: WorkspaceListedFile[];
   empty: boolean;
   summary: {
     total: number;
     shown: number;
+    // Files a Team Room saved, counted over every file, not only the shown ones.
+    savedByAgents: number;
   };
 }
 
@@ -2315,6 +2340,9 @@ export interface AgentSafetyStatus {
   permissive: boolean;
   summary: string;
   actions: AgentSafetyAction[];
+  // false when Agent OS could not read the setting (the read failed, timed out or printed
+  // nothing): `permissive` is then not a finding and screens show "—". Absent from older servers.
+  known?: boolean;
 }
 
 export interface AgentDetail {
@@ -2328,6 +2356,8 @@ export interface AgentRunPreview {
   commandPreview: string;
   cwd: string;
   transport: string;
+  // Which brain this run would use; null for agents that have no brain choice.
+  brain?: RunBrainInfo | null;
   gate: { enabled: boolean };
 }
 
@@ -2364,6 +2394,21 @@ export interface RunUsage {
   costUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
+  // How big the conversation was at the last answer (Claude Code).
+  lastInputTokens?: number;
+}
+
+// Which brain paid for a Claude Code / Codex / Cursor run.
+export interface RunBrainInfo {
+  mode: "plan" | "openrouter" | "local" | string;
+  model: string | null;
+}
+
+// Set on a coding agent's run that stopped because its PLAN ran out.
+export interface RunLimit {
+  kind: string;
+  message: string;
+  resetsAt?: string;
 }
 
 export type RunStatus =
@@ -2393,6 +2438,17 @@ export interface RunMeta {
   truncated: boolean;
   usage: RunUsage;
   error: string | null;
+  // Coding agents only (absent on older runs and on Hermes / OpenClaw runs).
+  brain?: RunBrainInfo | null;
+  // The model the agent itself reported using.
+  model?: string;
+  limit?: RunLimit;
+  // The plan was close to its limit (not stopped yet).
+  nearLimit?: boolean;
+  continuedFrom?: string;
+  continuedBy?: string;
+  // What the run was started for. `line` is the task's first line (up to 140 characters); older runs have no `line`.
+  task?: { cwd?: string; allowEdits?: boolean; line?: string };
 }
 
 export interface RunListResponse {
@@ -2430,6 +2486,9 @@ export interface TeamRoomLimits {
   maxTurns: number;
   maxMinutes: number;
   maxCostUsd: number | null;
+  // Model OpenClaw uses for this room (for example "ollama/phi4"); null means
+  // OpenClaw's own setting.
+  openclawModel?: string | null;
 }
 
 export interface TeamRoom {
@@ -2449,8 +2508,27 @@ export interface TeamRoom {
   costUsd: number | null;
   costKnownTurns: number;
   costUnknownTurns: number;
+  // The same facts for display: the cost that was reported, and how many turns
+  // reported none (never counted as $0). Missing on rooms saved by older versions.
+  cost?: { knownUsd: number; unknownTurns: number };
+  // Set when a cost cap is on but some turns report no cost, so the cap can't see them.
+  costWarning?: string | null;
+  // Plain-English hints (for example "this model didn't follow the reply format").
+  hints?: string[];
   endReason: string | null;
   folder: string;
+  // Set while the room is paused for one of your decisions (D10): the id of the
+  // file proposal it waits on, for example "P1". null or missing otherwise.
+  pausedFor?: string | null;
+  // Time the room had used when it paused, in milliseconds. A paused room's clock
+  // is stopped at this value, and the server keeps it across a restart. null
+  // (or missing) whenever the room is not paused.
+  clockUsedMs?: number | null;
+}
+
+// What starting a room returns: the room, plus any heads-ups for the start screen.
+export interface StartTeamRoomResponse extends TeamRoom {
+  warnings?: string[];
 }
 
 export interface TeamRoomSummary {
@@ -2464,13 +2542,20 @@ export interface TeamRoomSummary {
   turnsAllowed: number;
   costUsd: number | null;
   costUnknownTurns: number;
+  cost?: { knownUsd: number; unknownTurns: number };
   openProposals: number;
   needsApproval: number;
   actions: number;
+  // Same meaning as on TeamRoom: the proposal a paused room waits on.
+  pausedFor?: string | null;
 }
 
 export interface TeamRoomListResponse {
   rooms: TeamRoomSummary[];
+  // The room the server holds its one active slot for, or null when none. It can read "needs_you" on
+  // disk while the server is about to resume it (a decision was just made), so Hold to stop all stops it
+  // too. Absent on an older server.
+  activeRoomId?: string | null;
 }
 
 export type TeamProposalStatus =
@@ -2532,6 +2617,7 @@ export type TeamRoomEventType =
   | "proposal_status"
   | "proposal_decided"
   | "protocol_note"
+  | "room_hint"
   | "action"
   | "action_undone"
   | "limits_extended"
@@ -2557,7 +2643,12 @@ export interface TeamRoomEvent {
   status?: string;
   reason?: string | null;
   text?: string;
+  // null = this turn reported no cost (unknown); 0 = it reported a real zero.
   costUsd?: number | null;
+  // The model the agent used for this turn, when it said so (for example "ollama/llama3.2:3b").
+  model?: string | null;
+  // Tool calls the agent reported trying, when it said so.
+  toolSummary?: { calls: number; failures: number } | null;
   parsed?: TeamParsedReply;
   proposal?: TeamProposal;
   proposalId?: string;
@@ -2578,10 +2669,167 @@ export interface TeamRoomDetail {
 
 export interface StartTeamRoomInput {
   task: string;
-  limits?: Partial<TeamRoomLimits>;
+  limits?: Partial<Pick<TeamRoomLimits, "maxTurns" | "maxMinutes" | "maxCostUsd">>;
+  // Optional model for OpenClaw in this room, for example "ollama/phi4".
+  openclawModel?: string;
 }
 
 export interface TeamProposalDecisionResult {
   proposal: TeamProposal;
   action: TeamAction | null;
+  // true when this decision ended the pause the room was in and the room carried on.
+  resumed?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Sessions (SP3): an agent's own terminal, kept by server/runtime/sessions/. These mirror manager.js's
+// SessionSummary, routes.js's answers and ws.js's frames (spec "SP3 Sessions engine and page"; the SP3
+// contract). Frames are read defensively by src/ui/sessionsShared.ts (parseServerFrame).
+// ---------------------------------------------------------------------------
+
+// "setup": OpenClaw's ChatGPT sign-in in a brain card (plan-brains spec §1). The server lists it only with
+// ?kind=all and leaves it out of the quit check, so the Sessions page, Home, the menu's count and the quit
+// question never see one; Hold to stop all does.
+export type SessionKind = "agent" | "update" | "setup";
+
+// "waiting" and "held" are never produced in SP3; they arrive with SP4's signals.
+export type SessionStatus = "starting" | "live" | "waiting" | "idle" | "held" | "exited";
+
+// "stop" or "quit" when Agent OS ended the session, otherwise null.
+export type SessionEndedBy = "stop" | "quit" | null;
+
+export interface SessionSummary {
+  id: string;
+  kind: SessionKind;
+  agentId: string;
+  // The short name: "Claude Code", "Codex", "Cursor", "Hermes", "OpenClaw".
+  agentLabel: string;
+  folder: string;
+  folderName: string;
+  // false for OpenClaw until spike S5: it picks its own folder, so none is shown or claimed.
+  folderShown: boolean;
+  branch: string | null;
+  status: SessionStatus;
+  // When the current status began (ISO time), for "Idle for <time>".
+  stateSince: string;
+  startedAt: string;
+  endedAt: string | null;
+  // null when a signal ended the process.
+  exitCode: number | null;
+  signal: string | null;
+  endedBy: SessionEndedBy;
+  dismissed: boolean;
+  brain: { kind: "plan" | "openrouter" | "local"; label: string } | null;
+  resume: { available: boolean; reason: string | null; fallback: boolean };
+  // true when Claude Code's resume found no saved conversation (nothing was ever sent in the session, or Claude
+  // deleted an old transcript itself): there is nothing to resume. A server that doesn't send it means false.
+  nothingToResume: boolean;
+  // Every session's alerts are "basic" in SP3 (the 20 s rule).
+  alerts: "basic";
+  recordingBytes: number;
+}
+
+export interface SessionListResponse {
+  sessions: SessionSummary[];
+  // The quiet one-line notice when the login-shell environment could not be read (H2), else null.
+  environmentNotice: string | null;
+  pty: { ok: boolean; reason: string | null };
+  maxLive: number;
+}
+
+// POST /api/sessions/:id/stop: the session (unchanged when it had already ended), plus Stop's note: OpenClaw's
+// honest "Stopped the terminal. OpenClaw may still be finishing its last step." when only its terminal could be
+// stopped, otherwise null.
+export interface StopSessionResult extends SessionSummary {
+  note: string | null;
+}
+
+export interface SessionSettings {
+  claudeFullscreen: boolean;
+}
+
+export interface SessionFolder {
+  path: string;
+  name: string;
+  lastUsedAt: string;
+}
+
+export interface SessionFolderList {
+  folders: SessionFolder[];
+}
+
+export interface QuitCheckItem {
+  id: string;
+  title: string;
+  // An update session is never resumed, so the quit question promises a resume only when none is listed.
+  kind: SessionKind;
+}
+
+export interface QuitCheckResponse {
+  live: QuitCheckItem[];
+}
+
+export interface RecordingSummary {
+  sessionId: string;
+  // Update rows read "<agent> update" (spec, Session kinds).
+  kind: SessionKind;
+  agentId: string;
+  agentLabel: string;
+  folder: string;
+  folderName: string;
+  // false for OpenClaw until spike S5: its row reads "OpenClaw · Set by OpenClaw", never a folder it may not use.
+  folderShown: boolean;
+  startedAt: string;
+  endedAt: string | null;
+  bytes: number;
+  live: boolean;
+}
+
+export interface RecordingListResponse {
+  recordings: RecordingSummary[];
+  // How many recordings were removed to stay under 1 GB since the server started (Q38).
+  removedByCap: number;
+}
+
+// The terminal modes a snapshot carries (mirror.js), put back on reattach (spec, Browser terminal).
+export type MouseTrackingMode = "none" | "x10" | "vt200" | "drag" | "any";
+export type MouseEncodingMode = "default" | "sgr" | "sgr-pixels";
+
+export interface SessionModes {
+  altScreen: boolean;
+  bracketedPaste: boolean;
+  mouseTracking: MouseTrackingMode;
+  mouseEncoding: MouseEncodingMode;
+  focusReporting: boolean;
+  cursorKeysApp: boolean;
+  kittyFlags: number;
+}
+
+export interface SessionSnapshot {
+  data: string;
+  cols: number;
+  rows: number;
+  modes: SessionModes;
+}
+
+export interface SessionStateFrame {
+  status: SessionStatus;
+  exitCode: number | null;
+  signal: string | null;
+  endedBy: SessionEndedBy;
+  resetAt: string | null;
+}
+
+// Server to client, one JSON message per frame (ws.js).
+export type SessionServerFrame =
+  | ({ t: "snapshot" } & SessionSnapshot)
+  | { t: "out"; seq: number; d: string }
+  | ({ t: "state" } & SessionStateFrame)
+  | { t: "alert"; raw: string };
+
+// Client to server.
+export type SessionClientFrame =
+  | { t: "focus" }
+  | { t: "in"; d: string }
+  | { t: "resize"; cols: number; rows: number }
+  | { t: "ack"; seq: number };

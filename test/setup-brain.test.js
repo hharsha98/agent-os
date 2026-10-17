@@ -7,6 +7,7 @@
 // real shebang script) is POSIX-only, matching test/setup.test.js.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import express from "express";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -17,21 +18,27 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
+import { setExecutionGateStatus } from "../server/runtime/execution-gate.js";
 import {
   brainOptions,
   clearBrainCacheForTest,
   currentBrain,
   listFreeOpenRouterModels,
+  listLocalModels,
   verifyOpenRouterKey
 } from "../server/runtime/setup/brain.js";
 import {
   getSetupJob,
+  hermesHelpProblem,
+  hermesKeyStrategy,
   resetSetupJobsForTest,
   retrySetupJob,
   startConfigureJob
 } from "../server/runtime/setup/jobs.js";
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
 import { clearSystemCheckCache, systemCheck } from "../server/runtime/setup/system-check.js";
+import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
+import { installFakeOpenclawShim } from "./helpers/fake-openclaw.js";
 
 const isWindows = process.platform === "win32";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -67,6 +74,21 @@ if (args[0] === "auth" && args[1] === "add" && args.includes("--help")) {
   process.exit(0);
 }
 if (args[0] === "auth" && args[1] === "add") {
+  // Without --api-key the real Hermes "prompts securely"; with no terminal
+  // that is one line on stdin. A marker file makes this fake refuse that, to
+  // exercise the fall-back to --api-key.
+  if (!args.includes("--api-key")) {
+    if (existsSync(path.join(home, ".fake-hermes-no-stdin-prompt"))) {
+      process.stderr.write("error: --api-key is required when there is no terminal\\n");
+      process.exit(2);
+    }
+    let stdinKey = "";
+    try { stdinKey = readFileSync(0, "utf8").trim(); } catch {}
+    if (!stdinKey) { process.stderr.write("No API key provided.\\n"); process.exit(1); }
+    try {
+      appendFileSync(path.join(home, ".fake-hermes-record.jsonl"), JSON.stringify({ argv: ["__stdin__"], stdinKey }) + "\\n");
+    } catch {}
+  }
   writeFileSync(configuredMarker, "1");
   print("added");
   process.exit(0);
@@ -126,107 +148,6 @@ print("fake-hermes: " + JSON.stringify(args));
 process.exit(0);
 `;
 
-const FAKE_OPENCLAW_CLI_SOURCE = `
-import { existsSync, writeFileSync, appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import path from "node:path";
-
-const args = process.argv.slice(2);
-const home = process.env.HOME || process.env.USERPROFILE;
-function print(t) { process.stdout.write(t + "\\n"); }
-try {
-  appendFileSync(
-    path.join(home, ".fake-openclaw-record.jsonl"),
-    JSON.stringify({ argv: args, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || null }) + "\\n"
-  );
-} catch {}
-
-const openclawDir = path.join(home, ".openclaw");
-const configFile = path.join(openclawDir, "openclaw.json");
-const execModeFile = path.join(home, ".fake-openclaw-exec-mode");
-const runningMarker = path.join(home, ".fake-openclaw-gateway-running");
-
-if (args.includes("--version")) { print("openclaw 9.9.9-test"); process.exit(0); }
-
-if (args[0] === "onboard" && args.includes("--help")) {
-  print(
-    "Usage: openclaw onboard [--non-interactive] [--accept-risk] [--auth-choice CHOICE]\\n" +
-    "  --openrouter-api-key KEY --custom-base-url URL\\n" +
-    "  --skip-health --skip-channels --skip-skills --skip-ui --install-daemon --skip-daemon"
-  );
-  process.exit(0);
-}
-if (args[0] === "onboard") {
-  if (existsSync(path.join(home, ".fake-openclaw-onboard-fail"))) {
-    process.stderr.write("simulated onboard failure\\n");
-    process.exit(1);
-  }
-  if (!args.includes("--non-interactive") || !args.includes("--accept-risk") || !args.includes("--auth-choice")) {
-    process.stderr.write("missing required flags\\n");
-    process.exit(1);
-  }
-  mkdirSync(openclawDir, { recursive: true });
-  writeFileSync(configFile, JSON.stringify({ onboarded: true }));
-  if (args.includes("--install-daemon")) writeFileSync(runningMarker, "1");
-  print(JSON.stringify({ ok: true }));
-  process.exit(0);
-}
-if (args[0] === "models" && args[1] === "set") { print("ok"); process.exit(0); }
-
-if (args[0] === "agent" && args[1] === "exec" && args.includes("--help")) {
-  print("Usage\\n --message-file PATH\\n --cwd DIR\\n --json");
-  process.exit(0);
-}
-if (args[0] === "agent" && args[1] === "exec") {
-  let input = "";
-  try { input = readFileSync(0, "utf8"); } catch {}
-  if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
-    process.stderr.write("simulated agent failure\\n");
-    process.exit(2);
-  }
-  print(JSON.stringify({ ok: true, final: "ready: " + input.slice(0, 20) }));
-  process.exit(0);
-}
-if (args[0] === "agent" && args[1] === "-m") {
-  if (existsSync(path.join(home, ".fake-openclaw-agent-fail"))) {
-    process.stderr.write("simulated agent failure\\n");
-    process.exit(2);
-  }
-  print(JSON.stringify({ ok: true, final: "ready" }));
-  process.exit(0);
-}
-if (args[0] === "doctor") {
-  const ok = existsSync(configFile);
-  print(JSON.stringify({ ok, findings: ok ? [] : [{ message: "not onboarded" }] }));
-  process.exit(0);
-}
-if (args[0] === "config" && args[1] === "get") {
-  if (args[2] === "tools.exec.mode") {
-    let value = "full";
-    try { value = readFileSync(execModeFile, "utf8").trim(); } catch {}
-    print(value);
-    process.exit(0);
-  }
-  print("");
-  process.exit(0);
-}
-if (args[0] === "config" && args[1] === "set") {
-  if (args[2] === "tools.exec.mode") writeFileSync(execModeFile, args[3]);
-  print("ok");
-  process.exit(0);
-}
-if (args[0] === "gateway" && args[1] === "status") {
-  print(JSON.stringify({ running: existsSync(runningMarker) }));
-  process.exit(0);
-}
-if (args[0] === "gateway" && args[1] === "start") {
-  writeFileSync(runningMarker, "1");
-  print("ok");
-  process.exit(0);
-}
-print("fake-openclaw: " + JSON.stringify(args));
-process.exit(0);
-`;
-
 const MODELS_FIXTURE = [
   { id: "paid/model", name: "Paid Model", pricing: { prompt: "0.000002", completion: "0.000002" }, supported_parameters: ["tools"], context_length: 128000 },
   { id: "free/no-tools", name: "No Tools", pricing: { prompt: "0", completion: "0" }, supported_parameters: [], context_length: 128000 },
@@ -256,9 +177,59 @@ async function withEnv(vars, fn) {
 let mirrorServer = null;
 let mirrorPort = 0;
 let mirrorHits = {};
+const oauthCodes = {}; // one-time sign-in codes handed out by the fake /auth page
+
+// ---- the mirror doubles as a fake Ollama (AGENT_OS_OLLAMA_URL points here) ----
+const GIB = 1024 ** 3;
+// Tiny working-memory numbers (4 layers, 2 KV heads, head size 64 = 2,048 bytes
+// per token) so a model's size can be chosen to land at an exact SHARE of this
+// computer's memory, whatever machine the tests run on.
+const SMALL_KV_BYTES = 2 * 4 * 2 * (64 + 64);
+function smallKvInfo(contextLength = 131072) {
+  return {
+    "general.architecture": "tiny",
+    "tiny.block_count": 4,
+    "tiny.attention.head_count": 8,
+    "tiny.attention.head_count_kv": 2,
+    "tiny.attention.key_length": 64,
+    "tiny.attention.value_length": 64,
+    "tiny.context_length": contextLength
+  };
+}
+function sizeForShare(share) {
+  return Math.round(os.totalmem() * share - SMALL_KV_BYTES * 65536 - 0.5 * GIB);
+}
+let ollamaModels = {};
+let ollamaVariants = {}; // name -> { from, num_ctx }
+let ollamaCreateCalls = []; // every POST /api/create body, exactly as received
+
+function resetOllamaFake() {
+  ollamaVariants = {};
+  ollamaCreateCalls = [];
+  const toolModel = (size, parameterSize = "8.0B") => ({
+    size,
+    details: { parameter_size: parameterSize },
+    capabilities: ["completion", "tools"],
+    model_info: smallKvInfo()
+  });
+  ollamaModels = {
+    "llama3:8b": toolModel(4_700_000_000), // fits any computer comfortably
+    "tight:7b": toolModel(sizeForShare(0.7), "7.0B"), // 70% of this computer's memory: tight
+    "huge:70b": toolModel(sizeForShare(1.5), "70B"), // 150%: too big
+    "Mixed-Case:7b": toolModel(4_000_000_000, "7.0B") // a name that can't become a copy name
+  };
+}
+resetOllamaFake();
+
+async function readJsonBody(req) {
+  let raw = "";
+  for await (const chunk of req) raw += chunk;
+  return raw ? JSON.parse(raw) : {};
+}
 
 function resetMirrorHits() {
   mirrorHits = {};
+  resetOllamaFake();
 }
 
 before(async () => {
@@ -280,9 +251,63 @@ before(async () => {
       }
       return;
     }
+    // The OpenRouter one-click sign-in: /auth sends the browser back to the
+    // callback with a code; /auth/keys trades that code for a key, but only
+    // for the verifier whose sha256 is the challenge, and only once.
+    if (req.url.startsWith("/openrouter.ai/auth?")) {
+      const params = new URL(req.url, "http://mirror.local").searchParams;
+      const code = `code${Object.keys(oauthCodes).length}${Date.now().toString(36)}`;
+      oauthCodes[code] = { challenge: params.get("code_challenge"), used: false };
+      res.writeHead(302, { Location: `${params.get("callback_url")}?code=${code}&state=${params.get("state")}` });
+      res.end();
+      return;
+    }
+    if (req.url === "/openrouter.ai/api/v1/auth/keys" && req.method === "POST") {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw || "{}");
+      const record = oauthCodes[body.code];
+      const proof = crypto.createHash("sha256").update(String(body.code_verifier)).digest("base64url");
+      const good = record && !record.used && body.code_challenge_method === "S256" && proof === record.challenge;
+      if (good) record.used = true;
+      res.writeHead(good ? 200 : 403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(good ? { key: VALID_KEY } : { error: { message: "Invalid code or code_verifier" } }));
+      return;
+    }
     if (req.url === "/api/tags") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ models: [{ name: "llama3:8b", model: "llama3:8b" }] }));
+      const base = Object.entries(ollamaModels).map(([name, m]) => ({ name, model: name, size: m.size }));
+      const copies = Object.entries(ollamaVariants).map(([name, v]) => ({ name, model: name, size: ollamaModels[v.from]?.size ?? 0 }));
+      res.end(JSON.stringify({ models: [...base, ...copies] }));
+      return;
+    }
+    if (req.url === "/api/show" && req.method === "POST") {
+      const { model } = await readJsonBody(req);
+      const copy = ollamaVariants[model];
+      const info = copy ? ollamaModels[copy.from] : ollamaModels[model];
+      if (!info) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "model not found" }));
+        return;
+      }
+      const { size: _size, ...rest } = info;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(copy ? { ...rest, parameters: `num_ctx                        ${copy.num_ctx}` } : rest));
+      return;
+    }
+    // Ollama's "Create a Model" (docs/api.md): { model, from, parameters, stream:false }.
+    // Makes a settings-only copy that shares the original's weights.
+    if (req.url === "/api/create" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      ollamaCreateCalls.push(body);
+      if (!ollamaModels[body.from]) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `model '${body.from}' not found` }));
+        return;
+      }
+      ollamaVariants[body.model] = { from: body.from, num_ctx: body.parameters?.num_ctx ?? null };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "success" }));
       return;
     }
     res.writeHead(404);
@@ -315,6 +340,8 @@ async function withTempSetupEnv(fn) {
         clearDetectCaches();
         clearBrainCacheForTest();
         resetSetupJobsForTest();
+        // Running agents is allowed unless a test says otherwise: at Look only the hello check is skipped.
+        await setExecutionGateStatus({ enabled: true, reason: "setup test" });
         await fn({ home, agentOsHome });
       }
     );
@@ -332,18 +359,6 @@ async function installFakeHermesShim(home) {
   const binDir = path.join(home, ".local", "bin");
   await mkdir(binDir, { recursive: true });
   const shimPath = path.join(binDir, "hermes");
-  await writeFile(shimPath, `#!/bin/sh\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
-  await chmod(shimPath, 0o755);
-}
-
-async function installFakeOpenclawShim(home) {
-  const jsDir = path.join(home, ".fake-cli");
-  await mkdir(jsDir, { recursive: true });
-  const jsPath = path.join(jsDir, "openclaw.mjs");
-  await writeFile(jsPath, FAKE_OPENCLAW_CLI_SOURCE);
-  const binDir = path.join(home, ".npm-global", "bin");
-  await mkdir(binDir, { recursive: true });
-  const shimPath = path.join(binDir, "openclaw");
   await writeFile(shimPath, `#!/bin/sh\nexec "${process.execPath}" "${jsPath}" "$@"\n`);
   await chmod(shimPath, 0o755);
 }
@@ -432,7 +447,8 @@ test("verifyOpenRouterKey(): valid -> ok; invalid -> ok:false; malformed -> reje
 // 3. brainOptions()
 // =====================================================================
 
-test("brainOptions(): 8GB -> openrouter; 32GB+Ollama available -> ollama; Ollama not installed -> unavailable", async () => {
+test("brainOptions(): ALWAYS OpenRouter (even with a good local model on a big computer); Ollama not installed -> unavailable", async () => {
+  clearBrainCacheForTest();
   const low = await brainOptions({ ramGb: 8, freeDiskGb: 50, ollama: { found: false } });
   assert.equal(low.recommendation, "openrouter");
   const lowOllama = low.options.find((o) => o.id === "ollama");
@@ -440,9 +456,17 @@ test("brainOptions(): 8GB -> openrouter; 32GB+Ollama available -> ollama; Ollama
   assert.match(lowOllama.reason, /isn't installed/);
 
   await withEnv({ AGENT_OS_OLLAMA_URL: `http://127.0.0.1:${mirrorPort}` }, async () => {
+    resetOllamaFake();
+    clearBrainCacheForTest();
     const high = await brainOptions({ ramGb: 32, freeDiskGb: 50, ollama: { found: true } });
-    assert.equal(high.recommendation, "ollama");
+    assert.equal(high.recommendation, "openrouter", "Local is offered, never chosen for the person");
     assert.equal(high.options.find((o) => o.id === "ollama").available, true);
+    // The sentence about Local names a model that really is in the list, with the list's own number.
+    const list = await listLocalModels({ ramGb: 32 });
+    const named = list.find((m) => m.verdict.id === "good" && m.memory.fit === "comfortable");
+    assert.ok(named, "the fake has a model that fits a 32 GB computer");
+    assert.ok(high.reason.startsWith("We recommend OpenRouter for both agents: strong models, no big download, free to start."));
+    assert.ok(high.reason.includes(`You could also run ${named.name} locally; it fits this computer (about ${named.memory.memoryAt64kGb} GB).`));
   });
 });
 
@@ -573,11 +597,14 @@ test(
       AGENT_OS_SETUP_MIRROR: `http://127.0.0.1:${mirrorPort}`,
       AGENT_OS_TOKEN: TOKEN,
       HERMES_AGENT_OS_SCHEDULER: "0",
+      SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin"
     };
     for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT"]) {
       delete env[key];
     }
+    // Running agents is allowed (as if the person had left Look only): at Look only the hello check is skipped.
+    env.HERMES_AGENT_OS_ENABLE_EXEC = "1";
     const child = spawn(process.execPath, ["server/index.js"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
     const logs = collectLogs(child);
     const authed = { "x-agent-os-token": TOKEN };
@@ -643,11 +670,17 @@ test(
       assert.equal(receiptBody.receipt.length, 2);
       assert.ok(receiptBody.receipt.every((entry) => entry.provider === "openrouter" && entry.model === "free/128k"));
 
-      // The fakes really did receive the key (proves the pipe works)...
+      // The fakes really did receive the key (proves the pipe works), and we
+      // can say HOW: Hermes through its private prompt (standard input), so
+      // it is on no command line; OpenClaw only offers an argument (known
+      // limitation, see jobs.js). Neither got it through the environment.
       const hermesLines = await recordLines(path.join(homeDir, ".fake-hermes-record.jsonl"));
-      assert.ok(hermesLines.some((e) => e.argv.includes(VALID_KEY)));
+      assert.ok(hermesLines.some((e) => e.stdinKey === VALID_KEY));
+      assert.ok(!hermesLines.some((e) => e.argv.includes(VALID_KEY)), "Hermes was given the key on its command line");
+      assert.ok(hermesLines.every((e) => !e.OPENROUTER_API_KEY));
       const openclawLines = await recordLines(path.join(homeDir, ".fake-openclaw-record.jsonl"));
       assert.ok(openclawLines.some((e) => e.argv.includes(VALID_KEY)));
+      assert.ok(openclawLines.every((e) => !e.OPENROUTER_API_KEY));
       const execModeLine = openclawLines.find((e) => e.argv[0] === "config" && e.argv[1] === "set" && e.argv[2] === "tools.exec.mode");
       assert.equal(execModeLine.argv[3], "ask");
 
@@ -662,6 +695,185 @@ test(
         assert.ok(!body.includes(VALID_KEY), "key leaked into an API response body");
       }
       assert.ok(!logs.text.includes(VALID_KEY), "key leaked into server stdout/stderr");
+    } finally {
+      await killChild(child);
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(agentOsHome, { recursive: true, force: true });
+    }
+  }
+);
+
+// =====================================================================
+// 6b. One-click OpenRouter: the whole trip, against the REAL server process
+// =====================================================================
+
+test(
+  "Connect OpenRouter end to end: sign-in -> callback (no cookie) -> configure with {flowId} -> hello check; the key leaks nowhere",
+  posixSkip,
+  async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), "agent-os-oauth-home-"));
+    const agentOsHome = await mkdtemp(path.join(os.tmpdir(), "agent-os-oauth-runtime-"));
+    await installFakeHermesShim(homeDir);
+    await installFakeOpenclawShim(homeDir);
+    resetMirrorHits();
+    const port = await freePort();
+    const base = `http://127.0.0.1:${port}`;
+    const TOKEN = "test-oauth-token-123";
+    const env = {
+      ...process.env,
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      HOME: homeDir,
+      USERPROFILE: homeDir,
+      AGENT_OS_HOME: agentOsHome,
+      AGENT_OS_SETUP_MIRROR: `http://127.0.0.1:${mirrorPort}`,
+      AGENT_OS_TOKEN: TOKEN,
+      AGENT_OS_NO_BROWSER: "1", // never open a real browser from a test
+      HERMES_AGENT_OS_SCHEDULER: "0",
+      SHELL: FAKE_LOGIN_SHELL, // the sessions' login-shell read (SP3, ruling R15): never the developer's own shell setup
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin"
+    };
+    for (const key of ["HERMES_HOME", "DEMO_PUBLIC", "HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_ENABLE_EXEC", "AGENT_OS_LIVE_CHAT", "AGENT_OS_OAUTH_CALLBACK_HOST"]) {
+      delete env[key];
+    }
+    // Running agents is allowed (as if the person had left Look only): at Look only the hello check is skipped.
+    env.HERMES_AGENT_OS_ENABLE_EXEC = "1";
+    const child = spawn(process.execPath, ["server/index.js"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+    const logs = collectLogs(child);
+    const authedJson = { "Content-Type": "application/json", "x-agent-os-token": TOKEN };
+    const responseBodies = [];
+    const call = async (url, init = {}) => {
+      const response = await fetch(`${base}${url}`, { ...init, headers: { ...authedJson, ...(init.headers || {}) } });
+      const text = await response.text();
+      responseBodies.push(text);
+      return { status: response.status, body: text ? JSON.parse(text) : null };
+    };
+
+    try {
+      await waitForHealth(base, child, logs);
+
+      // 1. Connect: the server opens nothing here (no browser in tests) and
+      //    hands back the sign-in address to follow ourselves.
+      const connect = await call("/api/setup/openrouter/connect", { method: "POST", body: JSON.stringify({ confirm: true }) });
+      assert.equal(connect.status, 200);
+      assert.equal(connect.body.status, "waiting");
+      assert.equal(connect.body.opened, false);
+      const { flowId, authUrl } = connect.body;
+      assert.match(authUrl, new RegExp(`^http://localhost:${port}/oauth/openrouter/start/[a-f0-9]{64}$`), "a one-time LOCAL start address on the REAL port");
+
+      // 2. The browser (no session, no token) opens the start address and gets
+      //    its own cookie, is sent on to OpenRouter, and comes back WITH that cookie.
+      const start = await fetch(authUrl.replace("//localhost:", "//127.0.0.1:"), { redirect: "manual" });
+      assert.equal(start.status, 302);
+      const cookiePair = start.headers.get("set-cookie").split(";")[0];
+      const openRouterUrl = start.headers.get("location");
+      assert.equal(new URL(openRouterUrl).searchParams.get("callback_url"), `http://localhost:${port}/oauth/openrouter/callback`, "the REAL port, not 0 and not 8090");
+      const redirect = await fetch(openRouterUrl, { redirect: "manual" });
+      assert.equal(redirect.status, 302);
+      const location = redirect.headers.get("location");
+      const callback = await fetch(location.replace("//localhost:", "//127.0.0.1:"), { headers: { cookie: cookiePair } });
+      assert.equal(callback.status, 200);
+      const page = await callback.text();
+      responseBodies.push(page);
+      assert.match(page, /Connected to OpenRouter\./);
+
+      const status = await call(`/api/setup/openrouter/connect/${flowId}`);
+      assert.equal(status.body.status, "connected");
+
+      // The callback host rules and the gate, against the real server.
+      const badHost = await new Promise((resolve, reject) => {
+        const req = http.request({ host: "127.0.0.1", port, path: "/oauth/openrouter/callback?code=a&state=b", headers: { Host: "evil.example" } }, (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      assert.equal(badHost, 403);
+      assert.equal((await fetch(`${base}/oauth/elsewhere`)).status, 401);
+      // Changing the letter case of a protected path can't skip the session
+      // (against the REAL server: case-sensitive routing plus a gate that
+      // compares lower-cased paths).
+      for (const [method, requestPath] of [
+        ["POST", "/API/setup/configure"],
+        ["GET", "/Api/Setup/check"],
+        ["GET", "/API/runs"],
+        ["GET", "/OAUTH/openrouter/callback"]
+      ]) {
+        const res = await fetch(`${base}${requestPath}`, {
+          method,
+          headers: method === "POST" ? { "Content-Type": "application/json" } : {},
+          body: method === "POST" ? JSON.stringify({ confirm: true }) : undefined
+        });
+        assert.equal(res.status, 401, `${method} ${requestPath} must need the session`);
+      }
+      // The real lower-case callback still works for the browser (no params = the cancelled page).
+      assert.equal((await fetch(`${base}/oauth/openrouter/callback`)).status, 200);
+
+      // 3. The recommended model is one of the free models.
+      const models = await call("/api/setup/openrouter/models");
+      assert.equal(models.body.recommended, "free/200k");
+
+      // 4. Give it to both agents, with the sign-in as the key source.
+      const configure = await call("/api/setup/configure", {
+        method: "POST",
+        body: JSON.stringify({
+          confirm: true,
+          acceptOpenClawRisk: true,
+          keySource: { flowId },
+          targets: { hermes: { mode: "openrouter", model: "free/128k" }, openclaw: { mode: "openrouter", model: "free/64k" } }
+        })
+      });
+      assert.equal(configure.status, 200);
+      assert.equal(configure.body.kind, "configure");
+      assert.equal(configure.body.targets.openclaw.model, "free/64k");
+      let job = configure.body;
+      const deadline = Date.now() + 90000;
+      while (Date.now() < deadline && job.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        job = (await call(`/api/setup/jobs/${job.id}`)).body;
+      }
+      assert.equal(job.status, "succeeded");
+      assert.equal(job.health.hermes.promptOk, true);
+      assert.equal(job.health.openclaw.promptOk, true);
+
+      // 5. How each fake agent received the key.
+      const hermesLines = await recordLines(path.join(homeDir, ".fake-hermes-record.jsonl"));
+      assert.ok(hermesLines.some((e) => e.stdinKey === VALID_KEY), "Hermes should get the key on its private prompt");
+      assert.ok(hermesLines.every((e) => !e.argv.includes(VALID_KEY) && !e.OPENROUTER_API_KEY));
+      const openclawLines = await recordLines(path.join(homeDir, ".fake-openclaw-record.jsonl"));
+      assert.ok(openclawLines.some((e) => e.argv.includes(VALID_KEY)), "OpenClaw only offers --openrouter-api-key (known limitation)");
+
+      // 6. The key is gone from the sign-in: a second configure can't reuse it.
+      const again = await call("/api/setup/configure", {
+        method: "POST",
+        body: JSON.stringify({
+          confirm: true,
+          acceptOpenClawRisk: true,
+          keySource: { flowId },
+          targets: { hermes: { mode: "openrouter", model: "free/128k" } }
+        })
+      });
+      assert.equal(again.status, 409);
+      assert.equal(again.body.error, "key_unavailable");
+
+      // 7. Collect every place the key could have gone: each run's metadata,
+      //    event log and live stream, then grep the lot.
+      for (const step of job.steps) {
+        for (const runId of step.runIds) {
+          await call(`/api/runs/${runId}`);
+          await call(`/api/runs/${runId}/events`);
+          const stream = await fetch(`${base}/api/runs/${runId}/stream`, { headers: { "x-agent-os-token": TOKEN } });
+          responseBodies.push(await stream.text());
+        }
+      }
+      for (const file of await walkFiles(agentOsHome)) {
+        const content = await readFile(file, "utf8").catch(() => "");
+        assert.ok(!content.includes(VALID_KEY), `key leaked into ${file}`);
+      }
+      for (const body of responseBodies) assert.ok(!body.includes(VALID_KEY), "key leaked into an API response, page or event stream");
+      assert.ok(!logs.text.includes(VALID_KEY), "key leaked into server stdout/stderr");
+      assert.ok(responseBodies.length > 10, "the leak check should have looked at many responses");
     } finally {
       await killChild(child);
       await rm(homeDir, { recursive: true, force: true });
@@ -762,6 +974,63 @@ test("configure job: a failing test prompt reports promptOk:false without failin
   });
 });
 
+// Safety on Look only starts nothing, and the hello check starts the agent (it asks it to reply "ready"), so it is skipped.
+const HELLO_SKIPPED_AT_LOOK_ONLY = "Skipped the hello check because Safety is on Look only. Allow running agents in Safety, then apply the brain again to check it.";
+
+test("Look only: the hello check is skipped (no chat, no agent run) and the step says so; the brain change itself still happens", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await installFakeOpenclawShim(home);
+    await setExecutionGateStatus({ enabled: false, reason: "look only test" });
+
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k", acceptOpenClawRisk: true });
+    const finished = await waitForJob(job.id);
+    assert.equal(finished.status, "succeeded", "a skipped hello check is not a failure");
+
+    // The rest of the brain change is exactly what it was: the agents were still given the model.
+    const hermes = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+    const openclaw = await recordLines(path.join(home, ".fake-openclaw-record.jsonl"));
+    assert.ok(
+      hermes.some((e) => (e.argv[0] === "config" && e.argv[1] === "set") || (e.argv[0] === "auth" && e.argv[1] === "add" && !e.argv.includes("--help"))),
+      "Hermes was given its brain"
+    );
+    assert.ok(openclaw.some((e) => e.argv[0] === "onboard" && !e.argv.includes("--help")), "OpenClaw was given its brain");
+
+    // ...but the hello check started nothing: no reply-ready turn for either agent.
+    const notHelp = (e) => !e.argv.includes("--help");
+    assert.ok(!hermes.some((e) => e.argv[0] === "chat" && notHelp(e)), "Hermes was not asked to reply");
+    assert.ok(!openclaw.some((e) => e.argv[0] === "agent" && notHelp(e)), "OpenClaw was not asked to reply");
+
+    const health = finished.steps.find((s) => s.id === "health");
+    assert.equal(health.status, "succeeded");
+    assert.deepEqual(health.runIds, [], "no run was made");
+    assert.ok(health.log.some((line) => line.endsWith(` ${HELLO_SKIPPED_AT_LOOK_ONLY}`)), `the step log says so: ${health.log.join(" | ")}`);
+    for (const agentId of ["hermes", "openclaw"]) {
+      const entry = finished.health[agentId];
+      assert.equal(entry.skipped, true, agentId);
+      assert.equal(entry.promptOk, false, `${agentId}: nothing answered, so it is never a tick`);
+      assert.equal(entry.hint, HELLO_SKIPPED_AT_LOOK_ONLY, agentId);
+      assert.ok(!entry.error, `${agentId}: a skipped check is not an error`);
+    }
+  });
+});
+
+test("Look only off again: the same job runs the hello check as before (promptOk, no skipped flag)", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await setExecutionGateStatus({ enabled: false, reason: "look only test" });
+    await setExecutionGateStatus({ enabled: true, reason: "allowed again" });
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k" });
+    const finished = await waitForJob(job.id);
+    assert.equal(finished.status, "succeeded");
+    assert.equal(finished.health.hermes.promptOk, true);
+    assert.ok(!finished.health.hermes.skipped);
+    const hermes = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+    assert.ok(hermes.some((e) => e.argv[0] === "chat" && !e.argv.includes("--help")), "Hermes was asked to reply");
+    assert.ok(!finished.steps.find((s) => s.id === "health").log.some((line) => line.includes("Look only")));
+  });
+});
+
 // =====================================================================
 // 12. Retry of a configure job
 // =====================================================================
@@ -775,4 +1044,387 @@ test("retrySetupJob(): a failed configure job can't be retried once its key is g
     assert.equal(finished.status, "failed");
     await assert.rejects(() => retrySetupJob(job.id), (error) => error.code === "key_required_for_retry");
   });
+});
+
+test("retrySetupJob(): a retry the moment a configure job fails still asks for the key again", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeOpenclawShim(home);
+    await writeFile(path.join(home, ".fake-openclaw-onboard-fail"), "1");
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k", acceptOpenClawRisk: true });
+    // Watch the in-memory job as closely as the event loop allows and retry the
+    // moment it stops running: before its final save has reached the disk.
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      const current = await getSetupJob(job.id);
+      if (current && current.status !== "running") break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await assert.rejects(() => retrySetupJob(job.id), (error) => error.code === "key_required_for_retry");
+  });
+});
+
+// =====================================================================
+// 13. How the key reaches Hermes, and per-agent targets
+// =====================================================================
+
+test("configure job: Hermes falls back to --api-key when its private prompt is refused, and the log says so", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await writeFile(path.join(home, ".fake-hermes-no-stdin-prompt"), "1");
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k" });
+    const finished = await waitForJob(job.id);
+    assert.equal(finished.status, "succeeded");
+    const lines = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+    const withFlag = lines.filter((e) => e.argv[0] === "auth" && e.argv[1] === "add" && e.argv.includes("--api-key"));
+    assert.equal(withFlag.length, 1);
+    assert.equal(withFlag[0].argv[withFlag[0].argv.indexOf("--api-key") + 1], VALID_KEY);
+    const brainStep = finished.steps.find((s) => s.id === "hermes-brain");
+    assert.ok(brainStep.log.some((l) => /did not take the key from its private prompt/.test(l)));
+    // The persisted job file and its step logs never contain the key.
+    assert.ok(!JSON.stringify(finished).includes(VALID_KEY));
+  });
+});
+
+test("configure job: per-agent targets touch only the ticked agent and may use different brains", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await installFakeOpenclawShim(home);
+
+    // Only Hermes ticked: OpenClaw is not configured, not tightened, not tested.
+    const onlyHermes = await startConfigureJob({
+      targets: { hermes: { mode: "openrouter", model: "free/128k" } },
+      apiKey: VALID_KEY
+    });
+    const first = await waitForJob(onlyHermes.id);
+    assert.equal(first.status, "succeeded");
+    assert.deepEqual(first.scope, ["hermes"]);
+    assert.equal(first.steps.find((s) => s.id === "openclaw-brain").action, "keep");
+    assert.equal(first.steps.find((s) => s.id === "openclaw-safe-defaults").action, "skip-not-selected");
+    assert.deepEqual(Object.keys(first.health), ["hermes"]);
+    const openclawQuiet = await recordLines(path.join(home, ".fake-openclaw-record.jsonl"));
+    const touched = openclawQuiet.some(
+      (e) => ["onboard", "agent"].includes(e.argv[0]) && !e.argv.includes("--help") ||
+        (e.argv[0] === "config" && e.argv[1] === "set") ||
+        (e.argv[0] === "models" && e.argv[1] === "set")
+    );
+    assert.equal(touched, false, "an unticked OpenClaw was touched");
+
+    // Different brains IN ONE JOB: Hermes local (its 64K copy), OpenClaw
+    // OpenRouter. The key is only used for the agent that needs it.
+    await withEnv({ AGENT_OS_OLLAMA_URL: `http://127.0.0.1:${mirrorPort}` }, async () => {
+      resetSetupJobsForTest();
+      const hermesLinesBefore = (await recordLines(path.join(home, ".fake-hermes-record.jsonl"))).length;
+      const mixed = await startConfigureJob({
+        targets: { hermes: { mode: "ollama", model: "llama3:8b" }, openclaw: { mode: "openrouter", model: "free/64k" } },
+        apiKey: VALID_KEY,
+        acceptOpenClawRisk: true
+      });
+      const second = await waitForJob(mixed.id);
+      assert.equal(second.status, "succeeded");
+      assert.equal(second.mode, "mixed");
+      const hermesLines = (await recordLines(path.join(home, ".fake-hermes-record.jsonl"))).slice(hermesLinesBefore);
+      const setProvider = hermesLines.filter((e) => e.argv[0] === "config" && e.argv[1] === "set" && e.argv[2] === "model.provider");
+      assert.equal(setProvider.at(-1).argv[3], "custom");
+      assert.ok(!JSON.stringify(hermesLines).includes(VALID_KEY), "the key reached the agent that doesn't use OpenRouter");
+      const openclawLines = await recordLines(path.join(home, ".fake-openclaw-record.jsonl"));
+      assert.ok(openclawLines.some((e) => e.argv[0] === "onboard" && e.argv.includes("openrouter-api-key")));
+      assert.ok(!openclawLines.some((e) => e.argv[0] === "models" && e.argv[2]?.startsWith("ollama/")), "OpenClaw is on OpenRouter, not Local");
+      const receipt = (await readFile(path.join(process.env.AGENT_OS_HOME, "setup", "receipt.json"), "utf8").catch(() => "")) || "";
+      assert.ok(!receipt.includes(VALID_KEY));
+    });
+  });
+});
+
+test("startConfigureJob(): no agent ticked, a missing key, and a dead connection are refused with plain codes", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await assert.rejects(() => startConfigureJob({ targets: {} , apiKey: VALID_KEY }), (e) => e.code === "no_targets");
+    await assert.rejects(
+      () => startConfigureJob({ targets: { hermes: { mode: "cloud", model: "x" } }, apiKey: VALID_KEY }),
+      (e) => e.code === "invalid_mode"
+    );
+    await assert.rejects(
+      () => startConfigureJob({ targets: { hermes: { mode: "openrouter", model: "free/128k" } } }),
+      (e) => e.code === "key_required"
+    );
+    await assert.rejects(
+      () =>
+        startConfigureJob({
+          targets: { hermes: { mode: "openrouter", model: "free/128k" } },
+          keySource: { flowId: "0".repeat(32) }
+        }),
+      (e) => e.code === "key_unavailable"
+    );
+    await assert.rejects(
+      () => startConfigureJob({ targets: { hermes: { mode: "openrouter", model: "" } }, apiKey: VALID_KEY }),
+      (e) => e.code === "invalid_model"
+    );
+  });
+});
+
+// =====================================================================
+// 14. Local brains: the 64K copy, the fit check, both agents free to choose
+// =====================================================================
+
+// The commands that CHANGE an agent or run it, as opposed to the read-only
+// probes every system check makes (--version, doctor, --help, gateway status,
+// config get).
+function mutating(lines) {
+  return lines.filter((e) => {
+    const [a, b] = e.argv;
+    if (e.argv.includes("--help")) return false;
+    if (a === "config" && b === "set") return true;
+    if (a === "auth" && b === "add") return true;
+    if (["onboard", "models", "agent", "chat"].includes(a)) return true;
+    if (a === "gateway" && ["start", "stop", "install", "restart"].includes(b)) return true;
+    return false;
+  });
+}
+
+// Runs `fn` with a fake `ollama` on PATH (so Setup sees Ollama as installed)
+// and AGENT_OS_OLLAMA_URL pointing at the fake Ollama in the mirror.
+async function withFakeOllama(home, fn) {
+  const binDir = path.join(home, "fake-bin");
+  await mkdir(binDir, { recursive: true });
+  await writeFile(path.join(binDir, "ollama"), `#!/bin/sh\necho "ollama version 0.0.0-test"\n`);
+  await chmod(path.join(binDir, "ollama"), 0o755);
+  await withEnv(
+    { AGENT_OS_OLLAMA_URL: `http://127.0.0.1:${mirrorPort}`, PATH: [binDir, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter) },
+    async () => {
+      clearSystemCheckCache();
+      clearDetectCaches();
+      clearBrainCacheForTest();
+      await fn();
+    }
+  );
+}
+
+const lastSet = (lines, key) => lines.filter((e) => e.argv[0] === "config" && e.argv[1] === "set" && e.argv[2] === key).at(-1)?.argv[3];
+
+test("configure job (Local): the 64K copy is made once for both agents; Hermes and OpenClaw are pointed at it; the receipt names it; a second job reuses it", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await installFakeOpenclawShim(home);
+    await withFakeOllama(home, async () => {
+      const job = await startConfigureJob({ mode: "ollama", model: "llama3:8b", acceptOpenClawRisk: true });
+      const finished = await waitForJob(job.id);
+      assert.equal(finished.status, "succeeded");
+
+      // ONE create call, with exactly the documented body, even though two agents use the model.
+      assert.deepEqual(ollamaCreateCalls, [
+        { model: "agentos-llama3-8b:64k", from: "llama3:8b", parameters: { num_ctx: 65536 }, stream: false }
+      ]);
+      assert.equal(finished.steps[0].id, "local-prepare", "the copy is made before any agent is configured");
+      const prepare = finished.steps[0];
+      assert.equal(prepare.status, "succeeded");
+      assert.ok(prepare.log.some((l) => /Prepare llama3:8b with 64K working memory/.test(l)));
+      assert.ok(prepare.log.some((l) => /Created agentos-llama3-8b:64k, a settings copy of llama3:8b \(no extra download\)/.test(l)));
+      assert.deepEqual(finished.localVariants, { "llama3:8b": "agentos-llama3-8b:64k" });
+
+      // Hermes: the copy as its model, and 65536 as its context.
+      const hermes = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+      assert.equal(lastSet(hermes, "model.provider"), "custom");
+      assert.equal(lastSet(hermes, "model.base_url"), `http://localhost:${mirrorPort}/v1`);
+      assert.equal(lastSet(hermes, "model.default"), "agentos-llama3-8b:64k");
+      assert.equal(lastSet(hermes, "model.context_length"), "65536");
+      assert.ok(!hermes.some((e) => e.argv.includes("llama3:8b") && e.argv[2] === "model.default"), "Hermes must not be given the plain model");
+
+      // OpenClaw: native Ollama address for onboarding, the copy as its model.
+      const openclaw = await recordLines(path.join(home, ".fake-openclaw-record.jsonl"));
+      const onboard = openclaw.find((e) => e.argv[0] === "onboard" && !e.argv.includes("--help"));
+      assert.equal(onboard.argv[onboard.argv.indexOf("--auth-choice") + 1], "ollama");
+      assert.equal(onboard.argv[onboard.argv.indexOf("--custom-base-url") + 1], `http://127.0.0.1:${mirrorPort}`);
+      const modelsSet = openclaw.find((e) => e.argv[0] === "models" && e.argv[1] === "set");
+      assert.equal(modelsSet.argv[2], "ollama/agentos-llama3-8b:64k");
+
+      // The receipt and its change list name the copy and how to remove it.
+      const receipt = JSON.parse(await readFile(path.join(process.env.AGENT_OS_HOME, "setup", "receipt.json"), "utf8"));
+      const removal = "Added a settings copy named agentos-llama3-8b:64k to Ollama (no extra download). Remove it any time with `ollama rm agentos-llama3-8b:64k`.";
+      for (const agentId of ["hermes", "openclaw"]) {
+        const entry = receipt.find((r) => r.agentId === agentId && r.action === "configure");
+        assert.equal(entry.provider, "ollama");
+        assert.equal(entry.model, "llama3:8b");
+        assert.ok(entry.changes.includes(removal), `${agentId}'s receipt names the copy`);
+      }
+
+      // A second job for the same model reuses the copy: no second create call.
+      const again = await startConfigureJob({ targets: { hermes: { mode: "ollama", model: "llama3:8b" } } });
+      const second = await waitForJob(again.id);
+      assert.equal(second.status, "succeeded");
+      assert.equal(ollamaCreateCalls.length, 1, "an existing 64K copy is reused");
+      assert.ok(second.steps[0].log.some((l) => /already has 64K working memory; reused it/.test(l)));
+    });
+  });
+});
+
+test("mixed brains in two jobs: Hermes on Local, then OpenClaw on OpenRouter; the second job never touches Hermes", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await installFakeOpenclawShim(home);
+    await withFakeOllama(home, async () => {
+      const hermesFile = path.join(home, ".fake-hermes-record.jsonl");
+      const openclawFile = path.join(home, ".fake-openclaw-record.jsonl");
+
+      // Job 1: only Hermes, on Local.
+      const first = await waitForJob((await startConfigureJob({ targets: { hermes: { mode: "ollama", model: "llama3:8b" } } })).id);
+      assert.equal(first.status, "succeeded");
+      assert.deepEqual(first.scope, ["hermes"]);
+      assert.equal(lastSet(await recordLines(hermesFile), "model.default"), "agentos-llama3-8b:64k");
+      assert.equal(mutating(await recordLines(openclawFile)).length, 0, "OpenClaw was not touched by job 1");
+      const hermesAfterFirst = mutating(await recordLines(hermesFile)).length;
+      assert.ok(hermesAfterFirst > 0);
+
+      // Job 2: only OpenClaw, on OpenRouter.
+      resetSetupJobsForTest();
+      const second = await waitForJob(
+        (await startConfigureJob({ targets: { openclaw: { mode: "openrouter", model: "free/64k" } }, apiKey: VALID_KEY, acceptOpenClawRisk: true })).id
+      );
+      assert.equal(second.status, "succeeded");
+      assert.deepEqual(second.scope, ["openclaw"]);
+      assert.equal(second.steps.find((s) => s.id === "local-prepare"), undefined, "no Local model in job 2, so no copy step");
+      const hermesAfterSecond = await recordLines(hermesFile);
+      assert.equal(mutating(hermesAfterSecond).length, hermesAfterFirst, "job 2 recorded no Hermes command that changes or runs it");
+      assert.ok(!JSON.stringify(hermesAfterSecond).includes(VALID_KEY));
+      const openclaw = await recordLines(openclawFile);
+      assert.ok(openclaw.some((e) => e.argv[0] === "onboard" && e.argv.includes("openrouter-api-key") && e.argv.includes(VALID_KEY)));
+      assert.ok(openclaw.some((e) => e.argv[0] === "models" && e.argv[1] === "set" && e.argv[2] === "openrouter/free/64k"));
+      assert.equal(ollamaCreateCalls.length, 1, "job 2 asked Ollama for nothing");
+
+      const receipt = JSON.parse(await readFile(path.join(process.env.AGENT_OS_HOME, "setup", "receipt.json"), "utf8"));
+      assert.equal(receipt.find((r) => r.agentId === "hermes" && r.action === "configure").provider, "ollama");
+      assert.equal(receipt.find((r) => r.agentId === "openclaw" && r.action === "configure").provider, "openrouter");
+    });
+  });
+});
+
+test("Local fit: too big needs acceptLocalFit (400 local_model_too_big with GB numbers, no command runs); accepted it proceeds; tight only warns", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await installFakeOpenclawShim(home);
+    await withFakeOllama(home, async () => {
+      const hermesFile = path.join(home, ".fake-hermes-record.jsonl");
+      const openclawFile = path.join(home, ".fake-openclaw-record.jsonl");
+      await withRouterApp(async (base) => {
+        const post = (body) =>
+          fetch(`${base}/api/setup/configure`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true, ...body }) });
+        const targets = { hermes: { mode: "ollama", model: "huge:70b" } };
+
+        // The server works the fit out itself; the client can't talk its way past it.
+        for (const extra of [{}, { acceptLocalFit: false }, { acceptLocalFit: "yes" }, { acceptLocalFit: 1 }]) {
+          const refused = await post({ targets, ...extra });
+          assert.equal(refused.status, 400, JSON.stringify(extra));
+          const body = await refused.json();
+          assert.equal(body.error, "local_model_too_big");
+          assert.match(body.message, /huge:70b needs about [\d.]+ GB of memory for the 64K working memory agents need, and this computer has [\d.]+ GB/);
+          assert.match(body.message, /Use it anyway/);
+        }
+        assert.equal(ollamaCreateCalls.length, 0, "no copy was made");
+        assert.equal(mutating(await recordLines(hermesFile)).length, 0, "no Hermes command ran");
+        assert.equal(mutating(await recordLines(openclawFile)).length, 0, "no OpenClaw command ran");
+
+        // Accepted: it proceeds, with a warning on the step.
+        const accepted = await post({ targets, acceptLocalFit: true });
+        assert.equal(accepted.status, 200);
+        const job = await waitForJob((await accepted.json()).id);
+        assert.equal(job.status, "succeeded");
+        assert.equal(ollamaCreateCalls.length, 1);
+        assert.equal(job.acceptLocalFit, true);
+        assert.ok(job.steps[0].warnings.some((w) => /huge:70b needs about [\d.]+ GB .* You chose to use it anyway; it may be very slow or fail/.test(w)));
+        assert.equal(lastSet(await recordLines(hermesFile), "model.default"), "agentos-huge-70b:64k");
+      });
+
+      // Tight is allowed without accepting, and says so on the step.
+      resetSetupJobsForTest();
+      const tight = await waitForJob((await startConfigureJob({ targets: { hermes: { mode: "ollama", model: "tight:7b" } } })).id);
+      assert.equal(tight.status, "succeeded");
+      assert.equal(tight.acceptLocalFit, false);
+      assert.ok(tight.steps[0].warnings.some((w) => /tight:7b is a tight fit: it needs about [\d.]+ GB of memory at 64K and this computer has [\d.]+ GB\. Expect it to be slow/.test(w)));
+    });
+  });
+});
+
+test("Local: a model whose name can't become a valid copy name gives a plain error before anything runs; the lock is released", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await withFakeOllama(home, async () => {
+      await assert.rejects(
+        () => startConfigureJob({ targets: { hermes: { mode: "ollama", model: "Mixed-Case:7b" } } }),
+        (e) => e.code === "invalid_variant_name" && /Can't make a 64K copy of "Mixed-Case:7b"/.test(e.message) && /use OpenRouter/.test(e.message)
+      );
+      assert.equal(ollamaCreateCalls.length, 0);
+      assert.equal(mutating(await recordLines(path.join(home, ".fake-hermes-record.jsonl"))).length, 0);
+
+      // Over HTTP it is a 400 with the same sentence.
+      await withRouterApp(async (base) => {
+        const res = await fetch(`${base}/api/setup/configure`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm: true, targets: { hermes: { mode: "ollama", model: "Mixed-Case:7b" } } })
+        });
+        assert.equal(res.status, 400);
+        const body = await res.json();
+        assert.equal(body.error, "invalid_variant_name");
+        assert.match(body.message, /Can't make a 64K copy/);
+      });
+
+      // Nothing is left holding the one-job lock: a normal job starts straight away.
+      const next = await startConfigureJob({ targets: { hermes: { mode: "ollama", model: "llama3:8b" } } });
+      assert.equal((await waitForJob(next.id)).status, "succeeded");
+    });
+  });
+});
+
+test("job lock: configure starts that arrive together give exactly one job; a start that throws releases the lock", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await installFakeOpenclawShim(home);
+
+    // setup throws (OpenClaw not accepted) -> the lock must not stay claimed.
+    await assert.rejects(
+      () => startConfigureJob({ mode: "openrouter", apiKey: VALID_KEY, model: "free/128k" }),
+      (e) => e.code === "openclaw_risk_not_accepted"
+    );
+
+    const request = () => startConfigureJob({ targets: { hermes: { mode: "openrouter", model: "free/128k" } }, apiKey: VALID_KEY });
+    const results = await Promise.allSettled([request(), request(), request()]);
+    const started = results.filter((r) => r.status === "fulfilled");
+    const refused = results.filter((r) => r.status === "rejected");
+    assert.equal(started.length, 1, "exactly one job may start");
+    assert.equal(refused.length, 2);
+    for (const r of refused) assert.equal(r.reason.code, "job_already_running");
+    assert.equal((await waitForJob(started[0].value.id)).status, "succeeded");
+
+    // The key reached the agent exactly once (one job, not three).
+    const stdinKeys = (await recordLines(path.join(home, ".fake-hermes-record.jsonl"))).filter((e) => e.stdinKey === VALID_KEY);
+    assert.equal(stdinKeys.length, 1);
+  });
+});
+
+test("hermesKeyStrategy(): the private-prompt attempt is skipped on Windows (it would only hang); old Hermes uses config set", () => {
+  const withFlag = "usage: hermes auth add [--api-key API_KEY] [--label LABEL] provider";
+  assert.equal(hermesKeyStrategy({ platform: "darwin", authHelpText: withFlag }), "prompt-then-api-key");
+  assert.equal(hermesKeyStrategy({ platform: "linux", authHelpText: withFlag }), "prompt-then-api-key");
+  assert.equal(hermesKeyStrategy({ platform: "win32", authHelpText: withFlag }), "api-key");
+  assert.equal(hermesKeyStrategy({ platform: "darwin", authHelpText: "usage: hermes auth add provider" }), "config-set");
+  assert.equal(hermesKeyStrategy({ platform: "win32", authHelpText: "" }), "config-set");
+});
+
+test("hermesHelpProblem(): a crashed or silent Hermes is reported plainly; an old Hermes's usage text is not", () => {
+  // The real failure seen on 2026-10-09: Hermes's own code files had gone missing.
+  const crash = {
+    ok: false,
+    stdout: "",
+    stderr:
+      "Traceback (most recent call last):\n  File \"<string>\", line 21, in <module>\n" +
+      "ModuleNotFoundError: No module named 'hermes_cli.subcommands.sync'\n"
+  };
+  const crashed = hermesHelpProblem(crash);
+  assert.match(crashed, /^Hermes isn't working/);
+  assert.match(crashed, /No module named 'hermes_cli\.subcommands\.sync'/);
+
+  assert.match(hermesHelpProblem({ ok: false, stdout: "", stderr: "" }), /^Hermes didn't answer/);
+
+  // An older Hermes that simply lacks --api-key is not "broken": the fall-back still applies.
+  assert.equal(hermesHelpProblem({ ok: false, stdout: "", stderr: "usage: hermes auth add provider\nerror: unrecognized arguments" }), null);
+  assert.equal(hermesHelpProblem({ ok: true, stdout: "usage: hermes auth add [--api-key API_KEY] provider", stderr: "" }), null);
 });

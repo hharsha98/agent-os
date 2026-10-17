@@ -1,298 +1,495 @@
-// The "AI brain" step: choose a model provider for Hermes/OpenClaw. Two
-// option cards (free OpenRouter key, or a local Ollama model) plus a
-// "Choose for me" shortcut that picks the server's own recommendation.
-// The OpenRouter key lives only in this component's state until it's
-// verified and handed to onApply -- never logged, never in a URL, never in
-// localStorage, and the parent bumps `resetToken` right after POST
-// /configure returns so the field is wiped whether that call worked or not.
-import { useEffect, useState } from "react";
-import { AlertTriangle, ExternalLink } from "lucide-react";
+// The "AI brain" step, used by Setup and by each agent's Brain card: pick a
+// brain for Hermes and OpenClaw. Two cards side by side (stacked on narrow
+// screens): OpenRouter (free to start, one-click connect) and Local (Ollama).
+// Each agent can take a different brain; by default both take the same one.
+// OpenClaw also gets a third card, "Your plan" (BrainPlanCard), outside the
+// per-agent ticks: it applies through its own route.
+//
+// This panel owns the whole trip: choose -> press "Give it to ..." -> the
+// configure job runs (progress shown) -> a result per agent from its tiny
+// "say hello" check, with a plain fix line when one fails.
+//
+// No API key is ever held here for the one-click path -- only a flow id. The
+// "use an existing key" path keeps the pasted key in the OpenRouter card's
+// state until it is sent once.
+import { useEffect, useId, useRef, useState } from "react";
+import type { ReactNode, RefObject } from "react";
+import { AlertTriangle } from "lucide-react";
+import BrainLocalCard from "./BrainLocalCard";
+import BrainModelActions from "./BrainModelActions";
+import BrainOpenRouterCard, { type OpenRouterGive } from "./BrainOpenRouterCard";
+import BrainPlanCard from "./BrainPlanCard";
+import SetupInstallPanel from "./SetupInstallPanel";
 import StatusMark from "./StatusMark";
-import type { BrainOptionsResponse, OpenRouterModel } from "../../setupApi";
-import { getOpenRouterModels, isLikelySmallModel, verifyOpenRouterKey } from "../../setupApi";
+import { useAgentModels } from "./useAgentModels";
+import { useInterval } from "./useInterval";
+import type { BrainAgentId, BrainOptionsResponse, BrainTarget, SetupJob } from "../../setupApi";
+import { cancelSetupJob, friendlyError, getSetupJob, postConfigure, recallJobId, rememberJobId } from "../../setupApi";
+import { BRAIN_MODE_LABEL, CONFIGURE_STEP_LABEL, type BrainAgentLine } from "../brainShared";
+import { withTimeout } from "../homeShared";
+import { gotNoAnswer, noAnswerWords } from "../setupGroupShared";
+import { useSessionsList } from "../useSessionsList";
+import "../brain.css";
 
-export type BrainSelection = { mode: "openrouter" | "ollama"; model: string; apiKey?: string };
+export type { BrainAgentLine } from "../brainShared";
 
-export interface BrainAgentLine {
-  id: string;
-  label: string;
-  installed: boolean;
-  configured: boolean;
+type Kind = "openrouter" | "local";
+export type BrainPanelStatus = "idle" | "running" | "failed" | "succeeded";
+
+// Every request this panel makes has a time limit, so a server that never answers cannot leave
+// it spinning for ever.
+const REQUEST_TIMEOUT_MS = 20000;
+
+// A refusal Agent OS sent keeps its plain-English reason (friendlyError). A request that got no
+// answer says so in plain words, never the browser's raw "Failed to fetch" / "Load failed".
+function plainError(error: unknown) {
+  return gotNoAnswer(error) ? noAnswerWords(error) : friendlyError(error);
 }
-
-const MODE_LABEL = { openrouter: "Free OpenRouter key", ollama: "Local model (Ollama)" } as const;
 
 export default function SetupBrainPanel({
   brain,
   agents,
-  onApply,
-  busy,
-  error,
-  resetToken
+  onChanged,
+  onStatus,
+  onContinue,
+  continueLabel = "Continue",
+  initialAgents,
+  showModelActions = true,
+  showPlanCard = true,
+  rootRef
 }: {
   brain: BrainOptionsResponse;
   agents: BrainAgentLine[];
-  onApply: (selection: BrainSelection) => void;
-  busy?: boolean;
-  error?: string;
-  resetToken: number;
+  // A brain was really set: the parent should re-read what the server knows.
+  onChanged: () => void;
+  onStatus?: (status: BrainPanelStatus) => void;
+  onContinue?: () => void;
+  continueLabel?: string;
+  // Only these agents start ticked (the Agents page opens this for one agent).
+  initialAgents?: BrainAgentId[];
+  // "Change model" / "Choose on OpenRouter" buttons; off where the parent already shows them.
+  showModelActions?: boolean;
+  // OpenClaw's "Your plan" card; off where the parent already shows it (OpenClaw's Brain card on the Agents page).
+  showPlanCard?: boolean;
+  // The panel's outer box, for a parent that scrolls it into view (the Agents page, when Change brain opens it).
+  rootRef?: RefObject<HTMLDivElement>;
 }) {
-  const [mode, setMode] = useState<"openrouter" | "ollama" | null>(null);
-  const [pickedForYou, setPickedForYou] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [keyStatus, setKeyStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
-  const [keyMessage, setKeyMessage] = useState("");
-  const [models, setModels] = useState<OpenRouterModel[]>([]);
-  const [modelsError, setModelsError] = useState("");
-  const [modelsAttempt, setModelsAttempt] = useState(0);
-  const [selectedModel, setSelectedModel] = useState("");
-  const [ollamaModel, setOllamaModel] = useState("");
+  // "Choose for me" is ALWAYS OpenRouter: a local model with the 64K working
+  // memory agents need is a stretch even for a 24 GB computer. Local is always
+  // on offer (each agent can use either), but never ticked for the person.
+  const recommendedKind: Kind = "openrouter";
 
-  const ollamaOption = brain.options.find((o) => o.id === "ollama");
-
-  // The parent bumps this right after POST /configure returns: drop the key
-  // and make the person verify again rather than keep a secret around.
+  const [assignment, setAssignment] = useState<Record<BrainAgentId, Kind | null>>(() => {
+    const start: Record<BrainAgentId, Kind | null> = { hermes: null, openclaw: null };
+    for (const agent of agents) {
+      if (!agent.installed) continue;
+      const wanted = initialAgents ? initialAgents.includes(agent.id) : brain.defaults[agent.id] === "configure";
+      if (wanted) start[agent.id] = recommendedKind;
+    }
+    return start;
+  });
+  const [riskAccepted, setRiskAccepted] = useState(false);
+  const [pickedNote, setPickedNote] = useState("");
+  const [busy, setBusy] = useState<Kind | null>(null);
+  const [errors, setErrors] = useState<Partial<Record<Kind, string>>>({});
+  const [resetToken, setResetToken] = useState(0);
+  const [job, setJob] = useState<SetupJob | null>(null);
+  const [actionError, setActionError] = useState("");
+  // What each agent uses now, from the agents themselves (shown next to each name below).
+  const { models, reload: reloadModels } = useAgentModels(agents);
+  // The plan routes exist only where Agent OS runs in local mode, as sessions do (spec 2026-10-15 section 7).
+  const { available: localMode } = useSessionsList();
+  // False once the panel is gone: a late answer must not update a screen that is not there.
+  const alive = useRef(true);
+  const pollBusy = useRef(false);
   useEffect(() => {
-    if (resetToken === 0) return;
-    setApiKey("");
-    setKeyStatus("idle");
-    setKeyMessage("");
-  }, [resetToken]);
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
+  // A configure job that is still running on the server survives a reload or
+  // a trip to another page: pick it up again instead of starting over.
   useEffect(() => {
-    if (mode !== "openrouter" || models.length) return;
+    const id = recallJobId("configure");
+    if (!id) return;
     let cancelled = false;
-    setModelsError("");
-    getOpenRouterModels()
-      .then((res) => {
+    withTimeout(getSetupJob(id), REQUEST_TIMEOUT_MS)
+      .then((found) => {
         if (cancelled) return;
-        setModels(res.models);
-        if (res.error) setModelsError(res.error);
-        else if (!res.models.length) setModelsError("OpenRouter has no free models that fit right now.");
+        if (found.status === "running") setJob(found);
+        else rememberJobId("configure", null);
       })
-      .catch(() => {
-        if (!cancelled) setModelsError("Could not load OpenRouter's model list.");
+      // A job Agent OS says it does not know is forgotten; a question that got no answer is not a
+      // reason to forget it, so a reload can still find it later.
+      .catch((error) => {
+        if (!gotNoAnswer(error)) rememberJobId("configure", null);
       });
     return () => {
       cancelled = true;
     };
-    // modelsAttempt is the "Try again" button
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, modelsAttempt]);
+  }, []);
 
-  async function checkKey() {
-    if (!apiKey.trim() || keyStatus === "checking") return;
-    setKeyStatus("checking");
-    setKeyMessage("");
-    try {
-      const result = await verifyOpenRouterKey(apiKey);
-      if (result.ok) {
-        setKeyStatus("ok");
-        setKeyMessage(result.label ? `Key looks good (${result.label}).` : "Key looks good.");
-      } else {
-        setKeyStatus("error");
-        setKeyMessage(result.error || "That key didn't check out.");
+  // One poll at a time: a slow answer must not pile up behind the next tick.
+  useInterval(
+    async () => {
+      if (!job || pollBusy.current) return;
+      pollBusy.current = true;
+      try {
+        const next = await withTimeout(getSetupJob(job.id), REQUEST_TIMEOUT_MS);
+        if (alive.current) setJob(next);
+      } catch {
+        // transient poll failure; the next tick tries again
+      } finally {
+        pollBusy.current = false;
       }
-    } catch {
-      setKeyStatus("error");
-      setKeyMessage("Could not reach OpenRouter to verify the key.");
+    },
+    job && job.status === "running" ? 1000 : null
+  );
+
+  const status: BrainPanelStatus = !job ? "idle" : job.status === "running" ? "running" : job.status === "succeeded" ? "succeeded" : "failed";
+  useEffect(() => {
+    onStatus?.(status);
+    if (status === "succeeded") {
+      onChanged();
+      void reloadModels();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  function assignedTo(kind: Kind) {
+    return new Set<BrainAgentId>((Object.keys(assignment) as BrainAgentId[]).filter((id) => assignment[id] === kind));
+  }
+
+  function toggle(kind: Kind, id: BrainAgentId, checked: boolean) {
+    setPickedNote("");
+    setAssignment((current) => ({ ...current, [id]: checked ? kind : current[id] === kind ? null : current[id] }));
   }
 
   function chooseForMe() {
-    setMode(brain.recommendation);
-    setPickedForYou(true);
+    const needing = agents.filter((a) => a.installed && !a.configured);
+    const chosen = needing.length ? needing : agents.filter((a) => a.installed);
+    setAssignment((current) => {
+      const next = { ...current };
+      for (const a of agents) next[a.id] = chosen.some((c) => c.id === a.id) ? recommendedKind : current[a.id];
+      return next;
+    });
+    setPickedNote(
+      chosen.length >= 2
+        ? "Picked for you: OpenRouter for both agents. You can move either agent to Local."
+        : `Picked for you: OpenRouter for ${chosen.map((a) => a.label).join(" and ") || "your agents"}. You can move it to Local.`
+    );
   }
 
-  const ollamaSmallWarning = Boolean(ollamaModel && isLikelySmallModel(ollamaModel));
-
-  function handleApply() {
-    if (mode === "openrouter") {
-      if (keyStatus !== "ok" || !selectedModel) return;
-      onApply({ mode: "openrouter", model: selectedModel, apiKey });
-    } else if (mode === "ollama") {
-      if (!ollamaModel.trim()) return;
-      onApply({ mode: "ollama", model: ollamaModel.trim() });
+  async function give(kind: Kind, payload: OpenRouterGive | { model: string; acceptLocalFit?: boolean }) {
+    const targets: Partial<Record<BrainAgentId, BrainTarget>> = {};
+    for (const agent of agents) {
+      if (agent.installed && assignment[agent.id] === kind) {
+        targets[agent.id] = { mode: kind === "openrouter" ? "openrouter" : "ollama", model: payload.model };
+      }
+    }
+    setBusy(kind);
+    setErrors({});
+    setActionError("");
+    try {
+      const started = await withTimeout(
+        postConfigure({
+          targets,
+          keySource: "keySource" in payload ? payload.keySource : undefined,
+          apiKey: "apiKey" in payload ? payload.apiKey : undefined,
+          acceptOpenClawRisk: Boolean(targets.openclaw) && riskAccepted,
+          acceptLocalFit: "acceptLocalFit" in payload && payload.acceptLocalFit === true ? true : undefined
+        }),
+        REQUEST_TIMEOUT_MS
+      );
+      // The server has the job whether or not this panel is still on screen, so its id is always kept.
+      rememberJobId("configure", started.id);
+      if (alive.current) setJob(started);
+    } catch (error) {
+      if (!alive.current) return;
+      const code = error instanceof Error ? error.message : "";
+      setErrors({
+        [kind]: gotNoAnswer(error)
+          ? `${plainError(error)} It may or may not have been applied, so check what the agent uses now before trying again.`
+          : `Couldn't apply that: ${plainError(error)}`
+      });
+      // A used-up or refused connection can't be reused: start the card over.
+      if (code === "key_unavailable" || code === "connection_not_ready") setResetToken((n) => n + 1);
+    } finally {
+      if (alive.current) setBusy(null);
     }
   }
 
-  const canApply =
-    (mode === "openrouter" && keyStatus === "ok" && Boolean(selectedModel)) ||
-    (mode === "ollama" && Boolean(ollamaModel.trim()));
+  async function cancelJob() {
+    if (!job) return;
+    try {
+      const next = await withTimeout(cancelSetupJob(job.id), REQUEST_TIMEOUT_MS);
+      if (alive.current) setJob(next);
+    } catch (error) {
+      if (!alive.current) return;
+      setActionError(gotNoAnswer(error) ? `${plainError(error)} The cancel may not have gone through.` : friendlyError(error));
+    }
+  }
+
+  // Back to the two cards. The key is long gone from the server, so a new
+  // try means connecting (or pasting) again.
+  function backToChoices() {
+    rememberJobId("configure", null);
+    setJob(null);
+    setResetToken((n) => n + 1);
+    setErrors({});
+    setRiskAccepted(false);
+  }
+
+  if (job && job.status === "running") {
+    return (
+      <div className="os-brain" ref={rootRef}>
+        <SetupInstallPanel
+          title="Giving your agents a brain"
+          job={job}
+          stepLabels={CONFIGURE_STEP_LABEL}
+          onCancel={() => void cancelJob()}
+          onRetry={backToChoices}
+          retryLabel="Back to AI brain"
+        />
+        {actionError ? (
+          <p className="os-brain-card__error" role="alert">
+            <StatusMark kind="error" /> {actionError}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (job) {
+    return (
+      <div className="os-brain" ref={rootRef}>
+        <BrainResult job={job} agents={agents} onBack={backToChoices} onContinue={onContinue} continueLabel={continueLabel} />
+      </div>
+    );
+  }
 
   return (
-    <div className="os-setup-brain">
-      <div className="os-setup-brain__intro">
+    <div className="os-brain" ref={rootRef}>
+      <div className="os-brain-intro">
         <p>{brain.reason}</p>
         <button type="button" className="os-btn os-btn--secondary" onClick={chooseForMe}>
           Choose for me
         </button>
       </div>
-      <p className="os-setup-brain__picked" role="status">
-        {pickedForYou && mode ? `Picked for you: ${MODE_LABEL[mode]} (the option we recommend).` : ""}
+      <p className="os-brain-note" role="status">
+        {pickedNote}
+      </p>
+      {/* The two ways to pick one specific model: in this app, or on OpenRouter's website. */}
+      {showModelActions ? (
+        <BrainModelActions
+          agents={agents}
+          models={models}
+          initialAgents={initialAgents}
+          onChanged={() => {
+            onChanged();
+            void reloadModels();
+          }}
+        />
+      ) : null}
+      {/* Where each agent will get its brain, in one line, built from the ticks below. */}
+      <p className="os-brain-summary" aria-label="Where each agent's brain comes from">
+        {agents
+          .filter((a) => a.installed)
+          .map((a, index) => (
+            <span key={a.id} className="os-brain-summary__item">
+              {index > 0 ? <span className="os-brain-summary__sep"> · </span> : null}
+              <strong>{a.label}</strong> →{" "}
+              {assignment[a.id] === "openrouter" ? (
+                "OpenRouter"
+              ) : assignment[a.id] === "local" ? (
+                "Local"
+              ) : a.configured ? (
+                <>
+                  keeps <span className="os-mono">{models[a.id]?.model || "its model"}</span>
+                </>
+              ) : (
+                "no brain yet"
+              )}
+            </span>
+          ))}
       </p>
 
-      <ul className="os-setup-brain__agents" aria-label="Agents this applies to">
-        {agents.map((a) => (
-          <li key={a.id}>
-            <StatusMark kind={!a.installed ? "unknown" : a.configured ? "ok" : "warn"} />
-            <span>
-              <strong>{a.label}</strong>:{" "}
-              {!a.installed ? "not installed, so nothing to set up" : a.configured ? "already has a model (kept as it is)" : "needs a model"}
-            </span>
-          </li>
-        ))}
+      <div className="os-brain-cards">
+        <BrainOpenRouterCard
+          agents={agents}
+          assigned={assignedTo("openrouter")}
+          onToggleAgent={(id, checked) => toggle("openrouter", id, checked)}
+          riskAccepted={riskAccepted}
+          onRiskChange={setRiskAccepted}
+          busy={busy === "openrouter"}
+          recommended
+          onGive={(payload) => void give("openrouter", payload)}
+          error={errors.openrouter}
+          resetToken={resetToken}
+        />
+        <BrainLocalCard
+          agents={agents}
+          assigned={assignedTo("local")}
+          onToggleAgent={(id, checked) => toggle("local", id, checked)}
+          riskAccepted={riskAccepted}
+          onRiskChange={setRiskAccepted}
+          busy={busy === "local"}
+          preferredModel={brain.localModel}
+          onGive={(payload) => void give("local", payload)}
+          error={errors.local}
+        />
+        {showPlanCard && localMode && agents.some((agent) => agent.id === "openclaw" && agent.installed) ? (
+          <BrainPlanCard
+            where="setup"
+            currentPlan={null}
+            onChanged={() => {
+              onChanged();
+              void reloadModels();
+            }}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// ---- the result: one honest line per agent ---------------------------------------
+
+// Also shown by BrainPlanCard for a plan job.
+export function BrainResult({
+  job,
+  agents,
+  onBack,
+  onContinue,
+  continueLabel,
+  extraAction
+}: {
+  job: SetupJob;
+  agents: BrainAgentLine[];
+  onBack: () => void;
+  onContinue?: () => void;
+  continueLabel: string;
+  // A button the caller wants beside the result's own controls (the plan card's "Sign in again"); it comes first,
+  // so the way forward is the first thing the keyboard reaches.
+  extraAction?: ReactNode;
+}) {
+  const scope = (job.scope && job.scope.length ? job.scope : (["hermes", "openclaw"] as BrainAgentId[])).filter((id) =>
+    agents.some((a) => a.id === id && a.installed)
+  );
+  const failedStep = job.steps.find((s) => s.status === "failed");
+  const allHello = scope.length > 0 && scope.every((id) => job.health?.[id]?.promptOk);
+  // Safety on Look only starts nothing, so the hello check is skipped: nothing answered, and nothing failed to.
+  const allSkipped = scope.length > 0 && scope.every((id) => job.health?.[id]?.skipped);
+  const skippedNote = scope.map((id) => job.health?.[id]).find((entry) => entry?.skipped)?.hint;
+  const finishedOk = job.status === "succeeded";
+  const log = job.steps.flatMap((step) => (step.log || []).map((line) => `[${CONFIGURE_STEP_LABEL[step.id] || step.id}] ${line}`));
+  // Two results can be on one page (the plan card's and Change brain's), so the heading's id is this one's own.
+  const titleId = useId();
+
+  const heading =
+    job.status === "cancelled"
+      ? "Cancelled. Anything already finished stays as it is."
+      : !finishedOk
+        ? "That didn't finish."
+        : allHello
+          ? "All set. Each agent answered."
+          : allSkipped
+            ? "Set up. The hello check was skipped."
+            : "Set up, but not every agent answered.";
+
+  return (
+    <section className="os-panel os-brain-result" aria-labelledby={titleId}>
+      <header className="os-brain-result__head">
+        <StatusMark kind={finishedOk && allHello ? "ok" : job.status === "cancelled" ? "warn" : finishedOk ? "warn" : "error"} />
+        <h3 id={titleId}>{heading}</h3>
+      </header>
+
+      {job.status === "failed" && failedStep ? (
+        <p className="os-brain-card__error" role="alert">
+          <AlertTriangle size={14} aria-hidden="true" /> {failedStep.error || "A setup step failed."}
+        </p>
+      ) : null}
+
+      <ul className="os-brain-result__agents">
+        {scope.map((id) => {
+          const label = agents.find((a) => a.id === id)?.label || id;
+          const target = job.targets?.[id];
+          const entry = job.health?.[id];
+          return (
+            <li key={id} className="os-brain-result__agent">
+              <StatusMark
+                kind={entry ? (entry.promptOk ? "ok" : entry.skipped ? "unknown" : "error") : "unknown"}
+                label={entry ? (entry.promptOk ? "said hello" : entry.skipped ? "not checked" : "did not answer") : "not checked"}
+              />
+              <div>
+                <p className="os-brain-result__line">
+                  <strong>{label}</strong>
+                  {target ? (
+                    <span className="os-brain-result__brain">
+                      {" "}
+                      · {BRAIN_MODE_LABEL[target.mode] ?? target.mode} · <span className="os-mono">{target.model}</span>
+                    </span>
+                  ) : null}
+                </p>
+                {target?.mode === "ollama" && job.localVariants?.[target.model] ? (
+                  <p className="os-brain-result__verdict">
+                    Uses its 64K copy <span className="os-mono">{job.localVariants[target.model]}</span> (no extra download).
+                  </p>
+                ) : null}
+                <p className="os-brain-result__verdict">
+                  {entry ? (entry.promptOk ? "Said hello ✓" : entry.skipped ? "Hello check skipped." : "Didn't answer ✗") : finishedOk ? "Not checked." : "Not finished."}
+                </p>
+                {entry && !entry.promptOk && !entry.skipped ? <p className="os-brain-result__fix">{entry.hint || "Open its run on the Runs page for details."}</p> : null}
+              </div>
+            </li>
+          );
+        })}
       </ul>
 
-      {error ? (
-        <p className="os-setup-brain__error" role="alert">
-          <AlertTriangle size={14} /> {error}
+      {skippedNote ? (
+        <p className="os-brain-card__hint os-brain-result__warning">
+          <StatusMark kind="warn" label="note" /> {skippedNote}
         </p>
       ) : null}
 
-      <div className="os-setup-brain__cards">
-        <div className={`os-panel os-setup-brain__card ${mode === "openrouter" ? "os-setup-brain__card--selected" : ""}`}>
-          <header>
-            <label className="os-setup-brain__card-select">
-              <input type="radio" name="brain-mode" checked={mode === "openrouter"} onChange={() => {
-                  setMode("openrouter");
-                  setPickedForYou(false);
-                }} />
-              <strong>{MODE_LABEL.openrouter}</strong>
-            </label>
-            {brain.recommendation === "openrouter" ? <span className="os-chip">Recommended</span> : null}
-          </header>
-          <p className="os-setup-brain__tradeoff">Free, strong models, no download — but your messages go to a cloud provider.</p>
-          {mode === "openrouter" ? (
-            <div className="os-setup-brain__card-body">
-              <ol className="os-setup-brain__guide">
-                <li>
-                  Go to{" "}
-                  <a href="https://openrouter.ai" target="_blank" rel="noreferrer">
-                    openrouter.ai <ExternalLink size={12} />
-                  </a>{" "}
-                  and sign up (free).
-                </li>
-                <li>Create an API key from your dashboard.</li>
-                <li>Paste it below.</li>
-              </ol>
-              <label className="os-field">
-                <span className="os-field__label">OpenRouter API key</span>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={apiKey}
-                  onChange={(e) => {
-                    setApiKey(e.target.value);
-                    setKeyStatus("idle");
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      void checkKey();
-                    }
-                  }}
-                />
-              </label>
-              <div className="os-setup-brain__key-row">
-                <button type="button" className="os-btn os-btn--secondary" onClick={checkKey} disabled={!apiKey.trim() || keyStatus === "checking"}>
-                  {keyStatus === "checking" ? "Checking…" : "Check key"}
-                </button>
-                {keyStatus !== "idle" ? (
-                  <span className="os-setup-brain__key-status" role="status">
-                    <StatusMark kind={keyStatus === "ok" ? "ok" : keyStatus === "checking" ? "unknown" : "error"} />
-                    {keyStatus === "checking" ? "Checking…" : keyMessage}
-                  </span>
-                ) : null}
-              </div>
-              {modelsError ? (
-                <p className="os-setup-brain__error">
-                  {modelsError}{" "}
-                  <button type="button" className="os-btn os-btn--ghost" onClick={() => setModelsAttempt((n) => n + 1)}>
-                    Try again
-                  </button>
-                </p>
-              ) : null}
-              <label className="os-field">
-                <span className="os-field__label">Model</span>
-                <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={!models.length}>
-                  <option value="">{models.length ? "Choose a model" : modelsError ? "No models available" : "Loading models…"}</option>
-                  {models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="os-setup-brain__privacy">Your key goes straight into each agent's own settings. Agent OS doesn't keep a copy.</p>
-            </div>
-          ) : null}
-        </div>
+      {job.steps
+        .flatMap((step) => step.warnings || [])
+        .map((warning, index) => (
+          <p key={index} className="os-brain-card__hint os-brain-result__warning">
+            <StatusMark kind="warn" label="note" /> {warning}
+          </p>
+        ))}
 
-        <div className={`os-panel os-setup-brain__card ${mode === "ollama" ? "os-setup-brain__card--selected" : ""}`}>
-          <header>
-            <label className="os-setup-brain__card-select">
-              <input
-                type="radio"
-                name="brain-mode"
-                checked={mode === "ollama"}
-                onChange={() => {
-                  setMode("ollama");
-                  setPickedForYou(false);
-                }}
-                disabled={!ollamaOption?.available}
-              />
-              <strong>{MODE_LABEL.ollama}</strong>
-            </label>
-            <span className="os-setup-brain__card-badges">
-              {brain.recommendation === "ollama" ? <span className="os-chip">Recommended</span> : null}
-              <span className="os-setup-brain__avail">
-                <StatusMark kind={ollamaOption?.available ? "ok" : "unknown"} />
-                {ollamaOption?.available ? "Available" : "Not available"}
-              </span>
-            </span>
-          </header>
-          <p className="os-setup-brain__tradeoff">Private and free once downloaded — but needs disk space and is usually lower quality.</p>
-          {!ollamaOption?.available ? (
-            <p className="os-setup-brain__note">{ollamaOption?.reason || "Ollama is not available on this computer."}</p>
-          ) : null}
-          {mode === "ollama" && ollamaOption?.available ? (
-            <div className="os-setup-brain__card-body">
-              <label className="os-field">
-                <span className="os-field__label">Model you already downloaded in Ollama</span>
-                <input
-                  type="text"
-                  placeholder="e.g. llama3.1:8b"
-                  value={ollamaModel}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(e) => setOllamaModel(e.target.value)}
-                />
-              </label>
-              <p className="os-setup-brain__privacy">Type the name exactly as the "ollama list" command shows it. Agent OS checks it is really there before using it.</p>
-              {ollamaSmallWarning ? (
-                <p className="os-setup-brain__warning">
-                  Small models often give poor answers for agent tasks. For better results pick a bigger model or use OpenRouter.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
+      {!finishedOk && job.targets && Object.values(job.targets).some((t) => t?.mode === "openrouter") ? (
+        <p className="os-brain-card__hint">
+          For your safety Agent OS forgets the OpenRouter connection when a job ends. To try again, connect OpenRouter again.
+        </p>
+      ) : null}
+
+      {log.length ? (
+        <details className="os-brain-result__log">
+          <summary>Show the log</summary>
+          <div className="os-mono os-brain-result__log-lines" role="log" aria-label="Setup log" tabIndex={0}>
+            {log.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+
+      <div className="os-brain-result__actions">
+        {extraAction}
+        {finishedOk && onContinue ? (
+          <button type="button" className="os-btn os-btn--primary" onClick={onContinue}>
+            {continueLabel}
+          </button>
+        ) : null}
+        <button type="button" className={`os-btn ${finishedOk && onContinue ? "os-btn--secondary" : "os-btn--primary"}`} onClick={onBack}>
+          {finishedOk ? "Change a brain" : "Back to AI brain"}
+        </button>
       </div>
-
-      <button type="button" className="os-btn os-btn--primary os-setup-brain__apply" onClick={handleApply} disabled={!canApply || busy}>
-        Apply
-      </button>
-      {!canApply ? (
-        <p className="os-setup-brain__privacy">
-          {mode === null
-            ? "Pick an option above to continue."
-            : mode === "openrouter"
-              ? "Check your key and choose a model to continue."
-              : "Enter the model name to continue."}
-        </p>
-      ) : null}
-    </div>
+    </section>
   );
 }

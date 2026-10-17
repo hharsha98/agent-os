@@ -1,104 +1,173 @@
-// The "Ready" step: a green/red checklist per agent built from a FRESH
-// check (refresh=1 on every load -- a cached "it worked" would be stale the
-// moment a job finishes) plus each agent's live safety detail, and the
-// append-only install receipt with the official uninstall steps.
-import { useEffect, useState } from "react";
-import { ChevronDown, RefreshCw } from "lucide-react";
-import StatusMark from "./StatusMark";
+// The "Ready" step: a final look at what is in place. It is built from a FRESH
+// check (refresh=1 on every load: a cached "it worked" would be stale the moment a
+// job finishes) plus each always-on agent's live safety detail, and the append-only
+// install receipt with the official uninstall steps. It is calm when all is well
+// and plain about what is left when it is not: the headline never says "ready"
+// over a problem.
+import { useEffect, useId, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { ArrowRight, ChevronDown, ChevronUp, CircleCheck, RefreshCw, TriangleAlert } from "lucide-react";
+import Banner from "./Banner";
+import SetupFooter from "./SetupFooter";
+import SetupStatus from "./SetupStatus";
+import { AGENT_DETAIL_LIMIT_MS, BRAIN_READ_LIMIT_MS, withTimeout } from "../homeShared";
+import { AGENT_NAMES, gotNoAnswer, readyVerdict, safeDefaultsWords, type ReadyAgentState } from "../setupGroupShared";
 import type { AgentDetail, BrainOptionsResponse, ReceiptEntry, SystemCheck } from "../../setupApi";
 import { getAgentDetail, getBrainOptions, getReceipt, getSetupCheck } from "../../setupApi";
 
-const AGENT_LABEL: Record<string, string> = { hermes: "Hermes", openclaw: "OpenClaw", "managed-node": "Node 24 (managed by Agent OS)" };
+const COLUMNS = "minmax(132px, 240px) minmax(0, 1fr) minmax(176px, auto)";
 
-function ChecklistRow({ ok, label, fixLabel, onFix }: { ok: boolean | null; label: string; fixLabel?: string; onFix?: () => void }) {
-  return (
-    <li className="os-setup-ready__row">
-      <StatusMark kind={ok === null ? "unknown" : ok ? "ok" : "error"} />
-      <span>{label}</span>
-      {ok === false && onFix ? (
-        <button type="button" className="os-btn os-btn--ghost" onClick={onFix}>
-          {fixLabel || "Fix"}
-        </button>
-      ) : null}
-    </li>
-  );
+// The fresh check re-probes every agent, which can take about 13 s on a cold or hung command. The brain and
+// agent-detail reads also run each agent's own doctor (up to 30 s on the server), so their limits are above
+// that (homeShared.ts); shorter ones would fail every time on a slow computer.
+const CHECK_TIMEOUT_MS = 25000;
+const READ_TIMEOUT_MS = 20000;
+
+const AGENT_LABEL: Record<string, string> = {
+  ...AGENT_NAMES,
+  "managed-node": "Node 24 (managed by Agent OS)"
+};
+
+interface ReadyRow {
+  name: string;
+  detail: ReactNode;
+  // true = in place, false = needs attention, null = not known (shown as "—").
+  state: boolean | null;
+  fixLabel?: string;
+  onFix?: () => void;
+}
+
+interface ReadyCard {
+  agentId: "hermes" | "openclaw";
+  unsupported: boolean;
+  rows: ReadyRow[];
+}
+
+// One card per always-on agent. What is wrong, and what is not known, is counted by readyVerdict
+// (setupGroupShared.ts, tested in test/setup-page-logic.test.js), so the heading never says
+// "ready" over a red row or over a dash; this only draws the rows.
+function buildCards(
+  check: SystemCheck,
+  brain: BrainOptionsResponse | null,
+  details: Record<string, AgentDetail | null>,
+  states: ReadyAgentState[],
+  go: { toStep: (index: number) => void; openAgent: (agentId: string) => void }
+): ReadyCard[] {
+  return states.map((state) => {
+    const { agentId, unsupported, fact, installed, configured, serviceRunning, safeDefaults } = state;
+    const entry = check.agents?.[agentId];
+    const detail = details[agentId];
+    const rows: ReadyRow[] = [
+      {
+        name: "Installed",
+        detail: installed ? <span className="os-mono">{entry?.detected.version || "Version not reported"}</span> : "—",
+        state: fact !== "unknown" ? installed : null,
+        fixLabel: "Go to Plan",
+        onFix: () => go.toStep(1)
+      },
+      {
+        name: "Model provider configured",
+        detail: installed ? brain?.current?.[agentId]?.summary || "—" : "—",
+        state: installed ? configured : null,
+        fixLabel: "Go to AI brain",
+        onFix: () => go.toStep(3)
+      },
+      {
+        name: agentId === "openclaw" ? "Gateway running" : "Background service running",
+        detail: installed ? (entry?.service ? (entry.service.running ? "Running" : "Stopped") : "—") : "—",
+        state: installed ? serviceRunning : null,
+        // Starting a stopped service is done on the agent's own page (Start / Restart live there), not in the brain step.
+        fixLabel: `Open ${AGENT_LABEL[agentId]} on Agents`,
+        onFix: () => go.openAgent(agentId)
+      },
+      {
+        name: "Safe defaults applied",
+        detail: safeDefaultsWords(installed, detail),
+        state: safeDefaults,
+        fixLabel: "Change on the Agents page",
+        onFix: () => go.openAgent(agentId)
+      }
+    ];
+    return { agentId, unsupported, rows };
+  });
+}
+
+// A receipt time that cannot be read is "—", never "Invalid Date".
+function receiptTime(at: string) {
+  const when = new Date(at);
+  return Number.isNaN(when.getTime()) ? "—" : when.toLocaleString();
 }
 
 export default function SetupReadyPanel({
   onGoHome,
   onOpenSafety,
   onGoToStep,
-  onOpenAgent
+  onOpenAgent,
+  onProblems
 }: {
   onGoHome: () => void;
   onOpenSafety: () => void;
   onGoToStep: (index: number) => void;
   onOpenAgent: (agentId: string) => void;
+  // How many things are left to fix (null while unknown), so the step rail can show Ready as done only when it is.
+  onProblems?: (problems: number | null) => void;
 }) {
   const [check, setCheck] = useState<SystemCheck | null>(null);
   const [brain, setBrain] = useState<BrainOptionsResponse | null>(null);
   const [receipt, setReceipt] = useState<ReceiptEntry[] | null>(null);
   const [details, setDetails] = useState<Record<string, AgentDetail | null>>({});
   const [loading, setLoading] = useState(true);
-  const [showUninstall, setShowUninstall] = useState(false);
-  const [error, setError] = useState(false);
+  const [showReceipt, setShowReceipt] = useState(false);
+  // Why the last load failed ("" = it worked). After one good load the data stays on screen under a note.
+  const [problem, setProblem] = useState("");
+  const receiptId = useId();
+  const alive = useRef(true);
 
   async function load() {
     setLoading(true);
-    setError(false);
     try {
+      // The fresh check is the one read the page cannot do without. The others are judged apart: a slow brain
+      // read turns only the "Model provider configured" rows into "—" (readyVerdict counts them as unknown),
+      // a slow receipt only the list of changes, and neither fails the whole final check.
       const [checkRes, brainRes, receiptRes, hermesDetail, openclawDetail] = await Promise.all([
-        getSetupCheck(true),
-        getBrainOptions(true),
-        getReceipt(),
-        getAgentDetail("hermes").catch(() => null),
-        getAgentDetail("openclaw").catch(() => null)
+        withTimeout(getSetupCheck(true), CHECK_TIMEOUT_MS),
+        withTimeout(getBrainOptions(true), BRAIN_READ_LIMIT_MS).catch(() => null),
+        withTimeout(getReceipt(), READ_TIMEOUT_MS).catch(() => null),
+        withTimeout(getAgentDetail("hermes"), AGENT_DETAIL_LIMIT_MS).catch(() => null),
+        withTimeout(getAgentDetail("openclaw"), AGENT_DETAIL_LIMIT_MS).catch(() => null)
       ]);
+      if (!alive.current) return;
       setCheck(checkRes);
       setBrain(brainRes);
-      setReceipt(receiptRes.receipt);
+      setReceipt(receiptRes ? receiptRes.receipt : null);
       setDetails({ hermes: hermesDetail, openclaw: openclawDetail });
-    } catch {
-      setError(true);
+      setProblem("");
+    } catch (error) {
+      if (!alive.current) return;
+      setProblem(gotNoAnswer(error) ? "Agent OS did not answer in time." : "Agent OS could not finish the final check.");
     } finally {
-      setLoading(false);
+      if (alive.current) setLoading(false);
     }
   }
 
   useEffect(() => {
+    alive.current = true;
     void load();
+    return () => {
+      alive.current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (loading && !check) {
-    return <p className="os-setup__loading">Checking your computer…</p>;
-  }
-  if (error || !check) {
-    return (
-      <div className="os-setup__error">
-        <p>Couldn't load the Ready checklist.</p>
-        <button type="button" className="os-btn os-btn--secondary" onClick={() => void load()}>
-          <RefreshCw size={14} /> Retry
-        </button>
-      </div>
-    );
-  }
-
-  // Count what is actually wrong, so the heading never says "ready" over red rows.
-  let problems = 0;
-  const cards = (["hermes", "openclaw"] as const).map((agentId) => {
-    const entry = check.agents?.[agentId];
-    const unsupported = agentId === "hermes" && Boolean(check.isIntelMac);
-    const installed = Boolean(entry?.detected.installed);
-    const configured = brain?.current?.[agentId]?.configured ?? null;
-    const serviceRunning = installed ? Boolean(entry?.service?.running) : null;
-    const detail = details[agentId];
-    const safeDefaults = installed ? (detail ? !detail.safety.permissive : null) : null;
-    if (!unsupported) {
-      if (!installed) problems += 1;
-      else problems += [configured, serviceRunning, safeDefaults].filter((v) => v === false).length;
-    }
-    return { agentId, unsupported, installed, configured, serviceRunning, safeDefaults };
-  });
+  // Data kept from an earlier load (a later load failed), a partial answer, or a row that could not be
+  // read is "unsure": not a count to put on the rail, and never "ready".
+  const verdict = check ? readyVerdict(check, brain, details, Boolean(problem)) : null;
+  const built = check && verdict ? buildCards(check, brain, details, verdict.agents, { toStep: onGoToStep, openAgent: onOpenAgent }) : null;
+  const problems = verdict ? verdict.railCount : null;
+  useEffect(() => {
+    onProblems?.(problems);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [problems]);
 
   // Uninstall steps grouped by what they remove, each from the receipt data.
   const uninstallByAgent = new Map<string, string[]>();
@@ -108,110 +177,225 @@ export default function SetupReadyPanel({
     uninstallByAgent.set(entry.agentId, steps);
   }
 
-  return (
-    <div className="os-setup-ready">
-      <div className="os-setup-ready__head">
-        <h2>{problems === 0 ? "Agent OS is ready" : `Almost ready: ${problems} thing${problems === 1 ? "" : "s"} left to fix`}</h2>
-        <button type="button" className="os-btn os-btn--secondary" onClick={() => void load()} disabled={loading}>
-          <RefreshCw size={14} /> Run the check again
-        </button>
-      </div>
-
-      {cards.map(({ agentId, unsupported, installed, configured, serviceRunning, safeDefaults }) => (
-        <div className="os-panel os-setup-ready__card" key={agentId}>
-          <strong>{AGENT_LABEL[agentId]}</strong>
-          {unsupported ? (
-            <p className="os-setup-ready__empty">Hermes doesn't support Intel Macs yet, so it isn't set up here.</p>
-          ) : (
-            <ul>
-              <ChecklistRow ok={installed} label="Installed" fixLabel="Go to Plan" onFix={() => onGoToStep(1)} />
-              <ChecklistRow
-                ok={installed ? configured : null}
-                label="Model provider configured"
-                fixLabel="Go to AI brain"
-                onFix={() => onGoToStep(3)}
-              />
-              <ChecklistRow
-                ok={installed ? serviceRunning : null}
-                label="Background service running"
-                fixLabel="Go to AI brain"
-                onFix={() => onGoToStep(3)}
-              />
-              <ChecklistRow
-                ok={safeDefaults}
-                label="Safe defaults applied"
-                fixLabel="Change on the Agents page"
-                onFix={() => onOpenAgent(agentId)}
-              />
-            </ul>
-          )}
+  if (!built || !verdict) {
+    if (loading) {
+      return (
+        <>
+          <div className="os-setup-panel__content">
+            <p className="os-setup-loading" role="status">
+              Checking this computer…
+            </p>
+          </div>
+          <SetupFooter note="Reading what is in place." />
+        </>
+      );
+    }
+    return (
+      <>
+        <div className="os-setup-panel__content">
+          <Banner
+            tone="danger"
+            title="Couldn't load the final check"
+            actions={
+              <button type="button" className="os-btn os-btn--secondary" onClick={() => void load()}>
+                <RefreshCw size={14} aria-hidden="true" /> Retry
+              </button>
+            }
+          >
+            {problem || "Agent OS could not finish the final check."} Try again, or open Agents to see each agent on its own.
+          </Banner>
         </div>
-      ))}
+        <SetupFooter note="The final check did not finish." />
+      </>
+    );
+  }
 
-      <div className="os-panel os-setup-ready__receipt">
-        <header>
-          <strong>Install receipt</strong>
-        </header>
-        {receipt && receipt.length ? (
-          <ul className="os-setup-ready__receipt-list">
-            {receipt.map((entry, i) => (
-              <li key={i}>
-                <span className="os-mono">{new Date(entry.at).toLocaleString()}</span>
-                <span>
-                  {AGENT_LABEL[entry.agentId] || entry.agentId} — {entry.action}
-                  {entry.version ? ` (${entry.version})` : ""}
-                </span>
-                {entry.changes.length ? (
-                  <ul className="os-setup-ready__receipt-changes">
-                    {/* recipes.js already writes these with a literal "~", e.g.
-                        "Creates ~/.hermes..." -- never an absolute home path. */}
-                    {entry.changes.map((c, j) => (
-                      <li key={j}>{c}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
+  const { ready, partial, problems: left } = verdict;
+  return (
+    <>
+      <div className="os-setup-panel__content">
+        {problem ? (
+          <Banner
+            tone="warn"
+            title="Couldn't re-check just now"
+            actions={
+              <button type="button" className="os-btn os-btn--secondary" onClick={() => void load()} disabled={loading}>
+                <RefreshCw size={14} aria-hidden="true" /> Retry
+              </button>
+            }
+          >
+            {problem} What you see is from the last check, so it may be out of date.
+          </Banner>
+        ) : partial ? (
+          <Banner tone="warn" title="Part of the final check did not finish">
+            Rows marked — could not be read this time. Press Check again.
+          </Banner>
+        ) : null}
+
+        <div className="os-setup-done">
+          {ready ? (
+            <CircleCheck className="os-setup-done__icon os-setup-done__icon--ok" size={30} aria-hidden="true" />
+          ) : (
+            <TriangleAlert className="os-setup-done__icon os-setup-done__icon--warn" size={30} aria-hidden="true" />
+          )}
+          <div>
+            <b>
+              {problem
+                ? `Last check: ${left} thing${left === 1 ? "" : "s"} left to fix`
+                : partial
+                  ? "Can't tell yet if everything is in place"
+                  : ready
+                    ? "Agent OS is ready"
+                    : `Almost ready: ${left} thing${left === 1 ? "" : "s"} left to fix`}
+            </b>
+            <span>
+              {problem
+                ? "This is from the last check that worked."
+                : partial
+                  ? "Press Check again."
+                  : ready
+                    ? "Everything below is in place."
+                    : "Fix the items marked below, then check again."}
+            </span>
+          </div>
+          <button type="button" className="os-btn os-btn--ghost" onClick={() => void load()} disabled={loading}>
+            <RefreshCw size={16} aria-hidden="true" />
+            {loading ? "Checking…" : "Check again"}
+          </button>
+        </div>
+
+        <div className="os-table os-setup-table" role="table" aria-label="What is ready" style={{ "--os-table-cols": COLUMNS } as CSSProperties}>
+          <div className="os-table__head" role="row">
+            {["Item", "What Agent OS found", "Result"].map((heading) => (
+              <span key={heading} className="os-table__cell os-micro" role="columnheader">
+                {heading}
+              </span>
             ))}
-          </ul>
-        ) : (
-          <p className="os-setup-ready__empty">Nothing installed or changed by Agent OS yet.</p>
-        )}
-        {uninstallByAgent.size ? (
-          <div className="os-setup-plan-card__disclosure">
-            <button
-              type="button"
-              className="os-btn os-btn--ghost"
-              onClick={() => setShowUninstall((v) => !v)}
-              aria-expanded={showUninstall}
-            >
-              <ChevronDown size={14} style={{ transform: showUninstall ? "rotate(180deg)" : undefined }} /> How to remove each item
-            </button>
-            {showUninstall
-              ? Array.from(uninstallByAgent.entries()).map(([agentId, steps]) => (
-                  <div key={agentId} className="os-setup-ready__uninstall-group">
-                    <strong>{AGENT_LABEL[agentId] || agentId}</strong>
-                    <ul className="os-setup-ready__uninstall">
-                      {steps.map((step, i) => (
-                        <li key={i} className="os-mono">
-                          {step}
-                        </li>
-                      ))}
-                    </ul>
+          </div>
+          {built.map((card) => (
+            <div key={card.agentId} role="rowgroup">
+              <div className="os-table__group os-setup-table__group" role="presentation">
+                <b>{AGENT_LABEL[card.agentId]}</b>
+              </div>
+              {card.unsupported ? (
+                <div className="os-table__row" role="row">
+                  <div className="os-table__cell os-setup-table__name" role="rowheader">
+                    Support
+                  </div>
+                  <div className="os-table__cell os-setup-table__detail" role="cell">
+                    Hermes doesn't support Intel Macs yet, so it isn't set up here.
+                  </div>
+                  <div className="os-table__cell" role="cell">
+                    <SetupStatus tone="unknown">Not supported</SetupStatus>
+                  </div>
+                </div>
+              ) : (
+                card.rows.map((row) => (
+                  <div key={row.name} className="os-table__row" role="row">
+                    <div className="os-table__cell os-setup-table__name" role="rowheader">
+                      {row.name}
+                    </div>
+                    <div className="os-table__cell os-setup-table__detail" role="cell">
+                      {row.detail}
+                    </div>
+                    <div className="os-table__cell os-setup-ready__result" role="cell">
+                      {row.state === true ? (
+                        <SetupStatus tone="ok">Done</SetupStatus>
+                      ) : row.state === false ? (
+                        <>
+                          <SetupStatus tone="error">Needs attention</SetupStatus>
+                          {row.onFix ? (
+                            <button type="button" className="os-btn os-btn--secondary" onClick={row.onFix}>
+                              {row.fixLabel || "Fix"}
+                            </button>
+                          ) : null}
+                        </>
+                      ) : (
+                        <SetupStatus tone="unknown">—</SetupStatus>
+                      )}
+                    </div>
                   </div>
                 ))
-              : null}
-          </div>
-        ) : null}
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="os-setup-receipt">
+          <button
+            type="button"
+            className="os-btn os-btn--ghost"
+            onClick={() => setShowReceipt((v) => !v)}
+            aria-expanded={showReceipt}
+            aria-controls={receiptId}
+          >
+            {showReceipt ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+            What Setup changed on this computer
+          </button>
+          {showReceipt ? (
+            <div id={receiptId} className="os-setup-receipt__body">
+              <p className="os-setup-receipt__cap">Every change Agent OS made is listed here, with the official way to undo it.</p>
+              {receipt === null ? (
+                <p className="os-setup-receipt__empty">Agent OS could not read its list of changes this time. Press Check again.</p>
+              ) : receipt.length ? (
+                <ul className="os-setup-receipt__list">
+                  {receipt.map((entry, i) => (
+                    <li key={i}>
+                      <span className="os-mono">{receiptTime(entry.at)}</span>
+                      <span>
+                        {AGENT_LABEL[entry.agentId] || entry.agentId} · {entry.action}
+                        {entry.version ? ` (${entry.version})` : ""}
+                      </span>
+                      {entry.changes.length ? (
+                        <ul className="os-setup-receipt__changes">
+                          {/* recipes.js already writes these with a literal "~", e.g.
+                              "Creates ~/.hermes..." -- never an absolute home path. */}
+                          {entry.changes.map((c, j) => (
+                            <li key={j}>{c}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="os-setup-receipt__empty">Nothing installed or changed by Agent OS yet.</p>
+              )}
+              {uninstallByAgent.size ? (
+                <>
+                  <h4>How to remove each item</h4>
+                  {Array.from(uninstallByAgent.entries()).map(([agentId, steps]) => (
+                    <div key={agentId} className="os-setup-receipt__group">
+                      <b>{AGENT_LABEL[agentId] || agentId}</b>
+                      <ul>
+                        {steps.map((step, i) => (
+                          <li key={i} className="os-mono">
+                            {step}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
-      <div className="os-setup-ready__actions">
-        <button type="button" className="os-btn os-btn--secondary" onClick={onGoHome}>
-          Go to Home
+      <SetupFooter note={ready ? "Setup keeps what works and asks before it changes anything." : "Fix the items marked above, then check again."}>
+        <button type="button" className="os-btn os-btn--ghost" onClick={() => onGoToStep(0)}>
+          <RefreshCw size={16} aria-hidden="true" />
+          Run Setup again
         </button>
-        <button type="button" className="os-btn os-btn--primary" onClick={onOpenSafety}>
+        <button type="button" className="os-btn os-btn--secondary" onClick={onOpenSafety}>
           Open Safety
         </button>
-      </div>
-    </div>
+        <button type="button" className="os-btn os-btn--primary" onClick={onGoHome}>
+          Go to Home
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+      </SetupFooter>
+    </>
   );
 }

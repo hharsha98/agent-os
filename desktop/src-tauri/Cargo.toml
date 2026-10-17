@@ -1,6 +1,6 @@
 [package]
 name = "agent-os-desktop"
-version = "0.3.2"
+version = "0.4.0"
 description = "Agent OS desktop app: a Tauri shell around a bundled Node server"
 edition = "2021"
 # Not published; this crate only ever builds into the app bundle.
@@ -22,6 +22,11 @@ getrandom = "0.2"
 tauri-plugin-updater = "2"
 # `relaunch()` after the user approves an update.
 tauri-plugin-process = "2"
+# "Show in Finder" on the Workspace page: reveal one file in the file manager.
+tauri-plugin-opener = "2"
+# "Choose folder…" in the New session dialog: the system's folder picker. Only its
+# open dialog is granted (capabilities/default.json, dialog:allow-open).
+tauri-plugin-dialog = "2"
 
 # SIGTERM has no Windows equivalent, so these are unix-only. signal-hook lets
 # a plain `kill <pid>` (which skips the normal window-quit path) still shut

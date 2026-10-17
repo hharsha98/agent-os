@@ -1,189 +1,124 @@
-/* Safety "arming panel". Only .os- selectors; legacy pages never see these. */
+/* Safety (the prototype's safety.html). Shared pieces: kit.css. */
+.os-safety { display: flex; flex-direction: column; gap: var(--os-sp-7); }
+/* The page header already carries its own bottom margin; the column gap does the spacing here. */
+.os-safety > .os-page-head { margin-bottom: 0; }
+.os-saf-section { display: flex; flex-direction: column; gap: var(--os-sp-4); }
+.os-saf-section__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--os-sp-4); flex-wrap: wrap; }
+.os-saf-section__head h2 { margin: 0; font-size: var(--os-fs-20); font-stretch: 87.5%; letter-spacing: -0.02em; }
+.os-saf-section__quiet { margin: 0; font-size: var(--os-fs-13); color: var(--os-text-2); }
+/* A server message may hold a long unbroken word (a path, a setting name): it wraps instead of widening the page. */
+.os-saf-msg { overflow-wrap: anywhere; }
 
-.os-safety {
-  max-width: 760px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-6);
+/* The level control */
+.os-saf-ladder { display: flex; align-items: center; gap: var(--os-sp-3); font-size: var(--os-fs-12); color: var(--os-text-3); }
+.os-saf-ladder__line { flex: 1; height: 1px; background: var(--os-line-2); }
+.os-saf-levels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--os-sp-3); }
+@media (max-width: 1100px) { .os-saf-levels { grid-template-columns: minmax(0, 1fr); } }
+.os-shell button.os-saf-level {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: var(--os-sp-2) var(--os-sp-3);
+  padding: var(--os-sp-4);
+  text-align: left;
+  color: var(--os-text-1);
+  background: var(--os-surface-1);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  transition: background-color 140ms var(--os-ease-out), border-color 140ms var(--os-ease-out);
 }
-.os-safety__header h1 {
-  margin: var(--os-sp-1) 0 0;
-  font-size: var(--os-fs-32);
-  font-weight: 600;
+.os-shell button.os-saf-level:hover:not(:disabled):not(.is-current) { background: var(--os-surface-2); }
+.os-shell button.os-saf-level:disabled { opacity: 1; cursor: default; }
+.os-shell button.os-saf-level[aria-busy="true"] { cursor: progress; }
+.os-shell button.os-saf-level[aria-busy="true"] .os-saf-level__f { color: var(--os-text-1); }
+/* The current level stays a real, focusable button (see SafetyLevels.tsx); pressing it does nothing. */
+.os-shell button.os-saf-level.is-current { cursor: default; background: var(--os-surface-2); box-shadow: 0 0 0 1px var(--os-accent-line), var(--os-e1); }
+.os-shell button.os-saf-level.is-armed { box-shadow: 0 0 0 1px var(--os-warn-line), var(--os-e1); }
+.os-saf-level__n {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--os-line-3);
+  border-radius: 50%;
+  font-size: var(--os-fs-14);
   color: var(--os-text-1);
 }
+.os-saf-level__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.os-saf-level__t { font-size: var(--os-fs-15); font-weight: 600; }
+.os-saf-level__d { font-size: var(--os-fs-13); color: var(--os-text-2); line-height: 1.4; }
+.os-saf-level__f { grid-column: 2; display: inline-flex; align-items: center; gap: var(--os-sp-1); font-size: var(--os-fs-12); color: var(--os-text-2); }
+.os-saf-level.is-armed .os-saf-level__f { color: var(--os-warn); }
 
-.os-safety__plates {
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-4);
+.os-saf-detail { padding: var(--os-sp-4) var(--os-sp-5); background: var(--os-surface-1); border: 1px solid var(--os-line-1); border-radius: var(--os-r-md); }
+.os-saf-detail h3 { margin: 0 0 var(--os-sp-2); font-size: var(--os-fs-15); }
+.os-saf-detail__none { margin: 0; font-size: var(--os-fs-14); color: var(--os-text-2); }
+.os-saf-can { --os-table-cols: 170px minmax(0, 1fr); }
+.os-saf-can__w { display: inline-flex; align-items: center; gap: var(--os-sp-2); font-weight: 560; }
+.os-saf-can__w--ok svg { color: var(--os-ok); }
+.os-saf-can__w--warn svg { color: var(--os-warn); }
+.os-saf-can__w--idle svg { color: var(--os-text-3); }
+
+/* Pending approvals (empty until SP4) */
+.os-saf-approvals { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: var(--os-sp-5); align-items: start; }
+@media (max-width: 1100px) { .os-saf-approvals { grid-template-columns: minmax(0, 1fr); } }
+.os-saf-ghost { padding: var(--os-sp-4); border: 1px dashed var(--os-line-2); border-radius: var(--os-r-md); color: var(--os-text-2); }
+.os-saf-ghost p { margin: 0 0 var(--os-sp-2); display: flex; align-items: center; gap: var(--os-sp-2); }
+.os-saf-ghost__cap { font-size: var(--os-fs-12); color: var(--os-text-3); }
+.os-saf-ghost__title { font-size: var(--os-fs-14); color: var(--os-text-1); }
+.os-saf-ghost__cmd { font-size: var(--os-fs-13); }
+.os-saf-ghost__acts { display: flex; gap: var(--os-sp-2); }
+
+/* The safeguards table: "Applies to" and "Status" are quiet, small type, so the safeguard's own title is the loudest
+   thing in its row (as in the prototype). A short line height keeps a two-line "Applies to" tight in its 150px column. */
+.os-saf-guards .os-table__row > .os-table__cell:nth-child(2) {
+  font-size: var(--os-fs-13);
+  line-height: 1.4;
+  color: var(--os-text-2);
+}
+.os-saf-guards .os-table__row > .os-table__cell:nth-child(3) {
+  font-size: var(--os-fs-13);
+  line-height: 1.4;
+}
+.os-saf-guards .os-table__row .os-statusword {
+  font-size: var(--os-fs-13);
+  font-weight: 450;
 }
 
-.os-safety-plate {
+/* Hold to stop all, explained */
+.os-saf-stop { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--os-sp-6); align-items: start; }
+@media (max-width: 1100px) { .os-saf-stop { grid-template-columns: minmax(0, 1fr); } }
+.os-saf-stop__lede { margin: 0; max-width: 52ch; color: var(--os-text-1); }
+.os-saf-stop__steps { margin: var(--os-sp-3) 0; padding-left: var(--os-sp-5); color: var(--os-text-2); line-height: 1.5; }
+.os-saf-stop__keys { margin: 0 0 var(--os-sp-3); max-width: 52ch; color: var(--os-text-2); font-size: var(--os-fs-13); }
+.os-saf-stop__not { margin: 0; padding: var(--os-sp-3) var(--os-sp-4); background: var(--os-surface-1); border-radius: var(--os-r-sm); color: var(--os-text-2); font-size: var(--os-fs-13); }
+.os-saf-stop__more { margin: var(--os-sp-3) 0 0; font-size: var(--os-fs-13); }
+.os-saf-stop__more a { color: var(--os-accent-strong); }
+.os-saf-frames { display: flex; flex-direction: column; gap: var(--os-sp-3); }
+.os-saf-frame { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: var(--os-sp-3); align-items: center; }
+.os-saf-frame__btn {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-3);
-  transition: opacity var(--os-dur-slow) var(--os-ease-out), box-shadow var(--os-dur-slow) var(--os-ease-out);
-}
-.os-safety-plate--dim {
-  opacity: 0.82;
-}
-/* Lit plate: accent hairline + soft glow (the brief's --os-glow, tinted per
-   plate). Only the plate that matches the server's level ever gets this. */
-.os-safety-plate--lit {
-  opacity: 1;
-  box-shadow: var(--os-e2), 0 0 0 1px var(--os-plate-c, var(--os-line-2)), 0 0 28px color-mix(in srgb, var(--os-plate-c, transparent) 18%, transparent);
-}
-.os-safety-plate--disabled {
-  opacity: 0.72;
-}
-.os-safety-plate--disabled .os-safety-plate__note {
-  color: var(--os-text-1);
-}
-.os-safety-plate__toplight {
-  position: absolute;
-  top: 0;
-  left: var(--os-r-lg);
-  right: var(--os-r-lg);
-  height: 2px;
-  border-radius: var(--os-r-pill);
-  background: var(--os-plate-c, var(--os-line-2));
-  opacity: 0.7;
-  transition: background var(--os-dur-slow) var(--os-ease-out);
-}
-.os-safety-plate__head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.os-safety-plate__head {
-  position: relative;
-}
-.os-safety-plate__head h2 {
-  margin: 0;
-  font-size: var(--os-fs-20);
-  color: var(--os-text-1);
-}
-.os-safety-plate__tag {
-  position: absolute;
-  top: 0;
-  right: 0;
   display: inline-flex;
   align-items: center;
   gap: var(--os-sp-2);
-  font-size: var(--os-fs-11);
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--os-plate-c, var(--os-text-2));
-}
-.os-safety-plate__lines {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--os-text-2);
+  height: 32px;
+  padding: 0 var(--os-sp-3);
+  overflow: hidden;
+  color: var(--os-danger);
+  border: 1px solid var(--os-danger-line);
+  border-radius: var(--os-r-sm);
   font-size: var(--os-fs-13);
 }
-.os-safety-plate__action {
-  align-self: flex-start;
-}
-.os-safety-plate__note {
-  margin: 0;
-  color: var(--os-text-2);
-  font-size: var(--os-fs-12);
-}
-.os-safety-plate__arm-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-3);
-  align-items: flex-start;
-}
-.os-safety-plate__armed {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--os-sp-4);
-  flex-wrap: wrap;
-}
-.os-safety-plate__armed-clock {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.os-safety-plate__countdown {
-  font-size: var(--os-fs-44);
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-  color: var(--os-warn);
-}
-.os-safety-plate__expires {
-  font-size: var(--os-fs-12);
-  color: var(--os-text-2);
-}
-.os-safety-plate__disarm {
-  min-height: 44px;
-  padding: 0 var(--os-sp-6);
-  font-size: var(--os-fs-14);
-}
-.os-safety-plate__arm-form .os-field {
-  align-self: stretch;
-  max-width: 420px;
-  gap: var(--os-sp-2);
-}
+.os-saf-frame__btn > :not(.os-saf-frame__fill) { position: relative; }
+/* Once the red fill is under the words, they step up to full ink, as on the real button (shell.css
+   .os-holdstop.is-holding): danger-red words on the filling red measure 3.18:1, full ink 8.5:1. */
+.os-saf-frame__btn.is-filled { color: var(--os-text-1); border-color: var(--os-danger); }
+/* The same tint the real button's fill uses (shell.css .os-holdstop__fill); the 8% wash was too faint to show a fill. */
+.os-saf-frame__fill { position: absolute; inset: 0; transform-origin: left center; background: var(--os-danger-line); }
+.os-saf-frame__t { font-size: var(--os-fs-13); color: var(--os-text-2); }
 
-.os-safety-guards {
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-3);
-}
-.os-safety-guards ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--os-sp-2);
-}
-.os-safety-guards__row {
-  display: flex;
-  align-items: center;
-  gap: var(--os-sp-2);
-  font-size: var(--os-fs-13);
-  color: var(--os-text-2);
-  flex-wrap: wrap;
-}
-.os-safety-guards__row button {
-  margin-left: auto;
-}
-
-@media (max-width: 599px) {
-  .os-safety .os-btn {
-    min-height: 40px;
-  }
-  .os-safety-plate__tag {
-    position: static;
-    margin-top: var(--os-sp-1);
-  }
-  .os-safety-plate__disarm {
-    width: 100%;
-    justify-content: center;
-  }
-  .os-safety-guards__row {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    column-gap: var(--os-sp-2);
-    row-gap: var(--os-sp-1);
-    align-items: center;
-  }
-  .os-safety-guards__row button {
-    grid-column: 2;
-    justify-self: start;
-    margin-left: 0;
-    padding-left: 0;
-  }
-}
+/* The arming dialog */
+.os-saf-arm-list { margin: var(--os-sp-2) 0 var(--os-sp-4); padding-left: var(--os-sp-5); color: var(--os-text-1); line-height: 1.6; }
+.os-saf-arm-list svg { vertical-align: -2px; margin-right: var(--os-sp-1); }
+.os-saf-arm-hint { margin: var(--os-sp-2) 0 0; font-size: var(--os-fs-13); color: var(--os-text-2); }

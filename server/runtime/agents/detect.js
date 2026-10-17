@@ -5,6 +5,7 @@ import { access, constants as fsConstants } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runCommand, which } from "../safety.js";
+import { managedNodeRoot } from "../setup/managed-node.js";
 
 const DETECT_TTL_MS = 30 * 1000;
 
@@ -58,6 +59,35 @@ export function openclawFallbackPaths() {
   ];
 }
 
+// The coding agents' installers drop a launcher in these places, which are not
+// on PATH until the person opens a new terminal -- so a fresh install is found
+// by its absolute path instead.
+export function claudeFallbackPaths() {
+  const home = os.homedir();
+  if (process.platform === "win32") return [path.join(home, ".local", "bin", "claude.exe")];
+  return [path.join(home, ".local", "bin", "claude")];
+}
+
+// Codex is an npm package: it lands in the bin folder of whichever Node it was
+// installed with -- Agent OS's own (the managed Node root, which tests move
+// with AGENT_OS_MANAGED_ROOT) or a user-level npm folder.
+export function codexFallbackPaths() {
+  const home = os.homedir();
+  const managed = path.join(managedNodeRoot(), "node");
+  if (process.platform === "win32") {
+    return [
+      ...(process.env.APPDATA ? [path.join(process.env.APPDATA, "npm", "codex.cmd")] : []),
+      path.join(managed, "codex.cmd")
+    ];
+  }
+  return [path.join(managed, "bin", "codex"), path.join(home, ".npm-global", "bin", "codex"), path.join(home, ".local", "bin", "codex")];
+}
+
+export function cursorFallbackPaths(command) {
+  if (process.platform === "win32") return [];
+  return [path.join(os.homedir(), ".local", "bin", command)];
+}
+
 export async function runVersion(binPath, timeoutMs = 5000) {
   if (!binPath) return "";
   const result = await runCommand(binPath, ["--version"], timeoutMs);
@@ -87,10 +117,13 @@ export async function runHelp(binPath, args, timeoutMs = 5000) {
   return { ok: result.ok, text: `${result.stdout || ""}\n${result.stderr || ""}` };
 }
 
+// A result with `helpFailed: true` (the --help call timed out or printed
+// nothing) is returned but not remembered, so one slow start can't leave every
+// feature switched off until the CLI is upgraded.
 export async function cachedFeatures(key, compute) {
   if (featureCache.has(key)) return featureCache.get(key);
   const value = await compute();
-  featureCache.set(key, value);
+  if (!value?.helpFailed) featureCache.set(key, value);
   return value;
 }
 

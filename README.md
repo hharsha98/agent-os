@@ -56,9 +56,9 @@ Version 0.4 has a new look: dark only, a cobalt-blue accent, a new logo (a ring 
 
 A session is an agent's own terminal program running inside Agent OS. It is your installed copy of Claude Code, Codex, Cursor, Hermes or OpenClaw, so your keys and slash commands work the way they do in Terminal. Agent OS starts each program the way a normal terminal would, with your own sign-in and settings (if you picked an OpenRouter or Local brain for Claude Code or Codex in Agent OS, the session uses that brain). It never sets your home folder or the agents' config folders.
 
-![Agent OS Sessions page with one live Claude Code session in a folder named notes-app. The terminal shows Claude Code's own start screen: version 2.1.292, the Opus 5.5 model on a Claude Max plan, and the folder path, followed by start-up notes and a hook error from the author's own plugins. The side panel shows the session as Live with a Stop session button, the footer reads v0.4.0, and the top bar shows Level 1 Run agents.](docs/screenshots/v2/sessions.png)
+![Agent OS Sessions page with one live Hermes Agent session in a folder named notes-app. The terminal shows Hermes's own question, Help improve Hermes?, which explains its shared usage counters and offers three choices: Collect and send to Nous, Collect locally only, and No thanks, which is highlighted. Nothing was answered or typed. The side panel shows the session as Live with a Stop session button, the footer reads v0.4.0, and the top bar shows Level 1 Run agents.](docs/screenshots/v2/sessions.png)
 
-<sub>Sessions, on the author's Mac: a live Claude Code session in a throwaway demo folder. Everything inside the terminal is Claude Code's own output, including the lines from the author's own plugins. The tab and the side panel are Agent OS. The "auto mode on" line is the author's own Claude Code setting, not something Agent OS turns on.</sub>
+<sub>Sessions, on the author's Mac: a live Hermes Agent session in a throwaway demo folder, stopped right after this shot. Everything inside the terminal is Hermes's own output: its question about sharing usage counters, with "No thanks" already highlighted. Nothing was typed or answered. The tab and the side panel are Agent OS.</sub>
 
 - **New session:** pick an agent and a folder. The folder can be any folder inside your home folder, but not the home folder itself and not Agent OS's own data folder. The desktop app has a folder picker, you can pick a recent folder, and in a browser tab you type the full path. Sessions need Safety level 1 ("Run agents"), and at most 8 can be open at once.
 - **Tabs:** one tab per session, named by its agent and folder. An ended session's tab says so, and you can dismiss it. The side panel shows the state (starting, live or ended), the brain, how long the session has run, whether it is recorded, and a Stop button.
@@ -109,7 +109,7 @@ A run is one task an agent does on its own, without a terminal. Every run is rec
 
 The second tab, **Session recordings**, lists every recorded session, with Resume conversation.
 
-![Agent OS Runs page on the Session recordings tab. It lists one saved recording, Claude Code in ~/aos-demo/notes-app, 38 seconds long and recorded a minute ago, with a Resume conversation button and the note Replay arrives in a later update. The top bar shows Level 1 Run agents.](docs/screenshots/v2/runs-recordings.png)
+![Agent OS Runs page on the Session recordings tab. It lists one saved recording, Hermes in ~/aos-demo/notes-app, 33 seconds long and recorded a minute ago, with a Resume conversation button and the note Replay arrives in a later update. The top bar shows Level 1 Run agents.](docs/screenshots/v2/runs-recordings.png)
 
 <sub>Runs, on the Session recordings tab, on the author's Mac. It lists the recording of the demo session above.</sub>
 

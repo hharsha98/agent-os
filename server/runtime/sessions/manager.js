@@ -15,6 +15,9 @@
 //   (decision Q15). The update and setup kinds are not gated.
 // - At most `maxLive` live agent sessions. Update and setup sessions are not
 //   counted; at most one update session and one setup session run at a time.
+// - Signals (SP4, signals.js) change only what a session shows: its status
+//   and its alert. Nothing here answers for the person, and update and setup
+//   sessions never alert.
 // - A setup session (plan-brains spec §1: OpenClaw's ChatGPT sign-in) lives in
 //   memory only: no session folder, no meta.json, no recording. Its input goes
 //   to the PTY unscanned, and its mirror is disposed the moment it ends.
@@ -36,6 +39,18 @@ import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, SETUP_AC
 import { ptyAvailable, spawnPty } from "./pty-host.js";
 import { CAST_FILE, createRecorder, enforceRecordingCap } from "./recorder.js";
 import { readSessionSettings } from "./settings.js";
+import {
+  HELD_CHECK_MS,
+  MARKERS_MAX,
+  SIGNAL_SOURCES,
+  TURN_DONE_BACKSTOP_MS,
+  activityAfter,
+  freshActivity,
+  genericMirrorSignal,
+  makeMarker,
+  makeSignal,
+  printAlertLine
+} from "./signals.js";
 import { runSoftStop } from "./soft-stop.js";
 
 // Each shared name has one home: errors.js (the id pattern and the error
@@ -44,7 +59,9 @@ import { runSoftStop } from "./soft-stop.js";
 export { SESSION_ID_RE, isSessionId, sessionError } from "./errors.js";
 export { SESSION_AGENT_LABEL } from "./profiles.js";
 
-// The basic activity rule, used for every session in SP3.
+// The basic activity rule (spec "Session activity states"): 20 s without
+// counted output makes a live session idle, until the session is turn-done;
+// then signals.js's TURN_DONE_BACKSTOP_MS applies instead (K5).
 export const IDLE_AFTER_MS = 20 * 1000;
 // Flow control (spec "WebSocket protocol", Back-pressure).
 export const PAUSE_LAG_BYTES = 512 * 1024;
@@ -116,6 +133,15 @@ const NO_RECORDER = Object.freeze({
 // before it is killed (the same grace as Stop).
 const FAILED_START_GRACE_MS = 3000;
 const SIGNAL_NAMES = signalNameTable();
+// The signal kinds applySignal takes. A limit is never one: limit evidence
+// goes through the agent's limit rule (Task X1b), which calls setHeld.
+const APPLIED_SIGNAL_KINDS = Object.freeze(["waiting", "turn_done", "approval", "resolved"]);
+// The events that start a live session's idle time again.
+const REARM_EVENTS = new Set(["counted", "input", "new_turn"]);
+// A held session's reset timer is set only for a reset time closer than this;
+// the wall-clock check covers one further away (setTimeout's own limit is
+// about 24.8 days).
+const HELD_TIMER_MAX_MS = 24 * 24 * 60 * 60 * 1000;
 
 // ---- small helpers ----------------------------------------------------------------------------------
 
@@ -144,6 +170,43 @@ function signalName(signal) {
 
 function iso(ms) {
   return new Date(ms).toISOString();
+}
+
+// The SP4 summary fields that only memory knows (R22). An ended session sends
+// the defaults: its alert, meter and hand-off ended with its process.
+function memoryFields(view) {
+  const memory = view.status === "exited" ? null : view.memory ?? null;
+  const activity = memory?.activity ?? null;
+  const alert = activity?.alert ?? null;
+  return {
+    alerts: activity?.turnDone === true ? "full" : "basic",
+    alert: alert ? { kind: alert.kind, text: alert.text, at: alert.at } : null,
+    idleBy: activity?.idleBy ?? null,
+    resetAt: activity?.status === "held" ? activity.resetAt ?? null : null,
+    trustNeeded: memory?.trustNeeded === true,
+    hooksOff: { alerts: memory?.hooksOff?.alerts ?? null, meter: memory?.hooksOff?.meter ?? null },
+    meter: memory?.meter ?? null,
+    handoff: memory?.handoff ?? null
+  };
+}
+
+// Markers read back from meta.json: only well-formed ones with a real time,
+// the newest MARKERS_MAX.
+function storedMarkers(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((entry) => entry && typeof entry.at === "string" && Number.isFinite(Date.parse(entry.at)))
+    .map((entry) => makeMarker(entry))
+    .filter(Boolean)
+    .slice(-MARKERS_MAX);
+}
+
+function logListenerError(error) {
+  try {
+    console.error(`Agent OS: a live-sessions listener failed: ${error?.message || error}`);
+  } catch {
+    // logging must never be the thing that throws
+  }
 }
 
 function sessionsRoot() {
@@ -280,7 +343,12 @@ export function createSessionManager({
   writeJson = writeJsonFile,
   killTree = killProcessTree,
   softStop = runSoftStop,
-  attachSnapshotMs = ATTACH_SNAPSHOT_MS
+  attachSnapshotMs = ATTACH_SNAPSHOT_MS,
+  // SP4: prints the AGENT_OS_ALERT line when an alert starts. getSessionManager
+  // passes printAlertLine only when the desktop shell started this server.
+  onAlertLine = null,
+  // SP4 (K3): how often a held session compares the clock with its reset time.
+  heldCheckMs = HELD_CHECK_MS
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -302,6 +370,8 @@ export function createSessionManager({
   // The same starts, by agent and folder (set once the folder is known), so the
   // fallback-resume rule also sees a New session that is still starting there.
   const openStarts = new Set();
+  // onLiveChange listeners: told after an agent session starts or ends.
+  const liveListeners = new Set();
 
   function liveCount(kind) {
     let count = 0;
@@ -405,6 +475,20 @@ export function createSessionManager({
       endedBy: null,
       // Set only for a resume of a Claude Code conversation (watchForNothingToResume).
       noConversation: null,
+      // SP4 activity (signals.js). activity.status always equals `status`:
+      // dispatch() changes both, and the two exit paths set both.
+      activity: freshActivity(),
+      heldTimer: null,
+      heldCheck: null,
+      lastInputAt: 0,
+      lastCountedAt: 0,
+      // Memory only, never in meta.json or a recording; later SP4 tasks fill
+      // them (trust and hooks off: X2a and X2b; the meter: X2b; the hand-off:
+      // X8). The summary sends their defaults until then.
+      trustNeeded: false,
+      hooksOff: { alerts: null, meter: null },
+      meter: null,
+      handoff: null,
       exitSeen: false,
       exited,
       resolveExited
@@ -427,6 +511,7 @@ export function createSessionManager({
       frame.signal = state.meta.signal;
       frame.endedBy = state.meta.endedBy;
     }
+    if (state.status === "held" && state.activity.resetAt) frame.resetAt = state.activity.resetAt;
     return frame;
   }
 
@@ -447,20 +532,125 @@ export function createSessionManager({
     broadcast(state, stateFrame(state));
   }
 
-  function armIdle(state) {
+  // ---- activity and alerts (SP4; the transition table is activityAfter in signals.js) ----------------
+
+  function clearIdle(state) {
     clearTimeout(state.idleTimer);
+    state.idleTimer = null;
+  }
+
+  // A live session becomes idle after this long without counted output, user
+  // input or a new turn: IDLE_AFTER_MS for a basic session, and
+  // TURN_DONE_BACKSTOP_MS for a turn-done one, whose turn_done can fail to come
+  // after an API error or Esc (K5).
+  function armIdle(state) {
+    clearIdle(state);
+    const wait = state.activity.turnDone ? TURN_DONE_BACKSTOP_MS : IDLE_AFTER_MS;
     state.idleTimer = setTimeout(() => {
       state.idleTimer = null;
-      if (state.status === "live") setStatus(state, "idle");
-    }, IDLE_AFTER_MS);
+      dispatch(state, { type: "idle_timer" });
+    }, wait);
     state.idleTimer.unref?.();
   }
 
-  // Counted output or user input: the session is live, and the 20 s start again.
-  function markActive(state) {
-    if (state.status === "exited") return;
-    if (state.status !== "live") setStatus(state, "live");
-    armIdle(state);
+  function clearHeldTimers(state) {
+    clearTimeout(state.heldTimer);
+    clearInterval(state.heldCheck);
+    state.heldTimer = null;
+    state.heldCheck = null;
+  }
+
+  // A held session with a known reset time (K3): a timer at the reset time,
+  // and a wall-clock check every heldCheckMs, because Node's timers stop while
+  // a Mac sleeps; the first check after the lid opens sees that the clock has
+  // passed the reset time (Review Focus 3). Either one leaves held only once
+  // now() has reached the reset time; a timer that fires a little early by the
+  // wall clock is caught by the next check.
+  function armHeldTimers(state) {
+    clearHeldTimers(state);
+    const resetMs = Date.parse(state.activity.resetAt ?? "");
+    if (!Number.isFinite(resetMs)) return;
+    const check = () => {
+      if (state.status === "held" && now() >= resetMs) dispatch(state, { type: "held_cleared" });
+    };
+    const wait = Math.max(0, resetMs - now());
+    if (wait < HELD_TIMER_MAX_MS) {
+      state.heldTimer = setTimeout(check, wait);
+      state.heldTimer.unref?.();
+    }
+    state.heldCheck = setInterval(check, heldCheckMs);
+    state.heldCheck.unref?.();
+  }
+
+  // The one place an activity event changes a session. It keeps `status` and
+  // `activity.status` equal, sends the state frame (with resetAt while held)
+  // and the alert frames, and keeps the idle and held timers in step. An ended
+  // session takes no event.
+  function dispatch(state, event) {
+    if (state.status === "exited") return false;
+    const before = state.activity;
+    const after = activityAfter(before, event);
+    state.activity = after;
+    if (after.status !== before.status) setStatus(state, after.status);
+    else if (after.status === "held" && after.resetAt !== before.resetAt) broadcast(state, stateFrame(state));
+    alertChanged(state, before.alert, after.alert);
+    if (after.status !== "live") clearIdle(state);
+    else if (before.status !== "live" || before.turnDone !== after.turnDone || REARM_EVENTS.has(event.type)) armIdle(state);
+    if (after.status !== "held") clearHeldTimers(state);
+    else if (before.status !== "held" || after.resetAt !== before.resetAt) armHeldTimers(state);
+    return true;
+  }
+
+  // K7, K8: a frame for every change of the alert, queued like every alert
+  // frame for windows still waiting for their snapshot. When an alert starts or
+  // changes kind, also a "permission asked" marker (waiting and approval) and
+  // the AGENT_OS_ALERT line (onAlertLine). New text of the same kind and a
+  // cleared alert print nothing.
+  function alertChanged(state, before, after) {
+    if (!after) {
+      if (before) broadcast(state, { t: "alert", kind: "resolved", text: "" }, { queue: true });
+      return;
+    }
+    const sameKind = before?.kind === after.kind;
+    if (sameKind && before.text === after.text) return;
+    broadcast(state, { t: "alert", kind: after.kind, text: after.text }, { queue: true });
+    if (sameKind) return;
+    if (after.kind === "waiting" || after.kind === "approval") {
+      addMarkerTo(state, { type: "permission", text: after.text }).catch(() => {});
+    }
+    if (typeof onAlertLine === "function") {
+      try {
+        onAlertLine({ sessionId: state.meta.id, agent: state.meta.agentLabel, kind: after.kind, text: after.text });
+      } catch {
+        // a notification must never stop the session
+      }
+    }
+  }
+
+  // Adds a recording marker to the session's meta.json (spec "Recordings in
+  // Runs"), keeping the newest MARKERS_MAX (K20). Agent sessions only.
+  async function addMarkerTo(state, input) {
+    if (state.meta.kind !== "agent" || !input || typeof input !== "object") return false;
+    const marker = makeMarker({ ...input, at: input.at ?? iso(now()) });
+    if (!marker) return false;
+    const kept = Array.isArray(state.meta.markers) ? state.meta.markers : [];
+    state.meta.markers = [...kept, marker].slice(-MARKERS_MAX);
+    await persist(state);
+    return true;
+  }
+
+  // Tells every onLiveChange listener that an agent session started or ended
+  // (the SP4 pollers start and stop on it). A listener's error is logged and
+  // never reaches the session.
+  function notifyLiveChange() {
+    for (const listener of [...liveListeners]) {
+      try {
+        const result = listener();
+        if (result && typeof result.then === "function") result.then(undefined, logListenerError);
+      } catch (error) {
+        logListenerError(error);
+      }
+    }
   }
 
   // Pause reading the PTY only when every open window lags more than 512 KB;
@@ -568,6 +758,15 @@ export function createSessionManager({
     watch.tail = combined.slice(-NO_CONVERSATION_TAIL_CHARS);
   }
 
+  // A BEL or an OSC 9 / 99 / 777 the mirror saw. Until the per-agent rules
+  // (Task X1b, mirror-signals.js) each one is a basic "May need you" (R19), and
+  // an OSC 9;4 progress report is none. Update and setup sessions never alert.
+  function onMirrorAlert(state, raw) {
+    if (state.meta.kind !== "agent") return;
+    const found = genericMirrorSignal(raw);
+    if (found) applySignal(state.meta.id, found);
+  }
+
   function onOutput(state, data) {
     const chunk = typeof data === "string" ? data : String(data ?? "");
     if (!chunk) return;
@@ -582,7 +781,7 @@ export function createSessionManager({
     } catch {
       // nor must the mirror
     }
-    if (state.status === "starting") markActive(state);
+    if (state.status === "starting") dispatch(state, { type: "output" });
     const bytes = Buffer.byteLength(chunk, "utf8");
     for (const attachment of [...state.attachments.values()]) {
       if (attachment.pending) attachment.pending.push({ chunk });
@@ -594,8 +793,8 @@ export function createSessionManager({
   async function onProcessExit(state, event = {}) {
     if (state.exitSeen) return;
     state.exitSeen = true;
-    clearTimeout(state.idleTimer);
-    state.idleTimer = null;
+    clearIdle(state);
+    clearHeldTimers(state);
     clearPausedDrop(state);
     for (const off of state.offs.splice(0)) {
       try {
@@ -621,11 +820,20 @@ export function createSessionManager({
       state.meta.exitCode !== 0;
     state.noConversation = null;
     state.meta.lastUsedAt = endedAt;
+    // A session that ends while it waits or is held tells its windows the alert
+    // is gone, just before the exited state, so a page that clears an alert on
+    // a resolved frame clears this one too.
+    const hadAlert = state.activity.alert !== null;
     state.status = "exited";
+    state.activity = activityAfter(state.activity, { type: "exit" });
     state.stateSince = endedAt;
+    if (state.meta.kind === "agent") notifyLiveChange();
     const frame = stateFrame(state);
     for (const attachment of [...state.attachments.values()]) {
-      if (!attachment.pending) safeSend(attachment, frame);
+      if (!attachment.pending) {
+        if (hadAlert) safeSend(attachment, { t: "alert", kind: "resolved", text: "" });
+        safeSend(attachment, frame);
+      }
       dropAttachment(state, attachment.id, "session_ended");
     }
     try {
@@ -685,7 +893,7 @@ export function createSessionManager({
       onQueryReply: (reply) => {
         if (state.handle && state.status !== "exited") state.handle.write(reply);
       },
-      onAlert: (raw) => broadcast(state, { t: "alert", raw }, { queue: true })
+      onAlert: (raw) => onMirrorAlert(state, raw)
     });
     state.mirror.setWriterAttached(false);
     try {
@@ -728,13 +936,16 @@ export function createSessionManager({
         onProcessExit(state, event);
       })
     );
-    // Counted output wakes the session, except the redraw right after a resize.
+    // Counted output goes to the activity, which decides whether it wakes the
+    // session; the redraw right after a resize is not counted at all.
     state.offs.push(
       state.mirror.onCountedOutput(() => {
         if (now() < state.ignoreCountedUntil) return;
-        markActive(state);
+        state.lastCountedAt = now();
+        dispatch(state, { type: "counted" });
       })
     );
+    if (state.meta.kind === "agent") notifyLiveChange();
   }
 
   // Stops a process that started but whose session could not be saved: its
@@ -747,10 +958,13 @@ export function createSessionManager({
       return;
     }
     state.exitSeen = true;
+    const hadAlert = state.activity.alert !== null;
     state.status = "exited";
-    clearTimeout(state.idleTimer);
-    state.idleTimer = null;
+    state.activity = activityAfter(state.activity, { type: "exit" });
+    clearIdle(state);
+    clearHeldTimers(state);
     clearPausedDrop(state);
+    if (state.meta.kind === "agent") notifyLiveChange();
     for (const off of state.offs.splice(0)) {
       try {
         off();
@@ -758,7 +972,11 @@ export function createSessionManager({
         // already unsubscribed
       }
     }
-    for (const attachment of [...state.attachments.values()]) dropAttachment(state, attachment.id, "session_ended");
+    for (const attachment of [...state.attachments.values()]) {
+      // Same as onProcessExit: the alert is gone before the window is dropped.
+      if (hadAlert && !attachment.pending) safeSend(attachment, { t: "alert", kind: "resolved", text: "" });
+      dropAttachment(state, attachment.id, "session_ended");
+    }
     try {
       await killTree(state.handle.pid, { graceMs: FAILED_START_GRACE_MS });
     } catch {
@@ -793,7 +1011,19 @@ export function createSessionManager({
   // ---- summaries ------------------------------------------------------------------------------------
 
   function viewOfState(state) {
-    return { ...state.meta, status: state.status, stateSince: state.stateSince };
+    return {
+      ...state.meta,
+      status: state.status,
+      stateSince: state.stateSince,
+      // What only memory knows (SP4); it is never written to meta.json.
+      memory: {
+        activity: state.activity,
+        trustNeeded: state.trustNeeded,
+        hooksOff: state.hooksOff,
+        meter: state.meter,
+        handoff: state.handoff
+      }
+    };
   }
 
   function viewOfMeta(meta) {
@@ -847,6 +1077,7 @@ export function createSessionManager({
   }
 
   async function toSummary(view, views, installed) {
+    const extras = memoryFields(view);
     return {
       id: view.id,
       kind: view.kind,
@@ -867,7 +1098,15 @@ export function createSessionManager({
       brain: view.brain ?? null,
       resume: resumeOf(view, views, installed),
       nothingToResume: view.nothingToResume === true,
-      alerts: "basic",
+      alerts: extras.alerts,
+      alert: extras.alert,
+      idleBy: extras.idleBy,
+      resetAt: extras.resetAt,
+      trustNeeded: extras.trustNeeded,
+      hooksOff: extras.hooksOff,
+      meter: extras.meter,
+      copyOf: typeof view.copyOf === "string" && view.copyOf ? view.copyOf : null,
+      handoff: extras.handoff,
       recordingBytes: await recordingBytes(view.id)
     };
   }
@@ -1298,7 +1537,11 @@ export function createSessionManager({
     found.state.handle.write(data);
     // A setup session's input is a byte pipe (plan-brains spec §1): it may hold a
     // sign-in code, so it is never scanned; its activity comes from output only.
-    if (found.state.meta.kind !== "setup" && isUserInput(data)) markActive(found.state);
+    // User input clears waiting and held (spec "Session activity states").
+    if (found.state.meta.kind !== "setup" && isUserInput(data)) {
+      found.state.lastInputAt = now();
+      dispatch(found.state, { type: "input" });
+    }
     return true;
   }
 
@@ -1335,6 +1578,135 @@ export function createSessionManager({
     attachment.acked = Math.max(attachment.acked, Math.min(Math.floor(seq), attachment.sent));
     updateFlow(state);
     return true;
+  }
+
+  // ---- signals, alerts and markers: the SP4 entry points ----------------------------------------------
+  // The mirror (onMirrorAlert), the hooks endpoint and the pollers call these;
+  // no route passes page input to them. Each takes only a running agent
+  // session and answers false for any other (SP4 signals scope). A call that
+  // can never be right (a limit, an unknown kind or source) is a TypeError.
+
+  // The running agent session with this id, or null.
+  function liveAgent(id) {
+    if (!isSessionId(id)) return null;
+    const state = live.get(id);
+    return state && state.status !== "exited" && state.meta.kind === "agent" ? state : null;
+  }
+
+  function assertSource(source) {
+    if (!SIGNAL_SOURCES.includes(source)) throw new TypeError(`"${String(source)}" is not a signal source.`);
+  }
+
+  // A waiting, turn_done, approval or resolved signal.
+  function applySignal(id, { kind, text = "", source, resetAt = null } = {}) {
+    if (!APPLIED_SIGNAL_KINDS.includes(kind)) {
+      throw new TypeError(
+        kind === "limit"
+          ? "A limit goes through the agent's limit rule, which calls setHeld; it is never applied as a signal."
+          : `"${String(kind)}" is not a signal kind applySignal takes.`
+      );
+    }
+    assertSource(source);
+    const state = liveAgent(id);
+    if (!state) return false;
+    const signal = makeSignal({ sessionId: id, kind, text, source, at: iso(now()), resetAt });
+    dispatch(state, { type: "signal", kind: signal.kind, text: signal.text, source: signal.source, at: signal.at });
+    return true;
+  }
+
+  // The session has a turn_done source and its first signal arrived (Claude's
+  // first hook event, Codex's first classified OSC 9): turn-done from now on.
+  function markSourceSeen(id) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    dispatch(state, { type: "source_seen" });
+    return true;
+  }
+
+  // A hook that shows a new turn (UserPromptSubmit, PostToolUse(Edit|Write),
+  // the poller's busy): idle becomes live; waiting stays waiting.
+  function markNewTurn(id) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    dispatch(state, { type: "new_turn" });
+    return true;
+  }
+
+  // A limit the agent's limit rule confirmed: held, with the reset time when known.
+  function setHeld(id, { resetAt = null, text = "", source } = {}) {
+    assertSource(source);
+    const state = liveAgent(id);
+    if (!state) return false;
+    const signal = makeSignal({ sessionId: id, kind: "limit", text, source, at: iso(now()), resetAt });
+    dispatch(state, { type: "held", resetAt: signal.resetAt, text: signal.text, source: signal.source, at: signal.at });
+    return true;
+  }
+
+  // The hold ended before its reset time (R4: the status shows the window
+  // cleared, or Claude's own auto-resume fired). The reset time passing is
+  // armHeldTimers' job.
+  function clearHeld(id) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    dispatch(state, { type: "held_cleared" });
+    return true;
+  }
+
+  async function addMarker(id, marker) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    try {
+      return await addMarkerTo(state, marker);
+    } catch {
+      return false; // meta.json could not be written; the marker goes with the next write
+    }
+  }
+
+  // A session's markers: from memory while it runs (and while its recording
+  // closes), from meta.json after it ended.
+  async function markers(id) {
+    assertSessionId(id);
+    const state = live.get(id);
+    if (state) return storedMarkers(state.meta.markers);
+    const meta = await readMeta(id);
+    if (!meta) throw unknownSession();
+    return storedMarkers(meta.markers);
+  }
+
+  // Copies of the running agent sessions, in start order (a resume moves a
+  // session to the end), for the pollers and the hand-off.
+  function liveAgentSessions(agentId = null) {
+    const found = [];
+    for (const state of live.values()) {
+      if (state.status === "exited" || state.meta.kind !== "agent") continue;
+      if (agentId !== null && state.meta.agentId !== agentId) continue;
+      const profile = state.profile || {};
+      found.push({
+        id: state.meta.id,
+        agentId: state.meta.agentId,
+        agentSessionId: state.meta.agentSessionId ?? null,
+        folder: state.meta.folder,
+        status: state.status,
+        alert: state.activity.alert ? { ...state.activity.alert } : null,
+        pid: state.handle?.pid ?? null,
+        lastInputAt: state.lastInputAt, // 0 before any user input (X2b's poller reads 0 as "no input")
+        profile: {
+          command: profile.command,
+          args: Array.isArray(profile.args) ? [...profile.args] : [],
+          cwd: profile.cwd,
+          env: { ...(profile.env || {}) }
+        }
+      });
+    }
+    return found;
+  }
+
+  function onLiveChange(listener) {
+    if (typeof listener !== "function") throw new TypeError("onLiveChange() needs a function.");
+    liveListeners.add(listener);
+    return () => {
+      liveListeners.delete(listener);
+    };
   }
 
   // ---- quit check and recovery ------------------------------------------------------------------------
@@ -1528,6 +1900,15 @@ export function createSessionManager({
     quitCheck,
     isLive,
     recoverStaleSessions,
+    applySignal,
+    markSourceSeen,
+    markNewTurn,
+    setHeld,
+    clearHeld,
+    addMarker,
+    markers,
+    liveAgentSessions,
+    onLiveChange,
     // The limit this manager was created with (the sessions list reports it).
     get maxLive() {
       return maxLive;
@@ -1539,7 +1920,9 @@ let defaultManager = null;
 
 export function getSessionManager() {
   if (!defaultManager) {
-    const manager = createSessionManager();
+    // Only the desktop shell reads AGENT_OS_ALERT lines (spec "Desktop shell
+    // changes"), so a server started any other way prints none.
+    const manager = createSessionManager({ onAlertLine: process.env.AGENT_OS_PACKAGED === "1" ? printAlertLine : null });
     // Quitting Agent OS (SIGTERM or SIGINT, the desktop shell's stdin line, or
     // its Quit) ends every session with the Stop sequence, after writing
     // "ended (Agent OS quit)" into each meta.json. The task looks the method up

@@ -1313,19 +1313,30 @@ describe("the attach endpoint on a real server", { skip: SKIP_POSIX }, () => {
     });
   });
 
-  test("alerts and state: BEL and OSC 9 arrive raw, and Stop sends exited with endedBy stop, then closes with session_ended", async () => {
+  test("alerts and state: a BEL and an OSC 9 each make the session waiting with an alert frame, typing clears it with a resolved frame, the list carries the alert, no AGENT_OS_ALERT line outside the desktop app, and Stop sends exited with endedBy stop, then closes with session_ended", async () => {
     await withSession(async ({ id, open }) => {
       const a = await open();
       await waitForScreen(a, /FAKE_ARGV/);
       a.send({ t: "focus" });
+      const alerts = () => a.frames.filter((item) => item.t === "alert");
       a.send({ t: "in", d: "bell\r" });
-      await waitFor(() => a.frames.some((item) => item.t === "alert" && item.raw === "bel"), 5000, "the BEL alert");
-      a.send({ t: "in", d: "osc9 hello-alert\r" });
-      await waitFor(
-        () => a.frames.some((item) => item.t === "alert" && item.raw === "9;hello-alert"),
-        5000,
-        "the OSC 9 alert"
-      );
+      await waitFor(() => alerts().length >= 1, 5000, "the BEL alert");
+      assert.deepEqual(alerts()[0], { t: "alert", kind: "waiting", text: "May need you" });
+      await waitFor(() => a.frames.some((item) => item.t === "state" && item.status === "waiting"), 5000, "the waiting state");
+      a.send({ t: "in", d: "osc9 hello-alert\r" }); // typing clears the alert; then the fake's OSC 9 sets it again
+      await waitFor(() => alerts().length >= 3, 5000, "the resolved frame and the OSC 9 alert");
+      assert.deepEqual(alerts().slice(1, 3), [
+        { t: "alert", kind: "resolved", text: "" },
+        { t: "alert", kind: "waiting", text: "May need you" }
+      ]);
+      assert.equal(alerts().some((item) => "raw" in item), false, "SP3's raw alert frame is gone");
+      const listed = await api(main.port, "GET", "/api/sessions?live=1");
+      assert.equal(listed.status, 200, listed.text);
+      const mine = listed.json.sessions.find((session) => session.id === id);
+      assert.equal(mine.status, "waiting");
+      assert.equal(mine.alert.kind, "waiting");
+      assert.equal(mine.alert.text, "May need you");
+      assert.doesNotMatch(main.server.logs.text, /AGENT_OS_ALERT:/, "only a server the desktop shell started prints alert lines");
       const stopped = await api(main.port, "POST", `/api/sessions/${id}/stop`, {});
       assert.equal(stopped.status, 200, stopped.text);
       const ended = await waitFor(

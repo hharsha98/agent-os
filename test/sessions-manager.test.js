@@ -29,6 +29,7 @@ import {
 import { SESSION_AGENT_LABEL as PROFILE_AGENT_LABEL } from "../server/runtime/sessions/profiles.js";
 import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { createRecorder, enforceRecordingCap } from "../server/runtime/sessions/recorder.js";
+import { HELD_CHECK_MS, MARKERS_MAX, TURN_DONE_BACKSTOP_MS } from "../server/runtime/sessions/signals.js";
 import { RUNTIME_VERSION, writeJson } from "../server/runtime/store.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 
@@ -60,6 +61,14 @@ const SUMMARY_KEYS = [
   "resume",
   "nothingToResume",
   "alerts",
+  "alert",
+  "idleBy",
+  "resetAt",
+  "trustNeeded",
+  "hooksOff",
+  "meter",
+  "copyOf",
+  "handoff",
   "recordingBytes"
 ];
 const FAKE_MODES = {
@@ -132,6 +141,19 @@ async function metaOnDisk(agentOsHome, id) {
   } catch {
     return null;
   }
+}
+
+// Waits until meta.json holds at least `count` markers. It polls with
+// setImmediate, not setTimeout, because the activity tests replace setTimeout
+// with Node's mock timers. Every test that makes an alert waits for its marker,
+// so no meta.json write is still running when the temp folders are removed.
+async function markersOnDisk(agentOsHome, id, count) {
+  for (let i = 0; i < 5000; i += 1) {
+    const meta = await metaOnDisk(agentOsHome, id);
+    if ((meta?.markers?.length ?? 0) >= count) return meta.markers;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`meta.json never held ${count} markers`);
 }
 
 // ---- injected fakes -----------------------------------------------------------------------------
@@ -396,6 +418,15 @@ test("create: starts the agent from its profile, keeps meta.json private and ans
     assert.deepEqual(summary.brain, { kind: "plan", label: "Plan" });
     assert.deepEqual(summary.resume, { available: false, reason: null, fallback: false });
     assert.equal(summary.alerts, "basic");
+    // SP4's fields, with their defaults (filled by signals or by later tasks).
+    assert.equal(summary.alert, null);
+    assert.equal(summary.idleBy, null);
+    assert.equal(summary.resetAt, null);
+    assert.equal(summary.trustNeeded, false);
+    assert.deepEqual(summary.hooksOff, { alerts: null, meter: null });
+    assert.equal(summary.meter, null);
+    assert.equal(summary.copyOf, null);
+    assert.equal(summary.handoff, null);
     assert.equal(summary.recordingBytes, 0);
 
     // The profile got exactly what it needs to build the launch.
@@ -797,10 +828,480 @@ test("exit: the session ends with its exit code or signal, meta.json keeps it, o
   });
 });
 
+// ---- SP4: activity, alerts and markers (signals.js drives the table) --------------------------
+
+test("signals: a bell makes an agent session waiting with the basic text, one alert frame, one permission marker and one alert line; more bells add nothing; output never clears it, user input does with a resolved frame; update sessions never alert", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const lines = [];
+    const world = fakeWorld({ onAlertLine: (payload) => lines.push(payload) });
+    const summary = await world.manager.create({ agentId: "claude", folder: project });
+    const win = await attachFake(world.manager, summary.id, "w");
+    assert.equal(world.manager.focus(summary.id, "w"), true);
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    pty.emit("ready");
+    world.clock = T0 + 5000;
+    mirror.opts.onAlert("bel");
+    mirror.opts.onAlert("9;4;1;50"); // a progress report is not an alert
+    mirror.opts.onAlert("9;Build finished");
+    mirror.opts.onAlert("bel");
+
+    const waiting = await world.manager.get(summary.id);
+    assert.equal(waiting.status, "waiting");
+    assert.deepEqual(waiting.alert, { kind: "waiting", text: "May need you", at: "2026-10-14T09:00:05.000Z" });
+    assert.equal(waiting.alerts, "basic", "a bell never makes a session turn-done");
+    const alertFrames = () => win.frames.filter((frame) => frame.t === "alert");
+    assert.deepEqual(alertFrames(), [{ t: "alert", kind: "waiting", text: "May need you" }]);
+    assert.deepEqual(lines, [{ sessionId: summary.id, agent: "Claude Code", kind: "waiting", text: "May need you" }]);
+    const stored = await markersOnDisk(agentOsHome, summary.id, 1);
+    assert.deepEqual(stored, [{ at: "2026-10-14T09:00:05.000Z", type: "permission", text: "May need you" }]);
+    assert.deepEqual(await world.manager.markers(summary.id), stored);
+
+    pty.emit("\x1b[30;1Hredraw");
+    mirror.counted();
+    assert.equal((await world.manager.get(summary.id)).status, "waiting", "output never clears waiting");
+    assert.equal(world.manager.write(summary.id, "w", "\x1b[I"), true); // a focus report is not user input
+    assert.equal((await world.manager.get(summary.id)).status, "waiting");
+    assert.equal(world.manager.write(summary.id, "w", "y"), true);
+    const answered = await world.manager.get(summary.id);
+    assert.equal(answered.status, "live");
+    assert.equal(answered.alert, null);
+    assert.deepEqual(alertFrames().at(-1), { t: "alert", kind: "resolved", text: "" });
+    assert.deepEqual(win.frames.filter((frame) => frame.t === "state").map((frame) => frame.status), ["starting", "live", "waiting", "live"]);
+    assert.equal(lines.length, 1, "clearing an alert prints nothing");
+
+    const update = await world.manager.createUpdateSession({ agentId: "hermes", folder: project });
+    world.mirrors[1].opts.onAlert("bel");
+    const listed = (await world.manager.list({ includeUpdate: true })).find((session) => session.id === update.id);
+    assert.notEqual(listed.status, "waiting");
+    assert.equal(listed.alert, null);
+    assert.equal(lines.length, 1, "an update session never alerts");
+  });
+});
+
+test("activity (SP4): a turn-done session stays idle through redraws and status line refreshes and leaves idle only on user input or a new-turn hook; without a turn_done it is idle 120 s after its last counted output (K5)", async (t) => {
+  await withSessionEnv(async ({ project }) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    assert.equal(TURN_DONE_BACKSTOP_MS, 120000);
+    const world = fakeWorld();
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    const win = await attachFake(world.manager, id, "w");
+    assert.equal(world.manager.focus(id, "w"), true);
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    const current = () => world.manager.get(id);
+    pty.emit("hello");
+    assert.equal(world.manager.markSourceSeen(id), true);
+    assert.equal((await current()).alerts, "full");
+    t.mock.timers.tick(IDLE_AFTER_MS);
+    assert.equal((await current()).status, "live", "a turn-done session has no 20 s rule");
+
+    assert.equal(world.manager.applySignal(id, { kind: "turn_done", source: "hook" }), true);
+    let now = await current();
+    assert.equal(now.status, "idle");
+    assert.equal(now.idleBy, "turn_done");
+    for (let i = 0; i < 5; i += 1) {
+      pty.emit("\x1b[30;1Hstatus line");
+      mirror.counted();
+      t.mock.timers.tick(1000);
+    }
+    assert.equal((await current()).status, "idle", "redraws and status line refreshes never wake it");
+
+    assert.equal(world.manager.markNewTurn(id), true);
+    now = await current();
+    assert.equal(now.status, "live");
+    assert.equal(now.idleBy, null);
+    world.manager.applySignal(id, { kind: "turn_done", source: "hook" });
+    assert.equal(world.manager.write(id, "w", "next\r"), true);
+    assert.equal((await current()).status, "live", "user input wakes it");
+
+    // K5: this turn's turn_done never comes (an API error, Esc).
+    t.mock.timers.tick(TURN_DONE_BACKSTOP_MS - 1000);
+    mirror.counted(); // counted output starts the 120 s again
+    t.mock.timers.tick(TURN_DONE_BACKSTOP_MS - 1);
+    assert.equal((await current()).status, "live");
+    t.mock.timers.tick(1);
+    now = await current();
+    assert.equal(now.status, "idle");
+    assert.equal(now.idleBy, "timer");
+    world.manager.applySignal(id, { kind: "turn_done", source: "hook" });
+    assert.equal((await current()).idleBy, "turn_done", "a late turn_done still says the turn is done");
+    assert.deepEqual(
+      win.frames.filter((frame) => frame.t === "state").map((frame) => frame.status),
+      ["starting", "live", "idle", "live", "idle", "live", "idle"]
+    );
+    assert.deepEqual(win.frames.filter((frame) => frame.t === "alert"), [], "turn_done travels in the state frame, never as an alert (K8)");
+  });
+});
+
+test("activity (SP4): a basic session keeps the 20 s rule and has no idle time while it waits; a resolved signal makes it live; a turn_done signal while waiting makes the session idle and clears its alert (K4)", async (t) => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const world = fakeWorld();
+    const cursor = await world.manager.create({ agentId: "cursor", folder: project });
+    world.ptys[0].emit("ready");
+    const get = (id) => world.manager.get(id);
+    assert.equal(world.manager.applySignal(cursor.id, { kind: "waiting", text: "May need you", source: "bel" }), true);
+    t.mock.timers.tick(IDLE_AFTER_MS * 3);
+    assert.equal((await get(cursor.id)).status, "waiting", "no idle time runs while it waits");
+    assert.equal(world.manager.applySignal(cursor.id, { kind: "resolved", source: "title" }), true);
+    assert.equal((await get(cursor.id)).status, "live");
+    t.mock.timers.tick(IDLE_AFTER_MS - 1);
+    assert.equal((await get(cursor.id)).status, "live");
+    t.mock.timers.tick(1);
+    const idle = await get(cursor.id);
+    assert.equal(idle.status, "idle");
+    assert.equal(idle.idleBy, "timer");
+    assert.equal(idle.alerts, "basic");
+
+    const codex = await world.manager.create({ agentId: "codex", folder: project });
+    world.ptys[1].emit("ready");
+    world.manager.applySignal(codex.id, { kind: "waiting", text: "Approval requested: npm test", source: "osc" });
+    world.manager.applySignal(codex.id, { kind: "turn_done", text: "Agent turn complete", source: "osc" });
+    const done = await get(codex.id);
+    assert.equal(done.status, "idle");
+    assert.equal(done.idleBy, "turn_done");
+    assert.equal(done.alert, null);
+    assert.equal(done.alerts, "full");
+    await markersOnDisk(agentOsHome, cursor.id, 1);
+    await markersOnDisk(agentOsHome, codex.id, 1);
+  });
+});
+
+test("alert frames and the AGENT_OS_ALERT line (K7, K8): a line when an alert starts or changes kind, none for new text of the same kind, for clearing, or for a hold that only learns its reset time; a frame for every change", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const lines = [];
+    const world = fakeWorld({ onAlertLine: (payload) => lines.push(payload) });
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    const win = await attachFake(world.manager, id, "w");
+    world.ptys[0].emit("ready");
+    const limitText = "Claude Code's plan limit was reached.";
+    world.manager.applySignal(id, { kind: "waiting", text: "Wants to use Bash", source: "hook" });
+    world.manager.applySignal(id, { kind: "waiting", text: "Wants to use Bash", source: "hook" });
+    world.manager.applySignal(id, { kind: "waiting", text: "Has a question for you", source: "hook" });
+    world.manager.applySignal(id, { kind: "resolved", source: "hook" });
+    assert.equal(world.manager.setHeld(id, { text: limitText, source: "hook" }), true);
+    world.clock = T0 + 60000;
+    world.manager.setHeld(id, { resetAt: "2026-10-14T14:00:00.000Z", text: limitText, source: "status" });
+    const held = await world.manager.get(id);
+    assert.equal(held.resetAt, "2026-10-14T14:00:00.000Z");
+    assert.deepEqual(held.alert, { kind: "limit", text: limitText, at: "2026-10-14T09:00:00.000Z" }, "the same limit keeps the time it began");
+    assert.equal(world.manager.clearHeld(id), true);
+    assert.equal((await world.manager.get(id)).status, "idle");
+    assert.deepEqual(
+      win.frames.filter((frame) => frame.t === "state" || frame.t === "alert"),
+      [
+        { t: "state", status: "starting" },
+        { t: "state", status: "live" },
+        { t: "state", status: "waiting" },
+        { t: "alert", kind: "waiting", text: "Wants to use Bash" },
+        { t: "alert", kind: "waiting", text: "Has a question for you" },
+        { t: "state", status: "live" },
+        { t: "alert", kind: "resolved", text: "" },
+        { t: "state", status: "held" },
+        { t: "alert", kind: "limit", text: limitText },
+        { t: "state", status: "held", resetAt: "2026-10-14T14:00:00.000Z" },
+        { t: "state", status: "idle" },
+        { t: "alert", kind: "resolved", text: "" }
+      ]
+    );
+
+    const openclaw = await world.manager.create({ agentId: "openclaw" });
+    const cardWin = await attachFake(world.manager, openclaw.id, "o");
+    world.manager.applySignal(openclaw.id, { kind: "approval", text: "exec: npm test", source: "openclaw" });
+    world.mirrors[1].opts.onAlert("bel"); // M4: a basic bell never overwrites the approval
+    assert.deepEqual((await world.manager.get(openclaw.id)).alert, {
+      kind: "approval",
+      text: "exec: npm test",
+      at: "2026-10-14T09:01:00.000Z"
+    });
+    assert.deepEqual(
+      cardWin.frames.filter((frame) => frame.t === "alert"),
+      [{ t: "alert", kind: "approval", text: "exec: npm test" }],
+      "the bell sent no frame"
+    );
+    assert.equal(lines.length, 3, "and no second line");
+    // A specific alert of another kind does replace it.
+    world.manager.applySignal(openclaw.id, { kind: "waiting", text: "Has a question for you", source: "hook" });
+    assert.deepEqual(lines, [
+      { sessionId: id, agent: "Claude Code", kind: "waiting", text: "Wants to use Bash" },
+      { sessionId: id, agent: "Claude Code", kind: "limit", text: limitText },
+      { sessionId: openclaw.id, agent: "OpenClaw", kind: "approval", text: "exec: npm test" },
+      { sessionId: openclaw.id, agent: "OpenClaw", kind: "waiting", text: "Has a question for you" }
+    ]);
+    assert.deepEqual(
+      (await markersOnDisk(agentOsHome, id, 1)).map((marker) => marker.text),
+      ["Wants to use Bash"],
+      "one marker per question that started; none for the limit"
+    );
+    assert.deepEqual(
+      (await markersOnDisk(agentOsHome, openclaw.id, 2)).map((marker) => marker.text),
+      ["exec: npm test", "Has a question for you"],
+      "the bell added no marker"
+    );
+  });
+});
+
+test("held: setHeld shows the limit alert and the reset time in the summary and the state frame; output and other signals never clear it; user input makes it live; the reset timer makes it idle; a hold without a reset time stays until clearHeld", async (t) => {
+  await withSessionEnv(async ({ project }) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const world = fakeWorld();
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    const win = await attachFake(world.manager, id, "w");
+    assert.equal(world.manager.focus(id, "w"), true);
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    pty.emit("ready");
+    const resetAt = "2026-10-14T09:30:00.000Z";
+    const text = "Claude Code's plan limit was reached.";
+    const lastState = () => win.frames.filter((frame) => frame.t === "state").at(-1);
+    assert.equal(world.manager.setHeld(id, { resetAt, text, source: "hook" }), true);
+    let now = await world.manager.get(id);
+    assert.equal(now.status, "held");
+    assert.equal(now.resetAt, resetAt);
+    assert.deepEqual(now.alert, { kind: "limit", text, at: "2026-10-14T09:00:00.000Z" });
+    assert.equal(now.idleBy, null);
+    assert.deepEqual(lastState(), { t: "state", status: "held", resetAt });
+
+    pty.emit("\x1b[30;1Hstatus line");
+    mirror.counted();
+    world.manager.applySignal(id, { kind: "turn_done", source: "hook" });
+    world.manager.applySignal(id, { kind: "waiting", text: "Wants to use Bash", source: "hook" });
+    world.manager.applySignal(id, { kind: "resolved", source: "hook" });
+    world.manager.markNewTurn(id);
+    t.mock.timers.tick(TURN_DONE_BACKSTOP_MS * 2);
+    assert.equal((await world.manager.get(id)).status, "held", "output, signals and time before the reset never clear a hold");
+
+    assert.equal(world.manager.write(id, "w", "y"), true);
+    now = await world.manager.get(id);
+    assert.equal(now.status, "live");
+    assert.equal(now.alert, null);
+    assert.equal(now.resetAt, null);
+
+    // The reset time passes while the Mac is awake: the reset timer fires. This
+    // world compares the clock with the reset time only every 10 hours, so only
+    // the timer at the reset time (K3's first half) can end the hold; the 60 s
+    // wall-clock check is the next test's. A hold repeated without a reset time
+    // keeps the known one, and its timer stays armed (M2).
+    const timerWorld = fakeWorld({ heldCheckMs: 10 * 60 * 60 * 1000 });
+    const timed = await timerWorld.manager.create({ agentId: "claude", folder: project });
+    timerWorld.ptys[0].emit("ready");
+    timerWorld.manager.setHeld(timed.id, { resetAt, text, source: "hook" });
+    timerWorld.manager.setHeld(timed.id, { text, source: "status" });
+    assert.equal((await timerWorld.manager.get(timed.id)).resetAt, resetAt, "a repeated hold without a reset time keeps the known one");
+    t.mock.timers.tick(Date.parse(resetAt) - timerWorld.clock - 1);
+    assert.equal((await timerWorld.manager.get(timed.id)).status, "held", "one millisecond before the reset time nothing has fired");
+    timerWorld.clock = Date.parse(resetAt);
+    t.mock.timers.tick(1);
+    now = await timerWorld.manager.get(timed.id);
+    assert.equal(now.status, "idle", "the reset timer ended the hold");
+    assert.equal(now.idleBy, null);
+    assert.equal(now.alert, null);
+    assert.equal(now.resetAt, null);
+
+    // A hold whose reset time is unknown: no resetAt in the frame, and no timer.
+    world.manager.setHeld(id, { text, source: "status" });
+    assert.deepEqual(lastState(), { t: "state", status: "held" });
+    assert.equal((await world.manager.get(id)).resetAt, null);
+    t.mock.timers.tick(24 * 60 * 60 * 1000);
+    assert.equal((await world.manager.get(id)).status, "held");
+    assert.equal(world.manager.clearHeld(id), true); // R4: the status shows the window cleared
+    assert.equal((await world.manager.get(id)).status, "idle");
+  });
+});
+
+test("Review Focus 3: the Mac sleeps through the plan's reset time; the next 60 s wall-clock check, not the reset timer, moves the held session to idle, clears the alert and sends a resolved frame", async (t) => {
+  await withSessionEnv(async ({ project }) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    assert.equal(HELD_CHECK_MS, 60000);
+    const world = fakeWorld();
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    const win = await attachFake(world.manager, id, "w");
+    world.ptys[0].emit("ready");
+    const text = "Claude Code's plan limit was reached.";
+    const resetAt = new Date(T0 + 3 * 60 * 60 * 1000).toISOString();
+    assert.equal(world.manager.setHeld(id, { resetAt, text, source: "hook" }), true);
+    t.mock.timers.tick(5 * HELD_CHECK_MS);
+    world.clock += 5 * HELD_CHECK_MS;
+    assert.equal((await world.manager.get(id)).status, "held", "five minutes in, the reset is still ahead");
+
+    // The lid closes and Node's timers stop. It opens five hours later: the
+    // wall clock is two hours past the reset, and the reset timer (three
+    // hours of timer time away) has not fired.
+    world.clock = Date.parse(resetAt) + 2 * 60 * 60 * 1000;
+    t.mock.timers.tick(HELD_CHECK_MS);
+    const woke = await world.manager.get(id);
+    assert.equal(woke.status, "idle");
+    assert.equal(woke.alert, null);
+    assert.equal(woke.resetAt, null);
+    assert.equal(woke.stateSince, new Date(world.clock).toISOString());
+    assert.deepEqual(win.frames.filter((frame) => frame.t === "state" || frame.t === "alert").slice(-4), [
+      { t: "state", status: "held", resetAt },
+      { t: "alert", kind: "limit", text },
+      { t: "state", status: "idle" },
+      { t: "alert", kind: "resolved", text: "" }
+    ]);
+  });
+});
+
+test("markers: kept in meta.json (the newest 500), read from memory while the session runs and from disk after it ends; a prompt marker never carries the prompt's text (R23); unknown ids are 404; update sessions and unknown types keep none", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    assert.equal(MARKERS_MAX, 500);
+    const world = fakeWorld();
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    assert.deepEqual(await world.manager.markers(id), []);
+    world.clock = T0 + 1000;
+    assert.equal(await world.manager.addMarker(id, { type: "prompt", text: "my secret prompt" }), true);
+    assert.deepEqual(await world.manager.markers(id), [{ at: "2026-10-14T09:00:01.000Z", type: "prompt" }]);
+    assert.deepEqual(await markersOnDisk(agentOsHome, id, 1), [{ at: "2026-10-14T09:00:01.000Z", type: "prompt" }]);
+    assert.equal(JSON.stringify(await metaOnDisk(agentOsHome, id)).includes("my secret prompt"), false, "a prompt's text is never stored");
+
+    assert.equal(await world.manager.addMarker(id, { type: "shell", text: "x" }), false);
+    for (let i = 0; i < 505; i += 1) {
+      assert.equal(await world.manager.addMarker(id, { type: "permission", text: `Wants to use tool ${i}` }), true);
+    }
+    const kept = await world.manager.markers(id);
+    assert.equal(kept.length, 500);
+    assert.equal(kept[0].text, "Wants to use tool 5", "the oldest go first");
+    assert.equal(kept.at(-1).text, "Wants to use tool 504");
+    assert.deepEqual((await metaOnDisk(agentOsHome, id)).markers, kept);
+
+    world.ptys[0].exit(0);
+    await ended(world, id);
+    await waitFor(() => !world.manager.isLive(id));
+    assert.deepEqual(await world.manager.markers(id), kept, "after the end, read from meta.json");
+    assert.equal(await world.manager.addMarker(id, { type: "prompt" }), false, "an ended session takes no marker");
+
+    for (const unknownId of [crypto.randomUUID(), "not-a-uuid"]) {
+      await assert.rejects(world.manager.markers(unknownId), (error) => error.status === 404 && error.code === "unknown_session");
+    }
+    const update = await world.manager.createUpdateSession({ agentId: "hermes", folder: project });
+    assert.equal(await world.manager.addMarker(update.id, { type: "prompt" }), false);
+    assert.deepEqual(await world.manager.markers(update.id), []);
+  });
+});
+
+test("liveAgentSessions and onLiveChange: copies of the running agent sessions only, in start order; listeners run after an agent session starts and after it ends; a listener that throws is logged and never stops anything", async (t) => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const errors = [];
+    t.mock.method(console, "error", (...args) => errors.push(args.map(String).join(" ")));
+    const world = fakeWorld();
+    const seen = [];
+    const off = world.manager.onLiveChange(() => seen.push(world.manager.liveAgentSessions().map((session) => session.id)));
+    world.manager.onLiveChange(() => {
+      throw new Error("listener boom");
+    });
+    assert.throws(() => world.manager.onLiveChange("not a function"), TypeError);
+
+    const a = await world.manager.create({ agentId: "claude", folder: project });
+    const b = await world.manager.create({ agentId: "codex", folder: project });
+    await world.manager.createUpdateSession({ agentId: "hermes", folder: project });
+    assert.deepEqual(seen, [[a.id], [a.id, b.id]], "an update session is not an agent session");
+
+    const all = world.manager.liveAgentSessions();
+    assert.deepEqual(all.map((session) => session.id), [a.id, b.id]);
+    assert.deepEqual(world.manager.liveAgentSessions("codex").map((session) => session.id), [b.id]);
+    assert.deepEqual(world.manager.liveAgentSessions("hermes"), []);
+    const profile = { command: "/fake/bin/claude", args: [], cwd: project, env: { TERM: "xterm-256color" } };
+    assert.deepEqual(all[0], {
+      id: a.id,
+      agentId: "claude",
+      agentSessionId: CLAUDE_UUID,
+      folder: project,
+      status: "starting",
+      alert: null,
+      pid: world.ptys[0].pid,
+      lastInputAt: 0,
+      profile
+    });
+    all[0].profile.env.AGENT_OS_TOKEN = "leak";
+    all[0].profile.args.push("--yolo");
+    assert.deepEqual(world.manager.liveAgentSessions()[0].profile, profile, "callers get copies");
+    world.mirrors[0].opts.onAlert("bel");
+    assert.deepEqual(world.manager.liveAgentSessions()[0].alert, {
+      kind: "waiting",
+      text: "May need you",
+      at: "2026-10-14T09:00:00.000Z",
+      source: "bel"
+    });
+    await attachFake(world.manager, a.id, "w");
+    assert.equal(world.manager.focus(a.id, "w"), true); // only the writer's input counts
+    world.clock = T0 + 1000;
+    assert.equal(world.manager.write(a.id, "w", "y"), true);
+    assert.equal(world.manager.liveAgentSessions()[0].lastInputAt, T0 + 1000, "the time of the last user input");
+
+    world.ptys[1].exit(0);
+    await ended(world, b.id);
+    assert.deepEqual(seen.at(-1), [a.id]);
+    assert.equal(errors.filter((line) => line.includes("listener boom")).length, 3, "logged for two starts and one end");
+
+    off();
+    await world.manager.create({ agentId: "cursor", folder: project });
+    assert.equal(seen.length, 3, "an unsubscribed listener is not called again");
+    await markersOnDisk(agentOsHome, a.id, 1);
+  });
+});
+
+test("signal entry points: false for an unknown, ended or non-agent session; a limit never goes straight to the activity, and an unknown kind or source is a caller's bug (TypeError)", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const a = await world.manager.create({ agentId: "claude", folder: project });
+    const update = await world.manager.createUpdateSession({ agentId: "hermes", folder: project });
+    const waiting = { kind: "waiting", text: "Wants to use Bash", source: "hook" };
+    for (const id of [crypto.randomUUID(), "not-a-uuid", update.id]) {
+      assert.equal(world.manager.applySignal(id, waiting), false, id);
+      assert.equal(world.manager.markSourceSeen(id), false, id);
+      assert.equal(world.manager.markNewTurn(id), false, id);
+      assert.equal(world.manager.setHeld(id, { text: "x", source: "hook" }), false, id);
+      assert.equal(world.manager.clearHeld(id), false, id);
+    }
+    assert.equal((await world.manager.list({ includeUpdate: true })).find((session) => session.id === update.id).alert, null);
+    assert.throws(() => world.manager.applySignal(a.id, { kind: "limit", text: "x", source: "hook" }), TypeError);
+    assert.throws(() => world.manager.applySignal(a.id, { kind: "done", source: "hook" }), TypeError);
+    assert.throws(() => world.manager.applySignal(a.id, { kind: "waiting", source: "email" }), TypeError);
+    assert.throws(() => world.manager.setHeld(a.id, { text: "x", source: "email" }), TypeError);
+    assert.equal((await world.manager.get(a.id)).status, "starting", "a refused call changes nothing");
+
+    world.ptys[0].exit(0);
+    await ended(world, a.id);
+    assert.equal(world.manager.applySignal(a.id, waiting), false, "an ended session takes no signal");
+    assert.equal(world.manager.setHeld(a.id, { text: "x", source: "hook" }), false);
+  });
+});
+
+test("exit with an alert (M3): a session that ends while it waits or is held sends the resolved alert frame just before the exited state; a session with no alert sends none", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const world = fakeWorld();
+    const waiting = await world.manager.create({ agentId: "claude", folder: project });
+    const held = await world.manager.create({ agentId: "codex", folder: project });
+    const calm = await world.manager.create({ agentId: "cursor", folder: project });
+    const winWaiting = await attachFake(world.manager, waiting.id, "a");
+    const winHeld = await attachFake(world.manager, held.id, "b");
+    const winCalm = await attachFake(world.manager, calm.id, "c");
+    for (const pty of world.ptys) pty.emit("ready");
+    world.mirrors[0].opts.onAlert("bel");
+    assert.equal(world.manager.setHeld(held.id, { text: "Usage limit reached", source: "text" }), true);
+    const story = (win) => win.frames.filter((frame) => frame.t === "state" || frame.t === "alert").map((frame) => `${frame.t}:${frame.status ?? frame.kind}`);
+
+    for (const [index, session] of [waiting, held, calm].entries()) {
+      world.ptys[index].exit(0);
+      await ended(world, session.id);
+      await waitFor(() => !world.manager.isLive(session.id));
+    }
+    assert.deepEqual(story(winWaiting), ["state:starting", "state:live", "state:waiting", "alert:waiting", "alert:resolved", "state:exited"]);
+    assert.deepEqual(story(winHeld), ["state:starting", "state:live", "state:held", "alert:limit", "alert:resolved", "state:exited"]);
+    assert.deepEqual(story(winCalm), ["state:starting", "state:live", "state:exited"], "no alert, no resolved frame");
+    assert.deepEqual(winWaiting.frames.at(-1), { t: "state", status: "exited", exitCode: 0, signal: null, endedBy: null });
+    assert.deepEqual(winWaiting.frames.filter((frame) => frame.t === "alert").at(-1), { t: "alert", kind: "resolved", text: "" });
+    assert.equal((await world.manager.get(waiting.id)).alert, null, "the ended session's summary has no alert");
+    await markersOnDisk(agentOsHome, waiting.id, 1);
+  });
+});
+
 // ---- windows: attach, writer and viewers, flow control -------------------------------------------
 
-test("attach: snapshot first, then the state, then output; output that arrives while the snapshot is taken is neither lost nor sent twice; alerts are forwarded raw", async () => {
-  await withSessionEnv(async ({ project }) => {
+test("attach: snapshot first, then the state, then output; output that arrives while the snapshot is taken is neither lost nor sent twice; a bell reaches the window as the waiting state and one alert frame", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
     const world = fakeWorld();
     const summary = await world.manager.create({ agentId: "claude", folder: project });
     const pty = world.ptys[0];
@@ -826,12 +1327,14 @@ test("attach: snapshot first, then the state, then output; output that arrives w
     assert.deepEqual(frames.slice(2).map((frame) => frame.seq), [7, 12]);
 
     mirror.opts.onAlert("bel");
-    mirror.opts.onAlert("9;Build finished");
-    assert.deepEqual(frames.slice(-2), [
-      { t: "alert", raw: "bel" },
-      { t: "alert", raw: "9;Build finished" }
+    mirror.opts.onAlert("9;Build finished"); // the same basic alert again: nothing new to send
+    assert.deepEqual(frames.slice(4), [
+      { t: "state", status: "waiting" },
+      { t: "alert", kind: "waiting", text: "May need you" }
     ]);
+    assert.equal(frames.some((frame) => "raw" in frame), false, "SP3's raw alert frame is gone");
     assert.deepEqual(world.recorders[0].outputs, ["before ", "during ", "after"], "the recording gets every byte");
+    await markersOnDisk(agentOsHome, summary.id, 1);
   });
 });
 
@@ -1988,7 +2491,16 @@ test("getSessionManager: one manager per server, with every method the routes an
     "dismiss",
     "quitCheck",
     "isLive",
-    "recoverStaleSessions"
+    "recoverStaleSessions",
+    "applySignal",
+    "markSourceSeen",
+    "markNewTurn",
+    "setHeld",
+    "clearHeld",
+    "addMarker",
+    "markers",
+    "liveAgentSessions",
+    "onLiveChange"
   ]) {
     assert.equal(typeof manager[name], "function", name);
   }

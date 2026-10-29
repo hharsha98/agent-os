@@ -187,6 +187,11 @@ function stubManager() {
       calls.push(["quitCheck"]);
       return { live: [{ id: KNOWN_ID, title: "Claude Code · project", kind: "agent" }] };
     },
+    async markers(id) {
+      calls.push(["markers", id]);
+      if (id === KNOWN_ID) return [{ at: "2026-10-14T10:01:00.000Z", type: "prompt" }];
+      throw sessionError(404, "unknown_session", "That session doesn't exist anymore.");
+    },
     // Synchronous like the real one (ruling R8). Not recorded in `calls`: the
     // recordings routes ask it, and the fixed-path test counts only quitCheck.
     isLive(id) {
@@ -243,6 +248,7 @@ const EVERY_ROUTE = [
   ["POST", `/api/sessions/${KNOWN_ID}/dismiss`, {}],
   ["GET", `/api/sessions/${KNOWN_ID}/recording`],
   ["DELETE", `/api/sessions/${KNOWN_ID}/recording`],
+  ["GET", `/api/sessions/${KNOWN_ID}/markers`],
   ["GET", "/api/recordings"]
 ];
 
@@ -687,6 +693,29 @@ async function writeSessionFixture(agentOsHome, id, { cast = true, status = "exi
   }
   return dir;
 }
+
+test("GET /api/sessions/:id/markers answers { markers } from the manager; an unknown session keeps the manager's 404, and a bad id never reaches it", async () => {
+  await withSessionsEnv(async () => {
+    const { manager, calls } = stubManager();
+    await withSessionsApp(manager, async (api) => {
+      const known = await api("GET", `/api/sessions/${KNOWN_ID}/markers`);
+      assert.equal(known.status, 200, known.text);
+      assert.deepEqual(known.json, { markers: [{ at: "2026-10-14T10:01:00.000Z", type: "prompt" }] });
+
+      const unknown = await api("GET", `/api/sessions/${NEW_ID}/markers`);
+      assert.equal(unknown.status, 404);
+      assert.deepEqual(unknown.json, UNKNOWN_SESSION);
+
+      const bad = await api("GET", "/api/sessions/not-a-uuid/markers");
+      assert.equal(bad.status, 404);
+      assert.deepEqual(bad.json, UNKNOWN_SESSION);
+    });
+    assert.deepEqual(calls, [
+      ["markers", KNOWN_ID],
+      ["markers", NEW_ID]
+    ]);
+  });
+});
 
 test("GET /api/sessions/:id/recording streams the recorder's lines: the older segment, then the newer one without its header", async () => {
   await withSessionsEnv(async ({ agentOsHome }) => {

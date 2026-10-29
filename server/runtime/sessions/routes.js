@@ -293,6 +293,16 @@ export function createSessionsRouter({ manager = getSessionManager() } = {}) {
     })
   );
 
+  // The recording's moments (spec "Recordings in Runs"): the prompt, permission
+  // asked and files changed markers from meta.json, read from memory while the
+  // session runs. A prompt marker never holds the prompt's text (R23).
+  router.get(
+    "/:id/markers",
+    handle(async (req, res) => {
+      res.json({ markers: await manager.markers(req.params.id) });
+    })
+  );
+
   router.get(
     "/:id/recording",
     handle(async (req, res) => {

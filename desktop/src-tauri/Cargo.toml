@@ -27,6 +27,11 @@ tauri-plugin-opener = "2"
 # "Choose folder…" in the New session dialog: the system's folder picker. Only its
 # open dialog is granted (capabilities/default.json, dialog:allow-open).
 tauri-plugin-dialog = "2"
+# Desktop notifications when a session needs you and the window is hidden or not
+# focused. Only this shell raises them, from the server's AGENT_OS_ALERT lines; the
+# page has no notification:* permission and no notification package (SP4 ruling R20).
+# Exact pin: 2.8.0 was one day old when this was chosen.
+tauri-plugin-notification = "=2.7.0"
 
 # SIGTERM has no Windows equivalent, so these are unix-only. signal-hook lets
 # a plain `kill <pid>` (which skips the normal window-quit path) still shut

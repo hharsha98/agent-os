@@ -1,15 +1,18 @@
 // The session manager (SP3, Task S6): lifecycle, meta.json, the limit, the
 // Look only gate, activity states, writer and viewer windows with flow
-// control, the update kind, resume rules, dismiss and recovery. Most tests
-// drive the manager with injected fakes, so no process starts at all; the last
-// two start the TUI-like fake agents from test/helpers/fake-agents.js in a
-// real PTY. No real agent ever starts.
+// control, the update kind, resume rules, dismiss and recovery. SP4 Task X1b:
+// signals from the mirror (Codex's OSC 9 by its text, basic alerts, Hermes's
+// title) and the limit rules per agent. Most tests drive the manager with
+// injected fakes, so no process starts at all; the real-PTY tests at the end
+// start the TUI-like fake agents from test/helpers/fake-agents.js. No real
+// agent ever starts.
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { LIMIT_MESSAGE } from "../server/runtime/builders/limits.js";
 import * as sessionErrors from "../server/runtime/sessions/errors.js";
 import { recentSessionFolders } from "../server/runtime/sessions/folders.js";
 import {
@@ -26,6 +29,7 @@ import {
   readGitBranch,
   sessionError
 } from "../server/runtime/sessions/manager.js";
+import { parseResetText } from "../server/runtime/sessions/mirror-signals.js";
 import { SESSION_AGENT_LABEL as PROFILE_AGENT_LABEL } from "../server/runtime/sessions/profiles.js";
 import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { createRecorder, enforceRecordingCap } from "../server/runtime/sessions/recorder.js";
@@ -240,6 +244,27 @@ function fakeMirror(options) {
     },
     counted() {
       for (const cb of [...counted]) cb();
+    },
+    // SP4 (Task X1b): the visible screen as text (and how often it was read),
+    // and the modes with their change listeners, as the real mirror has them.
+    screen: "",
+    screenReads: 0,
+    screenText() {
+      mirror.screenReads += 1;
+      return mirror.disposed ? "" : mirror.screen;
+    },
+    modeState: { ...FAKE_MODES },
+    modeListeners: new Set(),
+    modes() {
+      return { ...mirror.modeState };
+    },
+    onModeChange(cb) {
+      mirror.modeListeners.add(cb);
+      return () => mirror.modeListeners.delete(cb);
+    },
+    setModes(patch) {
+      mirror.modeState = { ...mirror.modeState, ...patch };
+      for (const cb of [...mirror.modeListeners]) cb({ ...mirror.modeState });
     },
     dispose() {
       mirror.disposed = true;
@@ -2500,11 +2525,391 @@ test("getSessionManager: one manager per server, with every method the routes an
     "addMarker",
     "markers",
     "liveAgentSessions",
-    "onLiveChange"
+    "onLiveChange",
+    "noteLimit"
   ]) {
     assert.equal(typeof manager[name], "function", name);
   }
   assert.equal(manager.isLive("00000000-0000-4000-8000-000000000000"), false);
+});
+
+// ---- SP4 Task X1b: signals from the mirror and the limit rules -------------------------------------
+
+// Screen reads and the Codex confirmation run on real timers.
+const afterScan = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const CLAUDE_LIMIT_LINE = "You’ve hit your session limit · resets 3:45pm";
+const CODEX_LIMIT_LINE = "■ You’ve hit your usage limit. Try again at 3:45 PM.";
+
+test("X1b signals: Codex's OSC 9 is read by its text (R14): an approval makes the session waiting with Codex's words, a finished turn makes it a turn-done session that goes idle, and a progress report means nothing", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const { id } = await world.manager.create({ agentId: "codex", folder: project });
+    const mirror = world.mirrors[0];
+    world.ptys[0].emit("› ");
+    const { frames } = await attachFake(world.manager, id);
+    assert.equal((await world.manager.get(id)).alerts, "basic", "basic until its first notification");
+
+    mirror.opts.onAlert("9;4;1;40");
+    assert.equal((await world.manager.get(id)).status, "live", "a progress report is not a notification");
+
+    mirror.opts.onAlert("9;Approval requested: npm test");
+    let summary = await world.manager.get(id);
+    assert.equal(summary.status, "waiting");
+    assert.equal(summary.alerts, "full", "its first notification makes it a turn-done session");
+    assert.deepEqual([summary.alert.kind, summary.alert.text], ["waiting", "Approval requested: npm test"]);
+    assert.ok(frames.some((frame) => frame.t === "alert" && frame.kind === "waiting" && frame.text === "Approval requested: npm test"));
+
+    mirror.opts.onAlert("9;All 42 tests pass.");
+    summary = await world.manager.get(id);
+    assert.equal(summary.status, "idle");
+    assert.equal(summary.idleBy, "turn_done");
+    assert.equal(summary.alert, null);
+    assert.ok(frames.some((frame) => frame.t === "alert" && frame.kind === "resolved" && frame.text === ""));
+    assert.equal(frames.some((frame) => frame.t === "alert" && "raw" in frame), false, "SP3's raw alert frame is gone");
+  });
+});
+
+test("X1b signals: a BEL or an OSC 9, 99 or 777 from Hermes or Cursor is a basic alert, \"May need you\" (R19); it never makes the session turn-done, and user input clears it", async () => {
+  await withSessionEnv(async ({ project }) => {
+    for (const agentId of ["hermes", "cursor"]) {
+      const world = fakeWorld();
+      const { id } = await world.manager.create({ agentId, folder: project });
+      world.ptys[0].emit("> ");
+      await attachFake(world.manager, id);
+      assert.equal(world.manager.focus(id, "w"), true);
+      for (const raw of ["bel", "9;Hermes: approval", "99;i=cursor:d=0;Cursor needs your input", "777;notify;Cursor;Cursor is waiting for you"]) {
+        world.mirrors[0].opts.onAlert(raw);
+        const summary = await world.manager.get(id);
+        assert.equal(summary.status, "waiting", `${agentId} ${raw}`);
+        assert.deepEqual([summary.alert.kind, summary.alert.text, summary.alerts], ["waiting", "May need you", "basic"], `${agentId} ${raw}`);
+        assert.equal(world.manager.write(id, "w", "y"), true);
+        const after = await world.manager.get(id);
+        assert.deepEqual([after.status, after.alert], ["live", null], `${agentId}: user input clears it`);
+      }
+    }
+  });
+});
+
+test("X1b signals: Claude Code's and OpenClaw's notifications stay generic basic alerts (R12): Codex's words mean nothing for them and never end their turn", async () => {
+  await withSessionEnv(async ({ project }) => {
+    for (const agentId of ["claude", "openclaw"]) {
+      const world = fakeWorld();
+      const { id } = await world.manager.create({ agentId, folder: project });
+      world.ptys[0].emit("> ");
+      world.mirrors[0].opts.onAlert("9;Approval requested: npm test");
+      const summary = await world.manager.get(id);
+      assert.deepEqual([summary.status, summary.alert.text, summary.alerts], ["waiting", "May need you", "basic"], agentId);
+      world.mirrors[0].opts.onAlert("9;All 42 tests pass.");
+      assert.equal((await world.manager.get(id)).status, "waiting", `${agentId}: no OSC 9 ends its turn`);
+    }
+  });
+});
+
+test("X1b signals: Hermes's title (R17): a title starting with ⚠ makes the session waiting once, the marker gone resolves it, and another agent's title or an update session's counts for nothing", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const { id } = await world.manager.create({ agentId: "hermes", folder: project });
+    const mirror = world.mirrors[0];
+    world.ptys[0].emit("> ");
+    const { frames } = await attachFake(world.manager, id);
+    mirror.opts.onTitle("✓ fix-tests · glm-5.3 · ~/demo");
+    assert.equal((await world.manager.get(id)).status, "live", "no marker, nothing to resolve");
+
+    mirror.opts.onTitle("⚠ fix-tests · glm-5.3 · ~/demo"); // OSC 1
+    mirror.opts.onTitle("⚠ fix-tests · glm-5.3 · ~/demo"); // OSC 2, the same title
+    let summary = await world.manager.get(id);
+    assert.equal(summary.status, "waiting");
+    assert.deepEqual([summary.alert.kind, summary.alert.text, summary.alerts], ["waiting", "May need you", "basic"]);
+    assert.equal(frames.filter((frame) => frame.t === "alert" && frame.kind === "waiting").length, 1, "one alert for the two title sequences");
+
+    mirror.opts.onTitle("⏳ fix-tests · glm-5.3 · ~/demo");
+    summary = await world.manager.get(id);
+    assert.deepEqual([summary.status, summary.alert], ["live", null], "the marker gone resolves it");
+
+    // Answered by typing while the marker still shows: a refresh of the same title does not ask again.
+    mirror.opts.onTitle("⚠ fix-tests · glm-5.3 · ~/demo");
+    assert.equal(world.manager.focus(id, "w"), true);
+    assert.equal(world.manager.write(id, "w", "y"), true);
+    mirror.opts.onTitle("⚠ fix-tests · glm-5.3 · ~/demo");
+    assert.equal((await world.manager.get(id)).status, "live");
+
+    const codex = await world.manager.create({ agentId: "codex", folder: project });
+    world.ptys[1].emit("› ");
+    world.mirrors[1].opts.onTitle("⚠ something");
+    assert.equal((await world.manager.get(codex.id)).status, "live", "only Hermes's title means something");
+
+    const update = await world.manager.createUpdateSession({ agentId: "hermes", folder: project });
+    world.ptys[2].emit("Update now? ");
+    world.mirrors[2].opts.onTitle("⚠ Hermes");
+    world.mirrors[2].opts.onAlert("bel");
+    assert.equal((await world.manager.get(update.id)).status, "live", "update sessions never alert");
+  });
+});
+
+test("X1b limit rule, Claude Code: its limit text alone never holds; a limit hook within 120 s confirms it with the text's reset time; input ends the hold and uses up that evidence", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld({ limitScanMs: 5 });
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    pty.emit("╭ Claude Code\r\n");
+    await waitFor(() => mirror.screenReads >= 1); // the first read: nothing there
+    mirror.screen = `> fix the tests\n${CLAUDE_LIMIT_LINE}\n\n? for shortcuts`;
+    pty.emit(CLAUDE_LIMIT_LINE);
+    await waitFor(() => mirror.screenReads >= 2); // the read that sees it appear
+    assert.notEqual((await world.manager.get(id)).status, "held", "the text alone never holds");
+
+    world.clock += 60 * 1000;
+    assert.equal(world.manager.noteLimit(id, { source: "hook", text: "rate_limit" }), true);
+    const summary = await world.manager.get(id);
+    assert.equal(summary.status, "held");
+    assert.equal(summary.resetAt, parseResetText("3:45pm", T0));
+    assert.deepEqual([summary.alert.kind, summary.alert.text], ["limit", LIMIT_MESSAGE.claude]);
+
+    await attachFake(world.manager, id);
+    assert.equal(world.manager.focus(id, "w"), true);
+    assert.equal(world.manager.write(id, "w", "k"), true);
+    assert.equal((await world.manager.get(id)).status, "live", "user input ends the hold");
+    world.clock += 1000;
+    assert.equal(world.manager.noteLimit(id, { source: "hook" }), true);
+    pty.emit("."); // the same text is still on screen, so it did not appear again
+    await waitFor(() => mirror.screenReads >= 3);
+    assert.equal((await world.manager.get(id)).status, "live", "the hold used up its evidence");
+
+    mirror.screen = "> ";
+    pty.emit(".");
+    await waitFor(() => mirror.screenReads >= 4);
+    mirror.screen = `> try again\n${CLAUDE_LIMIT_LINE}`;
+    pty.emit(".");
+    await waitFor(async () => (await world.manager.get(id)).status === "held"); // it appeared again, within 120 s of the last hook
+  });
+});
+
+test("X1b limit rule, Claude Code: a limit hook alone never holds; the status line at 100 % confirms it with its own reset time, and below 100 % ends that hold", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld({ limitScanMs: 5 });
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    world.ptys[0].emit("> ");
+    assert.equal(world.manager.noteLimit(id, { source: "hook" }), true);
+    assert.equal((await world.manager.get(id)).status, "live");
+
+    const resetAt = "2026-10-14T14:00:00.000Z";
+    world.clock += 30 * 1000;
+    assert.equal(world.manager.noteLimit(id, { source: "status", atLimit: true, resetAt }), true);
+    let summary = await world.manager.get(id);
+    assert.deepEqual([summary.status, summary.resetAt, summary.alert.text], ["held", resetAt, LIMIT_MESSAGE.claude]);
+
+    assert.equal(world.manager.noteLimit(id, { source: "status", atLimit: false }), true);
+    summary = await world.manager.get(id);
+    assert.deepEqual([summary.status, summary.alert, summary.resetAt], ["idle", null, null], "held → idle when the status line drops below 100 %");
+
+    assert.equal(world.manager.noteLimit(id, { source: "poll" }), false);
+    assert.equal(world.manager.noteLimit(id, null), false);
+    assert.equal(world.manager.noteLimit("00000000-0000-4000-8000-000000000000", { source: "hook" }), false);
+  });
+});
+
+test("X1b limit rule, Codex: its limit text holds only when it is still on screen after the confirm time, the process is alive and nothing was counted since (R15); a hook or the status line means nothing for it", async () => {
+  await withSessionEnv(async ({ project }) => {
+    // Each case gets its own manager, so one case's clock never moves another's.
+    async function codexSession() {
+      const world = fakeWorld({ limitScanMs: 5, codexConfirmMs: 40 });
+      const { id } = await world.manager.create({ agentId: "codex", folder: project });
+      const pty = world.ptys[0];
+      const mirror = world.mirrors[0];
+      pty.emit("› run the tests\r\n");
+      await waitFor(() => mirror.screenReads >= 1); // the first read: nothing there
+      return { world, id, pty, mirror };
+    }
+    async function showLimit({ pty, mirror }) {
+      mirror.screen = `› run the tests\n\n${CODEX_LIMIT_LINE}\n\n› `;
+      pty.emit(`\r\n${CODEX_LIMIT_LINE}\r\n`);
+      await waitFor(() => mirror.screenReads >= 2); // the read that sees it appear
+    }
+    const statusOf = async ({ world, id }) => (await world.manager.get(id)).status;
+
+    let session = await codexSession();
+    await showLimit(session);
+    await waitFor(async () => (await statusOf(session)) === "held");
+    const summary = await session.world.manager.get(session.id);
+    assert.equal(summary.resetAt, parseResetText("3:45 PM", T0));
+    assert.deepEqual([summary.alert.kind, summary.alert.text], ["limit", LIMIT_MESSAGE.codex]);
+
+    session = await codexSession();
+    await showLimit(session);
+    session.world.clock += 1000;
+    session.mirror.counted();
+    await waitFor(() => session.mirror.screenReads >= 3); // the confirmation's read
+    await afterScan(20);
+    assert.notEqual(await statusOf(session), "held", "output was counted after the text appeared");
+
+    session = await codexSession();
+    await showLimit(session);
+    session.mirror.screen = "› ";
+    await waitFor(() => session.mirror.screenReads >= 3);
+    await afterScan(20);
+    assert.notEqual(await statusOf(session), "held", "the text is gone");
+
+    session = await codexSession();
+    await showLimit(session);
+    session.pty.exit(1);
+    await ended(session.world, session.id);
+    await afterScan(100);
+    assert.equal(await statusOf(session), "exited", "the process ended first: never held, and nothing fails later");
+
+    session = await codexSession();
+    assert.equal(session.world.manager.noteLimit(session.id, { source: "hook" }), false);
+    assert.equal(session.world.manager.noteLimit(session.id, { source: "status", atLimit: true }), false);
+    assert.equal(await statusOf(session), "live");
+  });
+});
+
+test("X1b limit rule, Claude Code (M1): a limit text that arrives after the read was armed and is not yet read by the mirror when the read runs still counts, because the last output is followed by one more read", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld({ limitScanMs: 100 });
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    // xterm.js reads a write a tick later: the first read still sees the old screen, the second the text.
+    mirror.screenText = () => {
+      mirror.screenReads += 1;
+      return mirror.screenReads > 1 ? `> fix the tests\n${CLAUDE_LIMIT_LINE}\n\n? for shortcuts` : "> fix the tests\n";
+    };
+    pty.emit("╭ Claude Code\r\n"); // arms the read, 100 ms away
+    await afterScan(20);
+    pty.emit(CLAUDE_LIMIT_LINE); // after the read was armed, just before it runs; then no more output
+    await waitFor(() => mirror.screenReads >= 1);
+    await waitFor(() => mirror.screenReads >= 2, { timeoutMs: 3000 }); // the one more read, a scan interval later
+    world.clock += 1000;
+    assert.equal(world.manager.noteLimit(id, { source: "hook" }), true);
+    const summary = await world.manager.get(id);
+    assert.equal(summary.status, "held", "the text counted at the second read, so the hook confirmed it");
+    assert.equal(summary.resetAt, parseResetText("3:45pm", T0));
+  });
+});
+
+test("X1b limit rule, Claude Code (M3): a second identical limit line printed under the first, while the first is still on screen, is a new limit text; with a hook it holds the session again", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld({ limitScanMs: 5 });
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    pty.emit("╭ Claude Code\r\n");
+    await waitFor(() => mirror.screenReads >= 1);
+    mirror.screen = `> fix the tests\n${CLAUDE_LIMIT_LINE}\n\n? for shortcuts`;
+    pty.emit(CLAUDE_LIMIT_LINE);
+    await waitFor(() => mirror.screenReads >= 2);
+    world.clock += 1000;
+    assert.equal(world.manager.noteLimit(id, { source: "hook" }), true);
+    assert.equal((await world.manager.get(id)).status, "held");
+
+    await attachFake(world.manager, id);
+    assert.equal(world.manager.focus(id, "w"), true);
+    assert.equal(world.manager.write(id, "w", "k"), true);
+    assert.equal((await world.manager.get(id)).status, "live", "input ends the hold");
+
+    // The person retries; Claude prints the same limit line under the first one, which is still on screen.
+    world.clock += 1000;
+    mirror.screen = `> fix the tests\n${CLAUDE_LIMIT_LINE}\n> try again\n${CLAUDE_LIMIT_LINE}\n\n? for shortcuts`;
+    pty.emit("\r\n");
+    await waitFor(() => mirror.screenReads >= 3);
+    assert.notEqual((await world.manager.get(id)).status, "held", "the text alone never holds");
+    world.clock += 1000;
+    assert.equal(world.manager.noteLimit(id, { source: "hook" }), true);
+    assert.equal((await world.manager.get(id)).status, "held", "the repeat line was a new text signal");
+  });
+});
+
+test("X1b limit rule, Codex (M2): output counted up to two counted checks after the text is a tail of the same frame and does not cancel the hold; output counted later does", async () => {
+  await withSessionEnv(async ({ project }) => {
+    // The counted check runs at most every 250 ms, so the tail of the text's own frame can be counted 250 to 500 ms after it was read.
+    async function codexWithCountedOutput(afterMs) {
+      const world = fakeWorld({ limitScanMs: 5, codexConfirmMs: 80 });
+      const { id } = await world.manager.create({ agentId: "codex", folder: project });
+      const pty = world.ptys[0];
+      const mirror = world.mirrors[0];
+      pty.emit("› run the tests\r\n");
+      await waitFor(() => mirror.screenReads >= 1);
+      mirror.screen = `› run the tests\n\n${CODEX_LIMIT_LINE}\n\n› `;
+      pty.emit(`\r\n${CODEX_LIMIT_LINE}\r\n`);
+      await waitFor(() => mirror.screenReads >= 2);
+      world.clock += afterMs;
+      mirror.counted();
+      return { world, id, mirror };
+    }
+    const statusOf = async ({ world, id }) => (await world.manager.get(id)).status;
+
+    let session = await codexWithCountedOutput(400);
+    await waitFor(async () => (await statusOf(session)) === "held", { timeoutMs: 3000 });
+
+    session = await codexWithCountedOutput(600);
+    await waitFor(() => session.mirror.screenReads >= 3); // the confirmation's read
+    await afterScan(30);
+    assert.notEqual(await statusOf(session), "held", "output counted more than two checks later is new work");
+  });
+});
+
+test("X1b limit rule (M4): a limit whose reset time has already passed never holds a session and raises no AGENT_OS_ALERT line; one still ahead does", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const lines = [];
+    const world = fakeWorld({ limitScanMs: 5, codexConfirmMs: 40, onAlertLine: (line) => lines.push(line) });
+
+    // Claude Code: the limit line carries a date before T0 (2026-10-14T09:00Z); a hook confirms the text.
+    const claude = await world.manager.create({ agentId: "claude", folder: project });
+    const claudeMirror = world.mirrors[0];
+    world.ptys[0].emit("╭ Claude Code\r\n");
+    await waitFor(() => claudeMirror.screenReads >= 1);
+    claudeMirror.screen = "> fix the tests\nYou’ve hit your limit · resets Oct 13th, 2026 3:45 PM\n";
+    world.ptys[0].emit("x");
+    await waitFor(() => claudeMirror.screenReads >= 2);
+    assert.equal(world.manager.noteLimit(claude.id, { source: "hook" }), true);
+    assert.equal((await world.manager.get(claude.id)).status, "live", "text and hook, but the reset time is behind us");
+    assert.equal(world.manager.noteLimit(claude.id, { source: "hook" }), true);
+    assert.equal((await world.manager.get(claude.id)).status, "live", "the evidence was used up");
+    // The status line at 100 % with a reset time already past is no limit either.
+    assert.equal(world.manager.noteLimit(claude.id, { source: "status", atLimit: true, resetAt: "2026-10-14T08:00:00.000Z" }), true);
+    assert.equal((await world.manager.get(claude.id)).status, "live");
+
+    // Codex: its dated limit line is a past date (a line replayed on resume).
+    const codex = await world.manager.create({ agentId: "codex", folder: project });
+    const codexMirror = world.mirrors[1];
+    world.ptys[1].emit("› run the tests\r\n");
+    await waitFor(() => codexMirror.screenReads >= 1);
+    codexMirror.screen = "› run the tests\n\n■ You’ve hit your usage limit. Try again at Oct 13th, 2026 3:45 PM.\n\n› ";
+    world.ptys[1].emit("x");
+    await waitFor(() => codexMirror.screenReads >= 3); // the confirmation's read
+    await afterScan(30);
+    assert.equal((await world.manager.get(codex.id)).status, "live", "past reset time: never held");
+    assert.deepEqual(lines, [], "and no desktop notification");
+
+    // The same Codex limit with a reset time ahead holds, and raises one line.
+    const ahead = await world.manager.create({ agentId: "codex", folder: project });
+    const aheadMirror = world.mirrors[2];
+    world.ptys[2].emit("› run the tests\r\n");
+    await waitFor(() => aheadMirror.screenReads >= 1);
+    aheadMirror.screen = `› run the tests\n\n${CODEX_LIMIT_LINE}\n\n› `;
+    world.ptys[2].emit("x");
+    await waitFor(async () => (await world.manager.get(ahead.id)).status === "held");
+    assert.deepEqual(lines.map((line) => [line.kind, line.text]), [["limit", LIMIT_MESSAGE.codex]]);
+  });
+});
+
+test("X1b limit rule: Cursor, Hermes and OpenClaw are never held, and their screens are never read", async () => {
+  await withSessionEnv(async ({ project }) => {
+    for (const agentId of ["cursor", "hermes", "openclaw"]) {
+      const world = fakeWorld({ limitScanMs: 5, codexConfirmMs: 20 });
+      const { id } = await world.manager.create({ agentId, folder: project });
+      const mirror = world.mirrors[0];
+      mirror.screen = `${CODEX_LIMIT_LINE}\n${CLAUDE_LIMIT_LINE}\nUsage limit reached`;
+      world.ptys[0].emit("> ");
+      for (const evidence of [{ source: "hook" }, { source: "text", text: "Usage limit reached" }, { source: "status", atLimit: true }]) {
+        assert.equal(world.manager.noteLimit(id, evidence), false, `${agentId} ${evidence.source}`);
+      }
+      await afterScan(80);
+      assert.equal(mirror.screenReads, 0, `${agentId}: the screen is never read`);
+      assert.notEqual((await world.manager.get(id)).status, "held", agentId);
+    }
+  });
 });
 
 // ---- real PTY, with the W1 TUI fakes ----------------------------------------------------------------
@@ -2675,6 +3080,82 @@ test("real PTY: an updater started as an update session asks its question and ge
 
       assert.equal(manager.write(id, "w", "y\r"), true);
       await waitFor(() => outText(frames).includes("ANSWER y"));
+    } finally {
+      killLeftovers(running);
+      if (id) await settled(agentOsHome, id).catch(() => {});
+    }
+  });
+});
+
+test("real PTY: a fake Codex's OSC 9 makes its session waiting with Codex's words, then turn-done and idle, and its limit text holds it with the reset time", SKIP_POSIX, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project, bin }) => {
+    const running = new Set();
+    let id = null;
+    try {
+      await makeFakeAgentBin(bin); // all six names, mode tui
+      const manager = createSessionManager({
+        ...realDeps({ command: path.join(bin, "codex"), args: ["-C", project], env: ptyEnv(home, bin), resumeMode: "fallback" }, running),
+        limitScanMs: 50,
+        codexConfirmMs: 300
+      });
+      id = (await manager.create({ agentId: "codex", folder: project })).id;
+      await manager.attach(id, { id: "w", send() {}, close() {} });
+      assert.equal(manager.focus(id, "w"), true);
+      const current = () => manager.get(id);
+      await waitFor(async () => (await current()).status === "live");
+
+      assert.equal(manager.write(id, "w", "osc9 Approval requested: npm test\r"), true);
+      await waitFor(async () => (await current()).status === "waiting");
+      assert.equal((await current()).alert.text, "Approval requested: npm test");
+
+      assert.equal(manager.write(id, "w", "osc9 All 42 tests pass.\r"), true);
+      await waitFor(async () => (await current()).status === "idle");
+      const idle = await current();
+      assert.deepEqual([idle.idleBy, idle.alerts], ["turn_done", "full"]);
+
+      assert.equal(manager.write(id, "w", "print You’ve hit your usage limit. Try again at 3:45 PM.\r"), true);
+      await waitFor(async () => (await current()).status === "held");
+      const resetAt = new Date((await current()).resetAt);
+      assert.deepEqual([resetAt.getHours(), resetAt.getMinutes()], [15, 45], "the reset time, in local time as Codex printed it");
+
+      assert.equal(manager.write(id, "w", "exit 0\r"), true);
+      await settled(agentOsHome, id);
+    } finally {
+      killLeftovers(running);
+      if (id) await settled(agentOsHome, id).catch(() => {});
+    }
+  });
+});
+
+test("real PTY: a fake Hermes's BEL and its window title starting with ⚠ each make its session waiting, \"May need you\"; a key press ends the first wait", SKIP_POSIX, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project, bin }) => {
+    const running = new Set();
+    let id = null;
+    try {
+      await makeFakeAgentBin(bin); // all six names, mode tui
+      const manager = createSessionManager(
+        realDeps({ command: path.join(bin, "hermes"), args: ["--in", project], env: ptyEnv(home, bin), resumeMode: "fallback" }, running)
+      );
+      id = (await manager.create({ agentId: "hermes", folder: project })).id;
+      await manager.attach(id, { id: "w", send() {}, close() {} });
+      assert.equal(manager.focus(id, "w"), true);
+      await waitFor(async () => (await manager.get(id)).status === "live");
+
+      // M5: a BEL through the real terminal copy is the same basic alert (the fake rings it when it is typed "bell").
+      assert.equal(manager.write(id, "w", "bell\r"), true);
+      await waitFor(async () => (await manager.get(id)).status === "waiting");
+      const belled = await manager.get(id);
+      assert.deepEqual([belled.alert.kind, belled.alert.text, belled.alerts], ["waiting", "May need you", "basic"]);
+      assert.equal(manager.write(id, "w", "\r"), true);
+      await waitFor(async () => (await manager.get(id)).status === "live");
+
+      assert.equal(manager.write(id, "w", "title ⚠ fix-tests · glm-5.3 · ~/demo\r"), true);
+      await waitFor(async () => (await manager.get(id)).status === "waiting");
+      const summary = await manager.get(id);
+      assert.deepEqual([summary.alert.kind, summary.alert.text, summary.alerts], ["waiting", "May need you", "basic"]);
+
+      assert.equal(manager.write(id, "w", "exit 0\r"), true);
+      await settled(agentOsHome, id);
     } finally {
       killLeftovers(running);
       if (id) await settled(agentOsHome, id).catch(() => {});

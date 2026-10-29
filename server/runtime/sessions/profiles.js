@@ -63,9 +63,11 @@ const OPENCLAW_KEY = /^agentos-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-
 // The names detection looks for, in its order (cursor.js tries agent first).
 const BINARY_NAMES = { claude: ["claude"], codex: ["codex"], cursor: ["agent", "cursor-agent"], hermes: ["hermes"], openclaw: ["openclaw"] };
 // Codex's own notifications as OSC 9, so the mirror sees them (spec table).
+// plan-mode-prompt is its third type, its questions and plan prompts (ruling
+// R14); H3 allows any -c tui.notification* option.
 const CODEX_TUI_OPTIONS = [
   "-c", "tui.notification_method=osc9",
-  "-c", 'tui.notifications=["agent-turn-complete","approval-requested"]',
+  "-c", 'tui.notifications=["agent-turn-complete","approval-requested","plan-mode-prompt"]',
   "-c", "tui.notification_condition=always"
 ];
 
@@ -323,7 +325,7 @@ const QUOTED = '"(?:[^"\\\\]|\\\\.)*"';
 // session leaves out (Q9b).
 const CODEX_CONFIG = [
   /^tui\.notification_method=osc9$/,
-  /^tui\.notifications=\["agent-turn-complete","approval-requested"\]$/,
+  /^tui\.notifications=\["agent-turn-complete","approval-requested","plan-mode-prompt"\]$/,
   /^tui\.notification_condition=always$/,
   /^model_provider="openrouter"$/,
   /^model_providers\.openrouter\.name="OpenRouter"$/,

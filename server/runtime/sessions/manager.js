@@ -11,6 +11,8 @@
 // - The only bytes this file writes into a PTY are the writer's input
 //   (write()) and the mirror's replies to terminal queries, which the mirror
 //   sends only while no window is the writer (startProcess()).
+// - The screen is read only for the Claude Code and Codex limit texts (spec
+//   SP4, Task X1b), at most once per LIMIT_SCAN_MS after output.
 // - An agent session starts or resumes only when Safety allows running agents
 //   (decision Q15). The update and setup kinds are not gated.
 // - At most `maxLive` live agent sessions. Update and setup sessions are not
@@ -27,6 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { getAdapter } from "../agents/index.js";
 import { BUILDER_AGENT_IDS } from "../builders/brains.js";
+import { LIMIT_MESSAGE } from "../builders/limits.js";
 import { resolveBrainForRun } from "../builders/resolve.js";
 import { isExecutionEnabled } from "../execution-gate.js";
 import { killProcessTree } from "../process-tree.js";
@@ -34,7 +37,17 @@ import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
-import { createMirror, isUserInput } from "./mirror.js";
+import { COUNTED_CHECK_MS, createMirror, isUserInput } from "./mirror.js";
+import {
+  CODEX_LIMIT_CONFIRM_MS,
+  LIMIT_SCAN_MS,
+  classifyMirrorAlert,
+  classifyTitle,
+  codexLimitConfirmed,
+  createClaudeLimitRule,
+  matchScreenLimit,
+  parseResetText
+} from "./mirror-signals.js";
 import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, SETUP_ACTIONS, buildSessionProfile } from "./profiles.js";
 import { ptyAvailable, spawnPty } from "./pty-host.js";
 import { CAST_FILE, createRecorder, enforceRecordingCap } from "./recorder.js";
@@ -46,7 +59,6 @@ import {
   TURN_DONE_BACKSTOP_MS,
   activityAfter,
   freshActivity,
-  genericMirrorSignal,
   makeMarker,
   makeSignal,
   printAlertLine
@@ -348,7 +360,11 @@ export function createSessionManager({
   // passes printAlertLine only when the desktop shell started this server.
   onAlertLine = null,
   // SP4 (K3): how often a held session compares the clock with its reset time.
-  heldCheckMs = HELD_CHECK_MS
+  heldCheckMs = HELD_CHECK_MS,
+  // Signals from the mirror (Task X1b): how long Codex's limit text must stay
+  // on screen, and how often the screen is read after output. Tests shorten both.
+  codexConfirmMs = CODEX_LIMIT_CONFIRM_MS,
+  limitScanMs = LIMIT_SCAN_MS
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -758,13 +774,196 @@ export function createSessionManager({
     watch.tail = combined.slice(-NO_CONVERSATION_TAIL_CHARS);
   }
 
-  // A BEL or an OSC 9 / 99 / 777 the mirror saw. Until the per-agent rules
-  // (Task X1b, mirror-signals.js) each one is a basic "May need you" (R19), and
-  // an OSC 9;4 progress report is none. Update and setup sessions never alert.
+  // ---- signals from the mirror (Task X1b) ---------------------------------------------------------
+  //
+  // Spec SP4 "Signals" and "Limit rule per agent"; rulings R12-R15, R17, R19.
+  // The mirror reports BELs, OSC 9/99/777 notifications and window titles raw;
+  // mirror-signals.js says what they mean for each agent; these functions hand
+  // the result to the activity state (applySignal, markSourceSeen, setHeld,
+  // clearHeld). Update and setup sessions never alert.
+
   function onMirrorAlert(state, raw) {
     if (state.meta.kind !== "agent") return;
-    const found = genericMirrorSignal(raw);
-    if (found) applySignal(state.meta.id, found);
+    const signal = classifyMirrorAlert(state.meta.agentId, raw);
+    if (!signal) return;
+    // Codex's first classified OSC 9 makes it a turn-done session.
+    if (signal.sourceSeen) markSourceSeen(state.meta.id);
+    applySignal(state.meta.id, { kind: signal.kind, text: signal.text, source: signal.source });
+  }
+
+  function onMirrorTitle(state, title) {
+    if (state.meta.kind !== "agent") return;
+    const signal = classifyTitle(state.meta.agentId, title, { waitingFromTitle: state.titleWaiting === true });
+    if (!signal) return;
+    if (signal.kind === "waiting") {
+      // Hermes sends the same title twice (OSC 1 and OSC 2) and again on each
+      // refresh: only the change to "⚠" is a new question, so a person who
+      // already typed is not asked again by a repeated title.
+      if (state.titleWaiting) return;
+      state.titleWaiting = true;
+    } else {
+      state.titleWaiting = false;
+    }
+    applySignal(state.meta.id, { kind: signal.kind, text: signal.text, source: signal.source });
+  }
+
+  // Claude Code and Codex agent sessions have a limit rule. Cursor, Hermes and
+  // OpenClaw have no limit signal, so they are never held (spec).
+  function limitWatchFor(meta) {
+    if (meta.kind !== "agent" || (meta.agentId !== "claude" && meta.agentId !== "codex")) return null;
+    return {
+      agentId: meta.agentId,
+      rule: meta.agentId === "claude" ? createClaudeLimitRule({ now }) : null,
+      holding: false, // this rule put the session in held
+      lastCount: 0, // how many limit lines the last screen read found
+      scanTimer: null,
+      moreOutput: false, // output arrived while the next read was already armed
+      confirmTimer: null,
+      seenAt: 0, // Codex: when a screen read saw its text appear
+      resetAt: null // Codex: the reset time its text gave
+    };
+  }
+
+  function stopLimitWatch(state) {
+    const watch = state.limitWatch;
+    if (!watch) return;
+    clearTimeout(watch.scanTimer);
+    clearTimeout(watch.confirmTimer);
+    watch.scanTimer = null;
+    watch.confirmTimer = null;
+  }
+
+  // At most one screen read per limitScanMs after output (K2). The first output
+  // arms a read limitScanMs later, by which time the mirror has read that
+  // output. Output that arrives after the read was armed may not have been read
+  // by the mirror yet when the read runs (xterm.js reads a write a tick later),
+  // so it arms one more read, limitScanMs after that one: the last output of a
+  // burst is always followed by a read at least limitScanMs later (M1).
+  function scheduleLimitScan(state) {
+    const watch = state.limitWatch;
+    if (state.exitSeen) return;
+    if (watch.scanTimer) {
+      watch.moreOutput = true;
+      return;
+    }
+    armLimitScan(state);
+  }
+
+  function armLimitScan(state) {
+    const watch = state.limitWatch;
+    watch.moreOutput = false;
+    watch.scanTimer = setTimeout(() => {
+      watch.scanTimer = null;
+      const outputSinceArmed = watch.moreOutput;
+      scanForLimitText(state);
+      if (outputSinceArmed && !state.exitSeen) armLimitScan(state);
+    }, limitScanMs);
+    watch.scanTimer.unref?.();
+  }
+
+  // A limit text counts once, when it appears: more limit lines on screen now
+  // than at the previous read (K2), so a line that stays on screen is one
+  // signal and a second identical line printed under it is a new one (M3).
+  function scanForLimitText(state) {
+    const watch = state.limitWatch;
+    if (!watch || state.exitSeen) return;
+    const match = readLimitLine(state, watch.agentId);
+    const count = match ? match.count : 0;
+    const appeared = count > watch.lastCount;
+    watch.lastCount = count;
+    if (!appeared) return;
+    noteLimit(state.meta.id, { source: "text", text: match.line, resetAt: parseResetText(match.resetText, now()) });
+  }
+
+  // A reset time already behind us leaves nothing to wait for: a session is
+  // never held on one, so no "plan ran out" flashes up and no notification is
+  // raised for a limit that is already over (M4).
+  function resetHasPassed(resetAt) {
+    return typeof resetAt === "string" && Date.parse(resetAt) <= now();
+  }
+
+  function readLimitLine(state, agentId) {
+    try {
+      return matchScreenLimit(agentId, state.mirror.screenText()); // SCREEN READING (spec SP4)
+    } catch {
+      return null;
+    }
+  }
+
+  // Limit evidence for a Claude Code or Codex agent session (spec "Limit rule
+  // per agent"): { source: "hook" | "text" | "status", ... }. It holds a
+  // session only through that agent's rule, never on one signal. True when
+  // the evidence was taken; false for an unknown, ended or non-agent session,
+  // an agent with no limit rule, or a source that agent's rule does not use.
+  function noteLimit(id, evidence) {
+    const state = live.get(id);
+    const watch = state?.limitWatch;
+    if (!watch || state.exitSeen || !evidence || typeof evidence !== "object") return false;
+    if (watch.holding && state.activity.status !== "held") {
+      // The hold ended some other way (input, the reset time, Claude's own
+      // auto-resume): its evidence is used up, so a status line that still says
+      // 100 % cannot hold the session again on its own.
+      watch.holding = false;
+      watch.rule?.reset();
+    }
+    return watch.agentId === "claude" ? noteClaudeLimit(state, watch, evidence) : noteCodexLimit(state, watch, evidence);
+  }
+
+  // Claude Code: a limit hook or the limit text, confirmed by the other one or
+  // by the status line at 100 % (K2); below 100 % the status line ends a hold
+  // it confirmed (R4).
+  function noteClaudeLimit(state, watch, evidence) {
+    if (!["hook", "text", "status"].includes(evidence.source)) return false;
+    const result = watch.rule.add(evidence);
+    if (result.cleared) {
+      watch.holding = false;
+      if (state.activity.status === "held") clearHeld(state.meta.id);
+      return true;
+    }
+    // A repeat hold keeps the reset time already known (the reducer's rule), so
+    // only a hold that starts, or brings a different reset time, is passed on.
+    const alreadyHeld = state.activity.status === "held";
+    if (!result.held) return true;
+    if (resetHasPassed(result.resetAt)) {
+      // Its reset time is already past (M4): never hold, and use up the
+      // evidence so it cannot hold the session later.
+      if (!alreadyHeld) watch.rule.reset();
+      return true;
+    }
+    if (!alreadyHeld || (result.resetAt !== null && state.activity.resetAt !== result.resetAt)) {
+      watch.holding = true;
+      setHeld(state.meta.id, { resetAt: result.resetAt, text: LIMIT_MESSAGE.claude, source: evidence.source });
+    }
+    return true;
+  }
+
+  // Codex: no hook and no status line, so its limit text is the only signal,
+  // confirmed only by the same text still on screen codexConfirmMs later, the
+  // process alive and no counted output since (R15).
+  function noteCodexLimit(state, watch, evidence) {
+    if (evidence.source !== "text") return false;
+    clearTimeout(watch.confirmTimer);
+    watch.seenAt = now();
+    watch.resetAt = typeof evidence.resetAt === "string" ? evidence.resetAt : null;
+    watch.confirmTimer = setTimeout(() => confirmCodexLimit(state), codexConfirmMs);
+    watch.confirmTimer.unref?.();
+    return true;
+  }
+
+  function confirmCodexLimit(state) {
+    const watch = state.limitWatch;
+    watch.confirmTimer = null;
+    const alive = !state.exitSeen;
+    const stillOnScreen = alive && readLimitLine(state, "codex") !== null;
+    // The text's own output is counted a little after the mirror read it, and
+    // the mirror read it before the screen read that saw it. The mirror's
+    // counted check runs at most every COUNTED_CHECK_MS, so a tail of the same
+    // frame can be counted up to two checks later (M2).
+    const countedSince = Number(state.lastCountedAt) > watch.seenAt + 2 * COUNTED_CHECK_MS;
+    if (!codexLimitConfirmed({ stillOnScreen, alive, countedSince })) return;
+    if (resetHasPassed(watch.resetAt)) return; // M4: its reset time is already past
+    watch.holding = true;
+    setHeld(state.meta.id, { resetAt: watch.resetAt, text: LIMIT_MESSAGE.codex, source: "text" });
   }
 
   function onOutput(state, data) {
@@ -781,6 +980,8 @@ export function createSessionManager({
     } catch {
       // nor must the mirror
     }
+    // The Claude Code and Codex limit texts are looked for on screen (Task X1b).
+    if (state.limitWatch) scheduleLimitScan(state);
     if (state.status === "starting") dispatch(state, { type: "output" });
     const bytes = Buffer.byteLength(chunk, "utf8");
     for (const attachment of [...state.attachments.values()]) {
@@ -796,6 +997,7 @@ export function createSessionManager({
     clearIdle(state);
     clearHeldTimers(state);
     clearPausedDrop(state);
+    stopLimitWatch(state);
     for (const off of state.offs.splice(0)) {
       try {
         off();
@@ -884,6 +1086,9 @@ export function createSessionManager({
   // pty-host.js, so nothing is lost.
   async function startProcess(state, profile, { append, releaseSlot }) {
     state.profile = profile;
+    // Signals from the mirror (Task X1b), fresh for every start and resume.
+    state.titleWaiting = false;
+    state.limitWatch = limitWatchFor(state.meta);
     state.mirror = mirrorFactory({
       cols: state.cols,
       rows: state.rows,
@@ -893,7 +1098,10 @@ export function createSessionManager({
       onQueryReply: (reply) => {
         if (state.handle && state.status !== "exited") state.handle.write(reply);
       },
-      onAlert: (raw) => onMirrorAlert(state, raw)
+      // Spec SP4 "Signals": a BEL or an OSC 9, 99 or 777 from any agent, Codex's
+      // OSC 9 read by its text (R14, R19), and Hermes's window title (R17).
+      onAlert: (raw) => onMirrorAlert(state, raw),
+      onTitle: (title) => onMirrorTitle(state, title)
     });
     state.mirror.setWriterAttached(false);
     try {
@@ -964,6 +1172,7 @@ export function createSessionManager({
     clearIdle(state);
     clearHeldTimers(state);
     clearPausedDrop(state);
+    stopLimitWatch(state);
     if (state.meta.kind === "agent") notifyLiveChange();
     for (const off of state.offs.splice(0)) {
       try {
@@ -1900,6 +2109,7 @@ export function createSessionManager({
     quitCheck,
     isLive,
     recoverStaleSessions,
+    noteLimit,
     applySignal,
     markSourceSeen,
     markNewTurn,

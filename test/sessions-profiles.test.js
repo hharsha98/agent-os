@@ -29,7 +29,8 @@ const SYSTEM_PATH_DIRS = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 const KEY = "sk-or-v1-SESSIONTEST-secret-1234";
 const VERSION = "9.9.9-test";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const TUI = ["-c", "tui.notification_method=osc9", "-c", 'tui.notifications=["agent-turn-complete","approval-requested"]', "-c", "tui.notification_condition=always"];
+// Codex's three notification types (ruling R14: plan-mode-prompt is its questions and plan prompts).
+const TUI = ["-c", "tui.notification_method=osc9", "-c", 'tui.notifications=["agent-turn-complete","approval-requested","plan-mode-prompt"]', "-c", "tui.notification_condition=always"];
 const BINARIES = { claude: "claude", codex: "codex", cursor: "agent", hermes: "hermes", openclaw: "openclaw" };
 // The variables a session may add on top of the login-shell environment (H2),
 // plus PWD (the session's folder, as a shell sets it after `cd`).
@@ -830,6 +831,10 @@ test("assertSessionArgvSafe refuses anything outside H3: bypass, yolo, trust, MC
       ["codex", ["-C", folder, "-c", 'approval_policy="never"']],
       ["codex", ["-C", folder, ...TUI, "-c", "shell_environment_policy.ignore_default_excludes=false"]],
       ["codex", ["-C", "relative/folder", ...TUI]],
+      // R14: exactly the three notification types; SP3's two-type list, a wider list and "all" are refused.
+      ["codex", ["-C", folder, "-c", "tui.notification_method=osc9", "-c", 'tui.notifications=["agent-turn-complete","approval-requested"]', "-c", "tui.notification_condition=always"]],
+      ["codex", ["-C", folder, "-c", "tui.notification_method=osc9", "-c", 'tui.notifications=["agent-turn-complete","approval-requested","plan-mode-prompt","user-input-requested"]', "-c", "tui.notification_condition=always"]],
+      ["codex", ["-C", folder, "-c", "tui.notification_method=osc9", "-c", "tui.notifications=true", "-c", "tui.notification_condition=always"]],
       ["codex", ["exec", "-C", folder]],
       ["cursor", ["--workspace", folder, "--force"]],
       ["cursor", ["--workspace", folder, "-f"]],

@@ -25,6 +25,7 @@
 //   bell   osc9 <text>   osc9st <text>   osc99 <text>   osc777 <text>   title <text>
 //   ask (DA1 and DSR)   ask after <ms>   ask kitty   ask color
 //   lines <n>   flood <KiB>   bottom <text>   ticker <ms> <count>   exit <code>
+//   print <text>   prints <text> exactly as typed (spaces kept), then \r\n (SP4: limit texts)
 //   anything else prints "you said: <text>"
 // Replies to its questions (DA1, DSR, kitty flags, OSC 10/11 colour) and
 // focus reports print "REPLY <json>"; a bracketed paste prints
@@ -415,6 +416,10 @@ function handleLine(text) {
       break;
     case "title":
       out(`${ESC}]0;${value}${BEL}`);
+      break;
+    case "print":
+      // Exactly what follows "print " (spaces kept): the SP4 limit-text tests.
+      line(text.replace(/^\s*print ?/, ""));
       break;
     case "ask":
       if (value === "kitty") out(`${ESC}[?u`);

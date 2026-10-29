@@ -200,6 +200,7 @@ import { setServerPort } from "./runtime/server-info.js";
 import { createHooksRouter } from "./runtime/sessions/hooks.js";
 import { createClaudeAgentsPoller } from "./runtime/sessions/claude-agents-poll.js";
 import { getSessionManager } from "./runtime/sessions/manager.js";
+import { createOpenclawApprovals } from "./runtime/sessions/openclaw-approvals.js";
 import { enforceRecordingCap } from "./runtime/sessions/recorder.js";
 import { createRecordingsRouter, createSessionsRouter } from "./runtime/sessions/routes.js";
 import { excludeFromSessionEnv, getLoginShellEnv } from "./runtime/sessions/shell-env.js";
@@ -1076,7 +1077,12 @@ app.use("/api/onboarding", requireAdminWhenPublic, createOnboardingRouter());
 // their recordings. Local mode only: in the public demo and the admin-token
 // public mode every one of these addresses answers 404 not_available.
 const sessionManager = getSessionManager();
-app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager }));
+// OpenClaw approvals (SP4, ruling R16): OpenClaw is asked only while an
+// OpenClaw session is open, and an approval is answered only from the
+// person's click (POST /api/sessions/approvals/resolve).
+const openclawApprovals = createOpenclawApprovals({ manager: sessionManager });
+registerShutdownTask("openclaw-approvals", () => openclawApprovals.stop());
+app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager, approvals: openclawApprovals }));
 app.use("/api/recordings", requireLocalMode, createRecordingsRouter({ manager: sessionManager }));
 // Claude Code's own list of its sessions as a fallback for alerts (SP4, R12): one poller for every
 // live Claude Code session, stopped when Agent OS quits.

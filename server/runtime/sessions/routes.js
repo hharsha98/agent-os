@@ -12,6 +12,7 @@ import { builderErrorResponse } from "../builders/resolve.js";
 import { errorBody, isSessionId } from "./errors.js";
 import { recentSessionFolders } from "./folders.js";
 import { getSessionManager } from "./manager.js";
+import { createOpenclawApprovals } from "./openclaw-approvals.js";
 import { ptyAvailable } from "./pty-host.js";
 import { deleteRecording, listRecordings, openRecording, recordingsRemovedByCap } from "./recorder.js";
 import { readSessionSettings, writeSessionSettings } from "./settings.js";
@@ -19,6 +20,10 @@ import { getLoginShellEnv } from "./shell-env.js";
 
 const UNKNOWN_SESSION = { error: "unknown_session", message: "That session doesn't exist anymore." };
 const INTERNAL_ERROR = { error: "internal_error", message: "Something went wrong with sessions. Try again." };
+// The approvals source when the router is built without one (tests that
+// mount it alone): it never sees an open OpenClaw session, so its list is
+// empty and nothing can be answered, with the real one's checks and words.
+const NO_OPEN_SESSIONS = Object.freeze({ liveAgentSessions: () => [] });
 
 // Express 4 does not catch a rejected promise from a handler, so every handler
 // goes through this.
@@ -172,7 +177,9 @@ function unknownSessionOnBadEncoding(error, _req, res, next) {
   res.status(404).json(UNKNOWN_SESSION);
 }
 
-export function createSessionsRouter({ manager = getSessionManager() } = {}) {
+export function createSessionsRouter({ manager = getSessionManager(), approvals = null } = {}) {
+  // OpenClaw approvals (SP4, Task X3): server/index.js hands in its one poller.
+  const approvalsSource = approvals ?? createOpenclawApprovals({ manager: NO_OPEN_SESSIONS });
   // Case sensitive like the app ("/api/sessions/FOLDERS" is not the folders
   // address; as an id it fails SESSION_ID_RE).
   const router = express.Router({ caseSensitive: true });
@@ -259,6 +266,26 @@ export function createSessionsRouter({ manager = getSessionManager() } = {}) {
     "/quit-check",
     handle(async (_req, res) => {
       res.json(await manager.quitCheck());
+    })
+  );
+
+  // OpenClaw approvals (SP4, ruling R16): the cards waiting at OpenClaw's
+  // Gateway while an OpenClaw session is open, as { approvals, error }, and the
+  // person's answer to one. Only Allow once or Deny, and only from this POST,
+  // which only the person's click sends: nothing answers by itself.
+  router.get(
+    "/approvals",
+    handle(async (_req, res) => {
+      res.json(approvalsSource.snapshot());
+    })
+  );
+
+  router.post(
+    "/approvals/resolve",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      const { message } = await approvalsSource.resolve(body.id, body.decision);
+      res.json({ ok: true, message: message ?? null });
     })
   );
 

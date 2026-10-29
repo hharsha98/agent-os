@@ -53,6 +53,12 @@ const ACTIVITY_SIGNAL_KINDS = Object.freeze(["waiting", "approval", "turn_done",
 const MARKER_TYPES = new Set(["prompt", "permission", "files"]);
 // Every C0 control character, DEL and every C1 control character.
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
+// Invisible characters that reorder the text around them: the bidi embeddings,
+// overrides and isolates (U+202A-202E, U+2066-2069), the left-to-right and
+// right-to-left marks (U+200E, U+200F) and the Arabic letter mark (U+061C). A
+// command or a question could be made to read in another order than it runs
+// ("Trojan Source"), so none of them stays in an alert text.
+const BIDI_FORMAT_CHARACTERS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/g;
 // The longest file path a "files changed" marker keeps.
 const MARKER_PATH_MAX = 4096;
 
@@ -72,12 +78,14 @@ function isBasicSource(source) {
 }
 
 // Short, plain, one-line text: tabs and newlines become spaces, every other
-// control character goes, runs of spaces collapse, and the text is cut to
+// control character goes, so do the invisible reordering characters
+// (BIDI_FORMAT_CHARACTERS), runs of spaces collapse, and the text is cut to
 // `max` code points (a character is never split, and no "…" is added).
 export function cleanAlertText(value, max = ALERT_TEXT_MAX) {
   const text = String(value ?? "")
     .replace(/[\t\n]/g, " ")
     .replace(CONTROL_CHARACTERS, "")
+    .replace(BIDI_FORMAT_CHARACTERS, "")
     .replace(/ {2,}/g, " ")
     .trim();
   const limit = Number.isInteger(max) && max >= 0 ? max : ALERT_TEXT_MAX;

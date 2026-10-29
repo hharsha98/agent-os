@@ -69,6 +69,18 @@
 // Code, and a session started before the server knew its port) it prints "HOOK no-hook". The
 // token is never printed or logged.
 //
+// OpenClaw approvals (SP4, Task X3), under the name openclaw only; both knobs are read like the
+// knobs below (test/helpers/fake-approvals.js writes them):
+//   FAKE_OPENCLAW_APPROVALS              what `approvals pending --json` prints (unset: {"approvals":[]});
+//                                        "fail" prints "gateway not running" on stderr and exits 1;
+//                                        "slow" waits 30 s, then answers like unset (a time-limit test
+//                                        must not wait for it)
+//   FAKE_OPENCLAW_RESOLVE                what `approvals resolve <id> <decision>` does: unset prints
+//                                        "resolved <id> <decision>" and exits 0; "fail" prints "approval
+//                                        expired" on stderr and exits 1; "slow" waits 30 s, then exits 0
+//   Every call is logged first, as { event: "approvals-pending" } or { event: "approvals-resolve", id,
+//   decision }, each with the fields of a start record (never as a "probe" record).
+//
 // Knobs (plan brains): FAKE_AGENT_VERSION is read from the environment, else from the trimmed
 // text of $HOME/.fake-knobs/FAKE_AGENT_VERSION (test/helpers/fake-knobs.js writes it), because
 // some callers hand an agent only an allow-listed environment that drops FAKE_* variables.
@@ -232,6 +244,47 @@ function createChat() {
   return answer(id);
 }
 
+// OpenClaw's approvals (SP4, Task X3): `approvals pending --json` and `approvals resolve <id>
+// <decision>`, picked by the two knobs in the header. Each call is logged first, never as a "probe"
+// record (those are agent detection's questions).
+const SLOW_APPROVALS_MS = 30 * 1000;
+
+function finishWith(code, { stdoutText = "", stderrText = "" } = {}) {
+  const exit = () => process.exit(code);
+  const toStdout = () => (stdoutText ? process.stdout.write(`${stdoutText}\n`, exit) : exit());
+  if (stderrText) process.stderr.write(`${stderrText}\n`, toStdout);
+  else toStdout();
+  return true;
+}
+
+function approvals() {
+  if (args[1] === "pending") {
+    const behaviour = knob("FAKE_OPENCLAW_APPROVALS");
+    log({ event: "approvals-pending", ...argvRecord() });
+    if (behaviour === "fail") return finishWith(1, { stderrText: "gateway not running" });
+    const listedText = behaviour && behaviour !== "slow" ? behaviour : '{"approvals":[]}';
+    if (behaviour === "slow") {
+      setTimeout(() => finishWith(0, { stdoutText: listedText }), SLOW_APPROVALS_MS);
+      return true;
+    }
+    return finishWith(0, { stdoutText: listedText });
+  }
+  if (args[1] === "resolve") {
+    const behaviour = knob("FAKE_OPENCLAW_RESOLVE");
+    const id = args[2] ?? null;
+    const decision = args[3] ?? null;
+    log({ event: "approvals-resolve", ...argvRecord(), id, decision });
+    if (behaviour === "fail") return finishWith(1, { stderrText: "approval expired" });
+    const done = () => finishWith(0, { stdoutText: `resolved ${id} ${decision}` });
+    if (behaviour === "slow") {
+      setTimeout(done, SLOW_APPROVALS_MS);
+      return true;
+    }
+    return done();
+  }
+  return finishWith(1, { stderrText: `unknown approvals command: ${args.slice(1).join(" ")}` });
+}
+
 // The quick, non-interactive questions that agent detection and the Stop
 // sequence ask. Each answers at once and exits, so nothing waits on a TUI.
 // Returns true when it handled the command line.
@@ -252,6 +305,7 @@ function oneShot() {
   if (args[0] === "doctor") return answer(args.includes("--json") ? "{}" : "ok");
   // Hermes's approvals setting reads as on ("manual"), as the earlier audit fake answered.
   if (args[0] === "config" && args[1] === "get") return answer(args[2] === "approvals.mode" ? "manual" : "");
+  if (name === "openclaw" && args[0] === "approvals") return approvals();
   if (args[0] === "gateway") {
     if (args[1] === "status") {
       return answer(args.includes("--json") ? JSON.stringify({ running: false }) : "gateway is not running");

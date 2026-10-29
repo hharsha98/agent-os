@@ -176,6 +176,20 @@ test("cleanAlertText: control characters go, tabs and newlines become spaces, ru
   assert.equal(faces.endsWith("…"), false);
 });
 
+test("cleanAlertText: every invisible reordering character goes (the bidi embeddings, overrides and isolates, the two direction marks and the Arabic letter mark), and nothing a word or an emoji needs", () => {
+  const reordering = [0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f, 0x061c];
+  for (const code of reordering) {
+    const hex = `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+    assert.equal(cleanAlertText(`rm${String.fromCodePoint(code)} -rf build`), "rm -rf build", hex);
+  }
+  assert.equal(cleanAlertText(`${String.fromCodePoint(...reordering)}ok${String.fromCodePoint(...reordering)}`), "ok", "all twelve together");
+  assert.equal(cleanAlertText("run ‮txt.sh‬ now"), "run txt.sh now", "a right-to-left override can't make a name read backwards");
+  assert.equal(cleanAlertText("a ‎ ‏ b"), "a b", "the spaces around a removed character still collapse");
+  // Neighbours that stay: the zero width joiner an emoji family needs, and a plain Arabic letter.
+  assert.equal(cleanAlertText("👨‍👩‍👧"), "👨‍👩‍👧");
+  assert.equal(cleanAlertText("ال"), "ال");
+});
+
 test("makeSignal: a frozen signal with cleaned text and an ISO time; resetAt only for a limit; a caller's bug is a TypeError", () => {
   const signal = makeSignal({ sessionId: SID, kind: "waiting", text: " Wants to use\nBash ", source: "hook", at: "2026-10-29T10:00:00Z" });
   assert.deepEqual(signal, { sessionId: SID, kind: "waiting", text: "Wants to use Bash", at: EARLIER, source: "hook", resetAt: null });

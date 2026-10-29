@@ -1181,7 +1181,7 @@ test("wiring: sessions mount behind requireLocalMode, recovery and the cap run b
     return index;
   };
   const sessionsMount = at(
-    'app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager }));'
+    'app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager, approvals: openclawApprovals }));'
   );
   const recordingsMount = at(
     'app.use("/api/recordings", requireLocalMode, createRecordingsRouter({ manager: sessionManager }));'

@@ -27,6 +27,9 @@
 //   lines <n>   flood <KiB>   bottom <text>   ticker <ms> <count>   exit <code>
 //   print <text>   prints <text> exactly as typed (spaces kept), then \r\n (SP4: limit texts)
 //   hook <EventName> [json]   hookbig <KiB>   (Claude Code's HTTP hooks, SP4 Task X2a: see below)
+//   statusline <json>  runs statusLine.command from its --settings file the way Claude Code runs a status
+//                      line (/bin/sh -c, <json> on stdin, this program's environment and folder) and prints
+//                      "STATUSLINE <exit code> <its stdout as a JSON string>", or "STATUSLINE none" (SP4 X2b)
 //   anything else prints "you said: <text>"
 // Replies to its questions (DA1, DSR, kitty flags, OSC 10/11 colour) and
 // focus reports print "REPLY <json>"; a bracketed paste prints
@@ -44,7 +47,8 @@
 //                                        a literal {AGENT_OS_SESSION_ID} in it becomes this
 //                                        process's AGENT_OS_SESSION_ID (the quit test knows
 //                                        the id only after the session starts)
-//   FAKE_CLAUDE_AGENTS_JSON              what `claude agents --json` prints (default "[]")
+//   FAKE_CLAUDE_AGENTS_JSON              what `claude agents --json` prints (default "[]"); read like the
+//                                        knobs below, so a test can change it while sessions run (SP4 X2b)
 //   FAKE_CURSOR_CREATE_CHAT              what `agent create-chat` does (spike S6): unset prints a fresh
 //                                        crypto.randomUUID() and exits 0; "fail" prints nothing and exits 1;
 //                                        "garbage" prints "not-a-uuid" and exits 0; "uuid-exit1" prints a fresh
@@ -264,7 +268,7 @@ function oneShot() {
       setTimeout(() => process.exit(0), MAX_LIFETIME_MS);
       return true;
     }
-    return answer(process.env.FAKE_CLAUDE_AGENTS_JSON || "[]");
+    return answer(knob("FAKE_CLAUDE_AGENTS_JSON") || "[]");
   }
   if (name === "claude" && args[0] === "stop") {
     log({ event: "stop", id: args[1] || null });
@@ -548,6 +552,9 @@ function handleLine(text) {
     case "hookbig":
       postHookEvent("PermissionRequest", { tool_name: "Bash", tool_input: { command: "echo big" } }, clampInt(value, 1, 65536, 300) * 1024);
       return;
+    case "statusline":
+      runStatusLine(text.trim().slice("statusline".length).trim());
+      return; // prints its own line and the prompt when the status line ends
     case "exit": {
       const code = clampInt(value, 0, 255, 0);
       process.stdout.write("", () => process.exit(code));
@@ -559,6 +566,40 @@ function handleLine(text) {
       line(`you said: ${text}`);
   }
   prompt();
+}
+
+// SP4 (Task X2b): the statusLine of the --settings file, run the way Claude Code runs it. Only the
+// exit code is logged: the output may be anything the person's status line prints.
+function runStatusLine(json) {
+  const at = args.indexOf("--settings");
+  let command = null;
+  if (at !== -1 && args[at + 1]) {
+    try {
+      const settings = JSON.parse(readFileSync(args[at + 1], "utf8"));
+      if (typeof settings?.statusLine?.command === "string" && settings.statusLine.command) command = settings.statusLine.command;
+    } catch {
+      command = null;
+    }
+  }
+  if (!command) {
+    line("STATUSLINE none");
+    prompt();
+    return;
+  }
+  const chunks = [];
+  const child = spawn("/bin/sh", ["-c", command], { cwd: process.cwd(), env: process.env, stdio: ["pipe", "pipe", "ignore"] });
+  child.stdout.on("data", (chunk) => chunks.push(chunk));
+  child.once("error", () => {
+    line("STATUSLINE error");
+    prompt();
+  });
+  child.once("close", (code) => {
+    log({ event: "statusline", code });
+    line(`STATUSLINE ${code} ${JSON.stringify(Buffer.concat(chunks).toString("utf8"))}`);
+    prompt();
+  });
+  child.stdin.on("error", () => {});
+  child.stdin.end(json);
 }
 
 function startGrandchild() {

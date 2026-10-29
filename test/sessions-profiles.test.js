@@ -19,7 +19,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { buildClaudeSettings, codexBrainArgs } from "../server/runtime/builders/brain-launch.js";
 import { helperCommandLine, openRouterKeyHelper, setKeystoreForTest, storeOpenRouterKey } from "../server/runtime/secrets/keystore.js";
-import { buildSessionClaudeSettings, claudeHookUrl } from "../server/runtime/sessions/claude-session.js";
+import { buildSessionClaudeSettings, claudeHookUrl, statusLineCommand } from "../server/runtime/sessions/claude-session.js";
 import {
   OPENCLAW_FOLDER_HONOURED,
   OPENCLAW_SIGNIN_ACTION,
@@ -191,8 +191,16 @@ function start(ctx, agentId, extra = {}) {
     detected: ctx.detected[agentId],
     brain: null,
     agentOsVersion: VERSION,
+    // No test reads the machine's real managed Claude settings: a file that does not exist.
+    managedSettingsPath: path.join(ctx.base, "managed-settings.json"),
     ...extra
   });
+}
+
+// The statusLine every hooked Claude Code session's settings file now carries (SP4 X2b): Agent OS's
+// wrapper, with the bundled Node (these temp homes have no status line of their own).
+function wrapperStatusLine(ctx, sessionId) {
+  return { type: "command", command: statusLineCommand(path.join(ctx.agentOsHome, "sessions", sessionId, "statusline.mjs")) };
 }
 
 // Security 2 and H1-H4 for one profile's environment against the login shell's.
@@ -349,7 +357,7 @@ test("profile snapshot (SP4): with a hook, only Claude Code gets the hook variab
         assert.equal(sp4.settingsFile, file);
         assert.deepEqual(sp4.claude, { hookUrl, hooksOff: { alerts: null, meter: null }, statusLineFrom: null });
         const text = await readFile(file, "utf8");
-        assert.deepEqual(JSON.parse(text), buildSessionClaudeSettings({ hookUrl }), `${where}: only the observe-only hooks`);
+        assert.deepEqual(JSON.parse(text), buildSessionClaudeSettings({ hookUrl, statusLine: wrapperStatusLine(ctx, sessionId) }), `${where}: only the observe-only hooks and the wrapper`);
         assert.ok(!text.includes(HOOK_TOKEN), `${where}: the token is never written into the file`);
         assert.equal((await stat(file)).mode & 0o777, 0o600);
         assert.equal((await stat(path.dirname(file))).mode & 0o777, 0o700);
@@ -370,8 +378,8 @@ test("profiles (SP4): Claude Code with a hook and an OpenRouter or Local brain w
       assert.deepEqual(profile.args, ["--session-id", profile.agentSessionId, "--settings", file], brain.mode);
       const written = JSON.parse(await readFile(file, "utf8"));
       const brainSettings = buildClaudeSettings(brain, brain.mode === "openrouter" ? helper : null, { forSession: true });
-      assert.deepEqual(written, buildSessionClaudeSettings({ hookUrl: claudeHookUrl(HOOK_PORT, sessionId), brainSettings }), brain.mode);
-      assert.deepEqual(Object.keys(written), brain.mode === "openrouter" ? ["hooks", "apiKeyHelper", "env"] : ["hooks", "env"]);
+      assert.deepEqual(written, buildSessionClaudeSettings({ hookUrl: claudeHookUrl(HOOK_PORT, sessionId), statusLine: wrapperStatusLine(ctx, sessionId), brainSettings }), brain.mode);
+      assert.deepEqual(Object.keys(written), brain.mode === "openrouter" ? ["hooks", "statusLine", "apiKeyHelper", "env"] : ["hooks", "statusLine", "env"]);
       assert.equal("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" in written.env, false);
       const text = JSON.stringify(written);
       assert.ok(!text.includes(KEY), "the key itself is never written");
@@ -392,7 +400,7 @@ test("profiles (SP4): a resume with a hook rewrites the settings file for the ne
     assert.deepEqual(resumed.args, ["--resume", claudeId, "--settings", file]);
     assert.equal(resumed.env.AGENT_OS_HOOK_URL, claudeHookUrl(43002, sessionId));
     assert.equal(resumed.env.AGENT_OS_HOOK_TOKEN, nextToken);
-    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), buildSessionClaudeSettings({ hookUrl: claudeHookUrl(43002, sessionId) }), "rewritten at every start and resume, never cached (R7)");
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), buildSessionClaudeSettings({ hookUrl: claudeHookUrl(43002, sessionId), statusLine: wrapperStatusLine(ctx, sessionId) }), "rewritten at every start and resume, never cached (R7)");
 
     const checkout = path.join(ctx.home, ".hermes", "hermes-agent");
     await mkdir(checkout, { recursive: true });

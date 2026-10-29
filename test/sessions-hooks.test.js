@@ -38,6 +38,7 @@ import {
   claudeConfigDir,
   claudeHookUrl,
   encodeClaudeProjectPath,
+  statusLineCommand,
   transcriptExists
 } from "../server/runtime/sessions/claude-session.js";
 import { BACKUP_WAITING_QUIET_MS, HOOK_BODY_LIMIT, bearerToken, createHooksRouter, mapHookEvent } from "../server/runtime/sessions/hooks.js";
@@ -914,8 +915,16 @@ test("source: hooks.js never logs; neither new module reads ~/.claude.json, sets
   ]) {
     assert.doesNotMatch(code, /\.claude\.json/, `${name}: never ~/.claude.json`);
     assert.doesNotMatch(code, /\b(?:HOME|USERPROFILE|CLAUDE_CONFIG_DIR)\s*=(?!=)/, `${name}: never sets HOME or CLAUDE_CONFIG_DIR (H1)`);
-    assert.doesNotMatch(code, /onFailure|disableAllHooks/, `${name}: no failure option, never disableAllHooks (R6, H3)`);
+    assert.doesNotMatch(code, /onFailure/, `${name}: no failure option (R6)`);
   }
+  // Task X2b only READS the person's disableAllHooks (R9); Agent OS never writes it (H3). So the name appears
+  // exactly twice in claude-session.js, in the two reading places, and never in hooks.js.
+  assert.doesNotMatch(hooksCode, /disableAllHooks/, "hooks.js never names disableAllHooks (H3)");
+  assert.equal((claudeCode.match(/disableAllHooks/g) ?? []).length, 2, "claude-session.js names disableAllHooks exactly twice (H3)");
+  const naming = claudeCode.split("\n").filter((line) => line.includes("disableAllHooks"));
+  assert.equal(naming.length, 2, "once on each of two lines");
+  assert.match(naming[0], /^export const SETTINGS_READ_KEYS = Object\.freeze\(\[/, "the list of keys Agent OS reads");
+  assert.match(naming[1], /layers\?\.\[from\]\?\.disableAllHooks === true/, "the read in detectHooksOff");
   const transcriptCheck = transcriptExists.toString();
   assert.match(transcriptCheck, /\bstat\(/);
   assert.doesNotMatch(transcriptCheck, /readFile|createReadStream|\.open\(/, "a transcript is never opened");
@@ -1014,6 +1023,8 @@ function hookManager(ctx, { getPort, now, onAlertLine, spawn: spawnFn, ptys = []
     now,
     getPort,
     onAlertLine,
+    // No test reads the machine's real managed Claude settings: a file that does not exist.
+    managedSettingsPath: path.join(ctx.base, "managed-settings.json"),
     spawn:
       spawnFn ??
       (async (options) => {
@@ -1041,6 +1052,12 @@ async function untilStatus(manager, id, status) {
     5000,
     `the session to be ${status}`
   );
+}
+
+// The statusLine every hooked Claude Code session's settings file carries (SP4 X2b): Agent OS's
+// wrapper, run by the bundled Node (these temp homes have no status line of their own).
+function wrapperStatusLine(ctx, sessionId) {
+  return { type: "command", command: statusLineCommand(path.join(ctx.agentOsHome, "sessions", sessionId, "statusline.mjs")) };
 }
 
 // A new Claude Code session on the fake terminal, past its first output.
@@ -1115,7 +1132,7 @@ test("the hook token (Security 4): one per Claude Code agent run, in that run's 
       // Never on disk: not in meta.json, not in the settings file.
       for (const run of [one, two]) {
         const dir = path.join(ctx.agentOsHome, "sessions", run.id);
-        assert.deepEqual((await readdir(dir)).sort(), ["claude-settings.json", "meta.json"]);
+        assert.deepEqual((await readdir(dir)).sort(), ["claude-settings.json", "meta.json", "statusline.json", "statusline.mjs"]);
         for (const name of await readdir(dir)) {
           assert.ok(!(await readFile(path.join(dir, name), "utf8")).includes(run.token), `${name} never holds the token`);
         }
@@ -1198,7 +1215,7 @@ test("Review Focus 2: Agent OS restarts on a new port and the session is resumed
       const urlA = `http://127.0.0.1:47061/hooks/sessions/${first.id}`;
       assert.deepEqual(first.pty.options.args, ["--session-id", first.agentSessionId, "--settings", file]);
       assert.equal(first.url, urlA);
-      assert.deepEqual(JSON.parse(await readFile(file, "utf8")), buildSessionClaudeSettings({ hookUrl: urlA }));
+      assert.deepEqual(JSON.parse(await readFile(file, "utf8")), buildSessionClaudeSettings({ hookUrl: urlA, statusLine: wrapperStatusLine(ctx, first.id) }));
       const post = (token) =>
         postHook({ port: app.port, sessionId: first.id, token, body: { hook_event_name: "Stop", session_id: first.agentSessionId } });
       assert.equal((await post(first.token)).status, 204);
@@ -1216,7 +1233,7 @@ test("Review Focus 2: Agent OS restarts on a new port and the session is resumed
       assert.match(env.AGENT_OS_HOOK_TOKEN, /^[A-Za-z0-9_-]{43}$/);
       assert.notEqual(env.AGENT_OS_HOOK_TOKEN, first.token, "a new token for the new run");
       const written = await readFile(file, "utf8");
-      assert.deepEqual(JSON.parse(written), buildSessionClaudeSettings({ hookUrl: urlB }), "rewritten at the resume, never cached (R7)");
+      assert.deepEqual(JSON.parse(written), buildSessionClaudeSettings({ hookUrl: urlB, statusLine: wrapperStatusLine(ctx, first.id) }), "rewritten at the resume, never cached (R7)");
       assert.ok(!written.includes(first.token) && !written.includes(env.AGENT_OS_HOOK_TOKEN), "no token in the file");
       assert.equal((await post(first.token)).status, 401, "the first run's token stopped working");
       assert.equal((await post(env.AGENT_OS_HOOK_TOKEN)).status, 204);

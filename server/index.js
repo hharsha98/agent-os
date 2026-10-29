@@ -185,7 +185,7 @@ import {
   saveWorkflow
 } from "./runtime/workflows.js";
 import { getDesktopContext, getVoiceControlStatus, runVoiceCommand } from "./runtime/voice-control.js";
-import { installShutdownHandlers } from "./runtime/shutdown.js";
+import { installShutdownHandlers, registerShutdownTask } from "./runtime/shutdown.js";
 import { getRunManager } from "./runtime/runs/run-manager.js";
 import { createRunsRouter } from "./runtime/runs/routes.js";
 import { createAgentsRouter } from "./runtime/agents/routes.js";
@@ -198,6 +198,7 @@ import { createSecretsRouter } from "./runtime/secrets/routes.js";
 import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
 import { setServerPort } from "./runtime/server-info.js";
 import { createHooksRouter } from "./runtime/sessions/hooks.js";
+import { createClaudeAgentsPoller } from "./runtime/sessions/claude-agents-poll.js";
 import { getSessionManager } from "./runtime/sessions/manager.js";
 import { enforceRecordingCap } from "./runtime/sessions/recorder.js";
 import { createRecordingsRouter, createSessionsRouter } from "./runtime/sessions/routes.js";
@@ -1077,6 +1078,10 @@ app.use("/api/onboarding", requireAdminWhenPublic, createOnboardingRouter());
 const sessionManager = getSessionManager();
 app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager }));
 app.use("/api/recordings", requireLocalMode, createRecordingsRouter({ manager: sessionManager }));
+// Claude Code's own list of its sessions as a fallback for alerts (SP4, R12): one poller for every
+// live Claude Code session, stopped when Agent OS quits.
+const claudeAgentsPoller = createClaudeAgentsPoller({ manager: sessionManager });
+registerShutdownTask("claude-agents-poll", () => claudeAgentsPoller.stop());
 
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {

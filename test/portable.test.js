@@ -191,6 +191,12 @@ describe("bundled server runs outside the repo", () => {
     // ws's optional speed-ups are not looked up on disk at run time: a bare require would search every
     // folder above the installed app (scripts/build-server-bundle.mjs swaps in a module that throws).
     assert.doesNotMatch(serverSource, /require\(["'](bufferutil|utf-8-validate)["']\)/, "no bare require of bufferutil or utf-8-validate");
+    // The statusLine wrapper (SP4) sits next to server.mjs, where claude-session.js looks for it.
+    assert.deepEqual(
+      await readFile(path.join(bundleDir, "statusline-wrapper.mjs")),
+      await readFile(path.join(root, "server", "runtime", "sessions", "statusline-wrapper.mjs")),
+      "statusline-wrapper.mjs is copied next to the bundle unchanged"
+    );
 
     let tmpServer = null;
     let tmpHome = null;

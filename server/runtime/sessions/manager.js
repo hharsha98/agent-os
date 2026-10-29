@@ -37,7 +37,7 @@ import { killProcessTree } from "../process-tree.js";
 import { getServerPort } from "../server-info.js";
 import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
-import { CLAUDE_HOOK_EVENTS, transcriptExists as defaultTranscriptExists } from "./claude-session.js";
+import { CLAUDE_HOOK_EVENTS, parseStatusLine, transcriptExists as defaultTranscriptExists } from "./claude-session.js";
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
 import { BACKUP_WAITING_QUIET_MS } from "./hooks.js";
@@ -384,7 +384,10 @@ export function createSessionManager({
   // token, and the re-link rule's transcript check. The tests inject them.
   getPort = getServerPort,
   newHookToken = defaultHookToken,
-  transcriptExists = defaultTranscriptExists
+  transcriptExists = defaultTranscriptExists,
+  // Tests only (Task X2b): where Claude's managed settings are read, handed to
+  // buildProfile; unset, the profile reads the platform's real path.
+  managedSettingsPath = undefined
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -1111,6 +1114,10 @@ export function createSessionManager({
   // pty-host.js, so nothing is lost.
   async function startProcess(state, profile, { append, releaseSlot }) {
     state.profile = profile;
+    // SP4 (R9): what the person's Claude settings keep out of this session, found with the profile.
+    if (profile.claude?.hooksOff) {
+      state.hooksOff = { alerts: profile.claude.hooksOff.alerts ?? null, meter: profile.claude.hooksOff.meter ?? null };
+    }
     // Signals from the mirror (Task X1b), fresh for every start and resume.
     state.titleWaiting = false;
     state.limitWatch = limitWatchFor(state.meta);
@@ -1427,7 +1434,8 @@ export function createSessionManager({
         detected,
         brain,
         agentOsVersion: RUNTIME_VERSION,
-        hook
+        hook,
+        ...(managedSettingsPath === undefined ? {} : { managedSettingsPath })
       });
       const at = iso(now());
       const folderPath = where.folder ?? profile.cwd;
@@ -1633,7 +1641,8 @@ export function createSessionManager({
           detected,
           brain,
           agentOsVersion: RUNTIME_VERSION,
-          hook
+          hook,
+          ...(managedSettingsPath === undefined ? {} : { managedSettingsPath })
         });
         const at = iso(now());
         const folderPath = where.folder ?? profile.cwd;
@@ -1923,12 +1932,13 @@ export function createSessionManager({
       if (state.status === "exited" || state.meta.kind !== "agent") continue;
       if (agentId !== null && state.meta.agentId !== agentId) continue;
       const profile = state.profile || {};
-      // M5: the hook token and URL belong to the Claude session's own
-      // environment only (H2). A helper process built from this copy (the
-      // `claude agents` poller, git, a hand-off) must never receive them.
-      const env = { ...(profile.env || {}) };
-      delete env.AGENT_OS_HOOK_TOKEN;
-      delete env.AGENT_OS_HOOK_URL;
+      // M5: the hook variables (every name starting with HOOK_PREFIX) belong
+      // to the Claude session's own environment only (H2). A helper process
+      // built from this copy (the `claude agents` poller, git, a hand-off)
+      // must never receive them. Dropped by prefix, so that this file never
+      // names them (E1's guard on which files do).
+      const HOOK_PREFIX = "AGENT_OS_HOOK_";
+      const env = Object.fromEntries(Object.entries(profile.env || {}).filter(([key]) => !key.startsWith(HOOK_PREFIX)));
       found.push({
         id: state.meta.id,
         agentId: state.meta.agentId,
@@ -2216,6 +2226,23 @@ export function createSessionManager({
     if (mapped.heldCleared) clearHeld(id);
   }
 
+  // POST /hooks/sessions/:id/status (SP4, H6): the statusLine wrapper's copy of Claude's status
+  // JSON. It fills the Live meter (R11), is the Claude limit rule's status signal (a level, K2;
+  // R4 clears a hold it confirmed), shows the folder is trusted (Claude runs a status line only
+  // after its trust dialog, so the trust line ends), and may re-link the conversation (R1). It
+  // never marks a hook source as seen: the status line also runs when the person's settings keep
+  // Agent OS's hooks out (allowedHttpHookUrls), and a session that waits for a Stop hook that never
+  // comes would say "Working." for far too long.
+  function onStatusLine(id, json) {
+    const state = liveAgent(id);
+    if (!state || state.meta.agentId !== "claude") return;
+    const status = parseStatusLine(json, now());
+    state.meter = status.meter;
+    state.trustNeeded = false;
+    if (status.claudeSessionId) relinkClaudeSession(state, status.claudeSessionId).catch(() => {});
+    noteLimit(id, { source: "status", atLimit: status.atLimit, resetAt: status.resetAt });
+  }
+
   return {
     create,
     createUpdateSession,
@@ -2238,6 +2265,7 @@ export function createSessionManager({
     recoverStaleSessions,
     checkHookToken,
     onHook,
+    onStatusLine,
     noteLimit,
     applySignal,
     markSourceSeen,

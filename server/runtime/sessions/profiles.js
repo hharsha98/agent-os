@@ -23,6 +23,7 @@ import { hasCursorForceFlag } from "../runs/run-manager.js";
 import { withSiblingNodePath } from "../safety.js";
 import { managedNodeRoot } from "../setup/managed-node.js";
 import { RUNTIME_VERSION, ensurePrivateDir, ensureRuntimeStore, runtimePaths } from "../store.js";
+import { buildSessionClaudeSettings, claudeHookUrl } from "./claude-session.js";
 import { SESSION_ID_RE, isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
 import { readSessionSettings } from "./settings.js";
@@ -87,6 +88,24 @@ function hasBrainKeys(brain) {
   return brain?.mode === "openrouter" || brain?.mode === "local";
 }
 
+// The hook a Claude Code agent session posts to (SP4, Task X2a): the server's
+// real port and this run's token, both made by the manager. Anything else is
+// a caller's bug, refused before anything is read or written.
+const HOOK_TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
+
+function checkedHook(hook) {
+  if (hook === null || hook === undefined) return null;
+  const ok =
+    typeof hook === "object" &&
+    Number.isInteger(hook.port) &&
+    hook.port >= 1 &&
+    hook.port <= 65535 &&
+    typeof hook.token === "string" &&
+    HOOK_TOKEN.test(hook.token);
+  if (!ok) throw new TypeError("buildSessionProfile: hook must be { port, token } (a port from 1 to 65535 and a base64url token)");
+  return { port: hook.port, token: hook.token };
+}
+
 async function findOnPath(names, pathValue) {
   const dirs = String(pathValue || "").split(path.delimiter).filter((dir) => dir && path.isAbsolute(dir));
   for (const name of names) {
@@ -127,13 +146,18 @@ function insideManagedNode(command) {
 }
 
 // Spec "Launch profiles", Claude Code: <AGENT_OS_HOME>/sessions/<id>/claude-settings.json
-// (0600, in a 0700 folder) with only the brain keys, without
-// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (Q9). It holds the key's read command, never the key.
-// Two steps, so that a command line assertSessionArgvSafe refuses leaves
+// (0600, in a 0700 folder) with the observe-only hooks of an agent session
+// with a hook (SP4, `hookUrl`) and, for an OpenRouter or Local brain, the
+// brain keys without CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (Q9). It holds the key's
+// read command, never the key, and the hook token's variable name, never the
+// token. Two steps, so that a command line assertSessionArgvSafe refuses leaves
 // nothing on disk: prepare builds the settings and works out where the file
 // goes (no disk access); write runs once the argv has been accepted.
-async function prepareSessionClaudeSettings(sessionId, brain) {
-  const settings = buildClaudeSettings(brain, brain.mode === "openrouter" ? await keyHelper() : null, { forSession: true });
+async function prepareSessionClaudeSettings(sessionId, brain, { hookUrl = null } = {}) {
+  const brainSettings = hasBrainKeys(brain)
+    ? buildClaudeSettings(brain, brain.mode === "openrouter" ? await keyHelper() : null, { forSession: true })
+    : null;
+  const settings = hookUrl ? buildSessionClaudeSettings({ hookUrl, brainSettings }) : brainSettings;
   assertSafeClaudeSettings(settings);
   return { settings, file: path.join(runtimePaths().sessions, sessionId, "claude-settings.json") };
 }
@@ -177,7 +201,10 @@ export async function cursorCreateChat(command, { cwd, env, timeoutMs = CURSOR_C
 }
 
 // The launch profile for one session start or resume:
-// { command, args, cwd, env, agentSessionId, settingsFile, softStop, resumeMode, folderShown, notes }.
+// { command, args, cwd, env, agentSessionId, settingsFile, softStop, resumeMode, folderShown, notes, claude }.
+// `hook` ({ port, token }, SP4) is passed by the manager for a Claude Code
+// agent run once the server knows its port; `claude` is then
+// { hookUrl, hooksOff, statusLineFrom }, and null for everything else.
 // `resume` is null for a fresh start, or { agentSessionId } (from meta.json)
 // to continue an ended agent session. `kind: "update"` is `hermes update`.
 // `kind: "setup"` runs the `setupAction` entry of SETUP_ACTIONS in HOME.
@@ -191,7 +218,8 @@ export async function buildSessionProfile({
   detected,
   brain = null,
   agentOsVersion = RUNTIME_VERSION,
-  setupAction = null
+  setupAction = null,
+  hook = null
 } = {}) {
   if (!SESSION_AGENTS.includes(agentId)) throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
   if (!isSessionId(sessionId)) throw sessionError(404, "unknown_session", "That session doesn't exist anymore.");
@@ -202,6 +230,12 @@ export async function buildSessionProfile({
   if (kind === "setup" && (!setup || setup.agentId !== agentId)) {
     throw sessionError(400, "unknown_kind", "Agent OS can't start that kind of session.");
   }
+  // SP4 (H2, H3, R7): a Claude Code agent session with a hook posts to the
+  // literal hook URL of this session. Every other agent and kind, and a start
+  // before the server knows its port (hook null), stay exactly as in SP3.
+  const given = checkedHook(hook);
+  const claudeHook =
+    given && kind === "agent" && agentId === "claude" ? { url: claudeHookUrl(given.port, sessionId), token: given.token } : null;
   const label = ownValue(SESSION_AGENT_LABEL, agentId);
 
   const shell = await getLoginShellEnv();
@@ -223,7 +257,13 @@ export async function buildSessionProfile({
   }
 
   const current = settings ?? (await readSessionSettings());
-  let env = sessionEnv(shell.env, { sessionId, agentOsVersion, claudeFullscreen: current?.claudeFullscreen === true, agentId });
+  let env = sessionEnv(shell.env, {
+    sessionId,
+    agentOsVersion,
+    claudeFullscreen: current?.claudeFullscreen === true,
+    agentId,
+    hook: claudeHook
+  });
   if (insideManagedNode(command)) env = withSiblingNodePath(command, env);
   // What a shell sets after `cd <folder>`; the login shell's own PWD was dropped.
   env.PWD = cwd;
@@ -254,9 +294,12 @@ export async function buildSessionProfile({
       agentSessionId = crypto.randomUUID(); // Q39: a second uuid, separate from the session id
       args = ["--session-id", agentSessionId];
     }
-    // H3: --settings only when the file has something to carry (SP3: an OpenRouter or Local brain).
-    if (hasBrainKeys(brain)) {
-      pendingSettings = await prepareSessionClaudeSettings(sessionId, brain);
+    // H3: --settings only when the file has something to carry: from SP4
+    // always for an agent session with a hook (the observe-only hooks,
+    // rewritten at every start and resume because the port changes at every
+    // launch, R7), and, as in SP3, with an OpenRouter or Local brain.
+    if (claudeHook || hasBrainKeys(brain)) {
+      pendingSettings = await prepareSessionClaudeSettings(sessionId, brain, { hookUrl: claudeHook?.url ?? null });
       settingsFile = pendingSettings.file;
       args.push("--settings", settingsFile);
     }
@@ -310,7 +353,9 @@ export async function buildSessionProfile({
     softStop,
     resumeMode,
     folderShown,
-    notes: shell.notice ? [shell.notice] : []
+    notes: shell.notice ? [shell.notice] : [],
+    // Task X2b fills hooksOff and statusLineFrom from the person's Claude settings.
+    claude: claudeHook ? { hookUrl: claudeHook.url, hooksOff: { alerts: null, meter: null }, statusLineFrom: null } : null
   };
 }
 

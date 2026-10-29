@@ -1,8 +1,10 @@
 // Sessions, how each agent starts (spec "Launch profiles", "Resume per agent",
 // "Session kinds", harness rules H1-H4, Security 2 and 3; planning decisions
-// Q7-Q11). The profile snapshot test checks every agent's argv and environment
+// Q7-Q11). The profile snapshot tests check every agent's argv and environment
 // with the SP3 expectations (no hook variables; --settings only with an
-// OpenRouter or Local brain) and the fullscreen opt-in off and on; then the
+// OpenRouter or Local brain) and the SP4 expectations (a hook given: hook
+// variables and --settings for Claude Code only), each with the fullscreen
+// opt-in off and on; then the
 // brains, resume, the update kind, folders, finding the binary, and the H3
 // argv check. (The stored settings are tested in sessions-settings.test.js.)
 // Nothing here starts an agent: profiles are built, never spawned. Every test
@@ -17,7 +19,15 @@ import path from "node:path";
 import { test } from "node:test";
 import { buildClaudeSettings, codexBrainArgs } from "../server/runtime/builders/brain-launch.js";
 import { helperCommandLine, openRouterKeyHelper, setKeystoreForTest, storeOpenRouterKey } from "../server/runtime/secrets/keystore.js";
-import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, assertSessionArgvSafe, buildSessionProfile, cursorCreateChat } from "../server/runtime/sessions/profiles.js";
+import { buildSessionClaudeSettings, claudeHookUrl } from "../server/runtime/sessions/claude-session.js";
+import {
+  OPENCLAW_FOLDER_HONOURED,
+  OPENCLAW_SIGNIN_ACTION,
+  SESSION_AGENTS,
+  assertSessionArgvSafe,
+  buildSessionProfile,
+  cursorCreateChat
+} from "../server/runtime/sessions/profiles.js";
 import { writeSessionSettings } from "../server/runtime/sessions/settings.js";
 import { FALLBACK_NOTICE, NESTED_MARKERS, getLoginShellEnv, resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { runtimePaths } from "../server/runtime/store.js";
@@ -186,7 +196,9 @@ function start(ctx, agentId, extra = {}) {
 }
 
 // Security 2 and H1-H4 for one profile's environment against the login shell's.
-function assertSessionEnvironment(env, loginEnv, { sessionId, cwd, flicker, where }) {
+// `hook` ({ url, token }) is the hook a Claude Code agent session gets from
+// SP4; without it no hook variable may appear (SP3, and every other agent).
+function assertSessionEnvironment(env, loginEnv, { sessionId, cwd, flicker, where, hook = null }) {
   assert.equal(env.TERM, "xterm-256color", where);
   assert.equal(env.COLORTERM, "truecolor", where);
   assert.equal(env.TERM_PROGRAM, "AgentOS", `${where}: never vscode`);
@@ -195,10 +207,16 @@ function assertSessionEnvironment(env, loginEnv, { sessionId, cwd, flicker, wher
   assert.equal(env.PWD, cwd, where);
   assert.equal(env.CLAUDE_CODE_NO_FLICKER, flicker ? "1" : undefined, `${where}: NO_FLICKER only with the opt-in, Claude Code only`);
   assert.equal(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, undefined, `${where}: never the env scrub`);
-  assert.equal(env.AGENT_OS_HOOK_URL, undefined, `${where}: no hook variables in SP3`);
-  assert.equal(env.AGENT_OS_HOOK_TOKEN, undefined, `${where}: no hook variables in SP3`);
+  if (hook) {
+    assert.equal(env.AGENT_OS_HOOK_URL, hook.url, `${where}: the literal hook URL of this session (SP4)`);
+    assert.equal(env.AGENT_OS_HOOK_TOKEN, hook.token, `${where}: this run's hook token (SP4)`);
+  } else {
+    assert.equal(env.AGENT_OS_HOOK_URL, undefined, `${where}: no hook variables`);
+    assert.equal(env.AGENT_OS_HOOK_TOKEN, undefined, `${where}: no hook variables`);
+  }
+  const hookNames = hook ? ["AGENT_OS_HOOK_URL", "AGENT_OS_HOOK_TOKEN"] : [];
   for (const key of Object.keys(env)) {
-    if (key === "AGENT_OS_SESSION_ID") continue;
+    if (key === "AGENT_OS_SESSION_ID" || hookNames.includes(key)) continue;
     assert.ok(!key.startsWith("AGENT_OS_") && !key.startsWith("HERMES_AGENT_OS_"), `${where}: ${key} is removed`);
   }
   for (const marker of NESTED_MARKERS) assert.equal(env[marker], undefined, `${where}: ${marker} is removed`);
@@ -217,7 +235,7 @@ function assertSessionEnvironment(env, loginEnv, { sessionId, cwd, flicker, wher
   // ...and nothing else is added.
   for (const key of Object.keys(env)) {
     if (key in loginEnv) continue;
-    assert.ok(ADDED.includes(key) || (flicker && key === "CLAUDE_CODE_NO_FLICKER"), `${where}: ${key} was added`);
+    assert.ok(ADDED.includes(key) || hookNames.includes(key) || (flicker && key === "CLAUDE_CODE_NO_FLICKER"), `${where}: ${key} was added`);
   }
 }
 
@@ -257,6 +275,7 @@ test("profile snapshot (SP3): every agent's argv and environment, with the fulls
         const profile = await start(ctx, agentId, { sessionId, settings: { claudeFullscreen } });
         assert.equal(profile.command, ctx.detected[agentId].path, `${where}: the detected binary, never a shell`);
         assert.equal(profile.settingsFile, null, `${where}: no --settings without an OpenRouter or Local brain`);
+        assert.equal(profile.claude, null, `${where}: no hook, so no Claude hook details`);
         assert.deepEqual(profile.notes, [], where);
         const expected = {
           claude: { args: ["--session-id", profile.agentSessionId], cwd: ctx.project, softStop: "claude-bg", resumeMode: "id", folderShown: true },
@@ -284,6 +303,130 @@ test("profile snapshot (SP3): every agent's argv and environment, with the fulls
           flicker: agentId === "claude" && claudeFullscreen,
           where
         });
+      }
+    }
+  });
+});
+
+// =====================================================================
+// 1b. The profile snapshot (SP4, Task X2a)
+// =====================================================================
+
+const HOOK_PORT = 43210;
+const HOOK_TOKEN = "snapshot-hook-token-0123456789abcdefghijklmnopq";
+
+test("profile snapshot (SP4): with a hook, only Claude Code gets the hook variables and --settings with the observe-only hooks; every other agent starts exactly as in SP3; the fullscreen opt-in off and on", posixSkip, async () => {
+  await withProfileEnv(async (ctx) => {
+    const login = await getLoginShellEnv();
+    const hook = { port: HOOK_PORT, token: HOOK_TOKEN };
+    const shape = (profile) => ({
+      command: profile.command,
+      args: profile.args.map((arg) => (arg === profile.agentSessionId ? "<id>" : arg)),
+      cwd: profile.cwd,
+      softStop: profile.softStop,
+      resumeMode: profile.resumeMode,
+      folderShown: profile.folderShown,
+      settingsFile: profile.settingsFile,
+      claude: profile.claude
+    });
+    for (const claudeFullscreen of [false, true]) {
+      for (const agentId of SESSION_AGENTS) {
+        const sessionId = crypto.randomUUID();
+        const where = `${agentId}, opt-in ${claudeFullscreen ? "on" : "off"}, with a hook`;
+        const flicker = agentId === "claude" && claudeFullscreen;
+        const sp3 = await start(ctx, agentId, { sessionId, settings: { claudeFullscreen } });
+        const sp4 = await start(ctx, agentId, { sessionId, settings: { claudeFullscreen }, hook });
+        if (agentId !== "claude") {
+          assert.deepEqual(shape(sp4), shape(sp3), `${where}: exactly its SP3 profile`);
+          assert.equal(sp4.settingsFile, null, where);
+          assert.equal(sp4.claude, null, where);
+          assertSessionEnvironment(sp4.env, login.env, { sessionId, cwd: sp4.cwd, flicker, where });
+          continue;
+        }
+        const file = path.join(ctx.agentOsHome, "sessions", sessionId, "claude-settings.json");
+        const hookUrl = `http://127.0.0.1:${HOOK_PORT}/hooks/sessions/${sessionId}`;
+        assert.deepEqual(sp4.args, ["--session-id", sp4.agentSessionId, "--settings", file], `${where}: --settings is always passed (H3, SP4)`);
+        assert.equal(sp4.settingsFile, file);
+        assert.deepEqual(sp4.claude, { hookUrl, hooksOff: { alerts: null, meter: null }, statusLineFrom: null });
+        const text = await readFile(file, "utf8");
+        assert.deepEqual(JSON.parse(text), buildSessionClaudeSettings({ hookUrl }), `${where}: only the observe-only hooks`);
+        assert.ok(!text.includes(HOOK_TOKEN), `${where}: the token is never written into the file`);
+        assert.equal((await stat(file)).mode & 0o777, 0o600);
+        assert.equal((await stat(path.dirname(file))).mode & 0o777, 0o700);
+        assertSessionEnvironment(sp4.env, login.env, { sessionId, cwd: ctx.project, flicker, where, hook: { url: hookUrl, token: HOOK_TOKEN } });
+      }
+    }
+  });
+});
+
+test("profiles (SP4): Claude Code with a hook and an OpenRouter or Local brain writes one file with the hooks and the brain keys, never the key or the token", posixSkip, async () => {
+  await withProfileEnv(async (ctx) => {
+    await storeOpenRouterKey(KEY);
+    const helper = await openRouterKeyHelper();
+    for (const brain of [OPENROUTER_BRAIN, LOCAL_BRAIN]) {
+      const sessionId = crypto.randomUUID();
+      const profile = await start(ctx, "claude", { sessionId, brain, hook: { port: HOOK_PORT, token: HOOK_TOKEN } });
+      const file = path.join(ctx.agentOsHome, "sessions", sessionId, "claude-settings.json");
+      assert.deepEqual(profile.args, ["--session-id", profile.agentSessionId, "--settings", file], brain.mode);
+      const written = JSON.parse(await readFile(file, "utf8"));
+      const brainSettings = buildClaudeSettings(brain, brain.mode === "openrouter" ? helper : null, { forSession: true });
+      assert.deepEqual(written, buildSessionClaudeSettings({ hookUrl: claudeHookUrl(HOOK_PORT, sessionId), brainSettings }), brain.mode);
+      assert.deepEqual(Object.keys(written), brain.mode === "openrouter" ? ["hooks", "apiKeyHelper", "env"] : ["hooks", "env"]);
+      assert.equal("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" in written.env, false);
+      const text = JSON.stringify(written);
+      assert.ok(!text.includes(KEY), "the key itself is never written");
+      assert.ok(!text.includes(HOOK_TOKEN), "the hook token is never written");
+    }
+  });
+});
+
+test("profiles (SP4): a resume with a hook rewrites the settings file for the new port and token; the update and setup kinds never get a hook", posixSkip, async () => {
+  await withProfileEnv(async (ctx) => {
+    const sessionId = crypto.randomUUID();
+    const claudeId = crypto.randomUUID();
+    const file = path.join(ctx.agentOsHome, "sessions", sessionId, "claude-settings.json");
+    await start(ctx, "claude", { sessionId, hook: { port: 43001, token: HOOK_TOKEN } });
+    assert.equal(JSON.parse(await readFile(file, "utf8")).hooks.Stop[0].hooks[0].url, claudeHookUrl(43001, sessionId));
+    const nextToken = `${HOOK_TOKEN}-next`;
+    const resumed = await start(ctx, "claude", { sessionId, resume: { agentSessionId: claudeId }, hook: { port: 43002, token: nextToken } });
+    assert.deepEqual(resumed.args, ["--resume", claudeId, "--settings", file]);
+    assert.equal(resumed.env.AGENT_OS_HOOK_URL, claudeHookUrl(43002, sessionId));
+    assert.equal(resumed.env.AGENT_OS_HOOK_TOKEN, nextToken);
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), buildSessionClaudeSettings({ hookUrl: claudeHookUrl(43002, sessionId) }), "rewritten at every start and resume, never cached (R7)");
+
+    const checkout = path.join(ctx.home, ".hermes", "hermes-agent");
+    await mkdir(checkout, { recursive: true });
+    const update = await start(ctx, "hermes", { kind: "update", folder: checkout, hook: { port: 43003, token: HOOK_TOKEN } });
+    assert.deepEqual([update.args, update.settingsFile, update.claude], [["update"], null, null]);
+    assert.equal(update.env.AGENT_OS_HOOK_URL, undefined);
+    assert.equal(update.env.AGENT_OS_HOOK_TOKEN, undefined);
+    const setup = await start(ctx, "openclaw", { kind: "setup", setupAction: OPENCLAW_SIGNIN_ACTION, hook: { port: 43004, token: HOOK_TOKEN } });
+    assert.deepEqual([setup.settingsFile, setup.claude], [null, null]);
+    assert.equal(setup.env.AGENT_OS_HOOK_URL, undefined);
+    assert.equal(setup.env.AGENT_OS_HOOK_TOKEN, undefined);
+  });
+});
+
+test("profiles (SP4): a malformed hook is a caller's bug and throws before anything is written", posixSkip, async () => {
+  await withProfileEnv(async (ctx) => {
+    const malformed = [
+      { port: 0, token: HOOK_TOKEN },
+      { port: 65536, token: HOOK_TOKEN },
+      { port: "43210", token: HOOK_TOKEN },
+      { port: 43.5, token: HOOK_TOKEN },
+      { port: HOOK_PORT, token: "short" },
+      { port: HOOK_PORT, token: `${HOOK_TOKEN} x` },
+      { port: HOOK_PORT, token: `${HOOK_TOKEN}\n` },
+      { port: HOOK_PORT },
+      "43210",
+      43210,
+      true
+    ];
+    for (const hook of malformed) {
+      for (const agentId of ["claude", "codex"]) {
+        const sessionId = crypto.randomUUID();
+        await assert.rejects(() => start(ctx, agentId, { sessionId, hook }), TypeError, `${agentId} ${JSON.stringify(hook)}`);
+        await assert.rejects(() => stat(path.join(ctx.agentOsHome, "sessions", sessionId)), `${agentId}: nothing written`);
       }
     }
   });

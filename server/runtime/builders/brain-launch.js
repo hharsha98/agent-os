@@ -168,11 +168,56 @@ function claudeEnv(baseUrl, authToken, model, { scrub = true } = {}) {
   return env;
 }
 
+// The only top-level keys a Claude settings file from Agent OS ever holds
+// (spec H3; ruling R27): a session's observe-only hooks and statusLine
+// wrapper, and a brain's apiKeyHelper and env. Anything else (disableAllHooks
+// above all) is refused before the file is written.
+export const CLAUDE_SETTINGS_KEYS = Object.freeze(["hooks", "statusLine", "apiKeyHelper", "env"]);
+const UNSAFE_SETTINGS_MESSAGE = "Agent OS stopped this: its Claude settings had a key Agent OS never writes.";
+
+// This server's own hook address: http://127.0.0.1:<port>/hooks/sessions/<Agent
+// OS session id (version 4)>, and with allowStatus the statusLine wrapper's
+// /status after it. Nothing else. (sessions/claude-session.js uses it too, so
+// the file and the check cannot drift apart.)
+const SESSION_HOOK_URL = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/hooks\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(\/status)?$/;
+
+export function isSessionHookUrl(url, { allowStatus = true } = {}) {
+  const match = SESSION_HOOK_URL.exec(typeof url === "string" ? url : "");
+  return Boolean(match) && Number(match[1]) <= 65535 && (allowStatus || !match[2]);
+}
+
+// M6: inside "hooks", every handler Agent OS writes is a plain HTTP hook to
+// this server's own hook address, with no failure option (R6). A command hook,
+// another address, or a shape that is not { Event: [{ hooks: [handler] }] }
+// could only come from a bug, and Claude would obey it.
+function assertSafeHooks(hooks) {
+  const refuse = () => {
+    throw brainError("unsafe_settings", UNSAFE_SETTINGS_MESSAGE);
+  };
+  if (hooks === null || typeof hooks !== "object" || Array.isArray(hooks)) refuse();
+  for (const groups of Object.values(hooks)) {
+    if (!Array.isArray(groups)) refuse();
+    for (const group of groups) {
+      if (group === null || typeof group !== "object" || !Array.isArray(group.hooks)) refuse();
+      for (const handler of group.hooks) {
+        if (handler === null || typeof handler !== "object" || handler.type !== "http") refuse();
+        if (!isSessionHookUrl(handler.url) || "onFailure" in handler) refuse();
+      }
+    }
+  }
+}
+
 // The hard rule: a custom ANTHROPIC_BASE_URL on its own would make Claude Code
 // send the person's saved claude.ai sign-in to that address. So a base URL is
 // only ever written next to a credential of its own: a key helper (OpenRouter),
 // or a stand-in token for an address on this computer (Local).
 export function assertSafeClaudeSettings(settings) {
+  if (settings && typeof settings === "object") {
+    for (const key of Object.keys(settings)) {
+      if (!CLAUDE_SETTINGS_KEYS.includes(key)) throw brainError("unsafe_settings", UNSAFE_SETTINGS_MESSAGE);
+    }
+    if (Object.hasOwn(settings, "hooks")) assertSafeHooks(settings.hooks);
+  }
   const env = settings && typeof settings.env === "object" && settings.env ? settings.env : {};
   const baseUrl = String(env.ANTHROPIC_BASE_URL || "");
   if (!baseUrl) return;

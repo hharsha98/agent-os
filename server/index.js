@@ -197,6 +197,7 @@ import { createOnboardingRouter } from "./runtime/onboarding.js";
 import { createSecretsRouter } from "./runtime/secrets/routes.js";
 import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
 import { setServerPort } from "./runtime/server-info.js";
+import { createHooksRouter } from "./runtime/sessions/hooks.js";
 import { getSessionManager } from "./runtime/sessions/manager.js";
 import { enforceRecordingCap } from "./runtime/sessions/recorder.js";
 import { createRecordingsRouter, createSessionsRouter } from "./runtime/sessions/routes.js";
@@ -259,6 +260,13 @@ const originalBuilderUrl = getBuilderUrl();
 app.use(hostAllowlistMiddleware());
 app.use(originCheckMiddleware());
 app.use(securityHeadersMiddleware());
+// Claude Code's hook endpoints (spec SP4, Task X2a). Claude calls them, not a
+// browser, so they sit outside the cookie-gated /api/ prefix and check a
+// bearer token per session instead; they come before the 2 MB JSON parser
+// because they read their own body (at most 256 KB kept) and answer 204
+// before any work (H5). The Host allowlist and the Origin check above still
+// run first, and outside local mode every /hooks address answers 403.
+app.use("/hooks", createHooksRouter({ manager: getSessionManager() }));
 app.use(express.json({ limit: "2mb" }));
 // Local-mode only: every /api, /agent-builder-source, /_next request needs
 // the session cookie or the x-agent-os-token header. Demo and public mode

@@ -32,11 +32,15 @@ import { BUILDER_AGENT_IDS } from "../builders/brains.js";
 import { LIMIT_MESSAGE } from "../builders/limits.js";
 import { resolveBrainForRun } from "../builders/resolve.js";
 import { isExecutionEnabled } from "../execution-gate.js";
+import { timingSafeEqualStrings } from "../local-session.js";
 import { killProcessTree } from "../process-tree.js";
+import { getServerPort } from "../server-info.js";
 import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
+import { CLAUDE_HOOK_EVENTS, transcriptExists as defaultTranscriptExists } from "./claude-session.js";
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
+import { BACKUP_WAITING_QUIET_MS } from "./hooks.js";
 import { COUNTED_CHECK_MS, createMirror, isUserInput } from "./mirror.js";
 import {
   CODEX_LIMIT_CONFIRM_MS,
@@ -336,6 +340,17 @@ function defaultResolveBrain(agentId) {
   return resolveBrainForRun(agentId, undefined, { prepare: true });
 }
 
+// A new hook token for one Claude Code run (spec Security 4): 32 random bytes,
+// 43 base64url characters. Never the main session token, never on disk.
+function defaultHookToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+// The events the per-session settings file registers. A post naming any other
+// event can only be forged (the token sits in the agent's environment), so
+// onHook ignores it entirely.
+const HOOK_EVENT_NAMES = new Set(CLAUDE_HOOK_EVENTS.map((entry) => entry.event));
+
 // ---- the manager --------------------------------------------------------------------------------------
 
 export function createSessionManager({
@@ -364,7 +379,12 @@ export function createSessionManager({
   // Signals from the mirror (Task X1b): how long Codex's limit text must stay
   // on screen, and how often the screen is read after output. Tests shorten both.
   codexConfirmMs = CODEX_LIMIT_CONFIRM_MS,
-  limitScanMs = LIMIT_SCAN_MS
+  limitScanMs = LIMIT_SCAN_MS,
+  // SP4 (Task X2a): the server's real port (0 until listen), this run's hook
+  // token, and the re-link rule's transcript check. The tests inject them.
+  getPort = getServerPort,
+  newHookToken = defaultHookToken,
+  transcriptExists = defaultTranscriptExists
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -489,6 +509,8 @@ export function createSessionManager({
       cols: START_COLS,
       rows: START_ROWS,
       endedBy: null,
+      // The run's hook token (spec Security 4): memory only, never in meta.json, a log or a recording.
+      hookToken: null,
       // Set only for a resume of a Claude Code conversation (watchForNothingToResume).
       noConversation: null,
       // SP4 activity (signals.js). activity.status always equals `status`:
@@ -994,6 +1016,9 @@ export function createSessionManager({
   async function onProcessExit(state, event = {}) {
     if (state.exitSeen) return;
     state.exitSeen = true;
+    // The hook token dies with the run (spec Security 4).
+    state.hookToken = null;
+    state.trustNeeded = false;
     clearIdle(state);
     clearHeldTimers(state);
     clearPausedDrop(state);
@@ -1168,6 +1193,8 @@ export function createSessionManager({
     state.exitSeen = true;
     const hadAlert = state.activity.alert !== null;
     state.status = "exited";
+    state.hookToken = null;
+    state.trustNeeded = false;
     state.activity = activityAfter(state.activity, { type: "exit" });
     clearIdle(state);
     clearHeldTimers(state);
@@ -1389,6 +1416,7 @@ export function createSessionManager({
       const dir = sessionDir(id);
       await ensurePrivateDir(sessionsRoot());
       await ensurePrivateDir(dir);
+      const hook = hookFor(kind, agentId);
       const profile = await buildProfile({
         agentId,
         folder: where.folder,
@@ -1398,7 +1426,8 @@ export function createSessionManager({
         settings,
         detected,
         brain,
-        agentOsVersion: RUNTIME_VERSION
+        agentOsVersion: RUNTIME_VERSION,
+        hook
       });
       const at = iso(now());
       const folderPath = where.folder ?? profile.cwd;
@@ -1429,6 +1458,7 @@ export function createSessionManager({
         lastUsedAt: at
       };
       const state = newState(dir, meta);
+      armHook(state, hook);
       // startProcess puts the session into `live` and gives the slot back.
       await startProcess(state, profile, { append: false, releaseSlot: slot.release });
       await saveStarted(state);
@@ -1592,6 +1622,7 @@ export function createSessionManager({
         const settings = await readSettings();
         const dir = sessionDir(id);
         await ensurePrivateDir(dir);
+        const hook = hookFor("agent", meta.agentId);
         const profile = await buildProfile({
           agentId: meta.agentId,
           folder: where.folder,
@@ -1601,7 +1632,8 @@ export function createSessionManager({
           settings,
           detected,
           brain,
-          agentOsVersion: RUNTIME_VERSION
+          agentOsVersion: RUNTIME_VERSION,
+          hook
         });
         const at = iso(now());
         const folderPath = where.folder ?? profile.cwd;
@@ -1627,6 +1659,7 @@ export function createSessionManager({
           resumes: (Number(meta.resumes) || 0) + 1,
           lastUsedAt: at
         });
+        armHook(state, hook);
         watchForNothingToResume(state);
         // The recorder writes the "--- resumed ---" marker itself (append: true).
         // startProcess puts the session into `live` and gives the slot back.
@@ -1890,6 +1923,12 @@ export function createSessionManager({
       if (state.status === "exited" || state.meta.kind !== "agent") continue;
       if (agentId !== null && state.meta.agentId !== agentId) continue;
       const profile = state.profile || {};
+      // M5: the hook token and URL belong to the Claude session's own
+      // environment only (H2). A helper process built from this copy (the
+      // `claude agents` poller, git, a hand-off) must never receive them.
+      const env = { ...(profile.env || {}) };
+      delete env.AGENT_OS_HOOK_TOKEN;
+      delete env.AGENT_OS_HOOK_URL;
       found.push({
         id: state.meta.id,
         agentId: state.meta.agentId,
@@ -1903,7 +1942,7 @@ export function createSessionManager({
           command: profile.command,
           args: Array.isArray(profile.args) ? [...profile.args] : [],
           cwd: profile.cwd,
-          env: { ...(profile.env || {}) }
+          env
         }
       });
     }
@@ -2089,6 +2128,94 @@ export function createSessionManager({
     return { stopped: running.length };
   }
 
+  // ---- Claude Code's hooks (SP4, Task X2a) -----------------------------------------------------------
+
+  // The hook a new run gets (H2, R7): Claude Code agent sessions only, and
+  // only once the server knows its real port (0 before listen and in tests
+  // that start no server). Every other start stays exactly as in SP3.
+  function hookFor(kind, agentId) {
+    if (kind !== "agent" || agentId !== "claude") return null;
+    const port = getPort();
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+    return { port, token: newHookToken() };
+  }
+
+  // The token lives in this run's memory only (never meta.json). Until the
+  // first hook event (or, from Task X2b, the first status post) arrives,
+  // Claude may still be waiting for the person to trust the folder: the panel
+  // says "Alerts start after you trust this folder in Claude".
+  function armHook(state, hook) {
+    state.hookToken = hook ? hook.token : null;
+    state.trustNeeded = Boolean(hook);
+  }
+
+  // "ok"; "unknown_session" for anything that is not a running Claude Code
+  // agent run with a hook (liveAgent: running, agent kind); "bad_token" for a
+  // missing or wrong token, another session's included. Timing-safe (spec
+  // "Hook endpoints").
+  function checkHookToken(id, presented) {
+    const state = liveAgent(id);
+    if (!state || state.meta.agentId !== "claude" || typeof state.hookToken !== "string" || state.hookToken === "") {
+      return "unknown_session";
+    }
+    if (typeof presented !== "string" || presented === "") return "bad_token";
+    return timingSafeEqualStrings(presented, state.hookToken) ? "ok" : "bad_token";
+  }
+
+  function msSinceInput(state) {
+    return Number.isFinite(state.lastInputAt) ? now() - state.lastInputAt : Infinity;
+  }
+
+  // R1: Claude's own session id moves to a new UUID after /clear or /resume
+  // inside Claude. Agent OS follows it only to a UUID whose transcript file
+  // exists in this session's own Claude project folder (one stat, never a
+  // read), so a forged event can at worst re-link to another conversation of
+  // the same folder. Used for hook events here and, from Task X2b, for the
+  // statusLine JSON. Never throws.
+  async function relinkClaudeSession(state, uuid) {
+    if (typeof uuid !== "string" || uuid === state.meta.agentSessionId) return false;
+    let found = false;
+    try {
+      found = await transcriptExists({ uuid, folder: state.meta.folder, env: state.profile?.env ?? {} });
+    } catch {
+      found = false;
+    }
+    // The run may have ended, or another event re-linked it, while the stat ran.
+    if (!found || live.get(state.meta.id) !== state || state.status === "exited" || uuid === state.meta.agentSessionId) return false;
+    state.meta.agentSessionId = uuid;
+    try {
+      await persist(state);
+    } catch {
+      // meta.json is written again when the run ends
+    }
+    return true;
+  }
+
+  // One Claude Code hook event, already mapped by hooks.js (mapHookEvent). It
+  // runs only after hooks.js checked this run's token and Claude got its 204
+  // (H5), so nothing here can slow Claude down; and everything it does is a
+  // hint (spec "Hook events are hints"): a waiting alert, a finished turn, a
+  // new turn, a label-only Prompt moment (R23), a limit hint that never holds
+  // on its own, the auto-continue that clears held (R4), and the re-link (R1).
+  function onHook(id, mapped) {
+    const state = liveAgent(id);
+    if (!state || state.meta.agentId !== "claude") return;
+    if (!mapped || typeof mapped !== "object" || !HOOK_EVENT_NAMES.has(mapped.event)) return;
+    markSourceSeen(id);
+    state.trustNeeded = false;
+    if (mapped.claudeSessionId) relinkClaudeSession(state, mapped.claudeSessionId).catch(() => {});
+    for (const signal of Array.isArray(mapped.signals) ? mapped.signals : []) {
+      // K6: Claude's backup Notification comes about 6 s after its prompt, so it
+      // can land just after the person answered; and not again while it waits.
+      if (signal.backup && (state.status === "waiting" || msSinceInput(state) < BACKUP_WAITING_QUIET_MS)) continue;
+      applySignal(id, { kind: signal.kind, text: signal.text, source: "hook" });
+    }
+    if (mapped.limit) noteLimit(id, { source: "hook", text: mapped.limit.text });
+    if (mapped.newTurn) markNewTurn(id);
+    if (mapped.promptMarker) addMarker(id, { type: "prompt" }).catch(() => {});
+    if (mapped.heldCleared) clearHeld(id);
+  }
+
   return {
     create,
     createUpdateSession,
@@ -2109,6 +2236,8 @@ export function createSessionManager({
     quitCheck,
     isLive,
     recoverStaleSessions,
+    checkHookToken,
+    onHook,
     noteLimit,
     applySignal,
     markSourceSeen,

@@ -114,7 +114,8 @@ export function parseCookieHeader(header = "") {
   );
 }
 
-function timingSafeEqualStrings(a, b) {
+// Also the hook token check (sessions/manager.js, SP4).
+export function timingSafeEqualStrings(a, b) {
   const bufA = Buffer.from(String(a || ""), "utf8");
   const bufB = Buffer.from(String(b || ""), "utf8");
   if (bufA.length !== bufB.length) return false;

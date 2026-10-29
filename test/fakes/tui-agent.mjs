@@ -26,6 +26,7 @@
 //   ask (DA1 and DSR)   ask after <ms>   ask kitty   ask color
 //   lines <n>   flood <KiB>   bottom <text>   ticker <ms> <count>   exit <code>
 //   print <text>   prints <text> exactly as typed (spaces kept), then \r\n (SP4: limit texts)
+//   hook <EventName> [json]   hookbig <KiB>   (Claude Code's HTTP hooks, SP4 Task X2a: see below)
 //   anything else prints "you said: <text>"
 // Replies to its questions (DA1, DSR, kitty flags, OSC 10/11 colour) and
 // focus reports print "REPLY <json>"; a bracketed paste prints
@@ -55,6 +56,15 @@
 //   FAKE_AGENT_VERSION                   openclaw only: the whole line `--version` prints, verbatim
 //                                        (unset: "openclaw 9.9.9-fake", which reads as older than 2026.9.7)
 //
+// Claude Code's HTTP hooks (SP4, Task X2a): `hook <EventName> [json]` POSTs
+// { hook_event_name, session_id, transcript_path, cwd, ...json } to $AGENT_OS_HOOK_URL with
+// "Authorization: Bearer $AGENT_OS_HOOK_TOKEN", the way the per-session settings file makes the
+// real Claude Code post (session_id is its own --session-id or --resume value; transcript_path is
+// where Claude would keep it), then prints "HOOK <status>". `hookbig <KiB>` posts a Bash
+// PermissionRequest padded to that many KiB. Without the two variables (every agent but Claude
+// Code, and a session started before the server knew its port) it prints "HOOK no-hook". The
+// token is never printed or logged.
+//
 // Knobs (plan brains): FAKE_AGENT_VERSION is read from the environment, else from the trimmed
 // text of $HOME/.fake-knobs/FAKE_AGENT_VERSION (test/helpers/fake-knobs.js writes it), because
 // some callers hand an agent only an allow-listed environment that drops FAKE_* variables.
@@ -75,6 +85,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import path from "node:path";
 
 const name = process.env.FAKE_AGENT_NAME || "";
@@ -369,6 +380,65 @@ function onInput(chunk) {
   }
 }
 
+// --- Claude Code's HTTP hooks (SP4, Task X2a) ----------------------------------------------------
+
+function argAfter(flag) {
+  const index = args.indexOf(flag);
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : "";
+}
+
+// Posts one hook event as Claude Code's "type": "http" hooks do, then prints
+// "HOOK <status>" and a new prompt. `targetBytes` pads the body (a "pad" field) to that size.
+function postHookEvent(event, extra = {}, targetBytes = 0) {
+  const url = process.env.AGENT_OS_HOOK_URL || "";
+  const token = process.env.AGENT_OS_HOOK_TOKEN || "";
+  if (!url.startsWith("http://127.0.0.1:") || !token) {
+    line("HOOK no-hook");
+    prompt();
+    return;
+  }
+  const sessionId = argAfter("--session-id") || argAfter("--resume");
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || "", ".claude");
+  const body = {
+    hook_event_name: event,
+    session_id: sessionId,
+    transcript_path: path.join(configDir, "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"), `${sessionId}.jsonl`),
+    cwd: process.cwd(),
+    ...extra
+  };
+  if (targetBytes > 0) {
+    body.pad = "";
+    body.pad = "x".repeat(Math.max(0, targetBytes - Buffer.byteLength(JSON.stringify(body))));
+  }
+  const payload = Buffer.from(JSON.stringify(body));
+  log({ event: "hook", hookEvent: event, bytes: payload.length });
+  const target = new URL(url);
+  let done = false;
+  const finish = (text) => {
+    if (done) return;
+    done = true;
+    line(text);
+    prompt();
+  };
+  const request = http.request(
+    {
+      host: target.hostname,
+      port: target.port,
+      path: target.pathname,
+      method: "POST",
+      agent: false,
+      headers: { "Content-Type": "application/json", "Content-Length": payload.length, Authorization: `Bearer ${token}` }
+    },
+    (response) => {
+      response.resume();
+      response.on("end", () => finish(`HOOK ${response.statusCode}`));
+    }
+  );
+  request.setTimeout(5000, () => request.destroy(new Error("timeout")));
+  request.on("error", (error) => finish(`HOOK error ${error.code || error.message}`));
+  request.end(payload);
+}
+
 function handleLine(text) {
   log({ event: "line", text });
   if (updaterWaiting) {
@@ -461,6 +531,23 @@ function handleLine(text) {
       }, intervalMs);
       return;
     }
+    case "hook": {
+      const [event = "", ...json] = rest;
+      let extra = {};
+      if (json.length) {
+        try {
+          extra = JSON.parse(json.join(" "));
+        } catch {
+          line("HOOK bad-json");
+          break;
+        }
+      }
+      postHookEvent(event, extra && typeof extra === "object" && !Array.isArray(extra) ? extra : {});
+      return; // postHookEvent prints the status and the next prompt
+    }
+    case "hookbig":
+      postHookEvent("PermissionRequest", { tool_name: "Bash", tool_input: { command: "echo big" } }, clampInt(value, 1, 65536, 300) * 1024);
+      return;
     case "exit": {
       const code = clampInt(value, 0, 255, 0);
       process.stdout.write("", () => process.exit(code));

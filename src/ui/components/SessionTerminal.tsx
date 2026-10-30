@@ -18,7 +18,7 @@ import "@xterm/xterm/css/xterm.css";
 import "../terminal.css";
 import { openSessionSocket } from "../../sessionsApi";
 import type { SessionSocket } from "../../sessionsApi";
-import type { SessionSnapshot, SessionStateFrame } from "../../types";
+import type { AlertKind, SessionSnapshot, SessionStateFrame } from "../../types";
 import { isDesktopApp } from "../desktop";
 import { togglePalette } from "../palette";
 import { isAppShortcut, isMacPlatform, MAX_COLS, MAX_ROWS } from "../sessionsShared";
@@ -77,8 +77,8 @@ export interface SessionTerminalProps {
   // can tell a refused try from a dropped connection (planning decision Q40).
   ended?: boolean;
   onState?: (state: SessionStateFrame) => void;
-  // SP3 forwards the raw OSC 9 / 99 / 777 payload, or "bel"; SP4 turns them into alerts.
-  onAlert?: (raw: string) => void;
+  // SP4: an alert was set or changed, or it cleared (kind "resolved"); the Sessions page reads its list again.
+  onAlert?: (alert: { kind: AlertKind | "resolved"; text: string }) => void;
   onConnection?: (connection: TerminalConnection) => void;
   // A sentence for the page to show (a link copied instead of opened: "Link copied. Open it in your browser.",
   // or typed text that was not sent while the terminal was reconnecting).
@@ -462,7 +462,7 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
             if (state.status === "exited") sessionEnded = true;
             latest.current.onState?.(state);
           },
-          onAlert: (raw) => latest.current.onAlert?.(raw),
+          onAlert: (alert) => latest.current.onAlert?.(alert),
           onClose: (info) => {
             socket = null;
             hasKeys = false;

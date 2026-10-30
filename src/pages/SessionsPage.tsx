@@ -19,10 +19,12 @@ import SessionSettingsMenu from "../ui/components/SessionSettingsMenu";
 import SessionSidePanel from "../ui/components/SessionSidePanel";
 import SessionTabs, { sessionTabDomId } from "../ui/components/SessionTabs";
 import SessionTerminal from "../ui/components/SessionTerminal";
+import type { SessionTerminalHandle } from "../ui/components/SessionTerminal";
 import StatusWord from "../ui/components/StatusWord";
 import Toast from "../ui/components/Toast";
 import { isDesktopApp } from "../ui/desktop";
 import { openNewSession, takeFocusNextSession } from "../ui/newSession";
+import { NOTIFY_NOTE_KEY, notifyNote } from "../ui/alertsShared";
 import {
   isAppShortcut,
   isMacPlatform,
@@ -108,11 +110,34 @@ export default function SessionsPage() {
   const [resuming, setResuming] = useState<Asking | null>(null);
   // The words of a failed Dismiss, with the ended tab they are about (they go when that tab does, see below).
   const [pageError, setPageError] = useState<{ id: string; text: string } | null>(null);
+  // The desktop app's one-time note about notifications (K17), until "Got it" (kept in this browser; a webview that
+  // refuses storage shows it again after a reload, which is harmless).
+  const [notifyDismissed, setNotifyDismissed] = useState(() => {
+    try {
+      return window.localStorage.getItem(NOTIFY_NOTE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  function dismissNotifyNote() {
+    // The button removes itself, so the keys would fall to the page: give them to the terminal that is open, else to the
+    // panel's title (the same fallback as when a session ends under you).
+    if (terminalRef.current && selected && selected.status !== "exited") terminalRef.current.focus();
+    else headingRef.current?.focus({ preventScroll: true });
+    setNotifyDismissed(true);
+    try {
+      window.localStorage.setItem(NOTIFY_NOTE_KEY, "1");
+    } catch {
+      // A locked-down webview: the note stays hidden until the page reloads.
+    }
+  }
   const alive = useRef(true);
   const askedFor = useRef("");
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const headingRef = useRef<HTMLHeadingElement>(null);
+  // The open terminal's own focus(), the one its autoFocus uses.
+  const terminalRef = useRef<SessionTerminalHandle>(null);
   const lastSeen = useRef<{ id: string; status: string } | null>(null);
   const focusAfterDismiss = useRef(false);
 
@@ -312,6 +337,16 @@ export default function SessionsPage() {
       {notice}
     </p>
   ) : null;
+  const notifyText = notifyNote({ desktop, isMac: IS_MAC, dismissed: notifyDismissed });
+  const notifyLine = notifyText ? (
+    <p className="os-sess__notice os-sess__notify">
+      <Info size={15} aria-hidden="true" />
+      <span>{notifyText}</span>
+      <button type="button" className="os-btn os-btn--ghost os-sess__notify-ok" onClick={dismissNotifyNote}>
+        Got it
+      </button>
+    </p>
+  ) : null;
 
   if (!list.available) {
     return (
@@ -433,9 +468,11 @@ export default function SessionsPage() {
           {selected.status === "exited" ? ptyBanner : null}
           {pageError ? <Banner tone="warn">{pageError.text}</Banner> : null}
           {noticeLine}
+          {notifyLine}
           {showTerminal ? (
             <div className="os-sess-term">
               <SessionTerminal
+                ref={terminalRef}
                 key={key}
                 sessionId={selected.id}
                 label={`${title} terminal`}
@@ -444,6 +481,7 @@ export default function SessionsPage() {
                 ended={selected.status === "exited"}
                 autoFocus={terminalTakesKeys({ focusTerminal, wanted, selectedId, wantedListed })}
                 onState={onTerminalState}
+                onAlert={onTerminalState}
                 onNotice={onTerminalNotice}
               />
             </div>

@@ -2692,11 +2692,74 @@ export interface TeamProposalDecisionResult {
 // question never see one; Hold to stop all does.
 export type SessionKind = "agent" | "update" | "setup";
 
-// "waiting" and "held" are never produced in SP3; they arrive with SP4's signals.
+// SP4's signals bring "waiting" (a question or an approval) and "held" (the plan ran out).
 export type SessionStatus = "starting" | "live" | "waiting" | "idle" | "held" | "exited";
 
 // "stop" or "quit" when Agent OS ended the session, otherwise null.
 export type SessionEndedBy = "stop" | "quit" | null;
+
+// SP4 (Task U5 adds these; the server fills them from Task X1a on): every session's alert state travels in GET
+// /api/sessions as well as on the WebSocket (ruling R22), so a tab that is not attached still shows its marker.
+export type SignalKind = "waiting" | "turn_done" | "limit" | "approval" | "resolved";
+export type AlertKind = "waiting" | "approval" | "limit";
+
+export interface SessionAlert {
+  kind: AlertKind;
+  // The server's cleaned short text (at most 200 characters): "Wants to use Bash", "May need you", OpenClaw's summary.
+  text: string;
+  at: string;
+}
+
+// Why Claude Code's own settings keep Agent OS's hooks or status line out of this session (ruling R9, K10).
+export type HooksOffCode = "managed_hooks_only" | "all_hooks_disabled" | "http_hook_urls" | "http_hook_env_vars" | "managed_status_line";
+
+// What Claude Code's own status line reports (Task X2b), for the Live meter.
+export interface SessionMeter {
+  model: string | null;
+  // 0-100.
+  contextPercent: number | null;
+  contextTokens: number | null;
+  // rate_limits.five_hour and .seven_day; absent on OpenRouter and Local brains (R11).
+  plan: { usedPercent: number; resetsAt: string | null } | null;
+  weekly: { usedPercent: number; resetsAt: string | null } | null;
+  // Claude's own estimate at list prices (R11).
+  costUsd: number | null;
+  at: string;
+}
+
+// A hand-off typed into this session (Task X8), kept in the server's memory only.
+export interface SessionHandoff {
+  state: "pending" | "typed" | "copy";
+  text: string;
+  fromId: string | null;
+  at: string;
+}
+
+// One of OpenClaw's pending approvals (Task X3). It never names a folder: OpenClaw's list has none (R16). `sessionId` is
+// the Agent OS session it came from, or null when OpenClaw did not say (then it shows in every OpenClaw panel, K11).
+export interface ApprovalCard {
+  id: string;
+  kind: "exec" | "plugin" | "system-agent";
+  summary: string;
+  createdAt: string;
+  expiresAt: string;
+  sessionId: string | null;
+}
+
+export interface ApprovalListResponse {
+  approvals: ApprovalCard[];
+  // The server's sentence while OpenClaw's approvals can't be read, else null.
+  error: string | null;
+}
+
+// The only two answers Agent OS ever sends to OpenClaw (R16).
+export type ApprovalDecision = "allow-once" | "deny";
+
+// A moment in a session's recording (meta.json): a prompt (label only, R23), a permission asked, files changed.
+export type SessionMarker =
+  | { at: string; type: "prompt" }
+  | { at: string; type: "permission"; text: string }
+  | { at: string; type: "files"; files: Array<{ path: string; added: number | null; removed: number | null }>; more: number };
 
 export interface SessionSummary {
   id: string;
@@ -2724,9 +2787,23 @@ export interface SessionSummary {
   // true when Claude Code's resume found no saved conversation (nothing was ever sent in the session, or Claude
   // deleted an old transcript itself): there is nothing to resume. A server that doesn't send it means false.
   nothingToResume: boolean;
-  // Every session's alerts are "basic" in SP3 (the 20 s rule).
-  alerts: "basic";
+  // "full" once a turn-done session's first signal arrived (Claude Code's hooks, Codex's notifications); otherwise
+  // "basic" (the 20 s rule; Hermes, Cursor and OpenClaw always).
+  alerts: "full" | "basic";
   recordingBytes: number;
+  // SP4: what the session waits for, or null.
+  alert: SessionAlert | null;
+  // How idle began: "turn_done" reads "Ready for the next message." (K21).
+  idleBy: "turn_done" | "timer" | null;
+  // Held only: when the plan resets, when known.
+  resetAt: string | null;
+  // A Claude Code session whose first hook event or status post has not arrived (the folder is not trusted yet).
+  trustNeeded: boolean;
+  hooksOff: { alerts: HooksOffCode | null; meter: HooksOffCode | null };
+  meter: SessionMeter | null;
+  // The original folder of a separate copy (Task X9), else null.
+  copyOf: string | null;
+  handoff: SessionHandoff | null;
 }
 
 export interface SessionListResponse {
@@ -2825,7 +2902,7 @@ export type SessionServerFrame =
   | ({ t: "snapshot" } & SessionSnapshot)
   | { t: "out"; seq: number; d: string }
   | ({ t: "state" } & SessionStateFrame)
-  | { t: "alert"; raw: string };
+  | { t: "alert"; kind: AlertKind | "resolved"; text: string };
 
 // Client to server.
 export type SessionClientFrame =

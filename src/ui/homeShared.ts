@@ -107,14 +107,17 @@ export function lastRunsByAgent(runs: RunMeta[]): Partial<Record<HomeAgentId, Ru
   return out;
 }
 
-// A line lights only while that agent works: a live agent run, or a session whose state is live (spec: Home Orbit is
-// lit only while live; starting, idle, held and exited stay dim). An update session never shows on Home. "waiting"
-// (amber) arrives with SP4.
+// A line lights only while that agent works: a live agent run, or a session whose state is live. It is amber while one
+// of the agent's sessions waits for you, which wins over live (spec: Home Orbit is lit only while live, amber for
+// waiting; starting, idle, held and exited stay dim). An update session never shows on Home.
 export function orbitStates(runs: RunMeta[], sessions: SessionSummary[] = []): OrbitStates {
   const out: OrbitStates = {};
   for (const id of Object.keys(liveRunsByAgent(runs)) as HomeAgentId[]) out[id] = "live";
   for (const session of sessions) {
-    if (session.kind !== "update" && session.status === "live" && isHomeAgent(session.agentId)) out[session.agentId] = "live";
+    const id = session.agentId;
+    if (session.kind === "update" || !isHomeAgent(id)) continue;
+    if (session.status === "waiting" && session.kind === "agent") out[id] = "waiting";
+    else if (session.status === "live" && out[id] !== "waiting") out[id] = "live";
   }
   return out;
 }
@@ -152,24 +155,23 @@ export function nothingRunningKnown(workKnown: boolean, sessions: SessionSummary
   return workKnown && openSessions(sessions).length === 0;
 }
 
-function namesOf(states: OrbitStates): string[] {
-  return HOME_AGENTS.filter((a) => states[a.id]).map((a) => a.name);
+function namesOf(states: OrbitStates, state: "live" | "waiting" = "live"): string[] {
+  return HOME_AGENTS.filter((a) => states[a.id] === state).map((a) => a.name);
 }
 
 // `runsKnown` is false until the runs list has loaded once: then nothing is claimed.
 export function orbitLabel(states: OrbitStates, runsKnown: boolean): string {
   const lit = namesOf(states);
-  const what = !runsKnown
-    ? "What each agent is doing is not known right now."
-    : lit.length
-      ? `Working now: ${lit.join(", ")}.`
-      : "No agent is working right now.";
+  const waiting = namesOf(states, "waiting");
+  const known = [waiting.length ? `Waiting for you: ${waiting.join(", ")}.` : "", lit.length ? `Working now: ${lit.join(", ")}.` : ""].filter(Boolean);
+  const what = !runsKnown ? "What each agent is doing is not known right now." : known.length ? known.join(" ") : "No agent is working right now.";
   return `Agent OS at the centre with five agents around it. ${what}`;
 }
 
-// SP4 brings the sentence "Amber means it needs you." back, once a line can be amber.
-export function orbitNote(_states: OrbitStates): string {
-  return "A line lights only while that agent works.";
+// "Amber means it needs you." only while a line is amber (the prototype's Home note).
+export function orbitNote(states: OrbitStates): string {
+  const base = "A line lights only while that agent works.";
+  return Object.values(states).includes("waiting") ? `${base} Amber means it needs you.` : base;
 }
 
 export function elapsedLabel(fromIso: string | null | undefined, now: number): string {
@@ -219,6 +221,9 @@ export function agentLine(input: {
   if (input.session) {
     const where = input.session.folderShown === false ? "Session open" : `Session in ${input.session.folderName}`;
     if (input.session.status === "live") return { state: "live", where };
+    // SP4: a session that waits for you, or whose plan ran out, says so in the kit's words (Waiting for you, Held).
+    if (input.session.status === "waiting") return { state: "waiting", where };
+    if (input.session.status === "held") return { state: "held", where };
     // Ruling R26 (decision Q18): Starting is the idle icon with the word "Starting", never "working".
     if (input.session.status === "starting") return { state: "idle", label: "Starting", where };
     return { state: "idle", where };
@@ -238,7 +243,15 @@ export function homeLede(input: { agents: Source<AgentSummary[]>; states: OrbitS
   if (input.agents.state === "loading") return "Checking your agents…";
   if (input.agents.state === "error") return "Can't reach Agent OS right now. This page tries again every few seconds.";
   const lit = namesOf(input.states);
-  if (lit.length) return `${joinNames(lit)} ${lit.length === 1 ? "is" : "are"} working.`;
+  const waiting = namesOf(input.states, "waiting");
+  if (lit.length || waiting.length) {
+    return [
+      waiting.length ? `${joinNames(waiting)} ${waiting.length === 1 ? "is" : "are"} waiting for you.` : "",
+      lit.length ? `${joinNames(lit)} ${lit.length === 1 ? "is" : "are"} working.` : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   const installed = input.agents.data.filter((a) => isHomeAgent(a.id) && a.detected.installed).length;
   if (installed === 0) return "No agents are installed yet. Setup installs them.";
   const count = installed === 5 ? "All five are installed." : `${installed} of 5 agents are installed.`;

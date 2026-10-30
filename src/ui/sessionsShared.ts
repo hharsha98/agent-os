@@ -93,27 +93,60 @@ export function endedLine(s: EndFields): string {
   return "Ended.";
 }
 
-// The side panel's one line for the state, SP3 versions (spec, Session activity states). Before alerts
-// exist, live says only "Working."; waiting and held never happen in SP3 but get true words anyway. An
-// ended session's recording holds at least its header line, so 0 bytes means the 1 GB cap (Q38) or a
+// "2:21 am" for a time today, "Oct 30, 2:21 am" for another day; "" when it isn't a time. The Runs page's
+// formatResetTime words (src/ui/builderShared.ts), kept here as a copy because that file imports at run time and this
+// one must not (test/sessions-alerts-ui-logic.test.js pins the words).
+export function resetWords(iso: string | null | undefined, now: number): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date
+    .toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    .replace(/\s?(AM|PM)$/i, (match) => ` ${match.trim().toLowerCase()}`);
+  if (date.toDateString() === new Date(now).toDateString()) return time;
+  return `${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${time}`;
+}
+
+// What the line reads besides the SP3 fields. Each SP4 field is optional here, so a summary without it reads as basic.
+// (trustNeeded and hooksOff are read by panelAlertLines in alertsShared.ts, the lines under this one.)
+type PanelLineFields = Pick<SessionSummary, "status" | "agentLabel" | "recordingBytes"> &
+  EndFields & {
+    stateSince?: string | null;
+    agentId?: string;
+    alerts?: SessionSummary["alerts"];
+    idleBy?: SessionSummary["idleBy"];
+    resetAt?: string | null;
+    alert?: SessionSummary["alert"];
+  };
+
+// The side panel's one line for the state (spec, Session activity states; the prototype's info()). Live says whether
+// Agent OS hears this agent's questions: "full" once a turn-done session's first signal arrived, otherwise basic.
+// OpenClaw's approval question is a card in the panel. Idle entered by a turn_done signal is "Ready for the next
+// message." (K21). An ended session's recording holds at least its header line, so 0 bytes means the 1 GB cap (Q38) or a
 // delete removed it: then Runs has no row for it, and the line does not send the person there.
-export function sessionPanelLine(
-  s: Pick<SessionSummary, "status" | "agentLabel" | "recordingBytes"> & { stateSince?: string | null } & EndFields,
-  now: number
-): string {
+export function sessionPanelLine(s: PanelLineFields, now: number): string {
   switch (s.status) {
     case "starting":
       return `Starting ${s.agentLabel}…`;
     case "live":
-      return "Working.";
+      // OpenClaw's approvals are alerts of their own (cards, polled every 3 s), so it says the full line although its
+      // session alerts are never "full" (it has no turn-done signal). Hermes and Cursor stay basic (R18).
+      return s.alerts === "full" || s.agentId === "openclaw"
+        ? "Working. Agent OS alerts you when it asks you something."
+        : `Working. Alerts for ${s.agentLabel} are basic.`;
     case "waiting":
-      return "The question is in the terminal. Agent OS never answers for you.";
+      return s.agentId === "openclaw" && s.alert?.kind === "approval"
+        ? "The question is in the card below."
+        : "The question is in the terminal. Agent OS never answers for you.";
     case "idle": {
+      if (s.idleBy === "turn_done") return "Ready for the next message.";
       const time = sessionDuration(s.stateSince, now);
       return time === "—" ? "Idle. Nothing is running." : `Idle for ${time}. Nothing is running.`;
     }
-    case "held":
-      return "Plan limit reached.";
+    case "held": {
+      const when = resetWords(s.resetAt, now);
+      return when ? `Plan limit reached. Resets ${when}.` : "Plan limit reached.";
+    }
     case "exited":
       return s.recordingBytes > 0 ? `${endedLine(s)} The recording is in Runs.` : `${endedLine(s)} Its recording was removed.`;
     default:
@@ -553,7 +586,12 @@ export function parseServerFrame(text: string): SessionServerFrame | null {
     const endedBy = f.endedBy === "stop" || f.endedBy === "quit" ? f.endedBy : null;
     return { t: "state", status: f.status, exitCode: numberOrNull(f.exitCode), signal: textOrNull(f.signal), endedBy, resetAt: textOrNull(f.resetAt) };
   }
-  if (f.t === "alert") return typeof f.raw === "string" ? { t: "alert", raw: f.raw } : null;
+  if (f.t === "alert") {
+    // SP4's frame (K8): a new or changed alert, or "resolved" when it cleared. SP3's { t: "alert", raw } is not read.
+    const kind = f.kind;
+    if (kind !== "waiting" && kind !== "approval" && kind !== "limit" && kind !== "resolved") return null;
+    return { t: "alert", kind, text: typeof f.text === "string" ? f.text : "" };
+  }
   return null;
 }
 

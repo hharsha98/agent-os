@@ -4,6 +4,9 @@
 // src/ui/sessionsShared.ts, where test/sessions-shared.test.js checks them.
 import { ApiError, request } from "./api";
 import type {
+  AlertKind,
+  ApprovalDecision,
+  ApprovalListResponse,
   QuitCheckResponse,
   RecordingListResponse,
   SessionClientFrame,
@@ -43,7 +46,11 @@ export const SESSION_LIMITS_MS = {
   recordings: 10000,
   signedIn: 5000,
   // One session's summary (the plan card's sign-in terminal asks every 5 s whether its session has ended).
-  get: 8000
+  get: 8000,
+  // OpenClaw's pending approvals (the server answers from its last poll).
+  approvals: 8000,
+  // An approval's answer: the server runs `openclaw approvals resolve` with a 10 s limit (Task X3).
+  approvalResolve: 15000
 } as const;
 
 const TIMEOUT_WORDS = "Agent OS did not answer in time.";
@@ -122,6 +129,22 @@ export function deleteRecording(sessionId: string): Promise<{ ok: true }> {
   return withTimeout(request<{ ok: true }>(sessionPath(sessionId, "/recording"), { method: "DELETE" }), SESSION_LIMITS_MS.recordings);
 }
 
+// OpenClaw's pending approvals (Task X3): the cards and, while OpenClaw can't be asked, the server's sentence.
+export async function listApprovals(): Promise<ApprovalListResponse> {
+  const body = await withTimeout(request<ApprovalListResponse>("/api/sessions/approvals"), SESSION_LIMITS_MS.approvals);
+  if (!body || !Array.isArray(body.approvals)) throw new Error(UNREADABLE);
+  return { approvals: body.approvals, error: typeof body.error === "string" && body.error ? body.error : null };
+}
+
+// Sends exactly the answer the person picked and confirmed (ruling R16). When OpenClaw refuses, the server answers 409
+// approval_failed with OpenClaw's own words (an ApiError whose detail is that sentence).
+export function resolveApproval(id: string, decision: ApprovalDecision): Promise<{ ok: true; message: string | null }> {
+  return withTimeout(
+    request<{ ok: true; message: string | null }>("/api/sessions/approvals/resolve", postJson({ id, decision })),
+    SESSION_LIMITS_MS.approvalResolve
+  );
+}
+
 // Words for a refused or failed request: the server's own sentence when it sent one (Q14, Q15, Q25),
 // otherwise a plain fallback.
 export function sessionProblem(error: unknown): string {
@@ -171,8 +194,8 @@ export interface SessionSocketHandlers {
   // A returned promise means "not on screen yet": the bytes count as processed (for acks) when it settles.
   onOut: (data: string) => void | Promise<void>;
   onState: (state: SessionStateFrame) => void;
-  // SP3: the raw OSC 9 / 99 / 777 payload, or "bel".
-  onAlert: (raw: string) => void;
+  // SP4: an alert was set or changed ({ kind, text }), or it cleared (kind "resolved", text "").
+  onAlert: (alert: { kind: AlertKind | "resolved"; text: string }) => void;
   // Not called after close() from this side.
   onClose: (info: SessionSocketClose) => void;
 }
@@ -310,10 +333,10 @@ export function openSessionSocket(sessionId: string, handlers: SessionSocketHand
         .catch(() => undefined);
       return;
     }
-    const raw = frame.raw;
+    const alert = { kind: frame.kind, text: frame.text };
     void ready
       .then(() => {
-        if (!closedHere) handlers.onAlert(raw);
+        if (!closedHere) handlers.onAlert(alert);
       })
       .catch(() => undefined);
   };

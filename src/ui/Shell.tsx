@@ -10,6 +10,7 @@ import {
   Check,
   Clapperboard,
   ChevronDown,
+  CircleHelp,
   Cpu,
   FlaskConical,
   FolderOpen,
@@ -57,6 +58,10 @@ import type { NewRunRequest } from "./newRun";
 import { NEW_SESSION_EVENT, openNewSession } from "./newSession";
 import type { NewSessionRequest } from "./newSession";
 import { withTimeout } from "./homeShared";
+import { navigateTo } from "../nav";
+import type { SessionSummary } from "../types";
+import { alertToast, homeStripItems, waitingBadgeText, waitingCount } from "./alertsShared";
+import { isDesktopApp } from "./desktop";
 import { revealGetStarted } from "./onboardingShared";
 import { createLatestRead } from "./latestRead";
 import { levelOf } from "./safetyShared";
@@ -189,8 +194,29 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const liveSessions = useLiveSessionCount();
   // false in the public demo and wherever the server says sessions do not exist: then nothing here offers or opens
   // the New session dialog (a dialog that could never start anything).
-  const sessionsAvailable = useSessionsList().available && !demoPublic;
+  const sessionsList = useSessionsList();
+  const sessionsAvailable = sessionsList.available && !demoPublic;
   const quitQuestion = useDesktopQuit();
+  // SP4 alerts from the shared sessions list (ruling R22). The badge counts agent sessions that wait for you (K22) and
+  // opens the one that has waited longest; a list that could not be refreshed shows no badge, as the menu shows no count.
+  const knownSessions = useMemo<SessionSummary[]>(
+    () => (sessionsList.source.state === "ok" && !sessionsList.source.stale ? sessionsList.source.data.sessions : []),
+    [sessionsList.source]
+  );
+  const waitingN = waitingCount(knownSessions);
+  const firstWaitingId = homeStripItems(knownSessions).find((item) => item.kind === "waiting")?.id ?? "";
+  // In a browser tab, a session that newly needs you also gets a message at the bottom of the window (spec, Alerts UI:
+  // "In browser mode, an in-app toast only"). The desktop app shows none: its Rust shell raises a notification while the
+  // window is hidden or not focused (Task X4). The first read of the list is not news.
+  const [alertNote, setAlertNote] = useState<{ id: number; message: string } | null>(null);
+  const alertBase = useRef<SessionSummary[] | null>(null);
+  useEffect(() => {
+    if (sessionsList.source.state !== "ok" || sessionsList.source.stale) return;
+    const next = sessionsList.source.data.sessions;
+    const message = isDesktopApp() ? null : alertToast(alertBase.current, next);
+    alertBase.current = next;
+    if (message) setAlertNote({ id: Date.now(), message });
+  }, [sessionsList.source]);
 
   const onboardingCounts = onboarding.data?.counts;
   // The same rule as the Get started pill: the server counts a skipped step as
@@ -485,7 +511,20 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
             )}
           </span>
         </button>
-        {/* SP4: "Waiting for you (n)" badge, hidden while n = 0 */}
+        {waitingN > 0 ? (
+          <button
+            type="button"
+            className="os-statusbar__wait"
+            aria-label={waitingBadgeText(waitingN)}
+            onClick={() => {
+              setMenuOpen(false);
+              navigateTo("sessions", firstWaitingId ? { session: firstWaitingId } : {});
+            }}
+          >
+            <CircleHelp size={15} aria-hidden="true" />
+            <span>{waitingBadgeText(waitingN)}</span>
+          </button>
+        ) : null}
         <HoldToStopAll onResult={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />
       </div>
 
@@ -579,7 +618,11 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         {children}
       </div>
       <UpdateBanner />
-      {toast ? <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
+      {toast ? (
+        <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} />
+      ) : alertNote ? (
+        <Toast key={alertNote.id} message={alertNote.message} tone="warn" onClose={() => setAlertNote(null)} />
+      ) : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
       {stopAllOpen ? (
         <StopAllRunsModal onClose={() => setStopAllOpen(false)} onDone={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />

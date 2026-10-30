@@ -1,17 +1,24 @@
-// The right-hand side of the Sessions page for the selected session (the prototype's panel, in its SP3 form): the
-// folder and agent, the state in words and its one line, the Live meter (every row; "—" where the source arrives
-// later, with the hint "— means unknown"), and the footer with Recorded, Stop session and the keyboard hints (desktop
-// app only). An ended session shows Resume conversation (or why it can't) and Open recording instead of Stop. The
-// panel keeps its own one-second clock for "Running for", so the page (and its terminal) is not re-rendered for it.
-// `note` is the Stop result note the page picks (panelStopNote: the server's own answer right after a Stop here,
-// otherwise the session's own rule), shown under the state line.
+// The right-hand side of the Sessions page for the selected session (the prototype's panel): the folder and agent, the
+// state in words and its one line, the alert lines under it (hooks switched off and why, the trust line, basic alerts;
+// panelAlertLines in alertsShared.ts), OpenClaw's approval cards for an open OpenClaw session (its own, and every card
+// OpenClaw could not match to one session, marked "from OpenClaw", ruling R16), the Live meter (every row; Model,
+// Context used, Plan used and Cost so far from Claude Code's status line, Task X2b; "—" where nothing is known, with the
+// hint "— means unknown") and the footer with Recorded, Stop session and the keyboard hints (desktop app only). An ended
+// session shows Resume conversation (or why it can't) and Open recording instead of Stop. The panel keeps its own
+// one-second clock for "Running for", so the page (and its terminal) is not re-rendered for it. `note` is the Stop result
+// note the page picks (panelStopNote: the server's own answer right after a Stop here, otherwise the session's own rule),
+// shown under the state line.
 import { useState } from "react";
 import type { RefObject } from "react";
-import { CircleDot, Folder, GitBranch, History, OctagonX } from "lucide-react";
+import { CircleDot, Folder, GitBranch, History, Info, OctagonX } from "lucide-react";
 import type { SessionSummary } from "../../types";
 import { collapseHomePath } from "../agentsShared";
+import { APPROVALS_STALE, approvalsForSession, panelAlertLines } from "../alertsShared";
 import { resumeConfirmCopy, sessionPanelLine, sessionStateWord } from "../sessionsShared";
-import { meterRows, panelFolder, recordingKept } from "../sessionsPageShared";
+import { meterRowLabel, meterRows, panelFolder, recordingKept } from "../sessionsPageShared";
+import { useApprovals } from "../useApprovals";
+import { ApprovalList } from "./ApprovalCard";
+import Meter from "./Meter";
 import StatusWord from "./StatusWord";
 import { useInterval } from "./useInterval";
 
@@ -37,6 +44,12 @@ export default function SessionSidePanel({
   useInterval(() => setNow(Date.now()), ended ? null : 1000);
   const word = sessionStateWord(session);
   const rows = meterRows(session, now);
+  const alertLines = panelAlertLines(session);
+  // OpenClaw's cards are read only while this panel shows an open OpenClaw session (useApprovals asks every 3 s).
+  const clawOpen = session.kind === "agent" && session.agentId === "openclaw" && !ended;
+  const approvals = useApprovals(clawOpen);
+  const listed = clawOpen && approvals.source.state === "ok" ? approvals.source.data : null;
+  const cards = listed ? approvalsForSession(listed.approvals, session.id) : [];
   // Why Resume can't be pressed: the server's reason (decision Q36), as the Resume confirm words it (Task U1).
   const blocked = ended ? resumeConfirmCopy(session).blocked : null;
   const where = panelFolder(session);
@@ -63,6 +76,12 @@ export default function SessionSidePanel({
             <StatusWord state={word.state} label={word.label} />
           </p>
           <p className="os-sess-panel__line">{sessionPanelLine(session, now)}</p>
+          {alertLines.map((line) => (
+            <p key={line} className="os-sess-panel__alert">
+              <Info size={15} aria-hidden="true" />
+              <span>{line}</span>
+            </p>
+          ))}
           {note ? (
             <p className="os-sess-panel__note" role="status">
               {note}
@@ -95,32 +114,49 @@ export default function SessionSidePanel({
             </div>
           ) : null}
         </header>
+        {clawOpen ? (
+          // Hidden by CSS while empty (no card, no error).
+          <div className="os-sess-panel__asks">
+            <ApprovalList cards={cards} showFrom onAnswered={approvals.refresh} fallbackFocus={() => headingRef.current?.focus({ preventScroll: true })} />
+            {listed?.error ? <p className="os-sess-panel__why">{listed.error}</p> : null}
+            {/* A read that failed or timed out says so (the server's own sentence for OpenClaw is `listed.error` above), and a list that
+                could not be refreshed says it is old: its cards keep their buttons, so the person must know. */}
+            {approvals.source.state === "error" ? <p className="os-sess-panel__why">{approvals.source.message}</p> : null}
+            {approvals.source.state === "ok" && approvals.source.stale ? <p className="os-sess-panel__why">{APPROVALS_STALE}</p> : null}
+          </div>
+        ) : null}
         <section className="os-sess-panel__sec" aria-label="Live meter">
           <div className="os-sess-panel__rh">
             Live meter<span className="os-sess-panel__hint">— means unknown</span>
           </div>
-          <dl className="os-sess-kv">
-            {rows.map((row) => (
-              <div key={row.id} className="os-sess-kv__row">
-                <dt>{row.label}</dt>
-                <dd>
-                  {row.value === null ? (
-                    <>
-                      <span className="os-mono os-sess-kv__dash" aria-hidden="true">
-                        —
-                      </span>
-                      <span className="os-visually-hidden">unknown</span>
-                    </>
-                  ) : (
-                    <>
-                      {row.id === "time" ? <span className="os-mono">{row.value}</span> : row.value}
-                      {row.dim ? <span className="os-sess-kv__dim"> · {row.dim}</span> : null}
-                    </>
-                  )}
-                </dd>
+          {rows.map((row) =>
+            row.gauge ? (
+              <div key={row.id} className="os-sess-panel__gauge">
+                <Meter label={row.dim ? `${row.label} · ${row.dim}` : row.label} value={row.gauge.percent / 100} tone={row.gauge.tone} detail={row.gauge.detail} />
               </div>
-            ))}
-          </dl>
+            ) : (
+              <dl key={row.id} className="os-sess-kv">
+                <div className="os-sess-kv__row">
+                  <dt>{meterRowLabel(row)}</dt>
+                  <dd>
+                    {row.value === null ? (
+                      <>
+                        <span className="os-mono os-sess-kv__dash" aria-hidden="true">
+                          —
+                        </span>
+                        <span className="os-visually-hidden">unknown</span>
+                      </>
+                    ) : (
+                      <>
+                        {row.id === "time" ? <span className="os-mono">{row.value}</span> : row.value}
+                        {row.dim ? <span className="os-sess-kv__dim"> · {row.dim}</span> : null}
+                      </>
+                    )}
+                  </dd>
+                </div>
+              </dl>
+            )
+          )}
         </section>
       </div>
       <footer className="os-sess-panel__foot">

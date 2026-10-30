@@ -117,7 +117,7 @@ test("a Resume refused as impossible is told apart from one that may work on ano
 
 test("the side panel's line for each state, SP3 versions (spec, Session activity states)", () => {
   assert.equal(ss.sessionPanelLine(session({ status: "starting" }), NOW), "Starting Claude Code…");
-  assert.equal(ss.sessionPanelLine(session({ status: "live" }), NOW), "Working.");
+  assert.equal(ss.sessionPanelLine(session({ status: "live" }), NOW), "Working. Alerts for Claude Code are basic.", "SP4: a basic session says so (the full line: sessions-alerts-ui-logic.test.js)");
   assert.equal(ss.sessionPanelLine(session({ status: "idle", stateSince: iso(26 * 60_000) }), NOW), "Idle for 26 m. Nothing is running.");
   assert.equal(ss.sessionPanelLine(session({ status: "idle", stateSince: iso(20_000) }), NOW), "Idle for under 1 m. Nothing is running.");
   assert.equal(ss.sessionPanelLine(session({ status: "idle", stateSince: iso(65 * 60_000) }), NOW), "Idle for 1 h 05 m. Nothing is running.");
@@ -515,7 +515,8 @@ test("server frames are read defensively", () => {
   }, "the manager's first state frame carries only the status");
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "state", status: "live", endedBy: "other" })).endedBy, null);
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "state", status: "nope" })), null);
-  assert.deepEqual(ss.parseServerFrame(JSON.stringify({ t: "alert", raw: "bel" })), { t: "alert", raw: "bel" });
+  assert.deepEqual(ss.parseServerFrame(JSON.stringify({ t: "alert", kind: "waiting", text: "May need you" })), { t: "alert", kind: "waiting", text: "May need you" });
+  assert.equal(ss.parseServerFrame(JSON.stringify({ t: "alert", raw: "bel" })), null, "SP4 replaced SP3's raw alert frame");
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "alert" })), null);
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "hello" })), null);
   assert.equal(ss.parseServerFrame("[]"), null);

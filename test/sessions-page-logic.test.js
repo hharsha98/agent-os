@@ -186,10 +186,10 @@ test("Live meter: every row, and null (shown as —) for each one whose source a
     ["Model", null, null],
     ["Running for", "12 m 40 s", null],
     ["Context used", null, null],
-    ["Plan used", null, null]
+    ["Plan used", null, "5-hour limit"]
   ]);
   const openrouter = page.meterRows(session({ brain: { kind: "openrouter", label: "OpenRouter" } }), NOW);
-  assert.deepEqual(openrouter.map((r) => r.label), ["Brain", "Model", "Running for", "Context used", "Cost so far"]);
+  assert.deepEqual(openrouter.map((r) => r.label), ["Brain", "Model", "Running for", "Context used", "Plan used", "Cost so far"]);
   assert.equal(openrouter[0].dim, "pay per use");
   assert.equal(page.meterRows(session({ brain: { kind: "local", label: "Local" } }), NOW)[0].dim, "on this computer");
   const none = page.meterRows(session({ agentId: "hermes", brain: null }), NOW);

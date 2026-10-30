@@ -1,5 +1,5 @@
 // Safety: one level control (Look only / Run agents / Machine control), the safeguards that are
-// always working, pending approvals (an honest empty state until SP4) and how Hold to stop all
+// always working, pending approvals (OpenClaw's cards and the sessions waiting for you, SP4) and how Hold to stop all
 // works. Every transition is exactly the request the design brief specifies -- no client-side
 // guessing of what the server will do, and no level is shown until the server has told us one.
 //

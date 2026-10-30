@@ -164,8 +164,8 @@ function openSocket(over = {}) {
     onState: (state) => {
       log.push(`state:${state.status}`);
     },
-    onAlert: (raw) => {
-      log.push(`alert:${raw}`);
+    onAlert: (alert) => {
+      log.push(`alert:${alert.kind}:${alert.text}`);
     },
     onClose: (info) => {
       log.push(`close:${info.code}:${info.reason}:${info.hadSnapshot}:${info.advice}`);
@@ -210,12 +210,13 @@ test("frames before the snapshot are dropped; later frames wait until onSnapshot
     ws.receive({ t: "out", seq: 5, d: "after" });
     ws.receive({ t: "state", status: "live" });
     ws.receive({ t: "alert", raw: "bel" });
+    ws.receive({ t: "alert", kind: "waiting", text: "May need you" });
     ws.receive({ ...SNAPSHOT, data: "second" });
     await flush();
     assert.deepEqual(log, ["snapshot:screen"], "the restored screen is still being drawn: nothing after it is delivered yet");
     screen.resolve();
     await flush();
-    assert.deepEqual(log, ["snapshot:screen", "out:after", "state:live", "alert:bel"]);
+    assert.deepEqual(log, ["snapshot:screen", "out:after", "state:live", "alert:waiting:May need you"], "SP3's raw alert frame is not delivered");
   } finally {
     removeFakes();
   }
@@ -259,7 +260,7 @@ test("an onOut that fails gives no ack and no unhandled rejection; a throwing on
     ws.receive(SNAPSHOT);
     ws.receive({ t: "out", seq: 70_000, d: "x" });
     ws.receive({ t: "state", status: "exited" });
-    ws.receive({ t: "alert", raw: "bel" });
+    ws.receive({ t: "alert", kind: "waiting", text: "May need you" });
     ws.serverClose(4001, "session_ended");
     await flush();
     assert.deepEqual(ws.sent, [], "nothing was drawn, so nothing is acknowledged");

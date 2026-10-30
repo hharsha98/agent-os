@@ -738,8 +738,10 @@ function killLeftovers(running, kill = (pid, signal) => process.kill(pid, signal
 // Real PTY, mirror, recorder, folder policy, process-tree kill and soft stop;
 // only the profiles, the gate, detection and the brain are given, so no real
 // agent can start. Every terminal and every CLI call the soft stop starts joins
-// `running`; `outcomes` collects what each soft stop answered.
-function realDeps(profiles, { spawned, running, cliPids, outcomes = [] }) {
+// `running`; `outcomes` collects what each soft stop answered. `softStopLimitMs` replaces the soft stop's
+// 2 s budget (SOFT_STOP_LIMIT_MS) for a test that is about the CLI calls themselves and not about the
+// budget: two fake CLI runs can take longer than 2 s on a busy machine, and the answer is then "timeout".
+function realDeps(profiles, { spawned, running, cliPids, outcomes = [], softStopLimitMs = undefined }) {
   return {
     ...NO_GIT_OPTIONS,
     isExecutionAllowed: async () => true,
@@ -768,6 +770,7 @@ function realDeps(profiles, { spawned, running, cliPids, outcomes = [] }) {
     softStop: async (input) => {
       const result = await runSoftStop({
         ...input,
+        ...(softStopLimitMs === undefined ? {} : { limitMs: softStopLimitMs }),
         onSpawn: (pid) => {
           cliPids.push(pid);
           watchPid(running, pid);
@@ -971,7 +974,8 @@ test("real PTY: Stop runs `claude agents --json` and then `claude stop <id>` thr
               resumeMode: "id"
             }
           },
-          { spawned, running, cliPids, outcomes }
+          // This test is about the real CLI path, not the soft stop's budget (the hung CLI test has that).
+          { spawned, running, cliPids, outcomes, softStopLimitMs: 60000 }
         )
       );
       const summary = await manager.create({ agentId: "claude", folder: project });

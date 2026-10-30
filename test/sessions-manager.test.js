@@ -132,8 +132,10 @@ async function withSessionEnv(fn) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    await rm(home, { recursive: true, force: true });
-    await rm(agentOsHome, { recursive: true, force: true });
+    // A session's last meta.json write can still land while the folders are removed (ENOTEMPTY under
+    // load: its status is "exited" in memory a moment before the file is written); rm tries again.
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await rm(agentOsHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

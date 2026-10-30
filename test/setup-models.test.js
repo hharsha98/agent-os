@@ -490,8 +490,11 @@ async function withModelEnv(fn, { hermes = true, openclaw = true, hermesConfig, 
     resetOpenRouterFlows();
     resetSetupJobsForTest();
     await new Promise((resolve) => server.close(resolve));
-    await rm(home, { recursive: true, force: true });
-    await rm(agentOsHome, { recursive: true, force: true });
+    // A fake CLI read the server started but did not wait for (OpenClaw's settings and sign-in reads, when
+    // the answer does not need them) may still write its record line into HOME while it is removed
+    // (ENOTEMPTY under load); rm tries again a few times.
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await rm(agentOsHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

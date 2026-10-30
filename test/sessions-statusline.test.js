@@ -61,12 +61,18 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const shQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
 const modeOf = async (file) => (await stat(file)).mode & 0o777;
 
+// Every limit here only bounds how long a healthy run may take; the condition is what the test waits for. A
+// machine under heavy load (load averages of 10 to 250 were seen) needs many times the seconds a quiet one
+// does, so a call site's figure is what a quiet machine needs and the wait runs for at least LOADED_WAIT_MS.
+const LOADED_WAIT_MS = 60000;
+
 async function waitFor(check, timeoutMs = 10000, what = "a condition") {
-  const deadline = Date.now() + timeoutMs;
+  const limitMs = Math.max(timeoutMs, LOADED_WAIT_MS);
+  const deadline = Date.now() + limitMs;
   for (;;) {
     const value = await check();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
+    if (Date.now() > deadline) throw new Error(`timed out after ${limitMs} ms waiting for ${what}`);
     await delay(25);
   }
 }
@@ -718,7 +724,9 @@ async function withProfileWorld(fn, { startupLines = () => [] } = {}) {
     );
   } finally {
     resetLoginShellEnvForTests();
-    await rm(base, { recursive: true, force: true });
+    // A session's last meta.json write can still land while the folder is removed (ENOTEMPTY under load:
+    // its status is "exited" in memory a moment before the file is written); rm tries again.
+    await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

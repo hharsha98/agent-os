@@ -53,6 +53,33 @@ export function rememberOpened(hold: string, targetId: string): void {
 export function openedFor(hold: string): string | null {
   return openedByHold.get(hold) ?? null;
 }
+export function forgetOpened(hold: string): void {
+  openedByHold.delete(hold);
+}
+// Sweep A item 11 (X10 N2): the new session a hold opened counts as open until the sessions list shows it ended; then the
+// hold offers Keep going again (the server accepts another press once that session has ended). A session the list does
+// not hold yet counts as open, because the list is read every 5 seconds and can lag a session that was just made.
+// `sessions` is null while the list is not known.
+export function openedStillOpen(openedId: string | null, sessions: ReadonlyArray<Pick<SessionSummary, "id" | "status">> | null): string | null {
+  if (openedId === null || sessions === null) return openedId;
+  const found = sessions.find((s) => s.id === openedId);
+  return found && found.status === "exited" ? null : openedId;
+}
+
+// Sweep A item 11 (X10 N1): the sentence of a Keep going that stopped a session and could not resume it. The one this page
+// just got comes first; otherwise the server's, kept with the ended session (so it is still there after the person left the
+// pane while the request ran, or reloaded). Only an ended session shows one. "" for none.
+export function keepGoingFailureText(local: string, s: Pick<SessionSummary, "status" | "keepGoingFailure">): string {
+  if (local !== "") return local;
+  return s.status === "exited" && typeof s.keepGoingFailure === "string" ? s.keepGoingFailure : "";
+}
+
+// Sweep A item 11 (X10 N4): a refusal is kept on the banner only while the session is ended or still shown as held (the list
+// can lag the stop by a few seconds). On a session that runs again (Claude Code's own auto-resume got there first and the
+// answer was "not held"), nothing is left behind: no red banner over a healthy session.
+export function keepsRefusal(status: SessionSummary["status"]): boolean {
+  return status === "exited" || status === "held";
+}
 // NEW SENTENCES (Q32), fix round 1 (M5): what the held session's banner says once its new session is open, and the
 // button that shows it.
 export function openedSessionLine(agentLabel: string): string {

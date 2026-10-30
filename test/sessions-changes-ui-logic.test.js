@@ -200,6 +200,9 @@ test("hidden characters are made visible: reordering and format characters as <U
     { text: "fdp.exe", hidden: false, label: null }
   ]);
   assert.equal(ch.visibleText("docs/report\u202Efdp.exe"), "docs/report<U+202E>fdp.exe");
+  // Sweep A item 8 (U7 ledger): the line and paragraph separators, which some tools break a line at, are tokens too.
+  assert.equal(ch.visibleText("x\u2028y\u2029z"), "x<U+2028>y<U+2029>z");
+  assert.deepEqual(ch.visiblePieces("a\u2028b")[1], { text: "<U+2028>", hidden: true, label: "hidden character U+2028" });
   // Trojan Source style line (CVE-2021-42574): the override and isolates hide what the line really holds.
   const trojan = "/* \u202E } \u2066if (isAdmin)\u2069 \u2066 begin admins only */";
   assert.equal(ch.visibleText(trojan), "/* <U+202E> } <U+2066>if (isAdmin)<U+2069> <U+2066> begin admins only */");
@@ -208,7 +211,7 @@ test("hidden characters are made visible: reordering and format characters as <U
   assert.equal(ch.visibleText("a\u0000b\u001B[31mc"), "a\\x00b\\x1B[31mc");
   assert.equal(ch.visibleText("x\u007Fy\u0085z\rw\nv"), "x\\x7Fy\\x85z\\x0Dw\\x0Av");
   // Every character the ruling names, one token each (the label says which character it is).
-  const named = [0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff];
+  const named = [0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff];
   for (const code of named) {
     const hex = code.toString(16).toUpperCase().padStart(4, "0");
     assert.deepEqual(ch.visiblePieces(`a${String.fromCodePoint(code)}b`)[1], { text: `<U+${hex}>`, hidden: true, label: `hidden character U+${hex}` }, `U+${hex}`);

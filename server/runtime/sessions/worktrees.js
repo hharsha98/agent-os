@@ -226,6 +226,10 @@ export async function createWorktree({ folder, agentId, sessionId, env, run = ru
   const headNow = await run(folder, ["rev-parse", "HEAD"], options);
   const headCommit = headNow?.ok ? String(headNow.stdout || "").trim() : "";
   const hooksOnly = await safeGit(folder, env, run, { kind: "add", filters: false });
+  // The place is looked at again right before the add (M12): the git calls above take a moment, and a link or a folder put
+  // there meanwhile (git accepts an empty folder reached through a link, and the reset would then fill what it points to)
+  // must not be handed to git. What can still slip in between this look and git's own is not this start's to remove.
+  if ((await kindOf(dir)) !== "gone") throw gitFailure("add", null);
   // HEAD as the start point: the copy branches from the commit the folder is on now (K14).
   const added = await guarded(hooksOnly, run, folder, ["worktree", "add", "--no-checkout", dir, "-b", branch, "HEAD"], {
     timeoutMs: timeLeft()
@@ -291,26 +295,66 @@ async function realWithin(p) {
 // Nothing else is touched. Never throws.
 async function forgetOwnEntry({ from, dir, safe, run }) {
   try {
-    const answer = await guarded(safe, run, from, ["rev-parse", "--git-common-dir"]);
-    if (!answer?.ok) return;
-    const parent = path.join(path.resolve(from, String(answer.stdout || "").trim()), "worktrees");
-    if ((await kindOf(parent)) !== "folder") return;
-    const mine = foldCase(await realWithin(path.join(dir, ".git")));
-    for (const name of await fs.readdir(parent)) {
-      const entry = path.join(parent, name);
-      if ((await kindOf(entry)) !== "folder") continue;
-      const file = path.join(entry, "gitdir");
-      const info = await fs.lstat(file).catch(() => null);
-      if (!info?.isFile()) continue;
-      const named = (await fs.readFile(file, "utf8")).trim();
-      if (!named || foldCase(await realWithin(path.resolve(entry, named))) !== mine) continue;
-      if ((await kindOf(path.join(entry, "locked"))) !== "gone") continue;
-      await fs.rm(entry, { recursive: true, force: true });
-      return;
-    }
+    const { entry } = await ownEntry({ from, dir, safe, run });
+    if (entry) await fs.rm(entry, { recursive: true, force: true });
   } catch {
     // nothing is dropped that could not be checked
   }
+}
+
+// Looks for git's record of Agent OS's own copy `dir` (`<project's .git>/worktrees/<name>`), found as described above.
+// Answers { entry, complete }: `entry` is the record's path, or null when there is none or it is locked; `complete` is false
+// when anything could not be read on the way (git could not name its folder, the records folder or one record's `gitdir`
+// file could not be read, a link where a record or its file should be), because a record that could not be looked at might
+// be the copy's. Whoever is about to let the record go must refuse on `complete: false` (M16). A plain file in the records
+// folder (a .DS_Store) is not a record and does not count. Never throws.
+async function ownEntry({ from, dir, safe, run }) {
+  let entry = null;
+  let complete = true;
+  try {
+    const answer = await guarded(safe, run, from, ["rev-parse", "--git-common-dir"]);
+    if (!answer?.ok) return { entry: null, complete: false };
+    const parent = path.join(path.resolve(from, String(answer.stdout || "").trim()), "worktrees");
+    const parentKind = await kindOf(parent);
+    if (parentKind === "gone") return { entry: null, complete: true };
+    if (parentKind !== "folder") return { entry: null, complete: false };
+    const mine = foldCase(await realWithin(path.join(dir, ".git")));
+    for (const name of await fs.readdir(parent)) {
+      const candidate = path.join(parent, name);
+      let info;
+      try {
+        info = await fs.lstat(candidate);
+      } catch (error) {
+        if (error?.code !== "ENOENT") complete = false;
+        continue;
+      }
+      if (info.isFile()) continue;
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        complete = false;
+        continue;
+      }
+      const file = path.join(candidate, "gitdir");
+      let named;
+      try {
+        const fileInfo = await fs.lstat(file);
+        if (!fileInfo.isFile()) {
+          complete = false;
+          continue;
+        }
+        named = (await fs.readFile(file, "utf8")).trim();
+      } catch (error) {
+        // A record without a gitdir file is not a record git can use; any other failure is a record that was not looked at.
+        if (error?.code !== "ENOENT") complete = false;
+        continue;
+      }
+      if (!named || foldCase(await realWithin(path.resolve(candidate, named))) !== mine) continue;
+      if ((await kindOf(path.join(candidate, "locked"))) !== "gone") continue;
+      if (entry === null) entry = candidate;
+    }
+  } catch {
+    return { entry: null, complete: false };
+  }
+  return { entry, complete };
 }
 
 // Removes a copy this same start made moments ago and could not use, and the branch made for it. Never throws: a
@@ -355,6 +399,34 @@ async function hidesEdits(dir, listing) {
   return false;
 }
 
+// Refuses (409 worktree_dirty) when a commit is reachable from a copy's own HEAD, refs/worktree/*, refs/bisect/* or
+// refs/rewritten/* and from no branch and no tag (I3). Read only. `gitDir` is git's record of a copy whose folder is gone
+// (M16): the check then runs against the record, from the project. Two things that have nothing to do with lost work must
+// not make a copy impossible to remove (M15): a file named HEAD in the copy (the trailing `--` tells git that every word
+// before it is a revision), and a HEAD that names no commit yet (`git checkout --orphan`), where only the other refs can
+// hold one. Any other failure of git still refuses.
+async function refuseLostCommits({ strict, run, folder, gitDir = null }) {
+  const place = gitDir ? [`--git-dir=${gitDir}`] : [];
+  const head = await guarded(strict, run, folder, [...place, "rev-parse", "--verify", "--quiet", "HEAD"], { okCodes: [0, 1] });
+  if (!head?.ok) throw gitFailure("remove", head);
+  const lost = await guarded(strict, run, folder, [
+    ...place,
+    "rev-list",
+    "-n",
+    "1",
+    ...(head.code === 0 ? ["HEAD"] : []),
+    "--glob=refs/worktree/*",
+    "--glob=refs/bisect/*",
+    "--glob=refs/rewritten/*",
+    "--not",
+    "--branches",
+    "--tags",
+    "--"
+  ]);
+  if (!lost?.ok) throw gitFailure("remove", lost);
+  if (String(lost.stdout || "").trim() !== "") throw sessionError(409, "worktree_dirty", DIRTY_MESSAGE);
+}
+
 // Removes a session's copy (Remove separate copy). Refuses (409 worktree_dirty) while `git status --porcelain` in
 // the copy prints anything: a change that isn't committed, or a new file git doesn't ignore. git runs from the
 // project while it is still there, else from the copy itself. A copy whose folder was already deleted is only
@@ -396,14 +468,16 @@ export async function removeWorktree({ path: dir, copyOf, env, run = runGit }) {
     // any rebase state. A commit that only they hold (a detached HEAD, an amend inside a stopped rebase, a ref kept in
     // refs/worktree) would be lost for good, so a commit that is reachable from them and from no branch and no tag
     // refuses the removal (I3). Read only; the agent's work on a branch of the project is safe on that branch.
-    const lost = await guarded(
-      strict,
-      run,
-      dir,
-      ["rev-list", "-n", "1", "HEAD", "--glob=refs/worktree/*", "--glob=refs/bisect/*", "--glob=refs/rewritten/*", "--not", "--branches", "--tags"]
-    );
-    if (!lost?.ok) throw gitFailure("remove", lost);
-    if (String(lost.stdout || "").trim() !== "") throw sessionError(409, "worktree_dirty", DIRTY_MESSAGE);
+    await refuseLostCommits({ strict, run, folder: dir });
+  } else {
+    // The folder is already gone (deleted by hand), but git's record of the copy, with the copy's own HEAD and refs, is
+    // about to go: git drops it itself, or Agent OS does. The same check runs against that record, so a commit that only
+    // the record holds is not lost with it (M16).
+    // If git's records can't all be read, the copy's own might be among those not looked at, and git drops it without a
+    // check: refuse and keep everything (M16, fix round 1), with the same plain refusal as any other git failure.
+    const { entry: record, complete } = await ownEntry({ from, dir, safe, run });
+    if (!complete) throw gitFailure("remove", null);
+    if (record) await refuseLostCommits({ strict, run, folder: from, gitDir: record });
   }
   const removed = await guarded(strict, run, from, ["worktree", "remove", dir], { timeoutMs: WORKTREE_REMOVE_LIMIT_MS });
   if (removed?.ok) return;

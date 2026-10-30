@@ -949,6 +949,185 @@ test("M14: Agent OS never prunes the project's worktrees: another worktree whose
   });
 });
 
+test("M12 (sweep A): the copy's place is looked at again right before the add, so a link put there meanwhile is never handed to git", GIT_ONLY, async () => {
+  await withRepo(async ({ home, agentOsHome, repo, env, git }) => {
+    const dir = path.join(agentOsHome, "worktrees", SESSION_A);
+    const target = path.join(home, "empty-target");
+    await mkdir(target, { recursive: true });
+    const calls = [];
+    // A link to an empty folder appears while the start is reading the commit HEAD is on: after the first look, before the add.
+    const racing = async (folder, args, options) => {
+      calls.push(bare(args));
+      const result = await runGit(folder, args, options);
+      if (args.join(" ") === "rev-parse HEAD") await symlink(target, dir);
+      return result;
+    };
+    await assert.rejects(createWorktree({ folder: repo, agentId: "codex", sessionId: SESSION_A, env, run: racing }), {
+      status: 409,
+      code: "worktree_failed",
+      message: NO_REASON
+    });
+    assert.ok(!calls.some((argv) => argv[0] === "worktree" || argv[0] === "reset"), "git was not asked to add anything");
+    assert.equal((await lstat(dir)).isSymbolicLink(), true, "the link is left alone (not followed, not removed)");
+    assert.deepEqual(await readdir(target), [], "and what it points to stays empty: no .git, no files");
+    assert.equal(git(repo, "for-each-ref", "refs/heads/agentos/"), "", "no branch was made");
+  });
+});
+
+test("M15 (sweep A): a file named HEAD in the copy, or a HEAD that names no commit yet, does not make a copy impossible to remove; a commit only a ref holds still refuses", GIT_ONLY, async () => {
+  await withRepo(async ({ repo, env, git }) => {
+    const refused = (copy) => assert.rejects(removeWorktree({ path: copy.path, copyOf: repo, env }), { status: 409, code: "worktree_dirty", message: DIRTY });
+
+    // 1. A committed file called HEAD (git said "ambiguous argument 'HEAD'"): the copy is removed, its commit is on its branch.
+    const one = await createWorktree({ folder: repo, agentId: "codex", sessionId: SESSION_A, env });
+    await writeFile(path.join(one.path, "HEAD"), "not a ref\n");
+    git(one.path, "add", "HEAD");
+    commit(git, one.path, "a file called HEAD");
+    assert.equal(git(one.path, "status", "--porcelain"), "", "precondition: clean");
+    await removeWorktree({ path: one.path, copyOf: repo, env });
+    assert.equal(existsSync(one.path), false, "removed");
+    assert.match(git(repo, "rev-parse", "--verify", "-q", `refs/heads/${one.branch}`).trim(), /^[0-9a-f]{40,64}$/, "its branch stays");
+
+    // 2. The same file name does not hide a detached commit: that still refuses.
+    const two = await createWorktree({ folder: repo, agentId: "codex", sessionId: SESSION_B, env });
+    git(two.path, "checkout", "-q", "--detach");
+    await writeFile(path.join(two.path, "HEAD"), "not a ref\n");
+    git(two.path, "add", "HEAD");
+    commit(git, two.path, "a detached commit, with a file called HEAD");
+    await refused(two);
+    git(two.path, "checkout", "-q", two.branch);
+
+    // 3. An unborn HEAD (git checkout --orphan, files removed): nothing at risk, so the copy is removed.
+    git(two.path, "checkout", "-q", "--orphan", "fresh-start");
+    git(two.path, "rm", "-rfq", ".");
+    assert.equal(git(two.path, "status", "--porcelain"), "", "precondition: clean");
+    assert.throws(() => git(two.path, "rev-parse", "--verify", "-q", "HEAD"), "precondition: HEAD names no commit");
+    await removeWorktree({ path: two.path, copyOf: repo, env });
+    assert.equal(existsSync(two.path), false, "an unborn HEAD does not block the removal");
+
+    // 4. An unborn HEAD with a commit that only a ref of the copy holds: that still refuses.
+    const three = await createWorktree({ folder: repo, agentId: "codex", sessionId: SESSION_C, env });
+    git(three.path, "checkout", "-q", "--detach");
+    await writeFile(path.join(three.path, "kept.txt"), "k\n");
+    git(three.path, "add", "kept.txt");
+    commit(git, three.path, "kept only by a ref of this copy");
+    const held = git(three.path, "rev-parse", "HEAD").trim();
+    git(three.path, "update-ref", "refs/worktree/keep", held);
+    git(three.path, "checkout", "-q", "--orphan", "other-start");
+    git(three.path, "rm", "-rfq", ".");
+    assert.equal(git(three.path, "status", "--porcelain"), "", "precondition: clean");
+    await refused(three);
+    assert.equal(git(three.path, "rev-parse", "refs/worktree/keep").trim(), held, "the ref and its commit are still there");
+
+    // 5. Any other failure of git in that check still refuses (here: git cannot answer the rev-list at all).
+    const four = await createWorktree({ folder: repo, agentId: "claude", sessionId: SESSION_A, env });
+    const broken = (folder, args, options) =>
+      bare(args)[0] === "rev-list"
+        ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: simulated", timedOut: false, ok: false })
+        : runGit(folder, args, options);
+    await assert.rejects(removeWorktree({ path: four.path, copyOf: repo, env, run: broken }), { status: 409, code: "worktree_remove_failed", message: /simulated/ });
+    assert.equal(existsSync(four.path), true, "the copy is kept");
+  });
+});
+
+test("M16 (sweep A): a copy whose folder is already gone keeps its record while that record holds a commit on no branch or tag, and goes once the commit is on a branch", GIT_ONLY, async () => {
+  await withRepo(async ({ repo, env, git }) => {
+    const recordOf = (id) => path.join(repo, ".git", "worktrees", id);
+    const made = await createWorktree({ folder: repo, agentId: "codex", sessionId: SESSION_A, env });
+    git(made.path, "checkout", "-q", "--detach");
+    await writeFile(path.join(made.path, "only-here.txt"), "d\n");
+    git(made.path, "add", "only-here.txt");
+    commit(git, made.path, "a detached commit that only the copy's record holds");
+    const detached = git(made.path, "rev-parse", "HEAD").trim();
+    assert.equal(git(made.path, "for-each-ref", "--contains", detached).trim(), "", "precondition: no branch or tag holds it");
+    // The folder is deleted by hand (Finder, rm -rf): git's record of the copy is all that holds the commit.
+    await rm(made.path, { recursive: true, force: true });
+    assert.ok(existsSync(recordOf(SESSION_A)), "precondition: git still has the record");
+
+    await assert.rejects(removeWorktree({ path: made.path, copyOf: repo, env }), { status: 409, code: "worktree_dirty", message: DIRTY });
+    assert.ok(existsSync(recordOf(SESSION_A)), "the record is not dropped");
+    assert.equal(git(repo, "cat-file", "-t", detached).trim(), "commit", "and the commit is still there");
+    // Agent OS's own record clean-up (git refusing to remove) is held back by the same check.
+    const stubborn = (folder, args, options) =>
+      bare(args)[0] === "worktree" && bare(args)[1] === "remove"
+        ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: simulated", timedOut: false, ok: false })
+        : runGit(folder, args, options);
+    await assert.rejects(removeWorktree({ path: made.path, copyOf: repo, env, run: stubborn }), { status: 409, code: "worktree_dirty" });
+    assert.ok(existsSync(recordOf(SESSION_A)), "still not dropped");
+
+    // Once the commit is on a branch of the project, the record goes.
+    git(repo, "branch", "rescued", detached);
+    await removeWorktree({ path: made.path, copyOf: repo, env });
+    assert.equal(existsSync(recordOf(SESSION_A)), false, "the record is dropped");
+    assert.equal(git(repo, "rev-parse", "rescued").trim(), detached, "and the commit is on its branch");
+    assert.ok(!git(repo, "worktree", "list", "--porcelain").includes(SESSION_A));
+  });
+});
+
+test("M16 fix round 1 (sweep A): when git's records for a gone copy can't all be read, Remove refuses and keeps everything (a stray file among them does not count)", GIT_ONLY, async () => {
+  await withRepo(async ({ repo, env, git }) => {
+    const records = path.join(repo, ".git", "worktrees");
+    const recordOf = (id) => path.join(records, id);
+    const made = await createWorktree({ folder: repo, agentId: "codex", sessionId: SESSION_A, env });
+    // A commit that only the copy's record holds, and then the folder is deleted by hand.
+    git(made.path, "checkout", "-q", "--detach");
+    await writeFile(path.join(made.path, "only-here.txt"), "d\n");
+    git(made.path, "add", "only-here.txt");
+    commit(git, made.path, "a detached commit that only the copy's record holds");
+    const detached = git(made.path, "rev-parse", "HEAD").trim();
+    await rm(made.path, { recursive: true, force: true });
+    assert.ok(existsSync(recordOf(SESSION_A)), "precondition: git still has the record");
+
+    // Every way a record can fail to be read ends in the same plain refusal, with the record and the commit kept. (Were the
+    // scan to skip what it cannot read, the copy's own record would be found and checked, and the refusal would be the
+    // dirty one instead: so this also tells the two apart.)
+    const refusedUnread = async (what, run = runGit) => {
+      await assert.rejects(removeWorktree({ path: made.path, copyOf: repo, env, run }), { status: 409, code: "worktree_remove_failed", message: /gave no reason/ }, what);
+      assert.ok(existsSync(recordOf(SESSION_A)), `${what}: the record is kept`);
+      assert.equal(git(repo, "cat-file", "-t", detached).trim(), "commit", `${what}: the commit is still there`);
+    };
+
+    // 1. Another record whose gitdir is a folder, not a file.
+    const odd = recordOf("a-record-gone-odd");
+    await mkdir(path.join(odd, "gitdir"), { recursive: true });
+    await refusedUnread("a gitdir that is a folder");
+    await rm(odd, { recursive: true, force: true });
+
+    // 2. A link where a record should be.
+    await symlink(path.join(repo, "src"), recordOf("a-linked-record"));
+    await refusedUnread("a link among the records");
+    await rm(recordOf("a-linked-record"));
+
+    // 3. A gitdir file that can't be opened (a user who may not read it; skipped when run as root, where nothing is unreadable).
+    if (typeof process.getuid === "function" && process.getuid() !== 0) {
+      await mkdir(odd, { recursive: true });
+      await writeFile(path.join(odd, "gitdir"), `${path.join(repo, "elsewhere", ".git")}\n`);
+      await chmod(path.join(odd, "gitdir"), 0o000);
+      await refusedUnread("a gitdir file that can't be read");
+      await chmod(path.join(odd, "gitdir"), 0o600);
+      await rm(odd, { recursive: true, force: true });
+    }
+
+    // 4. git can't say where its records are.
+    const noCommonDir = (folder, args, options) =>
+      bare(args)[0] === "rev-parse" && bare(args)[1] === "--git-common-dir"
+        ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: simulated", timedOut: false, ok: false })
+        : runGit(folder, args, options);
+    await refusedUnread("git can't name its folder", noCommonDir);
+
+    // 5. Everything readable again (a stray file such as .DS_Store among the records is not a record): the lost-commit check
+    // is what refuses now, and once the commit is on a branch the record goes.
+    await writeFile(path.join(records, ".DS_Store"), "x");
+    await assert.rejects(removeWorktree({ path: made.path, copyOf: repo, env }), { status: 409, code: "worktree_dirty", message: DIRTY });
+    assert.ok(existsSync(recordOf(SESSION_A)), "still kept");
+    git(repo, "branch", "rescued", detached);
+    await removeWorktree({ path: made.path, copyOf: repo, env });
+    assert.equal(existsSync(recordOf(SESSION_A)), false, "the record is dropped");
+    assert.equal(git(repo, "rev-parse", "rescued").trim(), detached);
+    assert.ok(existsSync(path.join(records, ".DS_Store")), "and the stray file was not touched");
+  });
+});
+
 test("M6: the page waits a little longer than the server's own worst case for a folder check, a copy start and a removal", async () => {
   const source = await readFile(new URL("../src/sessionsApi.ts", import.meta.url), "utf8");
   for (const [key, value] of [["folderCheck", 22000], ["createCopy", 240000], ["removeWorktree", 90000]]) {

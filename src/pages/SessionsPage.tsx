@@ -28,7 +28,7 @@ import SessionTerminal from "../ui/components/SessionTerminal";
 import type { SessionTerminalHandle } from "../ui/components/SessionTerminal";
 import SplitDivider from "../ui/components/SplitDivider";
 import StatusWord from "../ui/components/StatusWord";
-import Toast from "../ui/components/Toast";
+import { showShellToast } from "../ui/shellToast";
 import { isDesktopApp } from "../ui/desktop";
 import { openNewSession, takeFocusNextSession } from "../ui/newSession";
 import { NOTIFY_NOTE_KEY, notifyNote } from "../ui/alertsShared";
@@ -166,8 +166,6 @@ export default function SessionsPage() {
   const otherPaneId = splitOn ? (splitPanes.find((session) => session.id !== selectedId)?.id ?? "") : "";
   const [prefs, setPrefs] = useState<TerminalPrefs>(() => readPrefs(desktop));
   const [focusTerminal, setFocusTerminal] = useState(() => takeFocusNextSession());
-  // A sentence from the terminal itself, for example "Link copied. Open it in your browser." (ruling R25).
-  const [terminalNote, setTerminalNote] = useState<{ id: number; text: string } | null>(null);
   const [stopping, setStopping] = useState<Asking | null>(null);
   // The server's own note from the last Stop pressed here, with the terminal key of the run it stopped.
   const [stopNote, setStopNote] = useState<StopNote | null>(null);
@@ -249,6 +247,9 @@ export default function SessionsPage() {
       : askedFor.current === wanted && askedBody.current !== null && askedBody.current !== body;
     if (!settled) return;
     setWanted(selectedId);
+    // A keyboard hand-over that was still waiting (Enter on a pane, ⌘1-9, Resume) is dropped with the old address: once
+    // the address names a tab that is open, the terminal would take the keys from wherever they went (sweep A item 7).
+    setFocusTerminal(false);
     navigateTo("sessions", selectedId ? { session: selectedId } : {});
   }, [body, wanted, wantedListed, sessions, hidden, selectedId]);
 
@@ -366,8 +367,10 @@ export default function SessionsPage() {
   const onTerminalState = useCallback(() => {
     if (alive.current) refresh();
   }, [refresh]);
+  // A sentence from the terminal itself, for example "Link copied. Open it in your browser." (ruling R25). It goes into the
+  // shell's one toast slot, so it never sits on top of a message the shell is showing (sweep A item 6, U5 review M7).
   const onTerminalNotice = useCallback((text: string) => {
-    if (alive.current && text) setTerminalNote({ id: Date.now(), text });
+    if (alive.current && text) showShellToast(text);
   }, []);
 
   function changePrefs(next: TerminalPrefs) {
@@ -754,8 +757,6 @@ export default function SessionsPage() {
           ) : null}
         </AgentConfirmModal>
       ) : null}
-
-      {terminalNote ? <Toast key={terminalNote.id} message={terminalNote.text} tone="neutral" onClose={() => setTerminalNote(null)} /> : null}
     </section>
   );
 }

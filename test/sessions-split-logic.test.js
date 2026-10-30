@@ -245,6 +245,12 @@ test("the fix round is wired: a pane sizes itself, the divider is first for Tab,
   const terminal = source("ui/components/SessionTerminal.tsx");
   assert.ok(terminal.includes("sizesItself?: boolean"), "the terminal has the sizesItself prop");
   assert.match(terminal, /latest\.current\.sizesItself !== true \|\| !document\.hasFocus\(\)\) return;\s*takeKeys\(\);/, "and takes the writer role (not the keyboard focus) only while the window has the focus");
+  // Sweep A item 7 (U6 re-review): the address reset drops a pending keyboard hand-over, and a window that comes back to the
+  // front asks for the writer role again for a pane it did not focus (the once-per-socket rule is skipped only there).
+  assert.match(page, /setWanted\(selectedId\);\s*(?:\/\/[^\n]*\n\s*)*setFocusTerminal\(false\);\s*navigateTo\("sessions"/, "the address reset clears the pending focusTerminal flag");
+  assert.match(terminal, /const sizeSelf = \(again = false\) => \{\s*if \(disposed \|\| sessionEnded \|\| shown !== "open" \|\| \(hasKeys && !again\)\) return;/, "sizeSelf can skip the once-per-socket rule");
+  assert.match(terminal, /if \(document\.activeElement === t\.textarea\) takeKeys\(\);\s*else sizeSelf\(true\);/, "and only a window coming back to the front does");
+  assert.equal([...terminal.matchAll(/sizeSelf\(true\)/g)].length, 1, "no other caller skips the rule");
   const css = source("ui/sessions.css");
   assert.match(css, /\.os-sess-split__divider\s*\{[^}]*\n\s*order:\s*2;/, "the divider is placed between the panes with CSS order");
   const divider = source("ui/components/SplitDivider.tsx");

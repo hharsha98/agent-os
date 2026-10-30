@@ -773,6 +773,51 @@ test("handoff in the summary: pending and copy from setHandoff, typed from typeI
   });
 });
 
+test("keepGoingFailure in the summary (sweep A item 11, X10 N1): the sentence of a Keep going that could not resume shows on the ended session only, until it runs again or is dismissed; memory only, never in meta.json", async () => {
+  await withWorld({}, async (world, { agentOsHome, project }) => {
+    const m = world.manager;
+    const { id, pty } = await liveSession(world, "claude", project);
+    const SENTENCE = "That session is still running, so there is nothing to resume.";
+    assert.equal((await m.get(id)).keepGoingFailure, null);
+    m.setKeepGoingFailure(id, SENTENCE);
+    assert.equal((await m.get(id)).keepGoingFailure, null, "a running session shows none");
+
+    pty.exit(0);
+    await waitFor(async () => (await m.get(id)).status === "exited");
+    assert.equal((await m.get(id)).keepGoingFailure, SENTENCE, "once it has ended the sentence shows");
+    assert.equal((await m.list({ includeUpdate: true })).find((session) => session.id === id).keepGoingFailure, SENTENCE, "and in the list");
+    m.setKeepGoingFailure(id, "A\u0007B\ncd");
+    assert.equal((await m.get(id)).keepGoingFailure, "AB cd", "plain one-line text");
+    m.setKeepGoingFailure(id, "x".repeat(500));
+    const cut = (await m.get(id)).keepGoingFailure;
+    assert.equal(Array.from(cut).length, 300);
+    assert.ok(cut.endsWith("…"));
+    m.setKeepGoingFailure(id, null);
+    assert.equal((await m.get(id)).keepGoingFailure, null, "null clears it");
+    m.setKeepGoingFailure(id, "   ");
+    assert.equal((await m.get(id)).keepGoingFailure, null, "blank text keeps nothing");
+    assert.doesNotThrow(() => m.setKeepGoingFailure("not-a-session-id", SENTENCE));
+
+    // Never on disk.
+    m.setKeepGoingFailure(id, SENTENCE);
+    const meta = await readFile(path.join(agentOsHome, "sessions", id, "meta.json"), "utf8");
+    assert.ok(!meta.includes("keepGoingFailure") && !meta.includes("nothing to resume"), "no trace in meta.json");
+
+    // It goes when the session runs again.
+    await m.resume(id);
+    assert.equal((await m.get(id)).keepGoingFailure, null, "a resumed session starts clean");
+    world.ptys.at(-1).exit(0);
+    await waitFor(async () => (await m.get(id)).status === "exited");
+    assert.equal((await m.get(id)).keepGoingFailure, null, "and it does not come back when that run ends");
+
+    // Or when it is dismissed.
+    m.setKeepGoingFailure(id, SENTENCE);
+    assert.equal((await m.get(id)).keepGoingFailure, SENTENCE);
+    await m.dismiss(id);
+    assert.equal((await m.get(id)).keepGoingFailure, null, "a dismissed session keeps nothing");
+  });
+});
+
 // ---- 3. real PTY: what a fake agent really receives ---------------------------------------------------------
 
 function ptyEnv(home, bin, log) {
@@ -958,6 +1003,16 @@ test("Hand-off section: a Send button only in a Claude Code session (to Codex) a
   for (const agentId of ["cursor", "hermes", "openclaw"]) assert.deepEqual(ui.sendTargets({ kind: "agent", agentId }), [], agentId);
   assert.deepEqual(ui.sendTargets({ kind: "update", agentId: "claude" }), []);
   assert.deepEqual(ui.sendTargets({ kind: "setup", agentId: "codex" }), []);
+});
+
+test("Hand-off section: the typed text arrives in a live region that is in the page from the start, so a screen reader reads it once and the caption is not repeated (sweep A item 9)", async () => {
+  const section = await readFile(new URL("../src/ui/components/HandoffSection.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/ui/sessions.css", import.meta.url), "utf8");
+  // One status region, always rendered (not only while the state is "typed"), holding the typed box and nothing else of its own.
+  assert.match(section, /<div className="os-handoff__typed" role="status">\s*\{status\?\.kind === "typed" \? \(/, "the region is always there; the typed box is what gets added to it");
+  assert.equal([...section.matchAll(/\{HANDOFF_CAPTION\}/g)].length, 2, "the caption words are written in two places: under Send, and (a session with no Send) above its typed text");
+  assert.doesNotMatch(section, /className="os-handoff__status" role="status">\s*\{HANDOFF_CAPTION\}/, "and the caption is no longer a status of its own, so it is not announced twice");
+  assert.match(css, /\.os-handoff__cap ~ \.os-handoff__typed > \.os-handoff__box/, "the box keeps its space under the caption");
 });
 
 test("Hand-off section: what a session's own panel says about text handed to it", () => {

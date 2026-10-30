@@ -7,7 +7,7 @@
 // `showFrom` asks for it (the session panel). An answered card reads "You allowed it once" or "You said no" until a few
 // seconds after OpenClaw's list drops it (approvalView, alertsShared.ts). Keyboard: after a successful answer the keys
 // go to that card (the dialog's opener, its button, is gone), see ApprovalList.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Check, CircleCheck, CircleHelp, CircleX, X } from "lucide-react";
 import { resolveApproval, sessionGotNoAnswer, sessionProblem } from "../../sessionsApi";
@@ -33,7 +33,8 @@ export default function ApprovalCard({
   from,
   busy,
   error = "",
-  onAnswer
+  onAnswer,
+  onLeaveWithFocus
 }: {
   card: Card;
   answered: ApprovalDecision | null;
@@ -42,12 +43,26 @@ export default function ApprovalCard({
   // OpenClaw's own words when it refused this card's last answer, kept on the card after the dialog closed.
   error?: string;
   onAnswer: (decision: ApprovalDecision) => void;
+  // Called when the card goes away while the keys are on it (or on one of its buttons), see below.
+  onLeaveWithFocus?: () => void;
 }) {
   const heading = answered ? approvalDoneHeading(answered) : approvalHeading(card);
   const Icon = answered === "allow-once" ? CircleCheck : answered === "deny" ? CircleX : CircleHelp;
+  const articleRef = useRef<HTMLElement>(null);
+  const leaving = useRef(onLeaveWithFocus);
+  leaving.current = onLeaveWithFocus;
+  // A card that leaves takes its keyboard focus with it (the page body gets it), for example the answered card about 6
+  // seconds after OpenClaw dropped it. This cleanup runs before the card is taken out of the page, so the card can still
+  // tell whether it holds the keys, and the list can hand them on first (sweep A item 5, U5 re-review N1).
+  useLayoutEffect(() => {
+    const node = articleRef.current;
+    return () => {
+      if (node && document.activeElement && node.contains(document.activeElement)) leaving.current?.();
+    };
+  }, []);
   // tabIndex -1 and data-approval: where the keys go once this card's answer has removed its buttons (ApprovalList).
   return (
-    <article className={`os-approval${answered ? " is-done" : ""}`} aria-label={heading} tabIndex={-1} data-approval={card.id}>
+    <article className={`os-approval${answered ? " is-done" : ""}`} aria-label={heading} tabIndex={-1} data-approval={card.id} ref={articleRef}>
       <h3 className="os-approval__title">
         <Icon size={18} aria-hidden="true" />
         {/* role="status": "You allowed it once" and "You said no" are announced when the answer lands. */}
@@ -121,6 +136,16 @@ export function ApprovalList({
       alive.current = false;
     };
   }, []);
+  // How many cards the latest render shows, and whether the whole list is going away (its layout cleanup runs before its
+  // cards' own), for a card that leaves with the keys on it: see keysFromLeavingCard.
+  const shown = useRef(0);
+  const closing = useRef(false);
+  useLayoutEffect(() => {
+    closing.current = false;
+    return () => {
+      closing.current = true;
+    };
+  }, []);
   // A one-second clock only while an answered card waits to leave. Each tick also forgets an answer OpenClaw no longer
   // lists and that showed long enough, so the clock stops once nothing waits.
   useInterval(
@@ -161,6 +186,18 @@ export function ApprovalList({
     else fallback.current?.();
   }, [answered, asking, cards]);
   const items = approvalView(cards, answered, now);
+  shown.current = items.length;
+
+  // A card went away with the keys on it (an answered card, about 6 seconds after OpenClaw dropped it; or a card OpenClaw
+  // withdrew while the person was on its button). Called while the card is still in the page: the keys go to the list
+  // while other cards remain, else to `fallbackFocus`, not to the page body. Nothing moves when the whole list is going
+  // away (the person left the page).
+  function keysFromLeavingCard() {
+    if (closing.current) return;
+    const list = listRef.current;
+    if (shown.current > 0 && list) list.focus();
+    else fallback.current?.();
+  }
 
   async function send() {
     if (!asking || asking.busy) return;
@@ -213,6 +250,7 @@ export function ApprovalList({
                 busy={asking?.busy === true && asking.card.id === item.card.id}
                 error={errors[item.card.id] ?? ""}
                 onAnswer={(decision) => setAsking({ card: item.card, decision, busy: false, error: "" })}
+                onLeaveWithFocus={keysFromLeavingCard}
               />
             </li>
           ))}

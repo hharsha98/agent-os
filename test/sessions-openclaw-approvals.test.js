@@ -481,14 +481,17 @@ test("resolve sends only Allow once or Deny, only for an approval in the latest 
   const manager = fakeManager();
   manager.open(S1);
   const row = fakeApproval({ id: "appr-r1", sessionKey: keyOf(S1) });
-  const expiring = fakeApproval({ id: "appr-old", expiresAtMs: Date.now() + 600 });
+  // The module's own clock is injected (sweep A item 3): appr-old runs out when the test says so, not after
+  // 600 real milliseconds, so a slow machine can't make it vanish before the re-poll that has to list it.
+  let clock = Date.now();
+  const expiring = fakeApproval({ id: "appr-old", expiresAtMs: clock + 600 });
   let release = null;
   const cli = fakeCli(async (args) => {
     if (args[1] === "pending") return listed([row, expiring]);
     if (args[3] === "deny") await new Promise((resolve) => (release = resolve));
     return { ok: true, code: 0, aborted: false, stdout: `resolved ${args[2]} ${args[3]}\n`, stderr: "" };
   });
-  const approvals = createOpenclawApprovals({ manager, runCli: cli.run, intervalMs: 60000 });
+  const approvals = createOpenclawApprovals({ manager, runCli: cli.run, intervalMs: 60000, now: () => clock });
   try {
     await waitFor(() => approvals.snapshot().approvals.length === 2);
     assert.equal(cli.pending().length, 1, "one poll so far: the next one is a minute away");
@@ -521,11 +524,11 @@ test("resolve sends only Allow once or Deny, only for an approval in the latest 
       code: "approval_busy",
       message: "Agent OS is already sending your answer to this approval."
     });
+    // An approval past its expiry is not waiting any more: the clock moves past appr-old's time (appr-r1 has minutes left).
+    // (The Deny took appr-r1 off the list at once, so first the re-poll lists it again, and then appr-old is gone.)
+    clock += 1000;
     release();
     assert.deepEqual(await first, { message: null });
-
-    // An approval past its expiry is not waiting any more.
-    // (The Deny took appr-r1 off the list at once, so first the re-poll lists it again, and then appr-old runs out.)
     await waitFor(() => approvals.snapshot().approvals.map((card) => card.id).join() === "appr-r1");
     assert.deepEqual(approvals.snapshot().approvals.map((card) => card.id), ["appr-r1"]);
     await assert.rejects(approvals.resolve("appr-old", "deny"), { status: 404, code: "approval_missing" });
@@ -690,7 +693,7 @@ test("a refused answer comes back as plain text: OpenClaw's own words from stder
       [refusal({ stderr: "not allowed for this approval", stdout: "ignored" }), "OpenClaw didn't take that answer: not allowed for this approval"],
       [refusal({ stdout: "conflicting decision\r\n" }), "OpenClaw didn't take that answer: conflicting decision"],
       [refusal({ stderr: "  \n" }), "OpenClaw didn't take that answer and gave no reason."],
-      [refusal({ stderr: "x".repeat(1000) }), `OpenClaw didn't take that answer: ${"x".repeat(300)}`],
+      [refusal({ stderr: "x".repeat(1000) }), `OpenClaw didn't take that answer: ${"x".repeat(299)}\u2026`],
       [
         () => {
           throw new Error("spawn EAGAIN");

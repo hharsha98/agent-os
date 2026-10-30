@@ -80,6 +80,7 @@ const SUMMARY_KEYS = [
   "meter",
   "copyOf",
   "handoff",
+  "keepGoingFailure",
   "recordingBytes"
 ];
 const FAKE_MODES = {
@@ -3665,6 +3666,72 @@ test("worktree offer (X9): while a copy is being removed, nothing may start in i
     release();
     assert.deepEqual(await removing, { removed: true });
     assert.equal(existsSync(owner.folder), false);
+  });
+});
+
+test("worktree offer (U11 re-review M-8, sweep A): removing a copy leaves a session another request is changing right now alone, and releases every session's guard even when a write fails", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    // meta.json writes: one write of `hold.id` waits (a Dismiss in flight), and every write of `failId` fails.
+    let hold = null;
+    let failId = null;
+    const writes = async (file, data) => {
+      const id = path.basename(path.dirname(file));
+      if (path.basename(file) === "meta.json") {
+        if (hold && hold.id === id) {
+          const current = hold;
+          hold = null;
+          current.reached();
+          await current.wait;
+        }
+        if (failId === id) throw new Error("The disk is full (test).");
+      }
+      return writeJson(file, data);
+    };
+    const world = copyWorld(home, agentOsHome, { writeJson: writes });
+    const endedIn = async (agentId, folder, copy = false) => {
+      const session = await world.manager.create({ agentId, folder, ...(copy ? { copy: true } : {}) });
+      world.ptys.at(-1).exit(0);
+      await ended(world, session.id);
+      return session;
+    };
+
+    // 1. Three ended sessions ran in one copy. A Dismiss of one of them is in flight (it is writing that session's
+    // meta.json), so the removal leaves that session to its own request: the other two are marked, it is not.
+    const owner = await endedIn("claude", project, true);
+    const dismissed = await endedIn("codex", owner.folder);
+    const bystander = await endedIn("cursor", owner.folder);
+    let reached = () => {};
+    const atWrite = new Promise((resolve) => {
+      reached = resolve;
+    });
+    let release = () => {};
+    hold = { id: dismissed.id, reached: () => reached(), wait: new Promise((resolve) => (release = resolve)) };
+    const dismissing = world.manager.dismiss(dismissed.id);
+    await atWrite;
+    assert.deepEqual(await world.manager.removeWorktree(owner.id), { removed: true });
+    assert.equal(existsSync(owner.folder), false, "the copy is gone");
+    assert.equal((await metaOnDisk(agentOsHome, owner.id)).worktreeRemovedAt, "2026-10-14T09:00:00.000Z", "the session that asked is marked");
+    assert.equal((await metaOnDisk(agentOsHome, bystander.id)).worktreeRemovedAt, "2026-10-14T09:00:00.000Z", "so is one nobody is changing");
+    assert.equal((await metaOnDisk(agentOsHome, dismissed.id)).worktreeRemovedAt ?? null, null, "one another request is writing right now is left to that request");
+    release();
+    await dismissing;
+    const after = await metaOnDisk(agentOsHome, dismissed.id);
+    assert.equal(after.dismissed, true, "and that request's own write was not lost");
+    await world.manager.dismiss(dismissed.id);
+
+    // 2. A write that fails halfway through the marking still releases every guard: nothing stays "session_busy".
+    const owner2 = await endedIn("claude", project, true);
+    const failing = await endedIn("codex", owner2.folder);
+    failId = failing.id;
+    await assert.rejects(world.manager.removeWorktree(owner2.id), /The disk is full \(test\)\./);
+    failId = null;
+    const dismissedAfter = await world.manager.dismiss(failing.id);
+    assert.equal(dismissedAfter.dismissed, true, "the session whose write failed can be dismissed: its guard was released");
+    // The failed write left that session unmarked, so it can ask again: nothing is stuck as busy or as a copy being removed.
+    assert.equal((await metaOnDisk(agentOsHome, failing.id)).worktreeRemovedAt ?? null, null);
+    assert.deepEqual(await world.manager.removeWorktree(failing.id), { removed: true });
+    assert.equal((await metaOnDisk(agentOsHome, failing.id)).worktreeRemovedAt, "2026-10-14T09:00:00.000Z");
   });
 });
 

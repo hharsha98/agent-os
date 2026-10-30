@@ -82,19 +82,24 @@ export default function HandoffSection({ session, onOpenSession }: { session: Se
           …
         </p>
       ) : null}
-      {status?.kind === "typed" ? (
-        targets.length ? (
-          // The caption above already says it, so it is shown once: the typed text follows it, named by it.
-          <HandoffText text={status.text} labelId={`${id}-cap`} />
-        ) : (
-          <>
-            <p id={`${id}-typed`} className="os-handoff__status" role="status">
-              {HANDOFF_CAPTION}
-            </p>
-            <HandoffText text={status.text} labelId={`${id}-typed`} />
-          </>
-        )
-      ) : null}
+      {/* A live region that is in the page from the start, empty: when the typed text lands, its box is added here and read
+          out once (a region that mounts with its words in it is often not read). No words are repeated for that: the
+          caption stays the only line, and names the box (sweep A item 9). */}
+      <div className="os-handoff__typed" role="status">
+        {status?.kind === "typed" ? (
+          targets.length ? (
+            // The caption above already says it, so it is shown once: the typed text follows it, named by it.
+            <HandoffText text={status.text} labelId={`${id}-cap`} />
+          ) : (
+            <>
+              <p id={`${id}-typed`} className="os-handoff__status">
+                {HANDOFF_CAPTION}
+              </p>
+              <HandoffText text={status.text} labelId={`${id}-typed`} />
+            </>
+          )
+        ) : null}
+      </div>
       {status?.kind === "copy" ? <HandoffCopyFallback text={status.text} reason={status.reason} /> : null}
       {problem ? (
         <p className="os-sess-panel__note" role="alert">

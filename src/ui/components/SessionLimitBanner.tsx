@@ -31,12 +31,16 @@ import {
   SHOW_NEW_SESSION_LABEL,
   TRY_AGAIN_LABEL,
   WAIT_FOR_RESET_LABEL,
+  forgetOpened,
+  keepGoingFailureText,
   keepGoingStaysOnScreen,
+  keepsRefusal,
   keptGoingTarget,
   limitBannerCopy,
   needsBrainLink,
   openedFor,
   openedSessionLine,
+  openedStillOpen,
   rememberOpened,
   sessionWaitingText,
   showsLimitBanner,
@@ -58,7 +62,7 @@ function focusPaneOrTitle(pane: HTMLElement | null) {
 export default function SessionLimitBanner({ session }: { session: SessionSummary }) {
   const shown = showsLimitBanner(session);
   const hold = waitKey(session);
-  const { refresh } = useSessionsList();
+  const { refresh, source } = useSessionsList();
   const [info, setInfo] = useState<KeepGoingInfo | null>(null);
   const [failed, setFailed] = useState(false);
   const [waitingFor, setWaitingFor] = useState("");
@@ -77,6 +81,10 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
   const acting = useRef(false);
   const shownNow = useRef(shown);
   shownNow.current = shown;
+  const statusNow = useRef(session.status);
+  statusNow.current = session.status;
+  // True after a refusal that left nothing on screen (the session runs again): the keys then go to the pane, not the page.
+  const needsFocus = useRef(false);
   const wasShown = useRef(shown);
   const rootRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLElement | null>(null);
@@ -117,6 +125,17 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
     else reads.current += 1;
   }, [hold, shown, load]);
 
+  // The new session this hold opened stops counting once the sessions list shows it ended: the hold then offers Keep going
+  // again, as the server does (N2).
+  const known = source.state === "ok" && !source.stale ? source.data.sessions : null;
+  const openedNow = openedStillOpen(openedId, known);
+  useEffect(() => {
+    if (openedId !== null && openedNow === null) {
+      forgetOpened(hold);
+      setOpenedId(null);
+    }
+  }, [openedId, openedNow, hold]);
+
   // A failed Keep going explains why the conversation ended until the session runs again, or is another session.
   useEffect(() => {
     setFailure("");
@@ -156,7 +175,19 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
     else if (want === "choices") (keepRef.current ?? waitRef.current)?.focus();
   }, [waitingFor]);
 
-  if (!keepGoingStaysOnScreen(shown, busy, failure)) return null;
+  // A refusal that came after the session already runs again closed the dialog and left nothing on screen: the keys go to
+  // the pane's terminal or the panel's title, not the page (N4, with M7).
+  useEffect(() => {
+    if (asking || !needsFocus.current) return;
+    needsFocus.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) focusPaneOrTitle(paneRef.current);
+  }, [asking]);
+
+  // The sentence to show for a Keep going that stopped the session and could not resume it: the one just received here, else
+  // the server's, kept with the ended session (N1).
+  const failureWords = keepGoingFailureText(failure, session);
+  if (!keepGoingStaysOnScreen(shown, busy, failureWords)) return null;
 
   async function confirm() {
     if (busy || acting.current) return;
@@ -183,11 +214,16 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
       if (!alive.current) return;
       const message = sessionProblem(err);
       setError(message);
-      setFailure(message);
+      // Kept after the dialog only for a session that is ended or still shown as held; on one that runs again (Claude Code's
+      // own auto-resume got there first: "not held") nothing stays behind (N4).
+      const keep = keepsRefusal(statusNow.current);
+      setFailure(keep ? message : "");
       // Already past "held" (the stop happened, the resume then failed): the banner below says why. Otherwise the
       // dialog keeps the sentence, and the options are read again.
-      if (!shownNow.current) setAsking(false);
-      else void load();
+      if (!shownNow.current) {
+        setAsking(false);
+        if (!keep) needsFocus.current = true;
+      } else void load();
     } finally {
       acting.current = false;
       if (alive.current) setBusy(false);
@@ -211,8 +247,8 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
     </button>
   ) : (
     <>
-      {openedId !== null ? (
-        <button type="button" className="os-btn os-btn--secondary" onClick={() => navigateTo("sessions", { session: openedId })}>
+      {openedNow !== null ? (
+        <button type="button" className="os-btn os-btn--secondary" onClick={() => navigateTo("sessions", { session: openedNow })}>
           <ArrowLeftRight size={16} aria-hidden="true" />
           {SHOW_NEW_SESSION_LABEL}
         </button>
@@ -256,9 +292,9 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
             <>
               {copy.resets ? <p className="os-sess-limit__line">{copy.resets}</p> : null}
               <p className="os-sess-limit__sub">{copy.sub}</p>
-              {openedId !== null ? <p className="os-sess-limit__note">{openedSessionLine(session.agentLabel)}</p> : null}
-              {openedId === null && info === null && !failed ? <p className="os-sess-limit__note">{OPTIONS_LOADING}</p> : null}
-              {openedId === null && failed ? (
+              {openedNow !== null ? <p className="os-sess-limit__note">{openedSessionLine(session.agentLabel)}</p> : null}
+              {openedNow === null && info === null && !failed ? <p className="os-sess-limit__note">{OPTIONS_LOADING}</p> : null}
+              {openedNow === null && failed ? (
                 <p className="os-sess-limit__note" role="alert">
                   <StatusMark kind="error" /> {OPTIONS_FAILED}{" "}
                   <button type="button" className="os-sess-limit__link" onClick={() => void load()}>
@@ -266,7 +302,7 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
                   </button>
                 </p>
               ) : null}
-              {openedId === null && info && !info.available ? (
+              {openedNow === null && info && !info.available ? (
                 <p className="os-sess-limit__note">
                   <StatusMark kind="unknown" label="note" /> {info.reason}
                   {needsBrainLink(info) ? (
@@ -283,9 +319,9 @@ export default function SessionLimitBanner({ session }: { session: SessionSummar
           )}
         </Banner>
       ) : null}
-      {failure && !shown ? (
+      {failureWords && !shown ? (
         <div className="os-sess-limit__failure" ref={failureRef} tabIndex={-1}>
-          <Banner tone="danger">{failure}</Banner>
+          <Banner tone="danger">{failureWords}</Banner>
         </div>
       ) : null}
       {asking && info?.available && (shown || busy) ? (

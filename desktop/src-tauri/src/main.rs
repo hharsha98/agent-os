@@ -30,7 +30,7 @@
 use std::collections::VecDeque;
 use std::env;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
@@ -52,6 +52,15 @@ const ALERT_LINE_PREFIX: &str = "AGENT_OS_ALERT:";
 const ALERT_KINDS: [&str; 3] = ["waiting", "approval", "limit"];
 /// The longest alert text a notification shows, in characters (the server cuts it the same way).
 const ALERT_TEXT_MAX: usize = 200;
+/// The longest agent name a notification title shows, in characters (the server prints a short
+/// fixed name; this only keeps a wrong or odd value from filling the title).
+const ALERT_AGENT_MAX: usize = 40;
+/// An alert line is about 2.5 KB at most (200 characters, escaped, plus the ids); a longer one is
+/// not an alert and is not parsed.
+const ALERT_LINE_MAX_BYTES: usize = 8 * 1024;
+/// The most bytes read_lines_lossy keeps of one line. The rest of a longer line is read and
+/// dropped, so one stray binary dump can neither fill memory nor stop the reader.
+const LINE_MAX_BYTES: usize = 1 << 20;
 /// The action the notification plugin reports for a click on the notification itself.
 const NOTIFICATION_TAP: &str = "tap";
 /// How long to wait for that line before showing an error.
@@ -266,13 +275,17 @@ struct AlertNote {
 
 /// Reads one `AGENT_OS_ALERT:<json>` line. Anything else is not an alert: another line, broken
 /// JSON, a missing or non-string field, an empty session id or agent, or a kind other than
-/// waiting, approval or limit. The text is cut to 200 characters (characters, not bytes, so no
-/// letter is split).
+/// waiting, approval or limit, or a line longer than ALERT_LINE_MAX_BYTES (never parsed). The text
+/// is cut to 200 characters and the agent name to 40, control characters removed (characters, not
+/// bytes, so no letter is split).
 fn parse_alert_line(line: &str) -> Option<AlertNote> {
+    if line.len() > ALERT_LINE_MAX_BYTES {
+        return None;
+    }
     let value: serde_json::Value = serde_json::from_str(line.strip_prefix(ALERT_LINE_PREFIX)?).ok()?;
     let field = |name: &str| -> Option<String> { value.get(name)?.as_str().map(str::to_owned) };
     let session_id = field("sessionId")?;
-    let agent = field("agent")?;
+    let agent: String = field("agent")?.chars().filter(|c| !c.is_control()).take(ALERT_AGENT_MAX).collect();
     let kind = field("kind")?;
     let text = field("text")?;
     if session_id.is_empty() || agent.trim().is_empty() || !ALERT_KINDS.contains(&kind.as_str()) {
@@ -311,22 +324,46 @@ fn notification_click_shows_window(action_id: &str) -> bool {
 /// Calls `each` with every line `reader` gives, without its line ending ("\n" or "\r\n"), until
 /// the end of the input or a read error. Bytes that are not UTF-8 become U+FFFD instead of ending
 /// the loop (SP4 ruling R21): `BufRead::lines()` stops at the first such line, and then nobody
-/// drains the pipe, so a chatty server would block on a full pipe.
+/// drains the pipe, so a chatty server would block on a full pipe. A line longer than
+/// LINE_MAX_BYTES is given to `each` as its first LINE_MAX_BYTES bytes; the rest of it is read and
+/// dropped, and the next line comes as usual.
 fn read_lines_lossy<R: BufRead>(mut reader: R, mut each: impl FnMut(&str)) {
     let mut buf = Vec::new();
     loop {
         buf.clear();
-        match reader.read_until(b'\n', &mut buf) {
+        match (&mut reader).take(LINE_MAX_BYTES as u64).read_until(b'\n', &mut buf) {
             Ok(0) | Err(_) => return,
-            Ok(_) => {
+            Ok(read) => {
                 if buf.last() == Some(&b'\n') {
                     buf.pop();
                     if buf.last() == Some(&b'\r') {
                         buf.pop();
                     }
+                } else if read >= LINE_MAX_BYTES {
+                    // Too long for one line: the rest of it is not kept.
+                    skip_rest_of_line(&mut reader);
                 }
                 each(&String::from_utf8_lossy(&buf));
             }
+        }
+    }
+}
+
+/// Reads and drops everything up to and including the next "\n" (or to the end of the input).
+fn skip_rest_of_line<R: BufRead>(reader: &mut R) {
+    loop {
+        let (found, used) = match reader.fill_buf() {
+            Ok([]) => return,
+            Ok(available) => match available.iter().position(|byte| *byte == b'\n') {
+                Some(at) => (true, at + 1),
+                None => (false, available.len()),
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        reader.consume(used);
+        if found {
+            return;
         }
     }
 }
@@ -416,7 +453,8 @@ fn notify_alert(app: &AppHandle, note: &AlertNote) {
         notification = notification.body(note.text.as_str());
     }
     if let Err(err) = notification.show() {
-        eprintln!("Agent OS couldn't show a notification: {err}");
+        // Not eprintln!: that panics when stderr cannot be written, and this runs on the main thread.
+        let _ = writeln!(std::io::stderr(), "Agent OS couldn't show a notification: {err}");
     }
 }
 
@@ -434,7 +472,7 @@ fn listen_for_notification_clicks(app: &tauri::App) {
     if let Err(err) = registered {
         // Never on desktop (the plugin says so). Notifications still show; a click then only
         // brings the app to the front.
-        eprintln!("Agent OS couldn't listen for notification clicks: {err}");
+        let _ = writeln!(std::io::stderr(), "Agent OS couldn't listen for notification clicks: {err}");
     }
 }
 
@@ -1343,6 +1381,94 @@ mod alert_tests {
         read_lines_lossy(Cursor::new(input.as_slice()), |line| lines.push(line.to_string()));
         assert_eq!(lines, ["first", "\u{fffd}\u{fffd} not text \u{fffd}", alert.as_str(), "last"]);
         assert_eq!(parse_alert_line(&lines[2]).map(|note| note.kind), Some("limit".to_string()));
+    }
+
+    #[test]
+    fn a_title_never_holds_a_very_long_or_odd_agent_name() {
+        let with_agent = |agent: &str| {
+            format!(
+                "{ALERT_LINE_PREFIX}{}",
+                serde_json::json!({ "sessionId": "s-1", "agent": agent, "kind": "waiting", "text": "t" })
+            )
+        };
+        let long = parse_alert_line(&with_agent(&"A".repeat(100))).expect("an alert");
+        assert_eq!(long.agent, "A".repeat(40), "40 characters at most");
+        assert_eq!(alert_title(&long.kind, &long.agent).as_deref(), Some(format!("{} is waiting for you", "A".repeat(40)).as_str()));
+        let letters = parse_alert_line(&with_agent(&"é".repeat(100))).expect("an alert");
+        assert_eq!(letters.agent, "é".repeat(40), "characters, not bytes: none is split");
+        let odd = parse_alert_line(&with_agent("Co\u{7}de\n\u{1b}[31m X")).expect("an alert");
+        assert_eq!(odd.agent, "Code[31m X", "control characters are removed");
+        assert_eq!(parse_alert_line(&with_agent("Claude Code")).expect("an alert").agent, "Claude Code");
+        assert_eq!(parse_alert_line(&with_agent("\u{7}\n \u{1b}")), None, "a name that is only control characters and spaces is no name");
+    }
+
+    #[test]
+    fn a_line_over_the_size_limit_is_not_an_alert() {
+        let big = format!("{ALERT_LINE_PREFIX}{}", serde_json::json!({ "sessionId": "s-1", "agent": "Codex", "kind": "waiting", "text": "t", "pad": "x".repeat(ALERT_LINE_MAX_BYTES) }));
+        assert!(big.len() > ALERT_LINE_MAX_BYTES);
+        assert_eq!(parse_alert_line(&big), None);
+        // Deeply nested and very long: refused at once, never parsed.
+        assert_eq!(parse_alert_line(&format!("{ALERT_LINE_PREFIX}{}", "[".repeat(100_000))), None);
+        // A real alert with the longest text the server prints (200 characters, all escaped) fits.
+        let worst = format!("{ALERT_LINE_PREFIX}{}", serde_json::json!({ "sessionId": "3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b", "agent": "Claude Code", "kind": "approval", "text": "\u{1}".repeat(200) }));
+        assert!(worst.len() < ALERT_LINE_MAX_BYTES, "{} bytes", worst.len());
+        assert!(parse_alert_line(&worst).is_some());
+    }
+
+    #[test]
+    fn a_very_long_line_is_cut_short_and_the_next_line_still_comes() {
+        let mut input = vec![b'x'; 2 * LINE_MAX_BYTES + 5];
+        input.extend_from_slice(b"\nnext\r\nlast");
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(input.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 3, "the long line, the next one and the last one");
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES, "only the first LINE_MAX_BYTES bytes are kept");
+        assert!(lines[0].bytes().all(|byte| byte == b'x'));
+        assert_eq!(&lines[1..], ["next", "last"]);
+    }
+
+    #[test]
+    fn a_line_right_at_the_size_limit_and_one_without_an_ending_are_handled() {
+        let alert = line("waiting", "Wants to use Bash");
+        // LINE_MAX_BYTES - 1 letters and the ending: the whole line, nothing dropped.
+        let mut exact = vec![b'y'; LINE_MAX_BYTES - 1];
+        exact.push(b'\n');
+        exact.extend_from_slice(alert.as_bytes());
+        exact.push(b'\n');
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(exact.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES - 1);
+        assert_eq!(lines[1], alert);
+        // LINE_MAX_BYTES letters and the ending: the letters are kept, the ending is dropped, and the next line is whole.
+        let mut full = vec![b'z'; LINE_MAX_BYTES];
+        full.push(b'\n');
+        full.extend_from_slice(alert.as_bytes());
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(full.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES);
+        assert_eq!(lines[1], alert);
+        // A long line that ends with the input, no ending at all: cut, and the reader ends.
+        let ending = vec![b'q'; LINE_MAX_BYTES + 100];
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(ending.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES);
+    }
+
+    #[test]
+    fn bytes_that_are_not_utf8_inside_an_alert_line_still_make_an_alert() {
+        let mut input = b"AGENT_OS_ALERT:{\"sessionId\":\"s-1\",\"agent\":\"Codex\",\"kind\":\"waiting\",\"text\":\"a".to_vec();
+        input.extend_from_slice(b"\xff\xc3");
+        input.extend_from_slice(b"b\"}\nnext\n");
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(input.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 2, "the bad bytes do not end the reader");
+        assert_eq!(lines[1], "next");
+        let note = parse_alert_line(&lines[0]).expect("an alert, with the bad bytes replaced");
+        assert_eq!(note.text, "a\u{fffd}\u{fffd}b");
+        assert_eq!(note.agent, "Codex");
     }
 
     #[test]

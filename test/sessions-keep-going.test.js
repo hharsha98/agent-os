@@ -222,6 +222,12 @@ function stubManager(sessions = [summary()], { screen = "", ready = [], conversa
       byId.get(id).handoff = { state: "typed", text, fromId: options?.fromId ?? null };
       return { ok: true };
     },
+    // Keep going's I1 sentence for a session it stopped and could not resume (sweep A item 11): kept on the ended session.
+    setKeepGoingFailure(id, text) {
+      calls.push(["setKeepGoingFailure", id, text]);
+      const found = byId.get(id);
+      if (found) found.keepGoingFailure = text ?? null;
+    },
     setHandoff(id, handoff) {
       calls.push(["setHandoff", id, handoff.state]);
       const found = byId.get(id);
@@ -599,6 +605,13 @@ test("keepGoing, Claude Code: a resume that fails after the stop answers with it
     ["resume", HELD_ID, { brainOverride: brain }]
   ]);
   assert.equal((await manager.get(HELD_ID)).status, "exited", "the conversation ended");
+  // Sweep A item 11 (X10 N1): the server keeps the refusal's own sentence with the ended session (cleared first, set after
+  // the failed resume), so a person who left the pane while it ran still reads why.
+  assert.deepEqual(named(manager, "setKeepGoingFailure"), [
+    ["setKeepGoingFailure", HELD_ID, null],
+    ["setKeepGoingFailure", HELD_ID, refusal.message]
+  ]);
+  assert.equal((await manager.get(HELD_ID)).keepGoingFailure, refusal.message);
   // Not held any more: another press is the not-held sentence, and nothing is retried by itself.
   await assert.rejects(keepGoing(manager, HELD_ID, fakeDeps()), (error) => error.code === "not_held");
   assert.equal(named(manager, "stop").length, 1);
@@ -607,6 +620,31 @@ test("keepGoing, Claude Code: a resume that fails after the stop answers with it
   await manager.resume(HELD_ID);
   assert.deepEqual(named(manager, "resume").at(-1), ["resume", HELD_ID, undefined]);
   assert.equal((await manager.get(HELD_ID)).status, "starting");
+});
+
+test("keepGoing, Claude Code (sweep A item 11, X10 N1): a success keeps no failure sentence; an error that is not a session error keeps none either; a refusal before the stop keeps none (the conversation was not stopped)", async () => {
+  // A success: the old sentence is cleared at the start and nothing is set.
+  const fine = stubManager();
+  await keepGoing(fine, HELD_ID, fakeDeps());
+  assert.deepEqual(named(fine, "setKeepGoingFailure"), [["setKeepGoingFailure", HELD_ID, null]]);
+  assert.equal((await fine.get(HELD_ID)).keepGoingFailure ?? null, null);
+
+  // An internal error (the route answers it with a fixed sentence and logs it): no sentence is kept.
+  const broken = stubManager();
+  broken.resume = async () => {
+    throw new Error("spawn EACCES /Users/someone/.secret-place/claude");
+  };
+  await assert.rejects(keepGoing(broken, HELD_ID, fakeDeps()), /spawn EACCES/);
+  assert.deepEqual(named(broken, "setKeepGoingFailure"), [
+    ["setKeepGoingFailure", HELD_ID, null],
+    ["setKeepGoingFailure", HELD_ID, null]
+  ]);
+  assert.equal((await broken.get(HELD_ID)).keepGoingFailure ?? null, null, "an internal error's words (a path, say) are never kept");
+
+  // Look only: refused before anything is stopped, so there is no ended session to explain.
+  const gate = stubManager();
+  await assert.rejects(keepGoing(gate, HELD_ID, fakeDeps({ isExecutionAllowed: async () => false })), (error) => error.code === "execution_gate_off");
+  assert.deepEqual(named(gate, "stop", "setKeepGoingFailure"), []);
 });
 
 test("keepGoing, Codex: the held session stays open; a new Codex session opens on the OpenRouter brain in the same folder, and the summary of the held screen is typed into it later under the hand-off rules (deliverTyped), never sent", async () => {

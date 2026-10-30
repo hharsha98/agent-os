@@ -57,6 +57,8 @@ import { NEW_RUN_EVENT, openNewRun } from "./newRun";
 import type { NewRunRequest } from "./newRun";
 import { NEW_SESSION_EVENT, openNewSession } from "./newSession";
 import type { NewSessionRequest } from "./newSession";
+import { SHELL_TOAST_EVENT, slotMessage } from "./shellToast";
+import type { ShellToastRequest, ShellToastTone } from "./shellToast";
 import { withTimeout } from "./homeShared";
 import { navigateTo } from "../nav";
 import type { SessionSummary } from "../types";
@@ -393,6 +395,21 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
     return () => window.removeEventListener(NEW_SESSION_EVENT, onNewSession);
   }, [sessionsAvailable]);
 
+  // A page's own short message (showShellToast, src/ui/shellToast.ts) is drawn in the same slot as the shell's messages, so
+  // two toasts never overlap. It is kept here as the latest page note; slotMessage decides what the slot shows: a message
+  // that stays until closed (a stop-all failure, a browser tab's "needs you") is never replaced, and the note waits for it.
+  const [pageNote, setPageNote] = useState<{ id: number; message: string; tone: ShellToastTone } | null>(null);
+  useEffect(() => {
+    function onShellToast(event: Event) {
+      const request = (event as CustomEvent<ShellToastRequest>).detail;
+      if (request && typeof request.message === "string" && request.message) {
+        setPageNote({ id: Date.now(), message: request.message, tone: request.tone ?? "neutral" });
+      }
+    }
+    window.addEventListener(SHELL_TOAST_EVENT, onShellToast);
+    return () => window.removeEventListener(SHELL_TOAST_EVENT, onShellToast);
+  }, []);
+
   const onboardingData = onboarding.data;
   const setOnboardingHidden = onboarding.setHidden;
   const paletteItems: PaletteItem[] = useMemo(() => {
@@ -470,6 +487,18 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
     onMouseLeave: () => setTip(null),
     onBlur: () => setTip(null)
   });
+
+  // The one message at the bottom of the window: the shell's own (the stop-all result, else a browser tab's "needs you"
+  // message) or a page's note, see slotMessage. `close` clears whichever one is shown.
+  const shellOwn = toast
+    ? { id: toast.id, key: `shell-${toast.id}`, message: toast.message, tone: toast.tone, close: () => setToast(null) }
+    : alertNote
+      ? { id: alertNote.id, key: `alert-${alertNote.id}`, message: alertNote.message, tone: "warn" as const, close: () => setAlertNote(null) }
+      : null;
+  const shellPage = pageNote
+    ? { id: pageNote.id, key: `page-${pageNote.id}`, message: pageNote.message, tone: pageNote.tone, close: () => setPageNote(null) }
+    : null;
+  const inSlot = slotMessage(shellOwn, shellPage);
 
   return (
     <div className="aos-phase2-shell os-shell">
@@ -618,11 +647,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         {children}
       </div>
       <UpdateBanner />
-      {toast ? (
-        <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} />
-      ) : alertNote ? (
-        <Toast key={alertNote.id} message={alertNote.message} tone="warn" onClose={() => setAlertNote(null)} />
-      ) : null}
+      {inSlot ? <Toast key={inSlot.key} message={inSlot.message} tone={inSlot.tone} onClose={inSlot.close} /> : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
       {stopAllOpen ? (
         <StopAllRunsModal onClose={() => setStopAllOpen(false)} onDone={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />

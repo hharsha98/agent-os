@@ -46,8 +46,9 @@ export default function KeepGoingDialog({
       giveFocusBack={giveFocusBack}
     >
       {/* The body scrolls inside the dialog when the window is short (1280 by 720, split view), so Cancel and the main
-          button stay on screen (fix round 1, M8). */}
-      <div className="os-keepgoing__scroll">
+          button stay on screen (fix round 1, M8). It takes a Tab stop (tabIndex 0, with a focus ring in sessions.css), so
+          the keyboard can scroll it when it does (sweep A item 11). */}
+      <div className="os-keepgoing__scroll" tabIndex={0}>
         <p>{copy.lede}</p>
         <ul className="os-keepgoing__points">
           {copy.points.map((point) => {

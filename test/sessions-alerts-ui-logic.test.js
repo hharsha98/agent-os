@@ -13,6 +13,7 @@ import * as help from "../src/ui/helpShared.ts";
 import * as home from "../src/ui/homeShared.ts";
 import * as page from "../src/ui/sessionsPageShared.ts";
 import * as ss from "../src/ui/sessionsShared.ts";
+import * as shellToast from "../src/ui/shellToast.ts";
 
 // 3 pm local time, so "today" and every reset time read the same in every time zone.
 const NOW = new Date(2026, 9, 29, 15, 0, 0).getTime();
@@ -360,4 +361,57 @@ test("the SP3 placeholders this task replaces are gone, and alertsShared.ts keep
   const imports = [...read("ui/alertsShared.ts").matchAll(/^import (type )?[^;]*? from "([^"]+)";$/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`);
   assert.deepEqual(imports, ["type ../types", "./sessionsShared.ts"]);
   assert.doesNotMatch(read("ui/components/ApprovalCard.tsx"), /window\.confirm|allow-always/, "only Allow once and Deny, through Agent OS's own dialog (R16)");
+});
+
+test("showShellToast: a page asks the shell's one toast slot for its message, so the Sessions page draws no toast of its own and two never overlap (sweep A item 6, U5 review M7)", () => {
+  const heard = [];
+  const target = new EventTarget();
+  const had = Object.getOwnPropertyDescriptor(globalThis, "window");
+  globalThis.window = target;
+  try {
+    target.addEventListener(shellToast.SHELL_TOAST_EVENT, (event) => heard.push(event.detail));
+    shellToast.showShellToast("Link copied. Open it in your browser.");
+    shellToast.showShellToast("Needs a look", "warn");
+  } finally {
+    if (had) Object.defineProperty(globalThis, "window", had);
+    else delete globalThis.window;
+  }
+  assert.deepEqual(heard, [
+    { message: "Link copied. Open it in your browser.", tone: "neutral" },
+    { message: "Needs a look", tone: "warn" }
+  ]);
+  const read = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+  const sessionsPage = read("pages/SessionsPage.tsx");
+  assert.doesNotMatch(sessionsPage, /<Toast\b|terminalNote|components\/Toast/, "the page's terminal sentence goes through the shell, not a Toast of its own");
+  assert.match(sessionsPage, /showShellToast\(text\)/);
+  assert.match(read("ui/Shell.tsx"), /addEventListener\(SHELL_TOAST_EVENT, onShellToast\)/, "the shell listens and draws it in its own slot");
+  assert.doesNotMatch(read("ui/shellToast.ts"), /^import /m, "no imports: Node loads the file as it is");
+});
+
+test("slotMessage (sweep A fix round 1): a message that stays until closed keeps the shell's one slot, a page note waits for it and shows when it is closed", () => {
+  const m = (id, tone, message = `m${id}`) => ({ id, tone, message });
+  assert.deepEqual(["ok", "neutral", "warn", "danger"].map((tone) => shellToast.staysUntilClosed(tone)), [false, false, true, true], "the same rule as components/Toast.tsx");
+  assert.equal(shellToast.slotMessage(null, null), null);
+  const note = m(9, "neutral", "Link copied. Open it in your browser.");
+  assert.equal(shellToast.slotMessage(null, note), note, "nothing else on screen: the note shows");
+  assert.equal(shellToast.slotMessage(m(1, "ok"), null)?.id, 1);
+  // A stop-all failure, or a browser tab's "needs you" message, is never replaced by a plain note, however new it is.
+  for (const tone of ["danger", "warn"]) {
+    const sticky = m(5, tone);
+    assert.equal(shellToast.slotMessage(sticky, note), sticky, `a ${tone} message stays`);
+    assert.equal(shellToast.slotMessage(sticky, m(99, "ok")), sticky, `a newer ok note does not replace a ${tone} one`);
+    assert.equal(shellToast.slotMessage(sticky, m(100, "danger")), sticky, "nor does another sticky one: the first stays until closed");
+  }
+  // Once it has been closed the pending note shows.
+  assert.equal(shellToast.slotMessage(null, note), note);
+  // Plain news: the newer message shows; a note that stays until closed itself takes the slot from plain news.
+  assert.equal(shellToast.slotMessage(m(5, "ok"), m(9, "neutral"))?.id, 9);
+  assert.equal(shellToast.slotMessage(m(9, "ok"), m(5, "neutral"))?.id, 9);
+  assert.equal(shellToast.slotMessage(m(9, "ok"), m(5, "warn"))?.id, 5);
+  // The shell wires it: the page's event only sets the pending note, and the slot comes from slotMessage.
+  const shell = readFileSync(new URL("../src/ui/Shell.tsx", import.meta.url), "utf8");
+  assert.match(shell, /const inSlot = slotMessage\(shellOwn, shellPage\);/);
+  assert.match(shell, /function onShellToast[\s\S]*?setPageNote\(\{ id: Date\.now\(\)[\s\S]*?addEventListener\(SHELL_TOAST_EVENT, onShellToast\)/, "a page's note only becomes the pending page note");
+  assert.doesNotMatch(shell.slice(shell.indexOf("function onShellToast"), shell.indexOf("addEventListener(SHELL_TOAST_EVENT")), /setToast\(/, "and never overwrites the shell's own toast");
+  assert.match(shell, /\{inSlot \? <Toast key=\{inSlot\.key\}/);
 });

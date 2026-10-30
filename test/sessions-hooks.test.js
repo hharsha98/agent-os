@@ -346,7 +346,7 @@ test("mapHookEvent: each Claude Code event becomes signals and hints; a prompt a
     [{ hook_event_name: "PermissionRequest", tool_name: "ExitPlanMode", tool_input: { plan: "1. do it" } }, { signals: [waiting("Has a plan for you to approve")] }],
     [{ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "rm -rf build" } }, { signals: [waiting("Wants to use Bash")] }],
     [{ hook_event_name: "PermissionRequest", tool_name: "mcp__github__create_issue" }, { signals: [waiting("Wants to use mcp__github__create_issue")] }],
-    [{ hook_event_name: "PermissionRequest", tool_name: "T".repeat(100) }, { signals: [waiting(`Wants to use ${"T".repeat(60)}`)] }],
+    [{ hook_event_name: "PermissionRequest", tool_name: "T".repeat(100) }, { signals: [waiting(`Wants to use ${"T".repeat(59)}\u2026`)] }],
     [{ hook_event_name: "PermissionRequest", tool_name: "Bad\u001b[31m\nname" }, { signals: [waiting("Wants to use Bad[31m name")] }],
     [{ hook_event_name: "PermissionRequest" }, { signals: [waiting("Waiting for you")] }],
     [{ hook_event_name: "PermissionRequest", tool_name: { name: "Bash" } }, { signals: [waiting("Waiting for you")] }],

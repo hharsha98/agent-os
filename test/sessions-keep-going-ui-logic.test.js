@@ -225,13 +225,58 @@ test("I1 and M5: the banner stays while Keep going works or has failed, and the 
 
 test("how the components use them: the banner keeps its dialog and its failure after the stop (I1), shows the opened session instead of Keep going (M5), moves the focus (M7); the hand-over resets when the session ends (M4); the dialog body scrolls (M8)", () => {
   const banner = read("src/ui/components/SessionLimitBanner.tsx");
-  assert.match(banner, /keepGoingStaysOnScreen\(shown, busy, failure\)/);
+  assert.match(banner, /keepGoingStaysOnScreen\(shown, busy, failureWords\)/);
   assert.match(banner, /if \(acting\.current\) return;/, "the hold's reset waits for the request");
-  assert.match(banner, /\{failure && !shown \?/, "the failure banner outlives the hold");
+  assert.match(banner, /\{failureWords && !shown \?/, "the failure banner outlives the hold");
   assert.match(banner, /asking && info\?\.available && \(shown \|\| busy\)/, "the dialog stays while the request runs");
-  assert.match(banner, /openedId !== null \?/, "M5");
+  assert.match(banner, /openedNow !== null \?/, "M5");
   assert.match(banner, /nextFocus\.current = "show"/, "M7: Wait for reset focuses Show my choices");
   assert.match(read("src/ui/components/HandOverButton.tsx"), /\[session\.id, handable\]/, "M4");
   assert.match(read("src/ui/sessions.css"), /\.os-keepgoing__scroll \{[^}]*max-height: calc\(100vh[^}]*overflow-y: auto/, "M8");
-  assert.match(read("src/ui/components/KeepGoingDialog.tsx"), /className="os-keepgoing__scroll"/);
+  assert.match(read("src/ui/components/KeepGoingDialog.tsx"), /className="os-keepgoing__scroll" tabIndex=\{0\}/, "sweep A item 11: the scrolling body is a Tab stop");
+  assert.match(read("src/ui/sessions.css"), /\.os-keepgoing__scroll:focus-visible \{[^}]*outline: 2px solid var\(--os-accent\)/, "and shows the focus ring");
+});
+
+// ---- Sweep A item 11 (X10 N1, N2, N4) -------------------------------------------------------------------------------
+
+test("N2: the new session a hold opened stops counting once the sessions list shows it ended (a session the list does not hold yet still counts); forgetOpened drops the hold's memory", () => {
+  const list = (status) => [{ id: "new-1", status }, { id: "other", status: "live" }];
+  assert.equal(kg.openedStillOpen(null, list("live")), null, "nothing was opened");
+  assert.equal(kg.openedStillOpen("new-1", null), "new-1", "the list is not known: still open");
+  assert.equal(kg.openedStillOpen("new-1", list("live")), "new-1");
+  assert.equal(kg.openedStillOpen("new-1", list("starting")), "new-1");
+  assert.equal(kg.openedStillOpen("new-1", list("waiting")), "new-1");
+  assert.equal(kg.openedStillOpen("new-1", list("exited")), null, "it ended: Keep going is offered again");
+  assert.equal(kg.openedStillOpen("new-1", [{ id: "other", status: "live" }]), "new-1", "just made, the list has not caught up (it is read every 5 seconds)");
+  kg.rememberOpened("hold-x:1", "new-1");
+  kg.forgetOpened("hold-x:1");
+  assert.equal(kg.openedFor("hold-x:1"), null);
+  kg.forgetOpened("never-remembered");
+  const banner = read("src/ui/components/SessionLimitBanner.tsx");
+  assert.match(banner, /const openedNow = openedStillOpen\(openedId, known\);/);
+  assert.match(banner, /if \(openedId !== null && openedNow === null\) \{\s*forgetOpened\(hold\);\s*setOpenedId\(null\);/, "the banner releases the opened state");
+});
+
+test("N1: a failed Keep going's sentence is the one just received here, else the server's, and only an ended session shows one", () => {
+  const ended = (words) => ({ status: "exited", keepGoingFailure: words });
+  assert.equal(kg.keepGoingFailureText("", ended("It could not be resumed.")), "It could not be resumed.", "the server's, kept with the ended session");
+  assert.equal(kg.keepGoingFailureText("Just now.", ended("Earlier.")), "Just now.", "the one just received comes first");
+  assert.equal(kg.keepGoingFailureText("", ended(null)), "");
+  assert.equal(kg.keepGoingFailureText("", { status: "exited" }), "", "a server without the field");
+  for (const status of ["live", "working", "idle", "waiting", "held", "starting"]) {
+    assert.equal(kg.keepGoingFailureText("", { status, keepGoingFailure: "stale words" }), "", `a ${status} session shows none`);
+  }
+  assert.equal(kg.keepGoingStaysOnScreen(false, false, kg.keepGoingFailureText("", ended("Words."))), true, "the banner stays for an ended session that holds a sentence");
+  assert.equal(kg.keepGoingStaysOnScreen(false, false, kg.keepGoingFailureText("", ended(null))), false);
+  assert.match(read("src/types.ts"), /keepGoingFailure: string \| null;/);
+});
+
+test("N4: a refusal stays behind only for a session that is ended or still shown as held; on one that runs again nothing stays, and the keys go to the pane", () => {
+  assert.equal(kg.keepsRefusal("exited"), true);
+  assert.equal(kg.keepsRefusal("held"), true, "the list can lag the stop by a few seconds");
+  for (const status of ["live", "working", "idle", "waiting", "starting"]) assert.equal(kg.keepsRefusal(status), false, status);
+  const banner = read("src/ui/components/SessionLimitBanner.tsx");
+  assert.match(banner, /const keep = keepsRefusal\(statusNow\.current\);\s*setFailure\(keep \? message : ""\);/);
+  assert.match(banner, /if \(!keep\) needsFocus\.current = true;/);
+  assert.match(banner, /if \(asking \|\| !needsFocus\.current\) return;[\s\S]*focusPaneOrTitle\(paneRef\.current\)/);
 });

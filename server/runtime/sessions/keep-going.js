@@ -71,6 +71,12 @@ function isBlank(line) {
   return line.trim() === "";
 }
 
+// The words the page would show for a failed request: a sessionError's own message (the route answers it as it is). Anything
+// else is an internal error the route answers with a fixed sentence and logs, so nothing is kept for it.
+function sessionSentence(error) {
+  return Number.isInteger(error?.status) && typeof error?.code === "string" && typeof error?.message === "string" ? error.message : null;
+}
+
 // ---- the typed summary (R24) ------------------------------------------------------------------------
 
 export function summaryHeader(agentLabel, folder) {
@@ -226,8 +232,16 @@ export async function keepGoing(manager, id, deps) {
       // The price lookup and the brain check took time: if the plan came back and Claude Code carried on (or another
       // window stopped it) in the meantime, nothing is stopped (fix round 1, M1).
       await stillHeld(manager, id, live);
+      manager.setKeepGoingFailure?.(id, null);
       await manager.stop(id, { by: "stop" });
-      await manager.resume(id, { brainOverride });
+      try {
+        await manager.resume(id, { brainOverride });
+      } catch (error) {
+        // The conversation is stopped now and could not be resumed: its own sentence stays with the ended session
+        // (memory only), so the person still reads why when they were not looking at this session as it failed (I1).
+        manager.setKeepGoingFailure?.(id, sessionSentence(error));
+        throw error;
+      }
       return { result: "resumed", targetId: id };
     }
     // Codex: the held session is left as it is (K15). create() asks Look only itself. A hold that already opened its

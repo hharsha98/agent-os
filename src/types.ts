@@ -2804,6 +2804,9 @@ export interface SessionSummary {
   // The original folder of a separate copy (Task X9), else null.
   copyOf: string | null;
   handoff: SessionHandoff | null;
+  // Task X10: the server's own sentence when a Keep going stopped this Claude Code session and could not resume it. Only
+  // an ended session has one, kept in memory until it runs again or is dismissed.
+  keepGoingFailure: string | null;
 }
 
 export interface SessionListResponse {

@@ -232,8 +232,11 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
     // Split view (`sizesItself`): the same {t:"focus"} and size, but without moving the keyboard focus, so a pane nobody
     // clicked still sizes its agent to the pane. Only once the screen is shown (the snapshot is restored), only while
     // this window has the focus (a background window must not take the writer role), and once per socket.
-    const sizeSelf = () => {
-      if (disposed || sessionEnded || shown !== "open" || hasKeys) return;
+    // `again` (a window brought back to the front) skips the once-per-socket rule: another window may have taken the writer
+    // role for this session while this one was away, and the server does not say so, so this pane asks for it back, as the
+    // pane with the keyboard focus does (sweep A item 7, U6 re-review Minor-2).
+    const sizeSelf = (again = false) => {
+      if (disposed || sessionEnded || shown !== "open" || (hasKeys && !again)) return;
       if (latest.current.sizesItself !== true || !document.hasFocus()) return;
       takeKeys();
     };
@@ -350,7 +353,7 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       // webview does not fire the box's own focus event again.
       const onWindowFocus = () => {
         if (document.activeElement === t.textarea) takeKeys();
-        else sizeSelf();
+        else sizeSelf(true);
       };
       window.addEventListener("focus", onWindowFocus);
       cleanups.push(() => window.removeEventListener("focus", onWindowFocus));

@@ -139,9 +139,10 @@ export interface TextPiece {
 // Characters that change how text is drawn or that draw as nothing: the left-to-right and right-to-left marks,
 // embeddings, overrides and isolates (a file named "report" + U+202E + "fdp.exe" is drawn "reportexe.pdf"; a diff line
 // can hide what it holds, the "Trojan Source" trick), the Arabic letter mark, the zero width characters and the byte
-// order mark, and every control character except tab (NUL, ESC, DEL, the C1 range, a lone carriage return, a newline
-// inside a name). Tab stays: a diff keeps its indentation.
-const HIDDEN_CHARS = /[\u0000-\u0008\u000A-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+// order mark, the line and paragraph separators (U+2028 and U+2029, which some tools break a line at), and every control
+// character except tab (NUL, ESC, DEL, the C1 range, a lone carriage return, a newline inside a name). Tab stays: a
+// diff keeps its indentation.
+const HIDDEN_CHARS = /[\u0000-\u0008\u000A-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
 // A path or a diff line split into ordinary runs and visible tokens: `<U+202E>` for a reordering or format character,
 // `\x1B` for a control character. The page draws a token dimly, so what a name or a line really holds can be read

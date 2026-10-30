@@ -104,6 +104,7 @@ const SUMMARY_KEYS = [
   "meter",
   "copyOf",
   "handoff",
+  "keepGoingFailure",
   "recordingBytes"
 ];
 const T0 = Date.parse("2026-10-16T09:00:00.000Z");
@@ -637,7 +638,7 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
       world.gate = false; // Look only: a sign-in is a Setup step, not agent work (spec §1, Limits)
       const summary = await world.manager.createSetupSession({ action: OPENCLAW_SIGNIN_ACTION, detected: DETECTED });
       assert.match(summary.id, UUID);
-      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 29 keys as every session, and no new one");
+      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 30 keys as every session, and no new one");
       assert.deepEqual(
         { ...summary, id: "-", stateSince: "-", startedAt: "-" },
         {
@@ -669,6 +670,7 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
           meter: null,
           copyOf: null,
           handoff: null,
+          keepGoingFailure: null,
           recordingBytes: 0
         }
       );

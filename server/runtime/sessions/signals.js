@@ -80,7 +80,8 @@ function isBasicSource(source) {
 // Short, plain, one-line text: tabs and newlines become spaces, every other
 // control character goes, so do the invisible reordering characters
 // (BIDI_FORMAT_CHARACTERS), runs of spaces collapse, and the text is cut to
-// `max` code points (a character is never split, and no "…" is added).
+// `max` code points (a character is never split). A text that had to be cut ends in "…" and is
+// `max` code points: the first `max - 1` plus the "…", like the OpenClaw approval card.
 export function cleanAlertText(value, max = ALERT_TEXT_MAX) {
   const text = String(value ?? "")
     .replace(/[\t\n]/g, " ")
@@ -90,7 +91,8 @@ export function cleanAlertText(value, max = ALERT_TEXT_MAX) {
     .trim();
   const limit = Number.isInteger(max) && max >= 0 ? max : ALERT_TEXT_MAX;
   const points = Array.from(text);
-  return points.length > limit ? points.slice(0, limit).join("").trimEnd() : text;
+  if (points.length <= limit) return text;
+  return limit === 0 ? "" : `${points.slice(0, limit - 1).join("")}…`;
 }
 
 // The one signal shape (spec: {sessionId, kind, text, at}, plus K1's source

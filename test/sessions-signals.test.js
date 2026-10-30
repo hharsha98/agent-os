@@ -161,19 +161,26 @@ test("constants: the kinds, sources and limits the SP4 contract names", () => {
   assert.equal(ALERT_LINE_PREFIX, "AGENT_OS_ALERT:");
 });
 
-test("cleanAlertText: control characters go, tabs and newlines become spaces, runs of spaces collapse, and the text is cut to 200 code points without an ellipsis", () => {
+test("cleanAlertText: control characters go, tabs and newlines become spaces, runs of spaces collapse, and a text cut to 200 code points ends in an ellipsis (199 and the sign)", () => {
   assert.equal(cleanAlertText("  Wants\tto\nuse \u001b[31mBash\u0007  "), "Wants to use [31mBash");
   assert.equal(cleanAlertText("a\u0085b\u009bc\u007fd"), "abcd", "C1 and DEL go");
   assert.equal(cleanAlertText("one\r\ntwo"), "one two");
   assert.equal(cleanAlertText(null), "");
   assert.equal(cleanAlertText(undefined), "");
   assert.equal(cleanAlertText(42), "42");
-  assert.equal(cleanAlertText("x".repeat(250)), "x".repeat(200));
-  assert.equal(cleanAlertText("abcdef", 3), "abc");
+  assert.equal(cleanAlertText("x".repeat(250)), `${"x".repeat(199)}…`, "a cut text keeps 199 code points and the sign");
+  assert.equal(cleanAlertText("x".repeat(200)), "x".repeat(200), "exactly 200 fits: nothing is cut, no sign");
+  assert.equal(cleanAlertText("x".repeat(201)), `${"x".repeat(199)}…`, "201 is cut");
+  assert.equal(cleanAlertText("abcdef", 3), "ab…");
+  assert.equal(cleanAlertText("abc", 3), "abc");
+  assert.equal(cleanAlertText("abcdef", 1), "…");
+  assert.equal(cleanAlertText("abcdef", 0), "", "no room for even the sign");
   const faces = cleanAlertText("😀".repeat(201));
-  assert.equal(Array.from(faces).length, 200, "cut by code points");
-  assert.equal(faces, "😀".repeat(200), "no character is split");
-  assert.equal(faces.endsWith("…"), false);
+  assert.equal(Array.from(faces).length, 200, "cut by code points: 200 at most, the sign included");
+  assert.equal(faces, `${"😀".repeat(199)}…`, "no character is split");
+  assert.equal(faces.endsWith("…"), true);
+  // The sign is counted: the cleaned text is cut after cleaning, so control characters and runs of spaces do not use it up.
+  assert.equal(cleanAlertText(`${"x".repeat(150)}${"\u0007".repeat(40)}${"x".repeat(50)}`), "x".repeat(200), "raw length 240, cleaned length 200: not cut");
 });
 
 test("cleanAlertText: every invisible reordering character goes (the bidi embeddings, overrides and isolates, the two direction marks and the Arabic letter mark), and nothing a word or an emoji needs", () => {
@@ -292,9 +299,9 @@ test("alertLine: one JSON line, keys in order, text cleaned and cut to 200 code 
   assert.ok(long.startsWith(ALERT_LINE_PREFIX));
   const payload = JSON.parse(long.slice(ALERT_LINE_PREFIX.length));
   assert.deepEqual(Object.keys(payload), ["sessionId", "agent", "kind", "text"]);
-  assert.equal(payload.text, `Wants to use Bash${"x".repeat(300)}`.slice(0, 200));
+  assert.equal(payload.text, `${`Wants to use Bash${"x".repeat(300)}`.slice(0, 199)}…`, "cut at 199 and the sign (the line carries the same text as the tab and the toast)");
   const faces = JSON.parse(alertLine({ sessionId: SID, agent: "Hermes", kind: "waiting", text: "😀".repeat(250) }).slice(ALERT_LINE_PREFIX.length));
-  assert.equal(faces.text, "😀".repeat(200));
+  assert.equal(faces.text, `${"😀".repeat(199)}…`);
 });
 
 test("printAlertLine: writes the line and one newline for waiting, approval and limit only, and never throws", () => {

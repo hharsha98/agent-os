@@ -81,6 +81,7 @@ import {
   SIGNAL_SOURCES,
   TURN_DONE_BACKSTOP_MS,
   activityAfter,
+  cleanAlertText,
   freshActivity,
   makeMarker,
   makeSignal,
@@ -142,6 +143,8 @@ const TYPING_BLOCKING_ALERTS = new Set(["waiting", "approval"]);
 const HANDOFF_STATES = new Set(["pending", "typed", "copy"]);
 // How many ended sessions keep a hand-off copy in memory (the newest stay).
 const ENDED_COPIES_MAX = 20;
+// The longest sentence a failed Keep going keeps (an error's own words; cleanAlertText also marks a cut with "…").
+const KEEP_GOING_FAILURE_MAX = 300;
 const META_FILE = "meta.json";
 const META_VERSION = 1;
 const RECORDING_FILES = ["screen.cast", "screen.prev.cast"];
@@ -249,7 +252,8 @@ function memoryFields(view) {
     trustNeeded: memory?.trustNeeded === true,
     hooksOff: { alerts: memory?.hooksOff?.alerts ?? null, meter: memory?.hooksOff?.meter ?? null },
     meter: memory?.meter ?? null,
-    handoff: ended ? keptCopy : memory?.handoff ?? null
+    handoff: ended ? keptCopy : memory?.handoff ?? null,
+    keepGoingFailure: ended ? view.memory?.keepGoingFailure ?? null : null
   };
 }
 
@@ -488,6 +492,10 @@ export function createSessionManager({
   // id -> the hand-off "copy" of an ended session (SP4 Task X8): the text a new session never got because it ended
   // before it was ready, so the text is not lost. Memory only (never in meta.json), the newest ENDED_COPIES_MAX.
   const endedCopies = new Map();
+  // id -> the sentence of a Keep going that stopped a Claude Code session and then could not resume it (SP4 Task X10, I1),
+  // shown on the ended session until it runs again or is dismissed, so leaving the pane meanwhile does not lose it. Memory
+  // only (never in meta.json), the newest ENDED_COPIES_MAX.
+  const keepGoingFailures = new Map();
   // ids being resumed or dismissed right now, so two requests never race: a
   // second request for one of them is answered "session_busy".
   const busy = new Set();
@@ -1326,8 +1334,9 @@ export function createSessionManager({
     state.recorder =
       state.meta.kind === "setup" ? NO_RECORDER : recorderFactory({ dir: state.dir, cols: state.cols, rows: state.rows, append, now });
     live.set(state.meta.id, state);
-    // A resumed session starts clean: the copy of its earlier run is gone.
+    // A resumed session starts clean: the copy of its earlier run is gone, and so is a failed Keep going's sentence.
     endedCopies.delete(state.meta.id);
+    keepGoingFailures.delete(state.meta.id);
     releaseSlot();
     state.offs.push(state.handle.onData((data) => onOutput(state, data)));
     state.offs.push(
@@ -1644,7 +1653,8 @@ export function createSessionManager({
         trustNeeded: state.trustNeeded,
         hooksOff: state.hooksOff,
         meter: state.meter,
-        handoff: handoffOf(state)
+        handoff: handoffOf(state),
+        keepGoingFailure: keepGoingFailures.get(state.meta.id) ?? null
       }
     };
   }
@@ -1653,8 +1663,11 @@ export function createSessionManager({
     return {
       ...meta,
       stateSince: meta.status === "exited" ? meta.endedAt || meta.startedAt : meta.startedAt,
-      // Only the hand-off copy of an ended session is memory (memoryFields drops the rest for an ended session).
-      ...(meta.status === "exited" ? { memory: { handoff: endedCopies.get(meta.id) ?? null } } : {})
+      // Only the hand-off copy and a failed Keep going of an ended session are memory (memoryFields drops the rest for an
+      // ended session).
+      ...(meta.status === "exited"
+        ? { memory: { handoff: endedCopies.get(meta.id) ?? null, keepGoingFailure: keepGoingFailures.get(meta.id) ?? null } }
+        : {})
     };
   }
 
@@ -1747,6 +1760,7 @@ export function createSessionManager({
       // copy), the session is no longer a copy, so null; meta.json keeps copyOf for recent folders.
       copyOf: typeof view.copyOf === "string" && view.copyOf && !view.worktreeRemovedAt ? view.copyOf : null,
       handoff: extras.handoff,
+      keepGoingFailure: extras.keepGoingFailure,
       recordingBytes: await recordingBytes(view.id)
     };
   }
@@ -2155,8 +2169,9 @@ export function createSessionManager({
         meta.dismissed = true;
         await writeJson(path.join(sessionDir(id), META_FILE), meta);
       }
-      // A dismissed session's kept hand-off text goes too (memory only).
+      // A dismissed session's kept hand-off text and failed-Keep-going sentence go too (memory only).
       endedCopies.delete(id);
+      keepGoingFailures.delete(id);
     } finally {
       busy.delete(id);
     }
@@ -2611,6 +2626,18 @@ export function createSessionManager({
     }
   }
 
+  // Keep going's I1 sentence for a Claude Code session it stopped and then could not resume (keep-going.js): kept in memory
+  // for the newest ENDED_COPIES_MAX sessions and shown as `keepGoingFailure` while the session is ended; it goes when the
+  // session runs again or is dismissed. null (or blank text) clears it. Plain one-line text, as an alert's.
+  function setKeepGoingFailure(id, text) {
+    if (!isSessionId(id)) return;
+    const clean = text === null || text === undefined ? "" : cleanAlertText(text, KEEP_GOING_FAILURE_MAX);
+    keepGoingFailures.delete(id);
+    if (!clean) return;
+    keepGoingFailures.set(id, clean);
+    while (keepGoingFailures.size > ENDED_COPIES_MAX) keepGoingFailures.delete(keepGoingFailures.keys().next().value);
+  }
+
   // What the summary shows as `handoff` (through viewOfState's `memory`): a copy of the memory. An ended session shows
   // only a "copy" (see setHandoff). A typed one goes at the person's first input after it: the caption has done its
   // job then.
@@ -2941,6 +2968,7 @@ export function createSessionManager({
     readyForTyping,
     whenReadyForTyping,
     setHandoff,
+    setKeepGoingFailure,
     changes,
     diff,
     checkHookToken,

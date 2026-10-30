@@ -388,6 +388,41 @@ test("profiles (SP4): Claude Code with a hook and an OpenRouter or Local brain w
   });
 });
 
+// Sweep A item 1 (X2b re-review, Minor 1): when a hooks-off reason leaves out the event hooks (alerts)
+// or the wrapper (meter), the brain's own keys must still reach Claude through the same file.
+test("profiles (SP4): a hooks-off reason leaves out the hooks and the statusLine but still writes an OpenRouter or Local brain's keys", posixSkip, async () => {
+  await withProfileEnv(async (ctx) => {
+    await storeOpenRouterKey(KEY);
+    const helper = await openRouterKeyHelper();
+    const projectSettings = path.join(ctx.project, ".claude", "settings.json");
+    const managedSettings = path.join(ctx.base, "managed-settings.json");
+    await mkdir(path.dirname(projectSettings), { recursive: true });
+    const hook = { port: HOOK_PORT, token: HOOK_TOKEN };
+    // [name, brain, file that holds the reason, its content, keys the written file must have]
+    const cases = [
+      ["OpenRouter, all hooks disabled (alerts and meter off)", OPENROUTER_BRAIN, projectSettings, { disableAllHooks: true }, ["apiKeyHelper", "env"]],
+      ["Local, all hooks disabled (alerts and meter off)", LOCAL_BRAIN, projectSettings, { disableAllHooks: true }, ["env"]],
+      ["Local, alerts off only: the wrapper stays", LOCAL_BRAIN, projectSettings, { allowedHttpHookUrls: ["https://hooks.example.com/*"] }, ["statusLine", "env"]],
+      ["Local, meter off only: the hooks stay", LOCAL_BRAIN, managedSettings, { statusLine: { type: "command", command: "printf corp" } }, ["hooks", "env"]]
+    ];
+    for (const [what, brain, file, content, keys] of cases) {
+      const sessionId = crypto.randomUUID();
+      await writeFile(file, JSON.stringify(content));
+      const profile = await start(ctx, "claude", { sessionId, brain, hook });
+      await rm(file, { force: true });
+      const settingsFile = path.join(ctx.agentOsHome, "sessions", sessionId, "claude-settings.json");
+      assert.deepEqual(profile.args, ["--session-id", profile.agentSessionId, "--settings", settingsFile], `${what}: --settings is still passed`);
+      const written = JSON.parse(await readFile(settingsFile, "utf8"));
+      assert.deepEqual(Object.keys(written), keys, `${what}: keys of the written file`);
+      const brainSettings = buildClaudeSettings(brain, brain.mode === "openrouter" ? helper : null, { forSession: true });
+      if (brainSettings.apiKeyHelper !== undefined) assert.equal(written.apiKeyHelper, brainSettings.apiKeyHelper, `${what}: apiKeyHelper`);
+      assert.deepEqual(written.env, brainSettings.env, `${what}: env`);
+      assert.doesNotMatch(JSON.stringify(written), /disableAllHooks|allowManagedHooksOnly|allowedHttpHookUrls|httpHookAllowedEnvVars/, what);
+      assert.ok(!JSON.stringify(written).includes(KEY), `${what}: the key itself is never written`);
+    }
+  });
+});
+
 test("profiles (SP4): a resume with a hook rewrites the settings file for the new port and token; the update and setup kinds never get a hook", posixSkip, async () => {
   await withProfileEnv(async (ctx) => {
     const sessionId = crypto.randomUUID();

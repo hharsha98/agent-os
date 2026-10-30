@@ -274,6 +274,20 @@ test("fix round 1: an answered card is forgotten once OpenClaw dropped it and it
   assert.equal(page.meterRowLabel({ id: "brain", label: "Brain", value: "Plan", dim: "your subscription" }), "Brain", "a figure shows its dim next to the value, not in the label");
 });
 
+test("A-M2: the Model row falls back to the launch profile's model when the status line has none (OpenRouter, Local, a chosen Cursor model); the status line's own model wins; a plan brain with no model stays —", () => {
+  const modelOf = (rows) => rows.find((r) => r.id === "model").value;
+  const openrouter = { kind: "openrouter", label: "OpenRouter", model: "anthropic/claude-sonnet-4.5" };
+  assert.equal(modelOf(page.meterRows(session({ brain: openrouter, meter: null }), NOW)), "anthropic/claude-sonnet-4.5", "no status line at all (Codex, Cursor)");
+  assert.equal(modelOf(page.meterRows(session({ brain: openrouter, meter: { ...meter, model: null } }), NOW)), "anthropic/claude-sonnet-4.5");
+  assert.equal(modelOf(page.meterRows(session({ brain: openrouter, meter: { ...meter, model: "  " } }), NOW)), "anthropic/claude-sonnet-4.5");
+  assert.equal(modelOf(page.meterRows(session({ brain: openrouter, meter }), NOW)), "Opus 4.7", "the status line is the newer word");
+  assert.equal(modelOf(page.meterRows(session({ brain: { kind: "local", label: "Local", model: "qwen3:8b" }, meter: null }), NOW)), "qwen3:8b");
+  assert.equal(modelOf(page.meterRows(session({ brain: { kind: "plan", label: "Plan" }, meter: null }), NOW)), null);
+  assert.equal(modelOf(page.meterRows(session({ brain: { kind: "plan", label: "Plan", model: "  " }, meter: null }), NOW)), null);
+  assert.equal(modelOf(page.meterRows(session({ brain: null, meter: null }), NOW)), null);
+  assert.equal(modelOf(page.meterRows(session({ status: "exited", endedAt: iso(160_000), brain: openrouter, meter }), NOW)), "anthropic/claude-sonnet-4.5", "an ended session shows the launch profile's model, not live figures");
+});
+
 test("the Live meter fills Model, Context used, Plan used and Cost so far from Claude's status line (spec Side panel, R11)", () => {
   const rows = page.meterRows(session({ meter }), NOW);
   assert.deepEqual(rows.map((r) => [r.id, r.label, r.value]), [

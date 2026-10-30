@@ -66,6 +66,8 @@ const TABLE = [
   ["waiting, the idle timer: no change", WAITING, { type: "idle_timer" }, WAITING],
   ["live, turn_done: idle by turn_done, turn-done from now on", act({ status: "live" }), sig("turn_done"), IDLE_DONE],
   ["starting, turn_done: idle", act(), sig("turn_done"), IDLE_DONE],
+  ["live, turn_done from an OSC 9 notification: idle by turn_done, turn-done from now on", act({ status: "live" }), sig("turn_done", "", "osc"), IDLE_DONE],
+  ["live, turn_done from the Claude poller: idle by turn_done, but still basic (the poller is no first signal)", act({ status: "live" }), sig("turn_done", "", "poll"), act({ status: "idle", idleBy: "turn_done" })],
   ["waiting, turn_done: idle, the alert cleared (K4)", WAITING, sig("turn_done"), IDLE_DONE],
   ["idle by timer, turn_done: idle by turn_done", IDLE_BASIC, sig("turn_done"), IDLE_DONE],
   ["held, turn_done: stays held, turn-done from now on", HELD, sig("turn_done"), { ...HELD, turnDone: true }],
@@ -105,6 +107,24 @@ const TABLE = [
     act({ status: "waiting", alert: alertOf("approval", "exec: npm test", "openclaw") }),
     sig("waiting", BASIC_ALERT_TEXT, "osc"),
     act({ status: "waiting", alert: alertOf("approval", "exec: npm test", "openclaw") })
+  ],
+  [
+    "waiting for a Codex approval (its own OSC 9 words, source osc), a basic bell: Codex's words stay (A-M9)",
+    act({ status: "waiting", alert: alertOf("waiting", "Approval requested: rm -rf build", "osc") }),
+    sig("waiting", BASIC_ALERT_TEXT, "bel"),
+    act({ status: "waiting", alert: alertOf("waiting", "Approval requested: rm -rf build", "osc") })
+  ],
+  [
+    "waiting for a Codex approval (OSC 9), a basic OSC 99 or 777: Codex's words stay (A-M9)",
+    act({ status: "waiting", alert: alertOf("waiting", "Approval requested: rm -rf build", "osc") }),
+    sig("waiting", BASIC_ALERT_TEXT, "osc"),
+    act({ status: "waiting", alert: alertOf("waiting", "Approval requested: rm -rf build", "osc") })
+  ],
+  [
+    "waiting for a basic OSC 9, Codex's approval (OSC 9 with its own words): the specific words replace the basic ones",
+    act({ status: "waiting", alert: alertOf("waiting", BASIC_ALERT_TEXT, "osc") }),
+    sig("waiting", "Approval requested: rm -rf build", "osc"),
+    act({ status: "waiting", alert: alertOf("waiting", "Approval requested: rm -rf build", "osc") })
   ],
   [
     "waiting for a basic bell, a specific approval: it replaces the basic alert (M4 only protects specific alerts)",
@@ -256,6 +276,19 @@ test("activityAfter: a turn-done session stays idle through redraws and status l
   assert.equal(activityAfter(activity, { type: "input" }).status, "live");
   assert.equal(activityAfter(activity, { type: "new_turn" }).status, "live");
   assert.equal(activityAfter(IDLE_BASIC, { type: "counted" }).status, "live", "a basic session still wakes on counted output");
+});
+
+test("A-I1: the poller's idle (source poll) ends a turn but never makes a session turn-done: it stays basic, counted output wakes it, and only a hook or an OSC 9 turn_done switches the turn-done rules on", () => {
+  for (const source of ["poll", "status", "bel", "title", "text", "openclaw"]) {
+    const idle = activityAfter(act({ status: "live" }), sig("turn_done", "", source));
+    assert.deepEqual(idle, act({ status: "idle", idleBy: "turn_done" }), source);
+    assert.equal(activityAfter(idle, { type: "counted" }).status, "live", `${source}: a basic session wakes on counted output`);
+  }
+  // Once a hook has spoken, the session is turn-done and a later poll idle changes nothing about that.
+  const fromHook = activityAfter(act({ status: "live" }), sig("turn_done", "", "hook"));
+  assert.equal(fromHook.turnDone, true);
+  const live = activityAfter(fromHook, { type: "input" });
+  assert.equal(activityAfter(live, sig("turn_done", "", "poll")).turnDone, true, "turn-done stays");
 });
 
 test("activityAfter: held stays held through output, signals and new turns, and clears only on user input or held_cleared", () => {

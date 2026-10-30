@@ -37,6 +37,34 @@ test("the recordings answer is checked: a list, newest first, odd entries made s
   assert.deepEqual(rec.readRecordings([]), { rows: [], removedByCap: 0 }, "a bare list is accepted too");
 });
 
+test("A-M3: a recording of a session in a separate copy names the project it copied and the copy's branch, never the copy's own folder; every other row reads as before", () => {
+  const home = (path) => path.replace("/Users/you", "~");
+  const copy = row({
+    folder: "/Users/you/.hermes-agent-os/worktrees/3f2c9a7e-1b4d-4c8e-9f00-0123456789ab",
+    copyOf: "/Users/you/projects/my-app",
+    branch: "agentos/claude-1"
+  });
+  assert.equal(rec.recordingFolder(copy), "/Users/you/projects/my-app");
+  assert.equal(rec.recordingPlace(copy, home), "~/projects/my-app · agentos/claude-1");
+  assert.equal(rec.recordingFolder(row()), "/Users/you/projects/my-app");
+  assert.equal(rec.recordingPlace(row(), home), "~/projects/my-app", "no copy: only the folder");
+  assert.equal(rec.recordingPlace(row({ branch: "main" }), home), "~/projects/my-app", "a branch alone is not a copy");
+  assert.equal(rec.recordingPlace(row({ copyOf: "/Users/you/projects/my-app", branch: null }), home), "~/projects/my-app");
+  assert.equal(rec.recordingPlace(row({ kind: "update" }), home), "Agent update");
+  assert.equal(rec.recordingPlace(row({ folderShown: false }), home), "Folder set by OpenClaw");
+  assert.equal(rec.recordingPlace(row({ folder: "" }), () => ""), "—");
+  assert.equal(rec.recordingBranch(copy, null), "agentos/claude-1");
+  assert.equal(rec.recordingBranch(copy, "agentos/claude-2"), "agentos/claude-2", "the sessions list's word wins when it has one");
+  assert.equal(rec.recordingBranch(row(), undefined), null);
+  const body = rec.readRecordings({
+    recordings: [
+      { sessionId: "c", folder: "/x/worktrees/c", folderName: "my-app", copyOf: "/Users/you/projects/my-app", branch: "agentos/claude-1", startedAt: iso(1000) },
+      { sessionId: "d", folder: "/Users/you/my-app", folderName: "my-app", copyOf: 7, branch: "", startedAt: iso(2000) }
+    ]
+  });
+  assert.deepEqual(body.rows.map((r) => [r.copyOf, r.branch]), [["/Users/you/projects/my-app", "agentos/claude-1"], [null, null]]);
+});
+
 test("what a row offers: open a live session, resume an ended one or say why not, nothing for an update", () => {
   assert.deepEqual(rec.rowAction(row({ live: true }), undefined, "ok"), { kind: "open" });
   assert.deepEqual(rec.rowAction(row({ live: true }), session({ status: "exited" }), "ok"), { kind: "resume", available: true, reason: "" }, "the sessions list is newer: it ended");

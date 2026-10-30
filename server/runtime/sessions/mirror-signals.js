@@ -34,6 +34,13 @@ export const CLAUDE_SCREEN_LIMIT = /You[’']ve hit your (?:.+ )?limit|You[’']
 // R15: Codex 0.154.0's limit texts (codex-rs/protocol/src/error.rs, and the TUI's own two).
 export const CODEX_SCREEN_LIMIT =
   /You[’']ve hit your usage limit|You hit your spend cap|Your workspace is out of credits|You[’']re out of credits|Usage limit reached/;
+// The texts above on a line of their own are not yet a limit: Codex prints its errors as a row that starts with
+// "■", while a search result, a diff or a file view that only quotes the sentence (rg, git diff, a log) puts
+// something else in front of it. Only the "■" row counts as Codex's own limit message (E1 A-I2). R15's "not every
+// message starts the same way" is kept by allowing words between the mark and the sentence. CODEX_SCREEN_LIMIT
+// stays the plain text, for a screen read that only has to leave such sentences out (keep-going.js).
+export const CODEX_ERROR_LIMIT =
+  /^\s*■\s.*?(?:You[’']ve hit your usage limit|You hit your spend cap|Your workspace is out of credits|You[’']re out of credits|Usage limit reached)/;
 
 export const LIMIT_CONFIRM_WINDOW_MS = 120000; // K2: a first signal counts this long
 export const CODEX_LIMIT_CONFIRM_MS = 5000; // R15: the text must still be on screen this much later
@@ -96,7 +103,7 @@ export function classifyTitle(agentId, title, { waitingFromTitle = false } = {})
 // line printed under the first is a new limit text, though the first one is
 // still on screen (fix round 1, M3).
 export function matchScreenLimit(agentId, screenText) {
-  const pattern = agentId === "claude" ? CLAUDE_SCREEN_LIMIT : agentId === "codex" ? CODEX_SCREEN_LIMIT : null;
+  const pattern = agentId === "claude" ? CLAUDE_SCREEN_LIMIT : agentId === "codex" ? CODEX_ERROR_LIMIT : null;
   if (!pattern || typeof screenText !== "string" || !screenText) return null;
   const lines = screenText.split("\n");
   let newest = null;

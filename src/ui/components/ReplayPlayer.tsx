@@ -16,7 +16,7 @@ import { fetchRecording, getMarkers, sessionProblem } from "../../sessionsApi";
 import type { SessionSummary } from "../../types";
 import { collapseHomePath } from "../agentsShared";
 import { visibleText } from "../changesShared";
-import { recordedAt } from "../recordingsShared";
+import { recordedAt, recordingBranch, recordingFolder } from "../recordingsShared";
 import type { RecordingRow, RowAction } from "../recordingsShared";
 import {
   CAST_UNREADABLE,
@@ -372,7 +372,9 @@ export default function ReplayPlayer({
   // A moment: the screen one second after it (MOMENT_LEAD_S), where its own output has landed.
   const pick = useCallback((moment: ReplayMoment) => moveTo(moment.t + MOMENT_LEAD_S), [moveTo]);
 
-  const title = sessionTitle(row);
+  // The header shows the branch as a fact of its own, so the title leaves it out.
+  const title = sessionTitle(row, { branch: false });
+  const branch = recordingBranch(row, session?.branch);
   const agent = row.agentLabel || row.agentId || "Agent";
   const firstStart = recordedAt(row);
   const current = timeline ? currentMoment(timeline.moments, pos) : -1;
@@ -405,17 +407,17 @@ export default function ReplayPlayer({
               <span>
                 Folder{" "}
                 <span className="os-mono">
-                  <VisibleText text={collapseHomePath(row.folder) || "—"} />
+                  <VisibleText text={collapseHomePath(recordingFolder(row)) || "—"} />
                 </span>
               </span>
             )}
-            {session?.branch ? (
+            {branch ? (
               <>
                 <span className="os-replay__sep" aria-hidden="true" />
                 <span>
                   Branch{" "}
                   <span className="os-mono">
-                    <VisibleText text={session.branch} />
+                    <VisibleText text={branch} />
                   </span>
                 </span>
               </>

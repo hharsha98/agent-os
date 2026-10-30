@@ -204,7 +204,8 @@ const percentOf = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
 
 // Every Live meter row (spec, Side panel). Model, Context used, Plan used · 5-hour limit and Cost so far come from Claude
-// Code's status line (Task X2b's `meter`, only while the session runs); anything not known is "—". Plan used is there
+// Code's status line (Task X2b's `meter`, only while the session runs); Model falls back to the launch profile's model
+// (an OpenRouter or Local brain's, a chosen Cursor model); anything not known is "—". Plan used is there
 // for every brain: a gauge whenever the status line reports the 5-hour window, else "—". OpenRouter and Local brains
 // always show "—" there, because Claude sends them no rate_limits (R11). Cost so far is for an OpenRouter brain, as in
 // the prototype, and is Claude's own estimate.
@@ -217,7 +218,9 @@ export function meterRows(
   const endMs = ended ? (s.endedAt ? Date.parse(s.endedAt) : NaN) : now;
   const time = durationWords(s.startedAt, endMs);
   const m = ended ? null : s.meter ?? null;
-  const model = m && typeof m.model === "string" && m.model.trim() ? m.model.trim() : null;
+  // Claude's status line names the model it runs; without one the launch profile's model (spec, Side panel).
+  const profileModel = typeof s.brain?.model === "string" && s.brain.model.trim() ? s.brain.model.trim() : null;
+  const model = m && typeof m.model === "string" && m.model.trim() ? m.model.trim() : profileModel;
   const context = m ? percentOf(m.contextPercent) : null;
   const plan = m && m.plan ? percentOf(m.plan.usedPercent) : null;
   const rows: MeterRow[] = [

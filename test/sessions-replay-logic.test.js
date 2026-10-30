@@ -453,7 +453,8 @@ test("replay safety: an OSC 52 clipboard write, a title change and a link in a r
   }
   assert.match(player, /visibleText\(momentName\(moment\)\)/, "a pin's and a moment's name show hidden characters as tokens");
   assert.match(player, /<VisibleText text=\{moment\.detail\} \/>/, "and so does a moment's path or alert text");
-  assert.match(player, /<VisibleText text=\{collapseHomePath\(row\.folder\)/, "and the folder in the header");
+  assert.match(player, /<VisibleText text=\{collapseHomePath\(recordingFolder\(row\)\)/, "and the folder in the header (the project, for a separate copy: E1 A-M3)");
+  assert.match(player, /<VisibleText text=\{branch\} \/>/, "and the branch in the header");
   assert.match(player, /<VisibleText text=\{title\} \/>/, "and the replay's title");
   assert.match(source("ui/components/SessionRecordings.tsx"), /<VisibleText text=\{line\} \/>/, "and the Resume dialog's folder (fix round 1, M-3)");
   assert.match(player, /aria-label="Replayed terminal screen" tabIndex=\{0\}/, "the box that scrolls can take the keyboard (M-4)");

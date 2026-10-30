@@ -9,7 +9,7 @@
 // fakes for the terminal, so no agent and no terminal program ever starts.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -38,7 +38,7 @@ import {
   readDiff
 } from "../server/runtime/sessions/changes.js";
 import { sessionError } from "../server/runtime/sessions/errors.js";
-import { GIT_BASE_ARGS, GIT_LIMIT_MS, gitEnv, gitTopLevel, runGit } from "../server/runtime/sessions/git.js";
+import { GIT_BASE_ARGS, GIT_LIMIT_MS, emptyHooksFolder, gitEnv, gitTopLevel, runGit } from "../server/runtime/sessions/git.js";
 import { mapHookEvent } from "../server/runtime/sessions/hooks.js";
 import { createSessionManager } from "../server/runtime/sessions/manager.js";
 import { createSessionsRouter } from "../server/runtime/sessions/routes.js";
@@ -162,13 +162,33 @@ async function withEnvVars(vars, fn) {
   }
 }
 
-// A temp folder (canonical path) with a HOME inside it, removed after.
+// A temp AGENT_OS_HOME for one test (restored and removed when the test ends): every git call points
+// core.hooksPath at <AGENT_OS_HOME>/empty-hooks (git.js), which a test must never make in the real data folder.
+async function useTempAgentOsHome(t) {
+  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-changes-data-")));
+  const saved = { AGENT_OS_HOME: process.env.AGENT_OS_HOME, HERMES_AGENT_OS_HOME: process.env.HERMES_AGENT_OS_HOME };
+  process.env.AGENT_OS_HOME = dir;
+  delete process.env.HERMES_AGENT_OS_HOME;
+  t.after(async () => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
+  return dir;
+}
+
+// A temp folder (canonical path) with a HOME inside it, removed after. AGENT_OS_HOME is a folder inside it too:
+// every git call points core.hooksPath at <AGENT_OS_HOME>/empty-hooks (git.js), so a test never makes that
+// folder in the real data folder.
 async function withTempDirs(fn) {
   const base = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-changes-")));
   const home = path.join(base, "home");
+  const agentOsHome = path.join(base, "agent-os-data");
   await mkdir(home);
   try {
-    return await fn({ base, home });
+    return await withEnvVars({ AGENT_OS_HOME: agentOsHome, HERMES_AGENT_OS_HOME: undefined }, () => fn({ base, home, agentOsHome }));
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -372,7 +392,8 @@ async function withRouter(manager, fn) {
 
 // ---- the git runner -----------------------------------------------------------------------------
 
-test("runGit: argv only (git -C <folder>, then the fixed options that keep git from locking the index or running a file monitor), Agent OS's own variables removed, git's error text kept short, ok by exit code, and never the server's environment", async () => {
+test("runGit: argv only (git -C <folder>, then the fixed options that keep git from locking the index or running a file monitor), Agent OS's own variables removed, git's error text kept short, ok by exit code, and never the server's environment", async (t) => {
+  await useTempAgentOsHome(t);
   const calls = [];
   const fakeCli = (answer) => async (command, args, options) => {
     calls.push({ command, args, options });
@@ -392,7 +413,15 @@ test("runGit: argv only (git -C <folder>, then the fixed options that keep git f
     GIT_ALLOW_PROTOCOL: "https:ssh:ext",
     GIT_NO_LAZY_FETCH: "0"
   };
-  assert.deepEqual(GIT_BASE_ARGS, ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false"]);
+  assert.deepEqual(GIT_BASE_ARGS, [
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.quotepath=false",
+    "-c",
+    "diff.autoRefreshIndex=false"
+  ]);
   assert.equal(Object.isFrozen(GIT_BASE_ARGS), true);
 
   const result = await runGit("/repo/sub", ["status", "--porcelain=v2"], {
@@ -401,7 +430,16 @@ test("runGit: argv only (git -C <folder>, then the fixed options that keep git f
   });
   assert.deepEqual(result, { code: 0, stdout: "out", stderr: "warn", timedOut: false, ok: true });
   assert.equal(calls[0].command, "git");
-  assert.deepEqual(calls[0].args, ["-C", "/repo/sub", ...GIT_BASE_ARGS, "status", "--porcelain=v2"]);
+  // Hooks off for every call: the repository's own hooks folder is replaced by an empty one Agent OS owns (K12a).
+  assert.deepEqual(calls[0].args, [
+    "-C",
+    "/repo/sub",
+    ...GIT_BASE_ARGS,
+    "-c",
+    `core.hooksPath=${path.join(process.env.AGENT_OS_HOME, "empty-hooks")}`,
+    "status",
+    "--porcelain=v2"
+  ]);
   const expectedEnv = {
     PATH: "/usr/bin:/bin",
     HOME: "/Users/you",
@@ -459,12 +497,15 @@ test("runGit: argv only (git -C <folder>, then the fixed options that keep git f
 });
 
 test("Review Focus 4 (a big or slow git folder), part 1: every git run is cut at 5 s and answers timedOut with what it had", async (t) => {
+  await useTempAgentOsHome(t);
   t.mock.timers.enable({ apis: ["setTimeout"] });
   assert.equal(GIT_LIMIT_MS, 5000);
   let aborted = false;
+  let started = false;
   // Stands in for a git status that would take 8 s.
   const slowCli = (_command, _args, options) =>
     new Promise((resolve) => {
+      started = true;
       const timer = setTimeout(() => resolve({ ok: true, code: 0, aborted: false, stdout: "late", stderr: "" }), 8000);
       options.signal.addEventListener(
         "abort",
@@ -480,7 +521,8 @@ test("Review Focus 4 (a big or slow git folder), part 1: every git run is cut at
   const running = runGit("/repo", ["status"], { env: {}, run: slowCli }).then((value) => {
     answer = value;
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  // runGit checks the empty hooks folder (real file reads) before it starts git.
+  while (!started) await new Promise((resolve) => setImmediate(resolve));
   t.mock.timers.tick(GIT_LIMIT_MS - 1);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(answer, null, "still running at 4.999 s");
@@ -674,6 +716,116 @@ test("git never runs the person's helpers or takes the index lock: a file monito
     await assert.rejects(stat(ranLog), { code: "ENOENT" }, "no helper ran");
     assert.equal((await stat(index)).mtimeMs, indexBefore, "the index file was not rewritten");
   });
+});
+
+// A hook that writes a marker whenever git rewrites the index (post-index-change), in the repository's own
+// .git/hooks and in another folder that the repository's core.hooksPath names (the way a project, or an agent,
+// can set one up).
+async function plantIndexHooks(repo, home, marker) {
+  const script = `#!/bin/sh\necho "ran $0" >> '${marker}'\nexit 0\n`;
+  const named = path.join(path.dirname(repo), "project-hooks");
+  await mkdir(named, { recursive: true });
+  for (const dir of [path.join(repo, ".git", "hooks"), named]) {
+    await writeFile(path.join(dir, "post-index-change"), script);
+    await chmod(path.join(dir, "post-index-change"), 0o755);
+  }
+  git(repo, home, "config", "core.hooksPath", named);
+}
+
+async function indexState(repo) {
+  const file = path.join(repo, ".git", "index");
+  const info = await stat(file);
+  return { ino: info.ino, mtimeMs: info.mtimeMs, bytes: (await readFile(file)).toString("hex") };
+}
+
+test("C1 with real git: a tracked file that was only touched (same content, newer time) does not make the poll or a diff rewrite .git/index, take index.lock or run the repository's post-index-change hook, while plain git does (a control)", SKIP_GIT, async () => {
+  await withTempDirs(async ({ base, home }) => {
+    const repo = path.join(base, "repo");
+    const marker = path.join(base, "hook-ran.log");
+    await mkdir(repo);
+    git(repo, home, "init", "-q");
+    await writeFile(path.join(repo, "a.txt"), "same\n");
+    await writeFile(path.join(repo, "b.txt"), "one\n");
+    git(repo, home, "add", "-A");
+    git(repo, home, "commit", "-qm", "start");
+    await plantIndexHooks(repo, home, marker);
+    // b.txt really changed; a.txt only got a newer time, which makes it stat-dirty but unchanged.
+    await writeFile(path.join(repo, "b.txt"), "one\ntwo\n");
+    const later = new Date(Date.now() + 5000);
+    await utimes(path.join(repo, "a.txt"), later, later);
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    await utimes(path.join(repo, ".git", "index"), old, old);
+    const before = await indexState(repo);
+    const env = gitTestEnv(home);
+
+    // The 3 s poll's read, a repeat of it, and the diff of the touched file and of the changed one.
+    for (let poll = 0; poll < 2; poll += 1) {
+      const result = await readChanges(repo, { env, now: () => T0 });
+      assert.deepEqual(result.files, [{ path: "b.txt", status: "modified", added: 1, removed: 0 }], "the touched file is not a change");
+    }
+    assert.equal((await readDiff(repo, { path: "a.txt", status: "modified" }, { env })).diff, "");
+    assert.match((await readDiff(repo, { path: "b.txt", status: "modified" }, { env })).diff, /^\+two$/m);
+
+    await assert.rejects(stat(marker), { code: "ENOENT" }, "the repository's hook never ran");
+    await assert.rejects(stat(path.join(repo, ".git", "index.lock")), { code: "ENOENT" }, "no index.lock is left behind");
+    assert.deepEqual(await indexState(repo), before, ".git/index: the same file (inode), the same time, the same bytes");
+
+    // Control: plain git with its own diff does refresh the index and run the hook for this very state.
+    git(repo, home, "diff", "--numstat", "HEAD", "--");
+    assert.match(await readFile(marker, "utf8"), /^ran /, "plain git ran the planted hook");
+    assert.notEqual((await indexState(repo)).ino, before.ino, "plain git rewrote the index");
+  });
+});
+
+test("C1 with real git: every call of runGit has hooks off, even one that does rewrite the index (git update-index --refresh runs post-index-change in plain git, and not through runGit)", SKIP_GIT, async () => {
+  await withTempDirs(async ({ base, home, agentOsHome }) => {
+    const repo = path.join(base, "repo");
+    const marker = path.join(base, "hook-ran.log");
+    await mkdir(repo);
+    git(repo, home, "init", "-q");
+    await writeFile(path.join(repo, "a.txt"), "same\n");
+    git(repo, home, "add", "-A");
+    git(repo, home, "commit", "-qm", "start");
+    await plantIndexHooks(repo, home, marker);
+    const later = new Date(Date.now() + 5000);
+    await utimes(path.join(repo, "a.txt"), later, later);
+    const env = gitTestEnv(home);
+
+    const refreshed = await runGit(repo, ["update-index", "--refresh"], { env });
+    assert.equal(refreshed.ok, true, refreshed.stderr);
+    await assert.rejects(stat(marker), { code: "ENOENT" }, "no hook ran through runGit");
+    // The folder the hooks come from is Agent OS's own, empty and private.
+    const hooks = path.join(agentOsHome, "empty-hooks");
+    assert.deepEqual(await readdir(hooks), []);
+    if (!isWindows) assert.equal((await stat(hooks)).mode & 0o777, 0o700);
+
+    // Control: the same call in plain git runs the hook.
+    await utimes(path.join(repo, "a.txt"), new Date(Date.now() + 9000), new Date(Date.now() + 9000));
+    git(repo, home, "update-index", "--refresh");
+    assert.match(await readFile(marker, "utf8"), /^ran /, "plain git ran the planted hook");
+  });
+});
+
+test("C1: runGit does not start git when the empty hooks folder can't be made (it answers 'never started'), and callers that arrive together share one check of that folder", async (t) => {
+  const data = await useTempAgentOsHome(t);
+  const sharedChecks = await Promise.all(Array.from({ length: 12 }, () => emptyHooksFolder()));
+  assert.deepEqual(new Set(sharedChecks), new Set([path.join(data, "empty-hooks")]));
+  assert.deepEqual(await readdir(path.join(data, "empty-hooks")), []);
+
+  // AGENT_OS_HOME below a plain file: the folder can't be made.
+  const blocker = path.join(data, "blocker");
+  await writeFile(blocker, "x");
+  process.env.AGENT_OS_HOME = path.join(blocker, "data");
+  let started = false;
+  const answer = await runGit("/repo", ["status"], {
+    env: {},
+    run: async () => {
+      started = true;
+      return { ok: true, code: 0, aborted: false, stdout: "" };
+    }
+  });
+  assert.equal(started, false, "git never started without its empty hooks folder");
+  assert.deepEqual(answer, { code: null, stdout: "", stderr: "", timedOut: false, ok: false });
 });
 
 test("readChanges answers: 128 means not a git project, a git that never started or answered anything else is git_unavailable, a cut run is git_timeout, a failed list is git_failed, and 250 changes list 200 with the full total", async () => {
@@ -1129,7 +1281,8 @@ function scriptedGit(project, over = {}) {
 const EDIT_HOOK = () =>
   mapHookEvent({ hook_event_name: "PostToolUse", session_id: CLAUDE_UUID, tool_name: "Edit", tool_input: { file_path: "/x/a.txt" } });
 
-test("S2: gitEnv also drops what would send git to another repository or make it run something of the person's (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_EXTERNAL_DIFF, GIT_PAGER, GIT_ASKPASS, settings given in the environment), keeps harmless variables, and adds a call's own settings last", async () => {
+test("S2: gitEnv also drops what would send git to another repository or make it run something of the person's (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_EXTERNAL_DIFF, GIT_PAGER, GIT_ASKPASS, settings given in the environment), keeps harmless variables, and adds a call's own settings last", async (t) => {
+  await useTempAgentOsHome(t);
   const dropped = {
     GIT_DIR: "/elsewhere/.git",
     GIT_WORK_TREE: "/elsewhere",

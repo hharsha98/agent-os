@@ -168,6 +168,24 @@ test("matchScreenLimit: Codex's limit texts (R15) are found, with the reset time
   assert.equal(matchScreenLimit("claude", "You hit your spend cap set in your workspace."), null);
 });
 
+test("A-I2: matchScreenLimit for Codex counts only its own error row (the '■' row), not a search result, a diff line or a file view that quotes the sentence; the plain-text pattern still finds the sentence anywhere", () => {
+  const quotes = [
+    '• Ran rg -n "Usage limit reached" server',
+    "  └ server/runtime/sessions/mirror-signals.js:36: /You’ve hit your usage limit|You hit your spend cap/;",
+    '+  throw new Error("Your workspace is out of credits. Try again at 3:45 PM.");',
+    "     // You’re out of credits",
+    "- Usage limit reached",
+    "You’ve hit your usage limit. Try again at 3:45 PM."
+  ];
+  for (const quote of quotes) assert.equal(matchScreenLimit("codex", `› search\n\n${quote}\n\n› `), null, quote);
+  assert.equal(matchScreenLimit("codex", quotes.join("\n")), null);
+  const own = "■ You’ve hit your usage limit. Try again at 3:45 PM.";
+  assert.deepEqual(matchScreenLimit("codex", `${quotes.join("\n")}\n${own}\n\n› `), { line: cleanAlertText(own), resetText: "3:45 PM", count: 1 }, "only the error row is counted");
+  assert.equal(matchScreenLimit("codex", `  ■ Usage limit reached. You've reached your usage limit.`)?.count, 1, "an indented row too");
+  assert.equal(matchScreenLimit("codex", "■ something else went wrong"), null);
+  for (const quote of quotes) assert.ok(CODEX_SCREEN_LIMIT.test(quote), `the plain-text pattern still finds: ${quote}`);
+});
+
 test("parseResetText: a clock time is today or, once past, tomorrow; a weekday is the next one; a full date is that day; anything else is unknown", () => {
   assert.equal(parseResetText("3:45pm", NOW), iso(local(10, 29, 15, 45)));
   assert.equal(parseResetText("3:45 PM", NOW), iso(local(10, 29, 15, 45)));

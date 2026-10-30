@@ -28,7 +28,9 @@
 import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import {
+  DEV_ORIGINS,
   cookieNameFor,
+  devOriginAllowed,
   isAllowedHost,
   isLocalMode,
   parseCookieHeader,
@@ -48,13 +50,8 @@ export const MAX_CLIENT_FRAME_BYTES = 64 * 1024;
 // decide by the word, never by the number.
 export const CLOSE_CODES = { too_far_behind: 4000, session_ended: 4001, attach_failed: 4004 };
 
-const DEV_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
 const ATTACH_PATH = /^\/api\/sessions\/([^/]+)\/attach$/;
 const FORBIDDEN = "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-
-function devOriginAllowed(env) {
-  return env.AGENT_OS_DEV_ORIGIN === "1" && env.NODE_ENV !== "production" && env.AGENT_OS_PACKAGED !== "1";
-}
 
 // The exact Origin values an attach may carry, for the port this server is
 // bound to.

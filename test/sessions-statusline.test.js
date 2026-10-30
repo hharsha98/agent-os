@@ -12,9 +12,10 @@
 // Temp HOME, AGENT_OS_HOME and managed-settings path only: never the person's ~/.claude and never
 // the system's managed settings. W1's stand-in login shell; fake agents only. Never a real agent.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { closeSync, constants as fsConstants, openSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -22,6 +23,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import * as alertsUi from "../src/ui/alertsShared.ts";
+import * as ss from "../src/ui/sessionsShared.ts";
 import { helperCommandLine } from "../server/runtime/secrets/keystore.js";
 import {
   MANAGED_SETTINGS_PATHS,
@@ -35,6 +38,7 @@ import {
   statusLineCommand,
   writeStatusLineHelper
 } from "../server/runtime/sessions/claude-session.js";
+import { createClaudeAgentsPoller } from "../server/runtime/sessions/claude-agents-poll.js";
 import { createHooksRouter } from "../server/runtime/sessions/hooks.js";
 import { createSessionManager } from "../server/runtime/sessions/manager.js";
 import { buildSessionProfile } from "../server/runtime/sessions/profiles.js";
@@ -538,6 +542,67 @@ test("readClaudeSettingsLayers opens only those four files: never ~/.claude.json
     const touched = seen.filter((file) => file.startsWith(base));
     assert.deepEqual([...new Set(touched)].sort(), Object.values(files).sort());
     assert.ok(!seen.some((file) => file.endsWith(`${path.sep}.claude.json`)), "never ~/.claude.json");
+  });
+});
+
+// Something that is not a plain file where a settings file belongs, made inside the temp folders only.
+// Opens a pipe for writing at the end, so a read that did wait for it (the bug) lets go of its thread.
+async function withHostileSettings(files, fn) {
+  const fifo = files.local;
+  await mkdir(path.dirname(fifo), { recursive: true });
+  execFileSync("mkfifo", [fifo]);
+  try {
+    return await fn();
+  } finally {
+    try {
+      closeSync(openSync(fifo, fsConstants.O_RDWR | fsConstants.O_NONBLOCK));
+    } catch {
+      // nothing to release
+    }
+  }
+}
+
+const within = (promise, ms, what) =>
+  Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: no answer after ${ms} ms`)), ms).unref())]);
+
+test("B-I1: a pipe, a device and a file over 1 MB where a settings file belongs are ignored at once (the layer reads as null) and the other layers are still read", POSIX, async () => {
+  await withSettingsFiles(async ({ home, project, managedPath, files }) => {
+    await writeSettings(files.managed, { allowManagedHooksOnly: true });
+    await withHostileSettings(files, async () => {
+      await mkdir(path.dirname(files.project), { recursive: true });
+      await symlink("/dev/zero", files.project);
+      // Valid JSON, but 1 MB and one byte long: not read. One of exactly 1 MB is.
+      const json = '{"disableAllHooks":true}';
+      await mkdir(path.dirname(files.user), { recursive: true });
+      await writeFile(files.user, json + " ".repeat(1024 * 1024 + 1 - json.length));
+      const answered = await within(readClaudeSettingsLayers({ folder: project, env: {}, home, managedPath }), 3000, "readClaudeSettingsLayers");
+      assert.deepEqual(answered, { managed: { allowManagedHooksOnly: true }, local: null, project: null, user: null });
+      await writeFile(files.user, json + " ".repeat(1024 * 1024 - json.length));
+      const atTheLimit = await within(readClaudeSettingsLayers({ folder: project, env: {}, home, managedPath }), 3000, "the file at the limit");
+      assert.deepEqual(atTheLimit.user, { disableAllHooks: true });
+      // A link to a real settings file is followed (a person's dotfiles); a pipe or a device never is.
+      await rm(files.project);
+      await writeSettings(path.join(home, "dotfiles", "project-settings.json"), { disableAllHooks: false });
+      await symlink(path.join(home, "dotfiles", "project-settings.json"), files.project);
+      const linked = await within(readClaudeSettingsLayers({ folder: project, env: {}, home, managedPath }), 3000, "the linked file");
+      assert.deepEqual(linked.project, { disableAllHooks: false });
+    });
+  });
+});
+
+test("B-I1: a pipe at <folder>/.claude/settings.local.json does not stop a Claude start: the start goes on without that layer, the person's other settings still apply, and the server's file calls still answer", POSIX, async () => {
+  await withProfileWorld(async (ctx) => {
+    await writeSettings(path.join(ctx.home, ".claude", "settings.json"), { statusLine: { type: "command", command: "printf user-line" } });
+    const files = { local: path.join(ctx.project, ".claude", "settings.local.json") };
+    await withHostileSettings(files, async () => {
+      // Two starts at once: with the old read each would sit in one of Node's file threads for good.
+      const sessionIds = [crypto.randomUUID(), crypto.randomUUID()];
+      const profiles = await within(Promise.all(sessionIds.map((sessionId) => startClaude(ctx, { sessionId }))), 5000, "two Claude starts");
+      for (const profile of profiles) assert.equal(profile.claude.statusLineFrom, "user");
+      const probe = path.join(ctx.agentOsHome, "still-answers.txt");
+      await within(writeFile(probe, "ok"), 2000, "an unrelated file write");
+      assert.equal(await readFile(probe, "utf8"), "ok");
+    });
   });
 });
 
@@ -1073,6 +1138,41 @@ test("manager: hooksOff codes found at the start reach the session summary and s
   });
 });
 
+test("A-I1: a Claude session whose hooks are kept out stays basic after the poller's idle: the panel says basic, never 'Agent OS alerts you' above 'Alerts are off', and counted output wakes it", POSIX, async () => {
+  await withManagerWorld(async (ctx) => {
+    await writeSettings(path.join(ctx.project, ".claude", "settings.json"), { allowedHttpHookUrls: ["https://hooks.example.invalid/*"] });
+    const summary = await ctx.manager.create({ agentId: "claude", folder: ctx.project });
+    assert.equal(summary.hooksOff.alerts, "http_hook_urls");
+    ctx.ptys[0].emit("> ");
+    const agentSessionId = ctx.manager.liveAgentSessions("claude")[0].agentSessionId;
+    const answers = [];
+    const poller = createClaudeAgentsPoller({
+      manager: ctx.manager,
+      intervalMs: 20,
+      runCli: async () => {
+        answers.push(Date.now());
+        return { ok: true, code: 0, stdout: JSON.stringify([{ sessionId: agentSessionId, status: "idle" }]) };
+      }
+    });
+    try {
+      const idle = await waitFor(summaryWhen(ctx.manager, summary.id, (s) => s.status === "idle"), 5000, "the poller's idle");
+      assert.equal(idle.idleBy, "turn_done");
+      assert.equal(idle.alerts, "basic", "the poller is no hook and no OSC 9: still the 20 s rule");
+      poller.stop();
+      // Counted output wakes a basic session; the panel then reads as basic, and the hooks-off line is the one reason shown.
+      for (let line = 0; line < 3; line += 1) ctx.ptys[0].emit(`working on it, step ${line}\r\n`);
+      const live = await waitFor(summaryWhen(ctx.manager, summary.id, (s) => s.status === "live"), 5000, "counted output to wake it");
+      assert.equal(live.alerts, "basic");
+      assert.equal(ss.sessionPanelLine(live, Date.now()), "Working. Alerts for Claude Code are basic.");
+      const lines = alertsUi.panelAlertLines(live);
+      assert.deepEqual(lines, ["Alerts are off for this session: your Claude settings allow hooks to reach only the addresses they list."]);
+      assert.ok(!ss.sessionPanelLine(live, Date.now()).includes("Agent OS alerts you"), "the full-alerts line never sits above 'Alerts are off'");
+    } finally {
+      poller.stop();
+    }
+  });
+});
+
 test("manager: the statusLine's session_id re-links only to a conversation whose transcript exists (R1)", POSIX, async () => {
   await withManagerWorld(async (ctx) => {
     const summary = await ctx.manager.create({ agentId: "claude", folder: ctx.project });
@@ -1117,6 +1217,40 @@ test("manager: the status line's rate limits confirm a hook's limit hint, never 
     const cleared = await waitFor(summaryWhen(ctx.manager, summary.id, (s) => s.status === "idle"), 5000, "the hold to clear");
     assert.equal(cleared.alert, null);
     assert.equal(cleared.resetAt, null);
+  });
+});
+
+test("manager: a status line whose rate_limits window is absent (none at all, or a window past its reset that Claude drops itself) clears a hold the status line confirmed (R4); E1 test gap", POSIX, async () => {
+  await withManagerWorld(async (ctx) => {
+    const summary = await ctx.manager.create({ agentId: "claude", folder: ctx.project });
+    ctx.ptys[0].emit("> ");
+    const nowMs = Date.now();
+    const agentSessionId = ctx.manager.liveAgentSessions("claude")[0].agentSessionId;
+    const post = (body) => postHook({ port: ctx.port, sessionId: summary.id, token: TOKEN, body, path: "/status" });
+    const hold = async () => {
+      const hook = await postHook({ port: ctx.port, sessionId: summary.id, token: TOKEN, body: { hook_event_name: "StopFailure", session_id: agentSessionId, error: "rate_limit" } });
+      assert.equal(hook.status, 204);
+      assert.equal((await post(statusJson({ nowMs, fiveHour: 100 }))).status, 204);
+      return waitFor(summaryWhen(ctx.manager, summary.id, (s) => s.status === "held"), 5000, "held");
+    };
+    const cleared = () => waitFor(summaryWhen(ctx.manager, summary.id, (s) => s.status === "idle"), 5000, "the hold to clear");
+
+    assert.equal((await hold()).alert?.kind, "limit");
+    // No rate_limits at all (an OpenRouter or Local brain, or a Claude that dropped both windows).
+    const { rate_limits: _dropped, ...noLimits } = statusJson({ nowMs });
+    assert.equal((await post(noLimits)).status, 204);
+    const first = await cleared();
+    assert.equal(first.alert, null);
+    assert.equal(first.resetAt, null);
+
+    // Held again. Now the 5-hour window is still named but its reset time has passed: Claude drops such a window
+    // itself, so it reads as absent (and a window that is still open but below 100 % is not the case tested here).
+    assert.equal((await hold()).alert?.kind, "limit");
+    const past = statusJson({ nowMs, fiveHour: 100 });
+    past.rate_limits = { five_hour: { used_percentage: 100, resets_at: Math.floor(nowMs / 1000) - 60 } };
+    assert.equal((await post(past)).status, 204);
+    const second = await cleared();
+    assert.equal(second.alert, null);
   });
 });
 

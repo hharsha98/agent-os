@@ -1,15 +1,34 @@
 // git for the changes panel and the separate copies (SP4): argv only, never
 // a shell, always `git -C <folder>` first, then options that keep git from
-// taking the index lock (--no-optional-locks) or running the person's file
-// monitor (core.fsmonitor=false). Every call is cut at GIT_LIMIT_MS and gets
-// the session's own environment without Agent OS's own variables, never the
-// server's environment (which holds AGENT_OS_TOKEN). The commands that diff
-// add --no-ext-diff and --no-textconv themselves (changes.js), so git never
-// runs a diff tool or a text converter the person configured.
+// writing the person's index or taking its lock, and from running anything the
+// repository or an agent configured. --no-optional-locks covers `git status`
+// only: a plain `git diff` still refreshes a stat-dirty index by itself (it
+// takes index.lock, rewrites .git/index and runs the post-index-change hook),
+// so diff.autoRefreshIndex=false is set on every call too. The person's file
+// monitor is off (core.fsmonitor=false), and core.hooksPath points at an empty
+// folder Agent OS owns, so no hook of the repository ever runs (K12a). Every
+// call is cut at GIT_LIMIT_MS and gets the session's own environment without
+// Agent OS's own variables, never the server's environment (which holds
+// AGENT_OS_TOKEN). The commands that diff add --no-ext-diff and --no-textconv
+// themselves (changes.js), so git never runs a diff tool or a text converter
+// the person configured.
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { ensurePrivateDir, runtimePaths } from "../store.js";
 import { runCli } from "./soft-stop.js";
 
 export const GIT_LIMIT_MS = 5000;
-export const GIT_BASE_ARGS = Object.freeze(["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false"]);
+export const GIT_BASE_ARGS = Object.freeze([
+  "--no-optional-locks",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.quotepath=false",
+  "-c",
+  "diff.autoRefreshIndex=false"
+]);
+// The empty folder core.hooksPath points at, inside AGENT_OS_HOME.
+const EMPTY_HOOKS_FOLDER = "empty-hooks";
 // How much output one call keeps unless the caller asks for another limit.
 const GIT_OUTPUT_CHARS = 1024 * 1024;
 // git's error text, for a message that quotes it (Task X9's worktree_failed).
@@ -86,6 +105,45 @@ export function gitEnv(baseEnv, config = []) {
   return env;
 }
 
+// The empty folder core.hooksPath points at. Checked before every use: a real folder (not a link), owned by the
+// server's own user, 0700 and empty. Anything else is removed and made again, so a hook put there (or a link to
+// someone's hooks) never runs.
+async function hooksFolderIsClean(dir) {
+  try {
+    const info = await fs.lstat(dir);
+    if (!info.isDirectory() || info.isSymbolicLink()) return false;
+    if (process.platform !== "win32") {
+      if (typeof process.getuid === "function" && info.uid !== process.getuid()) return false;
+      if ((info.mode & 0o777) !== 0o700) return false;
+    }
+    return (await fs.readdir(dir)).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function checkHooksFolder(dir) {
+  if (await hooksFolderIsClean(dir)) return dir;
+  await fs.rm(dir, { recursive: true, force: true });
+  await ensurePrivateDir(dir);
+  if (!(await hooksFolderIsClean(dir))) throw new Error("The empty hooks folder can't be made.");
+  return dir;
+}
+
+// Callers that arrive together (every session's first read) share one check, so one of them never removes the
+// folder another has just made.
+const hooksChecks = new Map();
+
+export function emptyHooksFolder() {
+  const dir = path.join(runtimePaths().root, EMPTY_HOOKS_FOLDER);
+  let pending = hooksChecks.get(dir);
+  if (!pending) {
+    pending = checkHooksFolder(dir).finally(() => hooksChecks.delete(dir));
+    hooksChecks.set(dir, pending);
+  }
+  return pending;
+}
+
 // One git call: { code, stdout, stderr, timedOut, ok }. `ok` means it was not
 // cut and its exit code is one of `okCodes`. Never throws. `run` is runCli
 // (injectable for tests); a cut call's process tree is killed by runCli.
@@ -103,7 +161,9 @@ export async function runGit(
   }, timeoutMs);
   timer.unref?.();
   try {
-    const result = await run("git", ["-C", String(folder), ...GIT_BASE_ARGS, ...args], {
+    // Hooks off for every call (K12a). If the empty folder can't be made, git does not run (the catch below).
+    const hooks = await emptyHooksFolder();
+    const result = await run("git", ["-C", String(folder), ...GIT_BASE_ARGS, "-c", `core.hooksPath=${hooks}`, ...args], {
       env: gitEnv(env, config),
       signal: controller.signal,
       maxChars,

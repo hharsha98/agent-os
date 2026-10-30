@@ -258,7 +258,16 @@ const EVERY_ROUTE = [
   ["GET", `/api/sessions/${KNOWN_ID}/keep-going`],
   ["POST", `/api/sessions/${KNOWN_ID}/keep-going`, {}],
   ["POST", `/api/sessions/${KNOWN_ID}/hand-over`, { to: "claude" }],
-  ["GET", "/api/recordings"]
+  ["GET", "/api/recordings"],
+  // SP4 (E1 test gap): the pending approvals, the folder check of the New session dialog, the hand-off, the changes
+  // panel and the separate copy. Each one answers as if it did not exist outside local mode (spec Security 1).
+  ["GET", "/api/sessions/approvals"],
+  ["POST", "/api/sessions/approvals/resolve", { id: "ap-1", decision: "allow-once" }],
+  ["POST", "/api/sessions/folder-check", { folder: "/tmp", agentId: "claude" }],
+  ["POST", `/api/sessions/${KNOWN_ID}/send`, { to: "codex" }],
+  ["GET", `/api/sessions/${KNOWN_ID}/changes`],
+  ["GET", `/api/sessions/${KNOWN_ID}/changes/diff?path=notes.md`],
+  ["DELETE", `/api/sessions/${KNOWN_ID}/worktree`]
 ];
 
 before(() => {

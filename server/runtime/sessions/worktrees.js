@@ -28,7 +28,7 @@ import { promisify } from "node:util";
 import { ensurePrivateDir, runtimePaths } from "../store.js";
 import { filterSettings } from "./changes.js";
 import { isSessionId, sessionError } from "./errors.js";
-import { gitEnv, gitTopLevel, runGit } from "./git.js";
+import { emptyHooksFolder, gitEnv, gitTopLevel, runGit } from "./git.js";
 import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS } from "./profiles.js";
 import { cleanAlertText } from "./signals.js";
 
@@ -41,8 +41,6 @@ export const WORKTREE_ADD_LIMIT_MS = 120 * 1000;
 export const WORKTREE_REMOVE_LIMIT_MS = 60 * 1000;
 // At most this much of git's own words goes into a refusal.
 export const GIT_SAID_MAX = 300;
-// The empty folder core.hooksPath points at, inside AGENT_OS_HOME.
-const EMPTY_HOOKS_FOLDER = "empty-hooks";
 
 const NOT_GIT_MESSAGE = "This folder isn't a git project, so Agent OS can't make a separate copy.";
 const DIRTY_MESSAGE = "The separate copy has changes that aren't committed. Commit or discard them, then try again.";
@@ -95,32 +93,6 @@ function gitFailure(kind, result) {
   if (result?.timedOut) return sessionError(409, words.code, `${words.start}: ${words.late}.`);
   if (said) return sessionError(409, words.code, `${words.start}. Git said: ${said}`);
   return sessionError(409, words.code, `${words.start}, and git gave no reason.`);
-}
-
-// The empty folder core.hooksPath points at. Checked before every use: a real folder (not a link), owned by the
-// server's own user, 0700 and empty. Anything else is removed and made again, so a hook put there (or a link to
-// someone's hooks) never runs.
-async function hooksFolderIsClean(dir) {
-  try {
-    const info = await fs.lstat(dir);
-    if (!info.isDirectory() || info.isSymbolicLink()) return false;
-    if (process.platform !== "win32") {
-      if (typeof process.getuid === "function" && info.uid !== process.getuid()) return false;
-      if ((info.mode & 0o777) !== 0o700) return false;
-    }
-    return (await fs.readdir(dir)).length === 0;
-  } catch {
-    return false;
-  }
-}
-
-async function emptyHooksFolder() {
-  const dir = path.join(runtimePaths().root, EMPTY_HOOKS_FOLDER);
-  if (await hooksFolderIsClean(dir)) return dir;
-  await fs.rm(dir, { recursive: true, force: true });
-  await ensurePrivateDir(dir);
-  if (!(await hooksFolderIsClean(dir))) throw new Error("The empty hooks folder can't be made.");
-  return dir;
 }
 
 // What keeps the project's own programs from running during a call (see the header): { env, prefix, config }.

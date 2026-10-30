@@ -19,7 +19,9 @@ export default function SessionPaneHead({
   onPick: () => void;
   onEnter?: () => void;
 }) {
+  // The branch has its own chip next to the title, so the visible title leaves it out; the label and the tooltip say it.
   const title = sessionTitle(session);
+  const shownTitle = sessionTitle(session, { branch: false });
   const word = sessionStateWord(session);
   return (
     <button
@@ -42,7 +44,7 @@ export default function SessionPaneHead({
       }}
     >
       <SquareTerminal size={16} aria-hidden="true" />
-      <span className="os-sess-pane__title">{title}</span>
+      <span className="os-sess-pane__title">{shownTitle}</span>
       {session.branch ? <code className="os-mono os-sess-pane__branch">{session.branch}</code> : null}
       <span className="os-sess-pane__state">
         <StatusWord state={word.state} label={word.label} />

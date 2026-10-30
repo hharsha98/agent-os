@@ -46,6 +46,7 @@ import { createSessionManager } from "../server/runtime/sessions/manager.js";
 import { SESSION_AGENTS } from "../server/runtime/sessions/profiles.js";
 import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { NESTED_MARKERS, resetLoginShellEnvForTests, sessionEnv } from "../server/runtime/sessions/shell-env.js";
+import { ALERT_LINE_GAP_MS } from "../server/runtime/sessions/signals.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { postHook } from "./helpers/hook-client.js";
 import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
@@ -1018,7 +1019,7 @@ async function withHookEnv(fn) {
 // The real manager with the real launch profile (so the settings file and the
 // environment are the real ones), on a fake terminal unless `spawn` is given;
 // no recording, no recording cap and no kill (the fake pids are never signalled).
-function hookManager(ctx, { getPort, now, onAlertLine, spawn: spawnFn, ptys = [] } = {}) {
+function hookManager(ctx, { getPort, now, onAlertLine, spawn: spawnFn, softStop, ptys = [] } = {}) {
   let nextPid = 930001;
   return createSessionManager({
     // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
@@ -1042,7 +1043,8 @@ function hookManager(ctx, { getPort, now, onAlertLine, spawn: spawnFn, ptys = []
     resolveBrain: async () => null,
     recorderFactory: () => ({ output() {}, marker() {}, resize() {}, close: async () => {} }),
     enforceCap: async () => {},
-    killTree: async () => {}
+    killTree: async () => {},
+    ...(softStop ? { softStop } : {})
   });
 }
 
@@ -1186,8 +1188,9 @@ test("Review Focus 1: the person answers Claude's permission prompt within a few
       assert.deepEqual((await manager.markers(claude.id)).map((marker) => marker.type), ["permission"], "no second Permission asked moment");
       assert.equal(alertLines.length, 1, "no second AGENT_OS_ALERT line, so no second notification");
 
-      // A backup with no input for more than 3 s still alerts (the PermissionRequest hook was missed)...
-      clock.now = T0 + 1500 + BACKUP_WAITING_QUIET_MS + 1000;
+      // A backup with no input for more than 3 s still alerts (the PermissionRequest hook was missed), and once the
+      // session's 10 s between two notifications have passed (B-M2) it is a notification again...
+      clock.now = T0 + ALERT_LINE_GAP_MS + BACKUP_WAITING_QUIET_MS + 1000;
       await post({ hook_event_name: "Notification", notification_type: "permission_prompt", message: "Claude needs your permission to use Read" });
       summary = await untilStatus(manager, claude.id, "waiting");
       assert.equal(summary.alert.text, "Claude needs your permission to use Read");
@@ -1487,6 +1490,36 @@ test("M5: liveAgentSessions copies never carry the hook token or the hook URL, w
     } finally {
       if (codex) await endSession(manager, codex);
       if (claude) await endSession(manager, claude);
+    }
+  });
+});
+
+test("B-M1: the Stop sequence's helper calls (claude agents --json, claude stop) get the session's environment without the hook token and the hook address", posixSkip, async () => {
+  await withHookEnv(async (ctx) => {
+    const ptys = [];
+    const asked = [];
+    let claude = null;
+    const manager = hookManager(ctx, {
+      getPort: () => 47097,
+      ptys,
+      softStop: async (input) => {
+        asked.push(input);
+        claude.pty.exit(0); // the soft stop worked: the process is gone
+        return { outcome: "stopped", note: null };
+      }
+    });
+    try {
+      claude = await startClaude(manager, ptys, ctx);
+      assert.match(claude.token, /^[A-Za-z0-9_-]{43}$/);
+      await manager.stop(claude.id, { by: "stop" });
+      assert.equal(asked.length, 1, "the soft stop ran once");
+      const names = Object.keys(asked[0].env);
+      assert.deepEqual(names.filter((name) => name.startsWith("AGENT_OS_HOOK_")), [], "no hook variable");
+      assert.equal(asked[0].env.AGENT_OS_SESSION_ID, claude.id, "the rest of the environment is kept");
+      assert.ok(!JSON.stringify(asked[0]).includes(claude.token), "the token is nowhere in the call");
+      assert.equal(claude.pty.options.env.AGENT_OS_HOOK_TOKEN, claude.token, "the session's own environment is unchanged");
+    } finally {
+      if (claude && manager.isLive(claude.id)) await endSession(manager, claude);
     }
   });
 });

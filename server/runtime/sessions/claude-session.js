@@ -13,7 +13,7 @@
 // Task X2b adds the statusLine half (the person's settings layers, the
 // hooks-off checks and the wrapper), at the end of the file.
 import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,12 +142,41 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// A settings file is a few lines of JSON. Anything bigger is not read.
+const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
+// A pipe (FIFO) or a device left where a settings file belongs must not stop an open or a read: a
+// plain readFile waits in a thread of Node's small pool until someone writes into the pipe, and a few
+// of those stop every file call in the server. O_NONBLOCK makes the open return at once; the handle is
+// then checked before anything is read. No O_NOFOLLOW: a person's settings file is often a link into
+// their dotfiles.
+const SETTINGS_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0);
+
+// The text of a regular file of at most SETTINGS_FILE_MAX_BYTES, or null (missing, unreadable, a pipe,
+// a device, a folder, too big).
+export async function readRegularText(file) {
+  let handle = null;
+  try {
+    handle = await fs.open(file, SETTINGS_OPEN_FLAGS);
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > SETTINGS_FILE_MAX_BYTES) return null;
+    const buffer = Buffer.alloc(info.size);
+    const { bytesRead } = await handle.read(buffer, 0, info.size, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 // One settings file, keeping only SETTINGS_READ_KEYS (own properties). null when the file is
-// missing, unreadable, not JSON or not an object. Never logs what it read.
+// missing, unreadable, not a plain file, too big, not JSON or not an object. Never logs what it read.
 async function readSettingsLayer(file) {
   let parsed;
   try {
-    parsed = JSON.parse(await fs.readFile(file, "utf8"));
+    const text = await readRegularText(file);
+    if (text === null) return null;
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }

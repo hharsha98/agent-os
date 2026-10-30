@@ -21,7 +21,7 @@ import { deleteRecording, listRecordings, resumeSession, sessionGotNoAnswer } fr
 import type { SessionSummary } from "../../types";
 import { collapseHomePath } from "../agentsShared";
 import { askToFocusNextSession, createdSessionId } from "../newSession";
-import { CAP_NOTE, EMPTY_BODY, EMPTY_TITLE, isRecording, readRecordings, recordedAt, recordingLength, rowAction } from "../recordingsShared";
+import { CAP_NOTE, EMPTY_BODY, EMPTY_TITLE, isRecording, readRecordings, recordedAt, recordingLength, recordingPlace, rowAction } from "../recordingsShared";
 import type { RecordingRow, RecordingsBody } from "../recordingsShared";
 import { RECORDING_GONE, deleteConfirmCopy, deleteProblem, isFinalDeleteRefusal, replayResumeCopy } from "../replayShared";
 import { isImpossibleResume, resumeConfirmCopy, sessionTitle } from "../sessionsShared";
@@ -84,9 +84,7 @@ export function useRecordings(active: boolean): { value: RecordingsState; reload
 }
 
 function whereWords(row: RecordingRow): string {
-  if (row.kind === "update") return "Agent update";
-  if (!row.folderShown) return "Folder set by OpenClaw";
-  return collapseHomePath(row.folder) || "—";
+  return recordingPlace(row, collapseHomePath);
 }
 
 // The Resume dialog's words: SP3's from a row, the prototype's from the replay header (spec SP4, "Recordings in Runs").
@@ -320,7 +318,7 @@ export default function SessionRecordings({
                 const action = rowAction(row, session, sessionsState);
                 const length = recordingLength(row, now);
                 const lit = row.sessionId === highlight;
-                const title = sessionTitle(row);
+                const title = sessionTitle(row, { branch: false }); // the branch is in the words under it
                 const where = whereWords(row);
                 return (
                   <div

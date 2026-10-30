@@ -39,7 +39,7 @@ import { parseResetText } from "../server/runtime/sessions/mirror-signals.js";
 import { SESSION_AGENT_LABEL as PROFILE_AGENT_LABEL } from "../server/runtime/sessions/profiles.js";
 import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { createRecorder, enforceRecordingCap } from "../server/runtime/sessions/recorder.js";
-import { HELD_CHECK_MS, MARKERS_MAX, TURN_DONE_BACKSTOP_MS } from "../server/runtime/sessions/signals.js";
+import { ALERT_LINE_GAP_MS, HELD_CHECK_MS, MARKERS_MAX, TURN_DONE_BACKSTOP_MS } from "../server/runtime/sessions/signals.js";
 import { RUNTIME_VERSION, writeJson } from "../server/runtime/store.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
@@ -528,6 +528,16 @@ test("branch: a folder inside a git checkout shows its branch; a detached or pla
     assert.equal(await readGitBranch(project), "feat/sessions");
     assert.equal(await readGitBranch(sub), "feat/sessions", "found from a subfolder too");
 
+    // A pipe planted where HEAD should be never hangs the read (E1 review).
+    if (process.platform !== "win32") {
+      const piped = path.join(home, "piped");
+      await mkdir(path.join(piped, ".git"), { recursive: true });
+      execFileSync("mkfifo", [path.join(piped, ".git", "HEAD")]);
+      const started = Date.now();
+      assert.equal(await readGitBranch(piped), null, "a pipe is not a branch");
+      assert.ok(Date.now() - started < 2000, "the read returned at once");
+    }
+
     // A worktree: .git is a file that points at its git folder.
     const gitdir = path.join(home, "wt-git");
     await mkdir(gitdir);
@@ -560,8 +570,10 @@ test("brain: the Brain row comes from the resolved brain, which also goes to the
     const codex = await world.manager.create({ agentId: "codex", folder: project });
     const cursor = await world.manager.create({ agentId: "cursor", folder: project });
     const hermes = await world.manager.create({ agentId: "hermes", folder: project });
-    assert.deepEqual(claude.brain, { kind: "local", label: "Local" });
-    assert.deepEqual(codex.brain, { kind: "openrouter", label: "OpenRouter" });
+    // The launch profile's model goes with the Brain row, for the Live meter's Model row (E1 A-M2); a plan brain with
+    // no chosen model has none.
+    assert.deepEqual(claude.brain, { kind: "local", label: "Local", model: "qwen3-coder" });
+    assert.deepEqual(codex.brain, { kind: "openrouter", label: "OpenRouter", model: "openai/gpt-5.5" });
     assert.deepEqual(cursor.brain, { kind: "plan", label: "Plan" });
     assert.equal(hermes.brain, null);
     assert.deepEqual(world.profileInputs[0].brain, brains.claude);
@@ -1017,12 +1029,14 @@ test("alert frames and the AGENT_OS_ALERT line (K7, K8): a line when an alert st
     world.manager.applySignal(id, { kind: "waiting", text: "Wants to use Bash", source: "hook" });
     world.manager.applySignal(id, { kind: "waiting", text: "Has a question for you", source: "hook" });
     world.manager.applySignal(id, { kind: "resolved", source: "hook" });
+    // A session raises at most one AGENT_OS_ALERT line in ALERT_LINE_GAP_MS (B-M2): the limit comes after that gap.
+    world.clock = T0 + ALERT_LINE_GAP_MS;
     assert.equal(world.manager.setHeld(id, { text: limitText, source: "hook" }), true);
     world.clock = T0 + 60000;
     world.manager.setHeld(id, { resetAt: "2026-10-14T14:00:00.000Z", text: limitText, source: "status" });
     const held = await world.manager.get(id);
     assert.equal(held.resetAt, "2026-10-14T14:00:00.000Z");
-    assert.deepEqual(held.alert, { kind: "limit", text: limitText, at: "2026-10-14T09:00:00.000Z" }, "the same limit keeps the time it began");
+    assert.deepEqual(held.alert, { kind: "limit", text: limitText, at: "2026-10-14T09:00:10.000Z" }, "the same limit keeps the time it began");
     assert.equal(world.manager.clearHeld(id), true);
     assert.equal((await world.manager.get(id)).status, "idle");
     assert.deepEqual(
@@ -1058,7 +1072,8 @@ test("alert frames and the AGENT_OS_ALERT line (K7, K8): a line when an alert st
       "the bell sent no frame"
     );
     assert.equal(lines.length, 3, "and no second line");
-    // A specific alert of another kind does replace it.
+    // A specific alert of another kind does replace it (a notification again once the gap has passed).
+    world.clock += ALERT_LINE_GAP_MS;
     world.manager.applySignal(openclaw.id, { kind: "waiting", text: "Has a question for you", source: "hook" });
     assert.deepEqual(lines, [
       { sessionId: id, agent: "Claude Code", kind: "waiting", text: "Wants to use Bash" },
@@ -1076,6 +1091,46 @@ test("alert frames and the AGENT_OS_ALERT line (K7, K8): a line when an alert st
       ["exec: npm test", "Has a question for you"],
       "the bell added no marker"
     );
+  });
+});
+
+test("B-M2: a session raises at most one AGENT_OS_ALERT line in 10 s: later alerts of a new kind inside the gap are dropped (the in-app alert still follows each), another session has its own gap, and the first alert after the gap prints again", async () => {
+  await withSessionEnv(async ({ project }) => {
+    assert.equal(ALERT_LINE_GAP_MS, 10000);
+    const lines = [];
+    const world = fakeWorld({ onAlertLine: (payload) => lines.push(payload) });
+    const first = await world.manager.create({ agentId: "claude", folder: project });
+    const second = await world.manager.create({ agentId: "codex", folder: project });
+    const win = await attachFake(world.manager, first.id, "w");
+    world.ptys[0].emit("ready");
+    world.ptys[1].emit("ready");
+    const flood = async (id, n) => {
+      // A forged PermissionRequest then Stop, over and over: every pair starts a new waiting alert.
+      for (let round = 0; round < n; round += 1) {
+        world.manager.applySignal(id, { kind: "waiting", text: `Wants to use Bash ${round}`, source: "hook" });
+        world.manager.applySignal(id, { kind: "turn_done", source: "hook" });
+      }
+    };
+    await flood(first.id, 5);
+    assert.deepEqual(lines.map((line) => [line.sessionId, line.text]), [[first.id, "Wants to use Bash 0"]], "one line for the whole flood");
+    assert.equal(
+      win.frames.filter((frame) => frame.t === "alert" && frame.kind === "waiting").length,
+      5,
+      "the in-app alert followed every one"
+    );
+    await flood(second.id, 3);
+    assert.deepEqual(lines.map((line) => line.sessionId), [first.id, second.id], "another session has its own gap");
+    world.clock = T0 + ALERT_LINE_GAP_MS - 1;
+    await flood(first.id, 1);
+    assert.equal(lines.length, 2, "9.999 s later: still inside the gap");
+    world.clock = T0 + ALERT_LINE_GAP_MS;
+    await flood(first.id, 1);
+    assert.equal(lines.length, 3, "10 s later: a notification again");
+    assert.equal(lines[2].sessionId, first.id);
+    // A clock that went back (a sleeping Mac, a clock change) does not silence the session until it catches up.
+    world.clock = T0 - 3600 * 1000;
+    await flood(first.id, 1);
+    assert.equal(lines.length, 4);
   });
 });
 
@@ -2580,14 +2635,14 @@ test("brain override (keep going only, ruling R26): create and resume hand it to
     const claude = await world.manager.create({ agentId: "claude", folder: project });
     assert.deepEqual(claude.brain, { kind: "plan", label: "Plan" });
     const codex = await world.manager.create({ agentId: "codex", folder: project, brainOverride: codexOnOpenRouter });
-    assert.deepEqual(codex.brain, { kind: "openrouter", label: "OpenRouter" });
+    assert.deepEqual(codex.brain, { kind: "openrouter", label: "OpenRouter", model: "openai/gpt-5.6-codex" });
     assert.deepEqual(world.profileInputs[1].brain, codexOnOpenRouter);
 
     world.ptys[0].exit(0);
     await ended(world, claude.id);
     const resumed = await world.manager.resume(claude.id, { brainOverride: claudeOnOpenRouter });
     assert.equal(resumed.id, claude.id, "the same tab");
-    assert.deepEqual(resumed.brain, { kind: "openrouter", label: "OpenRouter" });
+    assert.deepEqual(resumed.brain, { kind: "openrouter", label: "OpenRouter", model: "anthropic/claude-sonnet-4.6" });
     assert.deepEqual(world.profileInputs[2].brain, claudeOnOpenRouter, "the profile writes the OpenRouter settings from it");
     assert.deepEqual(world.profileInputs[2].resume, { agentSessionId: CLAUDE_UUID }, "the same conversation");
 
@@ -2713,6 +2768,14 @@ test("X1b signals: Codex's OSC 9 is read by its text (R14): an approval makes th
     assert.equal(summary.alerts, "full", "its first notification makes it a turn-done session");
     assert.deepEqual([summary.alert.kind, summary.alert.text], ["waiting", "Approval requested: npm test"]);
     assert.ok(frames.some((frame) => frame.t === "alert" && frame.kind === "waiting" && frame.text === "Approval requested: npm test"));
+
+    // A-M9: a bell or a basic notification right after it does not replace Codex's words with "May need you".
+    const alertFrames = frames.filter((frame) => frame.t === "alert").length;
+    mirror.opts.onAlert("bel");
+    mirror.opts.onAlert("99;i=1:d=0;Codex needs you");
+    summary = await world.manager.get(id);
+    assert.deepEqual([summary.status, summary.alert.text], ["waiting", "Approval requested: npm test"]);
+    assert.equal(frames.filter((frame) => frame.t === "alert").length, alertFrames, "no new alert frame");
 
     mirror.opts.onAlert("9;All 42 tests pass.");
     summary = await world.manager.get(id);
@@ -2916,6 +2979,39 @@ test("X1b limit rule, Codex: its limit text holds only when it is still on scree
     assert.equal(session.world.manager.noteLimit(session.id, { source: "hook" }), false);
     assert.equal(session.world.manager.noteLimit(session.id, { source: "status", atLimit: true }), false);
     assert.equal(await statusOf(session), "live");
+  });
+});
+
+test("A-I2 limit rule, Codex: a screen that only quotes a limit sentence (rg output, a diff, a file view) is no limit even after the confirm time and raises no alert line; Codex's own error row still holds", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const lines = [];
+    const world = fakeWorld({ limitScanMs: 5, codexConfirmMs: 40, onAlertLine: (line) => lines.push(line) });
+    const { id } = await world.manager.create({ agentId: "codex", folder: project });
+    const pty = world.ptys[0];
+    const mirror = world.mirrors[0];
+    pty.emit("› search the code\r\n");
+    await waitFor(() => mirror.screenReads >= 1);
+    const quoted = [
+      "› search the code",
+      "",
+      '• Ran rg -n "Usage limit reached" server',
+      "  └ server/runtime/sessions/mirror-signals.js:36: /You’ve hit your usage limit|You hit your spend cap|Usage limit reached/;",
+      '+  throw new Error("Your workspace is out of credits. Try again at 3:45 PM.");',
+      "     // You’re out of credits",
+      ""
+    ].join("\n");
+    mirror.screen = `${quoted}\n› `;
+    pty.emit("\r\nsearching\r\n");
+    await waitFor(() => mirror.screenReads >= 2); // the read that sees the quotes
+    // Codex now only redraws its status row (not counted): the quotes stay on screen well past the confirm time.
+    await afterScan(200);
+    assert.notEqual((await world.manager.get(id)).status, "held", "quoted sentences are not Codex's error");
+    assert.deepEqual(lines, [], "no AGENT_OS_ALERT line");
+    // Codex's own error row, under the same quotes, holds as before.
+    mirror.screen = `${quoted}\n${CODEX_LIMIT_LINE}\n\n› `;
+    pty.emit(`\r\n${CODEX_LIMIT_LINE}\r\n`);
+    await waitFor(async () => (await world.manager.get(id)).status === "held");
+    assert.equal(lines.length, 1);
   });
 });
 
@@ -3269,7 +3365,7 @@ test("real PTY: a fake Codex's OSC 9 makes its session waiting with Codex's word
       const idle = await current();
       assert.deepEqual([idle.idleBy, idle.alerts], ["turn_done", "full"]);
 
-      assert.equal(manager.write(id, "w", "print You’ve hit your usage limit. Try again at 3:45 PM.\r"), true);
+      assert.equal(manager.write(id, "w", "print ■ You’ve hit your usage limit. Try again at 3:45 PM.\r"), true);
       await waitFor(async () => (await current()).status === "held");
       const resetAt = new Date((await current()).resetAt);
       assert.deepEqual([resetAt.getHours(), resetAt.getMinutes()], [15, 45], "the reset time, in local time as Codex printed it");

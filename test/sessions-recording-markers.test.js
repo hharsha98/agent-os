@@ -197,6 +197,17 @@ test(
           type(`hook PermissionRequest ${JSON.stringify({ tool_name: "Bash" })}`);
           await waitFor(() => answered() === 2);
           await waitFor(async () => (await manager.markers(id)).length === 2);
+          // E1 test gap: the list the badge, the Home strip and the tabs read carries the alert and the alert mode
+          // (spec, Alerts UI), and so does the session's own address.
+          for (const url of ["/api/sessions", `/api/sessions/${id}`]) {
+            const answer = await http("GET", url);
+            assert.equal(answer.status, 200, answer.text);
+            const item = url === "/api/sessions" ? answer.json.sessions.find((session) => session.id === id) : answer.json;
+            assert.equal(item.status, "waiting", url);
+            assert.deepEqual([item.alert.kind, item.alert.text], ["waiting", "Wants to use Bash"], url);
+            assert.equal(new Date(item.alert.at).toISOString(), item.alert.at, `${url}: the time the alert began`);
+            assert.equal(item.alerts, "full", `${url}: Claude's hooks spoke, so alerts are full`);
+          }
           await writeFile(path.join(folder, "notes.md"), "one\ntwo\nthree\n");
           type(`hook PostToolUse ${JSON.stringify({ tool_name: "Edit" })}`);
           await waitFor(async () => (await manager.markers(id)).length === 3, { timeoutMs: 15000 });

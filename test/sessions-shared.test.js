@@ -43,6 +43,17 @@ test("a session's title is '<agent> · <folder>'; OpenClaw's folder reads 'Set b
   assert.equal(ss.sessionTitle(session({ kind: "setup", agentId: "openclaw", agentLabel: "" })), "openclaw · ChatGPT sign-in");
 });
 
+test("A-M6: a session in a separate copy adds the copy's branch to its title (R25), so two sessions in one project can be told apart; `branch: false` leaves it out", () => {
+  const copy = session({ copyOf: "/Users/you/my-app", branch: "agentos/claude-1", folder: "/Users/you/.hermes-agent-os/worktrees/x" });
+  assert.equal(ss.sessionTitle(copy), "Claude Code · my-app · agentos/claude-1");
+  assert.equal(ss.sessionTitle(copy, { branch: false }), "Claude Code · my-app");
+  assert.equal(ss.sessionTitle(session({ branch: "main" })), "Claude Code · my-app", "a branch alone is not a copy");
+  assert.equal(ss.sessionTitle(session({ copyOf: "/Users/you/my-app", branch: null })), "Claude Code · my-app");
+  assert.equal(ss.sessionTitle({ ...copy, kind: "update" }), "Claude Code update");
+  assert.equal(ss.sessionTitle({ ...copy, folderShown: false }), "Claude Code · Set by OpenClaw");
+  assert.equal(stopAll.sessionStopTitle(copy), ss.sessionTitle(copy), "Stop all's list uses the same words");
+});
+
 test("Stop all names a session with the same words as the Sessions page (S10's sessionStopTitle)", () => {
   // stopAllShared.ts cannot import this file (Node follows no extensionless import, P14), so this test keeps
   // the two copies of the rule equal.
@@ -58,7 +69,10 @@ test("Stop all names a session with the same words as the Sessions page (S10's s
     session({ agentLabel: "", agentId: "openclaw", folderShown: false }),
     // A setup session (OpenClaw's ChatGPT sign-in, plan brains): the same title in both copies.
     session({ kind: "setup", agentId: "openclaw", agentLabel: "OpenClaw", folderShown: false, folderName: "you" }),
-    session({ kind: "setup", agentId: "openclaw", agentLabel: "" })
+    session({ kind: "setup", agentId: "openclaw", agentLabel: "" }),
+    // A separate copy adds its branch in both copies of the rule (R25).
+    session({ copyOf: "/Users/you/my-app", branch: "agentos/codex-2", agentId: "codex", agentLabel: "Codex" }),
+    session({ copyOf: "/Users/you/my-app", branch: null })
   ]) {
     assert.equal(stopAll.sessionStopTitle(s), ss.sessionTitle(s), `${s.kind} "${s.agentLabel}" ${s.agentId} ${s.folderShown} "${s.folderName}"`);
   }

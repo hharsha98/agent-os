@@ -65,6 +65,24 @@ export function hostAllowlistMiddleware() {
   };
 }
 
+// The Vite page of `npm run dev`. Its requests reach the server through Vite's proxy, which rewrites the Host
+// header but not the Origin, so these two are this server's own pages only while the dev launcher set the flag
+// (never in a production or packaged run). The sessions WebSocket (sessions/ws.js) trusts the same two.
+export const DEV_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
+
+export function devOriginAllowed(env = process.env) {
+  return env.AGENT_OS_DEV_ORIGIN === "1" && env.NODE_ENV !== "production" && env.AGENT_OS_PACKAGED !== "1";
+}
+
+// Whether `origin` is this server's own page: scheme and host AND PORT exactly as the request's Host header
+// says (so a page on 127.0.0.1:3000 is not the page on 127.0.0.1:8090), or the dev page above.
+function isOwnOrigin(origin, hostHeader) {
+  const wanted = String(origin).trim().toLowerCase();
+  const host = String(hostHeader || "").trim().toLowerCase();
+  if (host && (wanted === `http://${host}` || wanted === `https://${host}`)) return true;
+  return devOriginAllowed() && DEV_ORIGINS.includes(wanted);
+}
+
 export function originCheckMiddleware() {
   return (req, res, next) => {
     if (["GET", "HEAD", "OPTIONS"].includes(req.method)) {
@@ -83,6 +101,14 @@ export function originCheckMiddleware() {
       hostname = "";
     }
     if (!isAllowedHost(hostname)) {
+      res.status(403).json({ error: "origin_not_allowed" });
+      return;
+    }
+    // Local mode (browser mode on 127.0.0.1): the session cookie is SameSite=Strict, which counts 127.0.0.1:3000
+    // and 127.0.0.1:8090 as one site, so a page on any other local port would send it along with a form post or a
+    // no-cors fetch. A request that names an Origin must name this server's own. A request with none (Claude's
+    // hook calls, curl with the token header) is unchanged: it still needs the cookie or the token.
+    if (isLocalMode() && !isOwnOrigin(origin, req.get("host"))) {
       res.status(403).json({ error: "origin_not_allowed" });
       return;
     }

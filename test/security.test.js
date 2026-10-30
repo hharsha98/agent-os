@@ -501,3 +501,130 @@ test("19. unreadable JSON never echoes the request text in the reply or the log"
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(logs.text.includes("NOTAREALKEY"), false);
 });
+
+// The routes a page on another local port could reach with the session cookie of a browser-mode server: every state-changing
+// session route (SP3 stop/resume/dismiss, SP4 keep-going, hand-over, send, approvals, worktree, recording).
+const SESSION_ID = "3f2c9a7e-1b4d-4c8e-9f00-0123456789ab";
+const STATE_CHANGING_SESSION_ROUTES = [
+  ["POST", `/api/sessions/${SESSION_ID}/stop`],
+  ["POST", `/api/sessions/${SESSION_ID}/resume`],
+  ["POST", `/api/sessions/${SESSION_ID}/dismiss`],
+  ["POST", `/api/sessions/${SESSION_ID}/keep-going`],
+  ["POST", `/api/sessions/${SESSION_ID}/hand-over`],
+  ["POST", `/api/sessions/${SESSION_ID}/send`],
+  ["POST", "/api/sessions/approvals/resolve"],
+  ["DELETE", `/api/sessions/${SESSION_ID}/worktree`],
+  ["DELETE", `/api/sessions/${SESSION_ID}/recording`]
+];
+
+test("20. B-C2: a page on another local port gets the session cookie sent but is refused on every state-changing session route; the server's own origin and a request with no Origin still work, and reads are unchanged", async () => {
+  const claim = await fetch(`${base}/api/session/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: TOKEN })
+  });
+  const cookie = (claim.headers.get("set-cookie") || "").split(";")[0];
+  assert.match(cookie, new RegExp(`^agent_os_session_${port}=`));
+  const otherPort = port === 65535 ? port - 1 : port + 1;
+  const hostile = [`http://127.0.0.1:${otherPort}`, `http://localhost:${otherPort}`, `ftp://127.0.0.1:${port}`, "null"];
+  const send = (method, route, origin) =>
+    fetch(`${base}${route}`, {
+      method,
+      headers: { cookie, "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
+      body: method === "POST" ? JSON.stringify({}) : undefined
+    });
+
+  for (const [method, route] of STATE_CHANGING_SESSION_ROUTES) {
+    for (const origin of hostile) {
+      const refused = await send(method, route, origin);
+      assert.equal(refused.status, 403, `${method} ${route} from ${origin}`);
+      assert.equal((await refused.json()).error, "origin_not_allowed", `${method} ${route} from ${origin}`);
+    }
+    // Its own page (the desktop app's window and the browser tab both send exactly this), and no Origin at all.
+    for (const origin of [`http://127.0.0.1:${port}`, undefined]) {
+      const answered = await send(method, route, origin);
+      assert.notEqual(answered.status, 403, `${method} ${route} with ${origin ?? "no Origin"}: not refused for its Origin`);
+      assert.notEqual(answered.status, 401, `${method} ${route} with ${origin ?? "no Origin"}: the cookie is accepted`);
+    }
+  }
+
+  // Reads do not change: a GET from another port is answered as before (the page cannot read it, the browser stops that).
+  const read = await fetch(`${base}/api/sessions`, { headers: { cookie, Origin: `http://127.0.0.1:${otherPort}` } });
+  assert.equal(read.status, 200);
+});
+
+test("21. B-C2: the exact-origin rule is local mode only, compares scheme, host and port with the request's own Host, and lets the Vite page in only when the dev launcher set the flag", async () => {
+  const { originCheckMiddleware } = await import("../server/runtime/local-session.js");
+  const middleware = originCheckMiddleware();
+  const answer = (method, host, origin) => {
+    const headers = { host, ...(origin === undefined ? {} : { origin }) };
+    const result = { status: null, body: null, passed: false };
+    middleware(
+      { method, get: (name) => headers[String(name).toLowerCase()] },
+      {
+        status(code) {
+          result.status = code;
+          return this;
+        },
+        json(body) {
+          result.body = body;
+        }
+      },
+      () => {
+        result.passed = true;
+      }
+    );
+    return result;
+  };
+  const keys = ["HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_REQUIRE_AUTH", "DEMO_PUBLIC", "HERMES_AGENT_OS_DEMO_PUBLIC", "AGENT_OS_DEV_ORIGIN", "AGENT_OS_PACKAGED", "NODE_ENV"];
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const reset = () => {
+    for (const key of keys) delete process.env[key];
+  };
+  try {
+    reset();
+    // Local mode.
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:8090").passed, true, "its own page");
+    assert.equal(answer("POST", "localhost:8090", "http://localhost:8090").passed, true, "its own page by the other name");
+    assert.equal(answer("POST", "127.0.0.1:8090", "HTTP://127.0.0.1:8090").passed, true, "letter case does not matter");
+    assert.equal(answer("POST", "[::1]:8090", "http://[::1]:8090").passed, true, "an IPv6 host");
+    assert.equal(answer("POST", "127.0.0.1:8090", "https://127.0.0.1:8090").passed, true, "the same host and port behind a TLS proxy");
+    assert.equal(answer("POST", "127.0.0.1:8090", undefined).passed, true, "no Origin: unchanged (it still needs the cookie or the token)");
+    assert.equal(answer("GET", "127.0.0.1:8090", "http://127.0.0.1:3000").passed, true, "reads are unchanged");
+    for (const origin of [
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1",
+      "http://localhost:8090",
+      "http://127.0.0.1:8090.evil.example",
+      "http://127.0.0.1:8090/",
+      "null",
+      "http://127.0.0.1:5173"
+    ]) {
+      const refused = answer("POST", "127.0.0.1:8090", origin);
+      assert.equal(refused.passed, false, origin);
+      assert.deepEqual([refused.status, refused.body], [403, { error: "origin_not_allowed" }], origin);
+    }
+    assert.equal(answer("DELETE", "127.0.0.1:8090", "http://127.0.0.1:3000").status, 403, "DELETE too");
+    // The Vite page of `npm run dev`: only with the launcher's flag, and never in a production or packaged run.
+    process.env.AGENT_OS_DEV_ORIGIN = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:5173").passed, true);
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://localhost:5173").passed, true);
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:5174").status, 403);
+    process.env.AGENT_OS_PACKAGED = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:5173").status, 403, "packaged: no dev page");
+    reset();
+    // A host that is not allowed is refused whatever the mode; a foreign Origin too.
+    assert.equal(answer("POST", "127.0.0.1:8090", "https://evil.example").status, 403);
+    // Public and demo modes are unchanged (the host name alone, as before): their own gates decide.
+    process.env.HERMES_AGENT_OS_PUBLIC_MODE = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:3000").passed, true, "public mode: unchanged");
+    delete process.env.HERMES_AGENT_OS_PUBLIC_MODE;
+    process.env.DEMO_PUBLIC = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:3000").passed, true, "demo mode: unchanged");
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+});

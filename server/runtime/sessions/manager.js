@@ -53,7 +53,7 @@ import {
   readChanges,
   readDiff
 } from "./changes.js";
-import { CLAUDE_HOOK_EVENTS, parseStatusLine, transcriptExists as defaultTranscriptExists } from "./claude-session.js";
+import { CLAUDE_HOOK_EVENTS, parseStatusLine, readRegularText, transcriptExists as defaultTranscriptExists } from "./claude-session.js";
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
 import { runGit as defaultRunGit } from "./git.js";
@@ -76,6 +76,7 @@ import { CAST_FILE, createRecorder, deleteRecording as deleteRecordingFiles, enf
 import { readSessionSettings } from "./settings.js";
 import { getLoginShellEnv } from "./shell-env.js";
 import {
+  ALERT_LINE_GAP_MS,
   HELD_CHECK_MS,
   MARKERS_MAX,
   SIGNAL_SOURCES,
@@ -200,6 +201,14 @@ const SIGNAL_NAMES = signalNameTable();
 const APPLIED_SIGNAL_KINDS = Object.freeze(["waiting", "turn_done", "approval", "resolved"]);
 // The events that start a live session's idle time again.
 const REARM_EVENTS = new Set(["counted", "input", "new_turn"]);
+// M5: the hook variables (every name starting with HOOK_PREFIX) belong to the Claude session's own environment only
+// (H2). A helper process built from a copy of that environment (the `claude agents` poller, git, a hand-off, the
+// Stop sequence's `claude agents --json` and `claude stop`) must never receive them. Dropped by prefix, so that this
+// file never names them (E1's guard on which files do).
+const HOOK_PREFIX = "AGENT_OS_HOOK_";
+function withoutHookVariables(env) {
+  return Object.fromEntries(Object.entries(env || {}).filter(([key]) => !key.startsWith(HOOK_PREFIX)));
+}
 // A held session's reset timer is set only for a reset time closer than this;
 // the wall-clock check covers one further away (setTimeout's own limit is
 // about 24.8 days).
@@ -341,12 +350,13 @@ export async function readGitBranch(folder) {
     if (info) {
       let gitDir = dotGit;
       if (info.isFile()) {
-        const pointer = await fs.readFile(dotGit, "utf8").catch(() => "");
+        // Regular files only, so a pipe planted in a project can't hang the server (E1 review).
+        const pointer = (await readRegularText(dotGit)) ?? "";
         const match = /^gitdir:\s*(.+?)\s*$/m.exec(pointer);
         if (!match) return null;
         gitDir = path.resolve(dir, match[1]);
       }
-      const head = await fs.readFile(path.join(gitDir, "HEAD"), "utf8").catch(() => "");
+      const head = (await readRegularText(path.join(gitDir, "HEAD"))) ?? "";
       const ref = /^ref:\s*refs\/heads\/(.+?)\s*$/.exec(head.trim());
       return ref ? ref[1].slice(0, 200) : null;
     }
@@ -358,11 +368,14 @@ export async function readGitBranch(folder) {
 }
 
 // The Brain row of the side panel. Hermes and OpenClaw keep their model in
-// their own config, so Agent OS shows no brain for them.
+// their own config, so Agent OS shows no brain for them. The launch profile's model (an OpenRouter or Local brain's,
+// a chosen Cursor model) goes with it, for the Live meter's Model row when Claude's status line has none (spec,
+// Side panel: "launch profile; Claude's statusLine when present"). A plan brain with no chosen model has no `model`.
 function brainSummary(agentId, resolved) {
   if (!BUILDER_AGENT_IDS.includes(agentId)) return null;
   const kind = resolved && Object.hasOwn(BRAIN_LABEL, resolved.mode) ? resolved.mode : "plan";
-  return { kind, label: BRAIN_LABEL[kind] };
+  const model = typeof resolved?.model === "string" ? resolved.model.trim() : "";
+  return model ? { kind, label: BRAIN_LABEL[kind], model } : { kind, label: BRAIN_LABEL[kind] };
 }
 
 function titleOf(meta) {
@@ -676,6 +689,8 @@ export function createSessionManager({
       hookToken: null,
       // Set only for a resume of a Claude Code conversation (watchForNothingToResume).
       noConversation: null,
+      // When this session last raised an AGENT_OS_ALERT line (B-M2), as now() read it; null: never.
+      alertLineAt: null,
       // The changes panel (SP4): see the "changes panel" section below.
       changes: freshChanges(),
       // SP4 activity (signals.js). activity.status always equals `status`:
@@ -822,6 +837,11 @@ export function createSessionManager({
       addMarkerTo(state, { type: "permission", text: after.text }).catch(() => {});
     }
     if (typeof onAlertLine === "function") {
+      // B-M2: at most one notification per session in ALERT_LINE_GAP_MS. The frame above and the session's own alert
+      // already follow every change; only the desktop notification is held back.
+      const at = now();
+      if (state.alertLineAt !== null && at >= state.alertLineAt && at - state.alertLineAt < ALERT_LINE_GAP_MS) return;
+      state.alertLineAt = at;
       try {
         onAlertLine({ sessionId: state.meta.id, agent: state.meta.agentLabel, kind: after.kind, text: after.text });
       } catch {
@@ -2484,13 +2504,8 @@ export function createSessionManager({
       if (state.status === "exited" || state.meta.kind !== "agent") continue;
       if (agentId !== null && state.meta.agentId !== agentId) continue;
       const profile = state.profile || {};
-      // M5: the hook variables (every name starting with HOOK_PREFIX) belong
-      // to the Claude session's own environment only (H2). A helper process
-      // built from this copy (the `claude agents` poller, git, a hand-off)
-      // must never receive them. Dropped by prefix, so that this file never
-      // names them (E1's guard on which files do).
-      const HOOK_PREFIX = "AGENT_OS_HOOK_";
-      const env = Object.fromEntries(Object.entries(profile.env || {}).filter(([key]) => !key.startsWith(HOOK_PREFIX)));
+      // M5: no hook variable in the copy a helper process gets (withoutHookVariables).
+      const env = withoutHookVariables(profile.env);
       found.push({
         id: state.meta.id,
         agentId: state.meta.agentId,
@@ -2746,7 +2761,8 @@ export function createSessionManager({
       soft = await softStop({
         softStop: profile.softStop ?? null,
         command: profile.command,
-        env: profile.env,
+        // B-M1: `claude agents --json` and `claude stop` are helper processes, not the session: no hook token or address.
+        env: withoutHookVariables(profile.env),
         cwd: profile.cwd,
         agentSessionId: state.meta.agentSessionId ?? null,
         pid: state.handle?.pid ?? null

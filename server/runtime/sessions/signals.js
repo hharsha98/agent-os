@@ -28,6 +28,9 @@ export const BASIC_ALERT_TEXT = "May need you";
 export const TURN_DONE_BACKSTOP_MS = 120 * 1000;
 // K3: how often a held session compares the wall clock with its reset time.
 export const HELD_CHECK_MS = 60 * 1000;
+// B-M2: one session raises at most one AGENT_OS_ALERT line (a desktop notification) in this time; a token holder
+// that forges one question after another gets one notification, while the in-app alert still follows each.
+export const ALERT_LINE_GAP_MS = 10 * 1000;
 // K20: the most markers one session keeps in meta.json (the oldest go first).
 export const MARKERS_MAX = 500;
 // The desktop shell looks for stdout lines that start with this (spec
@@ -72,9 +75,11 @@ function countOrNull(value) {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
-// A bell or an OSC 9 / 99 / 777 from the mirror: the basic sources (R19).
-function isBasicSource(source) {
-  return source === "bel" || source === "osc";
+// A bell or an OSC 9 / 99 / 777 from the mirror that says only "May need you": a basic alert (R19). The source
+// alone is not enough: Codex's OSC 9 is classified by its text ("Approval requested: rm -rf build"), carries
+// Codex's own words and has the source "osc" too, but it is a specific alert and no later bell may replace it.
+function isBasicAlert({ source, text } = {}) {
+  return (source === "bel" || source === "osc") && text === BASIC_ALERT_TEXT;
 }
 
 // Short, plain, one-line text: tabs and newlines become spaces, every other
@@ -141,7 +146,10 @@ function alertFrom(kind, event, previous) {
 function signalInto(next, from, event) {
   const status = from.status;
   if (event.kind === "turn_done") {
-    next.turnDone = true;
+    // Turn-done from now on only after a hook event or an OSC 9 notification (spec, "Session activity states").
+    // The Claude poller's idle (source "poll") also ends the turn, but it is no first signal: a session whose
+    // hooks are off must stay basic, or its panel would claim full alerts above "Alerts are off".
+    if (event.source === "hook" || event.source === "osc") next.turnDone = true;
     // K4: a turn_done while waiting means the agent finished, so it no longer waits.
     if (status === "starting" || status === "live" || status === "waiting" || status === "idle") {
       next.status = "idle";
@@ -164,7 +172,7 @@ function signalInto(next, from, event) {
     // (an approval's command, a hook's question): one question, one alert, one
     // notification (K7). The activity stays as it is, so no frame, no second
     // AGENT_OS_ALERT line and no second permission marker follow.
-    if (status === "waiting" && from.alert && isBasicSource(event.source) && !isBasicSource(from.alert.source)) return;
+    if (status === "waiting" && from.alert && isBasicAlert(event) && !isBasicAlert(from.alert)) return;
     next.status = "waiting";
     next.alert = alertFrom(event.kind, event, from.alert);
   }

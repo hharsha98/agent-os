@@ -165,14 +165,16 @@ test(
       assert.deepEqual(payload, { sessionId: id, agent: "Claude Code", kind: "waiting", text: BASIC_ALERT_TEXT });
       assert.equal(line.includes(home), false, "no folder or path in the line");
 
-      // The mirror passes at most one bell per 250 ms. Typing clears the alert
-      // (no line); the next bell starts a new alert, which prints a new line.
+      // The mirror passes at most one bell per 250 ms. Typing clears the alert (no line); the next bell starts a new
+      // alert in the session, but a session raises at most one notification in 10 s (B-M2): no second line yet.
       await delay(300);
       client.send({ t: "in", d: "bell\r" });
-      await waitFor(() => alertLines().length === 2, 10000, "the second AGENT_OS_ALERT line");
-      assert.equal(alertLines()[1], line);
-      const listed = await api(port, "GET", "/api/sessions?live=1");
-      assert.equal(listed.json.sessions.find((session) => session.id === id).status, "waiting");
+      await waitFor(async () => {
+        const listed = await api(port, "GET", "/api/sessions?live=1");
+        return listed.json.sessions.find((session) => session.id === id)?.status === "waiting";
+      }, 10000, "the session to wait again");
+      await delay(500);
+      assert.equal(alertLines().length, 1, "the second notification is held back inside the 10 s gap");
       assert.equal(out.stderr.includes(ALERT_LINE_PREFIX), false, "the line goes to stdout only");
     } finally {
       client?.ws.close();

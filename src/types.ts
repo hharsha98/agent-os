@@ -2782,7 +2782,8 @@ export interface SessionSummary {
   signal: string | null;
   endedBy: SessionEndedBy;
   dismissed: boolean;
-  brain: { kind: "plan" | "openrouter" | "local"; label: string } | null;
+  // `model` is the launch profile's model (an OpenRouter or Local brain's, a chosen Cursor model), when there is one.
+  brain: { kind: "plan" | "openrouter" | "local"; label: string; model?: string } | null;
   resume: { available: boolean; reason: string | null; fallback: boolean };
   // true when Claude Code's resume found no saved conversation (nothing was ever sent in the session, or Claude
   // deleted an old transcript itself): there is nothing to resume. A server that doesn't send it means false.

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { claimSession } from "./sessionKey";
 import Logo from "./ui/Logo";
 
 // shown when the local session cookie is missing or wrong
@@ -20,13 +21,8 @@ export default function LockedScreen() {
     setError("");
     setBusy(true);
     try {
-      const response = await fetch("/api/session/claim", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      });
-      if (!response.ok) {
+      const accepted = await claimSession(token);
+      if (!accepted) {
         setError("That token was not accepted.");
         setBusy(false);
         return;

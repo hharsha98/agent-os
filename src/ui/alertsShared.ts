@@ -130,13 +130,31 @@ export function panelAlertLines(s: PanelAlertFields): string[] {
   return lines;
 }
 
+// The sessions that went into waiting or held between two reads of the list: what the browser message is about. The
+// first read (no earlier list) has none.
+function freshAlerts(prev: ReadonlyArray<Listed> | null, next: ReadonlyArray<Listed>): Listed[] {
+  if (!prev) return [];
+  const before = new Map(prev.map((s) => [s.id, s.status]));
+  return next.filter((s) => (needsYou(s, "waiting") || needsYou(s, "held")) && before.get(s.id) !== s.status);
+}
+
+// The ids of the sessions a browser message is about, so the page can take the message away when they stop alerting (M5).
+export function alertToastSessions(prev: ReadonlyArray<Listed> | null, next: ReadonlyArray<Listed>): string[] {
+  return freshAlerts(prev, next).map((s) => s.id);
+}
+
+// Is the message still true? Yes while any session it is about still waits for you or is held. Gone from the list, ended,
+// or back to work (user input, an answer, the plan reset): no. Spec, Alerts UI: alerts clear when the agent resolves, there
+// is user input in that session, or the session leaves that state. An OpenClaw approval is a waiting session too.
+export function toastStillAlerting(ids: ReadonlyArray<string>, sessions: ReadonlyArray<Pick<SessionSummary, "id" | "kind" | "status">>): boolean {
+  return sessions.some((s) => ids.includes(s.id) && (needsYou(s, "waiting") || needsYou(s, "held")));
+}
+
 // The browser tab's message (spec, Alerts UI: "In browser mode, an in-app toast only"): one for each change between two
 // reads of the list into waiting or held. The first read is not news, and new words for an alert that was already
 // there are not either. Several at once give one message.
 export function alertToast(prev: ReadonlyArray<Listed> | null, next: ReadonlyArray<Listed>): string | null {
-  if (!prev) return null;
-  const before = new Map(prev.map((s) => [s.id, s.status]));
-  const fresh = next.filter((s) => (needsYou(s, "waiting") || needsYou(s, "held")) && before.get(s.id) !== s.status);
+  const fresh = freshAlerts(prev, next);
   if (fresh.length === 0) return null;
   if (fresh.length > 1) return `${fresh.length} sessions need you.`;
   const s = fresh[0];

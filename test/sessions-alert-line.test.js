@@ -14,7 +14,6 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import WebSocket from "ws";
-import { cookieNameFor } from "../server/runtime/local-session.js";
 import { ALERT_LINE_PREFIX, BASIC_ALERT_TEXT } from "../server/runtime/sessions/signals.js";
 import { FAKE_AGENT_NAMES, FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 
@@ -110,7 +109,8 @@ function attach(port, id) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/${id}/attach`, {
       origin: `http://127.0.0.1:${port}`,
-      headers: { Cookie: `${cookieNameFor(port)}=${encodeURIComponent(TOKEN)}` },
+      // The launch token header is the script door (R32); the cookie only works together with the page key.
+      headers: { "x-agent-os-token": TOKEN },
       handshakeTimeout: 5000
     });
     const client = { ws, screen: "", send: (value) => ws.send(JSON.stringify(value)) };

@@ -1,11 +1,13 @@
 import { Copy, FolderOpen, Lock, Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getWorkspaceFileDetail, undoTeamAction } from "../../api";
+import { useApiBlobUrl, useApiText } from "../../apiBlob";
 import type { WorkspaceListedFile, WorkspaceListing } from "../../types";
 import { canRevealInFinder, revealInFinder } from "../desktop";
 import { withTimeout } from "../homeShared";
 import MiniMarkdown from "../miniMarkdown";
 import {
+  PREVIEW_FETCH_MAX_BYTES,
   PREVIEW_MAX_BYTES,
   TYPE_INFO,
   absolutePathOf,
@@ -92,6 +94,15 @@ export default function WorkspacePreview({ file, roots, onRefresh, onNotice, aut
   const [undone, setUndone] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const source = canToggle && mode === "source";
+  // An <img>, <audio>, <video> or <iframe> cannot send the page key header, so the file is fetched with it and shown
+  // from an address the page makes (R32). Which kind of address depends on the file's type: see apiBlob.ts (R33).
+  const lockedHtml = type === "html" && !source;
+  const showsFile = type === "image" || type === "audio" || type === "video" || type === "pdf" || lockedHtml;
+  // A file this big is not fetched whole just to be previewed (R33).
+  const tooBigToFetch = showsFile && file.size > PREVIEW_FETCH_MAX_BYTES;
+  const fileSrc = useApiBlobUrl(showsFile && !lockedHtml && !tooBigToFetch ? rawUrl : null).src;
+  // The locked HTML view draws the file's text inside a sandboxed frame; the file never gets an address.
+  const htmlText = useApiText(lockedHtml && !tooBigToFetch ? rawUrl : null);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -174,14 +185,17 @@ export default function WorkspacePreview({ file, roots, onRefresh, onNotice, aut
   }
 
   function body() {
-    if (type === "image") return <img className="os-ws__media" src={rawUrl} alt={file.name} />;
-    if (type === "audio") return <audio className="os-ws__media" controls src={rawUrl} />;
-    if (type === "video") return <video className="os-ws__media" controls src={rawUrl} />;
-    if (type === "pdf") return <iframe className="os-ws__frame os-ws__frame--tall" title={`PDF: ${file.name}`} src={rawUrl} />;
+    if (tooBigToFetch) {
+      return <p className="os-ws__plain">This file is larger than 200 MB, so Agent OS does not preview it here.</p>;
+    }
+    if (type === "image") return <img className="os-ws__media" src={fileSrc} alt={file.name} />;
+    if (type === "audio") return <audio className="os-ws__media" controls src={fileSrc} />;
+    if (type === "video") return <video className="os-ws__media" controls src={fileSrc} />;
+    if (type === "pdf") return <iframe className="os-ws__frame os-ws__frame--tall" title={`PDF: ${file.name}`} src={fileSrc} />;
     if (type === "other") {
       return <p className="os-ws__plain">This file type has no inline preview. It stays in the workspace, and Agent OS does not open or download it.</p>;
     }
-    if (type === "html" && !source) {
+    if (lockedHtml) {
       return (
         <>
           <p className="os-ws__lock" role="note">
@@ -190,7 +204,7 @@ export default function WorkspacePreview({ file, roots, onRefresh, onNotice, aut
               <b>Locked preview.</b> This HTML is drawn inside a sandbox. Scripts and forms are switched off in this preview.
             </span>
           </p>
-          <iframe className="os-ws__frame" sandbox="" title={`Locked preview of ${displayPath(file)}`} src={rawUrl} />
+          <iframe className="os-ws__frame" sandbox="" title={`Locked preview of ${displayPath(file)}`} srcDoc={htmlText.text ?? ""} />
         </>
       );
     }

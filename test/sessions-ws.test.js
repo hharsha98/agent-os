@@ -24,7 +24,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { cookieNameFor, sessionToken } from "../server/runtime/local-session.js";
+import { cookieNameFor, cookieSecret, pageKey, sessionToken } from "../server/runtime/local-session.js";
 import { PAUSED_DROP_MS, PAUSE_LAG_BYTES, createSessionManager } from "../server/runtime/sessions/manager.js";
 import { NESTED_MARKERS } from "../server/runtime/sessions/shell-env.js";
 import {
@@ -96,7 +96,8 @@ function upgradeRequest(over = {}) {
   const headers = {
     host: `127.0.0.1:${PORT}`,
     origin: `http://127.0.0.1:${PORT}`,
-    cookie: `${cookieNameFor(PORT)}=${encodeURIComponent(sessionToken)}`,
+    cookie: `${cookieNameFor(PORT)}=${encodeURIComponent(cookieSecret)}`,
+    "sec-websocket-protocol": `agent-os-key.${pageKey}`,
     upgrade: "websocket",
     connection: "Upgrade",
     ...headerOver
@@ -118,7 +119,7 @@ test("checkUpgradeRequest: a correct attach passes and names the session", async
       sessionId: ID
     });
     assert.deepEqual(check({ headers: { host: `[::1]:${PORT}` } }), { ok: true, sessionId: ID });
-    const among = `theme=dark; ${cookieNameFor(PORT)}=${encodeURIComponent(sessionToken)}; other=1`;
+    const among = `theme=dark; ${cookieNameFor(PORT)}=${encodeURIComponent(cookieSecret)}; other=1`;
     assert.deepEqual(check({ headers: { cookie: among } }), { ok: true, sessionId: ID });
   });
 });
@@ -240,41 +241,65 @@ test("checkUpgradeRequest: the Vite dev origin needs AGENT_OS_DEV_ORIGIN=1 and n
   ]);
 });
 
-test("checkUpgradeRequest: the session cookie for this port is required and compared exactly, in constant time", async (t) => {
+test("checkUpgradeRequest: the session cookie for this port AND the page key are required and compared exactly, in constant time (R32)", async (t) => {
   await withEnv(CLEAN, async () => {
     const name = cookieNameFor(PORT);
+    const key = `agent-os-key.${pageKey}`;
     for (const [label, headers] of [
       ["no cookie", { cookie: undefined }],
-      ["a wrong value", { cookie: `${name}=not-the-token` }],
-      ["another port's cookie", { cookie: `${cookieNameFor(PORT + 1)}=${encodeURIComponent(sessionToken)}` }],
-      ["one character more", { cookie: `${name}=${encodeURIComponent(sessionToken)}x` }],
+      ["a wrong value", { cookie: `${name}=not-the-secret` }],
+      ["another port's cookie", { cookie: `${cookieNameFor(PORT + 1)}=${encodeURIComponent(cookieSecret)}` }],
+      ["one character more", { cookie: `${name}=${encodeURIComponent(cookieSecret)}x` }],
       ["not valid percent-encoding", { cookie: `${name}=%E0%A4%A` }],
-      ["the token in a header instead", { cookie: undefined, "x-agent-os-token": sessionToken }]
+      ["the launch token as the cookie's value", { cookie: `${name}=${encodeURIComponent(sessionToken)}` }],
+      // R32: the cookie alone is not enough, and neither is the key alone.
+      ["the cookie without the page key", { "sec-websocket-protocol": undefined }],
+      ["the cookie with a wrong page key", { "sec-websocket-protocol": "agent-os-key.not-the-key" }],
+      ["the cookie with an empty page key", { "sec-websocket-protocol": "agent-os-key." }],
+      ["the cookie with some other protocol", { "sec-websocket-protocol": "chat" }],
+      ["the page key without the cookie", { cookie: undefined }],
+      ["the page key where the cookie goes", { cookie: `${name}=${encodeURIComponent(pageKey)}` }],
+      ["the cookie secret where the key goes", { "sec-websocket-protocol": `agent-os-key.${cookieSecret}` }]
     ]) {
       assert.deepEqual(check({ headers }), { ok: false, reason: "cookie" }, label);
     }
+    // A script may use the launch token header instead of the cookie and key; a wrong token is no better than nothing.
+    assert.deepEqual(
+      check({ headers: { cookie: undefined, "sec-websocket-protocol": undefined, "x-agent-os-token": sessionToken } }),
+      { ok: true, sessionId: ID },
+      "the launch token header"
+    );
+    for (const wrongToken of ["not-the-token", pageKey, cookieSecret, `${sessionToken}x`]) {
+      assert.deepEqual(
+        check({ headers: { cookie: undefined, "sec-websocket-protocol": undefined, "x-agent-os-token": wrongToken } }),
+        { ok: false, reason: "cookie" },
+        `a wrong launch token header (${wrongToken.length} chars)`
+      );
+    }
+    // The key may be one of several offered protocols.
+    assert.deepEqual(check({ headers: { "sec-websocket-protocol": `chat, ${key}` } }), { ok: true, sessionId: ID }, "among others");
 
-    // Security 1: the comparison is crypto.timingSafeEqual (ws.js imports the
-    // same `crypto` object), never `===`. The spy calls through to the real
-    // function and is removed when this test ends.
+    // Security 1: the comparison is crypto.timingSafeEqual (local-session.js imports the same `crypto` object), never
+    // `===`. The spy calls through to the real function and is removed when this test ends. Cookie and key are both
+    // compared, even when one of them is wrong.
     const spy = t.mock.method(crypto, "timingSafeEqual");
     assert.deepEqual(check(), { ok: true, sessionId: ID });
-    assert.equal(spy.mock.callCount(), 1, "the cookie is compared with crypto.timingSafeEqual");
-    // The token with its last character changed: same length, wrong value.
-    const sameLength = sessionToken.slice(0, -1) + (sessionToken.endsWith("0") ? "1" : "0");
-    assert.equal(Buffer.byteLength(sameLength), Buffer.byteLength(sessionToken));
+    assert.equal(spy.mock.callCount(), 2, "the cookie and the page key are compared with crypto.timingSafeEqual");
+    // The secret with its last character changed: same length, wrong value.
+    const sameLength = cookieSecret.slice(0, -1) + (cookieSecret.endsWith("0") ? "1" : "0");
+    assert.equal(Buffer.byteLength(sameLength), Buffer.byteLength(cookieSecret));
     assert.deepEqual(check({ headers: { cookie: `${name}=${encodeURIComponent(sameLength)}` } }), {
       ok: false,
       reason: "cookie"
     });
-    assert.equal(spy.mock.callCount(), 2, "a same-length wrong token is compared the same way");
+    assert.equal(spy.mock.callCount(), 4, "a same-length wrong cookie is compared the same way, and the key still is too");
   });
 });
 
 test("checkUpgradeRequest: a session cookie sent twice is read like the REST gate reads it, the last one winning", async () => {
   await withEnv(CLEAN, async () => {
     const name = cookieNameFor(PORT);
-    const real = `${name}=${encodeURIComponent(sessionToken)}`;
+    const real = `${name}=${encodeURIComponent(cookieSecret)}`;
     // Another local page can set a cookie of the same name (cookies do not
     // keep ports apart, and a longer path is sent first). The REST gate takes
     // the last value, so the terminal must too: with the first-wins rule the
@@ -455,6 +480,7 @@ async function startServer(home, extra = {}) {
     }
     await delay(25);
   }
+  await claimLogin(port);
   return { child, port, logs };
 }
 
@@ -508,7 +534,23 @@ async function stopSession(port, id) {
 
 const ownOrigin = (port) => `http://127.0.0.1:${port}`;
 const attachPath = (id) => `/api/sessions/${id}/attach`;
-const cookieFor = (port) => `${cookieNameFor(port)}=${encodeURIComponent(TOKEN)}`;
+// R32: the real login claim of each test server, made once when it starts: its cookie and its page key. (The server
+// makes its own random secrets; they cannot be guessed from the launch token.)
+const claimed = new Map();
+async function claimLogin(port) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/session/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: TOKEN })
+  });
+  const pair = (response.headers.get("set-cookie") || "").split(";")[0];
+  const body = await response.json().catch(() => ({}));
+  claimed.set(port, { pair, key: body.pageKey, secret: decodeURIComponent(pair.slice(pair.indexOf("=") + 1)) });
+}
+const cookieFor = (port) => claimed.get(port).pair;
+const keyFor = (port) => claimed.get(port).key;
+// The cookie and the page key together, the way the page sends them.
+const authFor = (port) => ({ cookie: cookieFor(port), key: keyFor(port) });
 
 // Everything one socket received, for the assertions below.
 function trackClient(ws) {
@@ -562,16 +604,20 @@ function trackClient(ws) {
 }
 
 // One upgrade attempt: { opened: true, client } or { opened: false, error }.
-function tryUpgrade(port, urlPath, { origin, cookie, host, headers = {} } = {}) {
+// `key` is the page key, offered as the subprotocol "agent-os-key.<key>" (R32); `protocols` replaces it with exactly what
+// the caller wants offered.
+function tryUpgrade(port, urlPath, { origin, cookie, key, protocols, host, headers = {} } = {}) {
   return new Promise((resolve) => {
     const sent = { ...headers };
     if (cookie !== undefined) sent.Cookie = cookie;
     if (host !== undefined) sent.Host = host;
-    const ws = new WebSocket(`ws://127.0.0.1:${port}${urlPath}`, {
+    const offered = protocols ?? (key === undefined ? undefined : [`agent-os-key.${key}`]);
+    const options = {
       headers: sent,
       ...(origin === undefined ? {} : { origin }),
       handshakeTimeout: 5000
-    });
+    };
+    const ws = offered ? new WebSocket(`ws://127.0.0.1:${port}${urlPath}`, offered, options) : new WebSocket(`ws://127.0.0.1:${port}${urlPath}`, options);
     const client = trackClient(ws);
     let settled = false;
     const finish = (result) => {
@@ -594,7 +640,7 @@ function expectRefused(result, label) {
 
 // A window that is attached: its snapshot and its first state have arrived.
 async function openClient(port, id, { origin = ownOrigin(port) } = {}) {
-  const result = await tryUpgrade(port, attachPath(id), { origin, cookie: cookieFor(port) });
+  const result = await tryUpgrade(port, attachPath(id), { origin, ...authFor(port) });
   assert.equal(result.opened, true, `the attach should open: ${result.error}`);
   const { client } = result;
   await waitFor(() => client.frames.some((item) => item.t === "state"), 5000, "the snapshot and state frames");
@@ -697,7 +743,7 @@ async function withEndpoint(manager, fn) {
     server.listen(0, "127.0.0.1", resolve);
   });
   const { port } = server.address();
-  const good = { origin: ownOrigin(port), cookie: `${cookieNameFor(port)}=${encodeURIComponent(sessionToken)}` };
+  const good = { origin: ownOrigin(port), cookie: `${cookieNameFor(port)}=${encodeURIComponent(cookieSecret)}`, key: pageKey };
   try {
     return await fn({ port, good });
   } finally {
@@ -716,7 +762,7 @@ test("a server started in the public demo answers an upgrade with 403 (the real 
     expectRefused(
       await tryUpgrade(server.port, attachPath(crypto.randomUUID()), {
         origin: ownOrigin(server.port),
-        cookie: cookieFor(server.port)
+        ...authFor(server.port)
       }),
       "demo mode"
     );
@@ -925,15 +971,18 @@ describe("the attach endpoint on a real server", { skip: SKIP_POSIX }, () => {
     } finally {
       client.close();
     }
-    // The cookie the real login hands out works the same way.
+    // The cookie and the page key the real login hands out work the same way.
     const claim = await fetch(`http://127.0.0.1:${main.port}/api/session/claim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: TOKEN })
     });
     const cookie = (claim.headers.get("set-cookie") || "").split(";")[0];
-    const viaClaim = await tryUpgrade(main.port, attachPath(main.securityId), { origin: ownOrigin(main.port), cookie });
+    const { pageKey: viaClaimKey } = await claim.json();
+    const viaClaim = await tryUpgrade(main.port, attachPath(main.securityId), { origin: ownOrigin(main.port), cookie, key: viaClaimKey });
     assert.equal(viaClaim.opened, true, viaClaim.error);
+    // The server answers with the one subprotocol the page offered (a browser fails the socket otherwise).
+    assert.equal(viaClaim.client.ws.protocol, `agent-os-key.${viaClaimKey}`);
     viaClaim.client.close();
   });
 
@@ -947,7 +996,7 @@ describe("the attach endpoint on a real server", { skip: SKIP_POSIX }, () => {
       ["the Vite dev page without AGENT_OS_DEV_ORIGIN=1", "http://127.0.0.1:5173"]
     ]) {
       expectRefused(
-        await tryUpgrade(main.port, attachPath(main.securityId), { origin, cookie: cookieFor(main.port) }),
+        await tryUpgrade(main.port, attachPath(main.securityId), { origin, ...authFor(main.port) }),
         label
       );
     }
@@ -964,51 +1013,63 @@ describe("the attach endpoint on a real server", { skip: SKIP_POSIX }, () => {
       `/api/sessions/${id}/attach?token=${TOKEN}`
     ]) {
       expectRefused(
-        await tryUpgrade(main.port, urlPath, { origin: ownOrigin(main.port), cookie: cookieFor(main.port) }),
+        await tryUpgrade(main.port, urlPath, { origin: ownOrigin(main.port), ...authFor(main.port) }),
         urlPath
       );
     }
   });
 
-  test("the session cookie is required and must match", async () => {
+  test("the session cookie AND the page key are required and must match; the launch token header is the script door (R32)", async () => {
     const origin = ownOrigin(main.port);
+    const { pair, key, secret } = claimed.get(main.port);
     for (const [label, options] of [
       ["no cookie", { origin }],
-      ["a wrong cookie", { origin, cookie: `${cookieNameFor(main.port)}=not-the-token` }],
-      ["the token under another port's cookie", { origin, cookie: `${cookieNameFor(main.port + 1)}=${encodeURIComponent(TOKEN)}` }],
-      ["the token in the x-agent-os-token header instead", { origin, headers: { "x-agent-os-token": TOKEN } }],
-      ["a cookie that is not valid percent-encoding", { origin, cookie: `${cookieNameFor(main.port)}=%E0%A4%A` }]
+      ["a wrong cookie", { origin, cookie: `${cookieNameFor(main.port)}=not-the-token`, key }],
+      ["the token under another port's cookie", { origin, cookie: `${cookieNameFor(main.port + 1)}=${encodeURIComponent(TOKEN)}`, key }],
+      ["the launch token as the cookie's value", { origin, cookie: `${cookieNameFor(main.port)}=${encodeURIComponent(TOKEN)}`, key }],
+      ["a cookie that is not valid percent-encoding", { origin, cookie: `${cookieNameFor(main.port)}=%E0%A4%A`, key }],
+      // R32: the cookie alone (what a page on another local port receives) opens nothing.
+      ["the cookie alone", { origin, cookie: pair }],
+      ["the cookie with a wrong page key", { origin, cookie: pair, key: key.slice(0, -1) + (key.endsWith("0") ? "1" : "0") }],
+      ["the cookie with the key under another name", { origin, cookie: pair, protocols: [`other.${key}`] }],
+      ["the page key alone", { origin, key }],
+      ["the cookie secret as the key", { origin, cookie: pair, key: secret }],
+      ["the key as the launch token", { origin, headers: { "x-agent-os-token": key } }]
     ]) {
       expectRefused(await tryUpgrade(main.port, attachPath(main.securityId), options), label);
     }
-    // The server is still up after the broken cookie.
+    // The server is still up after the broken cookie, and a script that has the launch token can attach with the header.
     const fine = await openClient(main.port, main.securityId);
     fine.close();
+    const byToken = await tryUpgrade(main.port, attachPath(main.securityId), { origin, headers: { "x-agent-os-token": TOKEN } });
+    assert.equal(byToken.opened, true, byToken.error);
+    byToken.client.close();
   });
 
   test("a session cookie sent twice is read like the REST gate reads it: the last one wins, for REST and the terminal alike", async () => {
     const name = cookieNameFor(main.port);
-    const real = `${name}=${encodeURIComponent(TOKEN)}`;
+    const { secret, key } = claimed.get(main.port);
+    const real = `${name}=${encodeURIComponent(secret)}`;
     const stray = `${name}=not-the-token`;
     const origin = ownOrigin(main.port);
     const restStatus = async (cookie) =>
-      (await fetch(`http://127.0.0.1:${main.port}/api/sessions`, { headers: { Cookie: cookie } })).status;
+      (await fetch(`http://127.0.0.1:${main.port}/api/sessions`, { headers: { Cookie: cookie, "x-agent-os-key": key } })).status;
     // A stray cookie of the same name sent first (another local page set it):
     // the REST gate accepts the header, and so must the terminal.
     assert.equal(await restStatus(`${stray}; ${real}`), 200, "REST takes the last value");
-    const first = await tryUpgrade(main.port, attachPath(main.securityId), { origin, cookie: `${stray}; ${real}` });
+    const first = await tryUpgrade(main.port, attachPath(main.securityId), { origin, cookie: `${stray}; ${real}`, key });
     assert.equal(first.opened, true, `the terminal takes the last value too: ${first.error}`);
     first.client.close();
     // The stray one last: both refuse.
     assert.equal(await restStatus(`${real}; ${stray}`), 401, "REST takes the last value, the stray one");
     expectRefused(
-      await tryUpgrade(main.port, attachPath(main.securityId), { origin, cookie: `${real}; ${stray}` }),
+      await tryUpgrade(main.port, attachPath(main.securityId), { origin, cookie: `${real}; ${stray}`, key }),
       "a stray cookie last"
     );
   });
 
   test("an unknown, malformed or ended session is refused like any other failure", async () => {
-    const good = { origin: ownOrigin(main.port), cookie: cookieFor(main.port) };
+    const good = { origin: ownOrigin(main.port), ...authFor(main.port) };
     expectRefused(await tryUpgrade(main.port, attachPath(crypto.randomUUID()), good), "an unknown session id");
     expectRefused(await tryUpgrade(main.port, "/api/sessions/not-a-session/attach", good), "a malformed id");
     const ended = await createSession(main.port, main.home);
@@ -1022,7 +1083,7 @@ describe("the attach endpoint on a real server", { skip: SKIP_POSIX }, () => {
   });
 
   test("Host must be allowed and carry this server's port", async () => {
-    const good = { origin: ownOrigin(main.port), cookie: cookieFor(main.port) };
+    const good = { origin: ownOrigin(main.port), ...authFor(main.port) };
     for (const [label, host] of [
       ["a forged Host", `evil.example:${main.port}`],
       ["a Host without a port", "127.0.0.1"],
@@ -1033,7 +1094,7 @@ describe("the attach endpoint on a real server", { skip: SKIP_POSIX }, () => {
     const viaLocalhost = await tryUpgrade(main.port, attachPath(main.securityId), {
       host: `localhost:${main.port}`,
       origin: `http://localhost:${main.port}`,
-      cookie: cookieFor(main.port)
+      ...authFor(main.port)
     });
     assert.equal(viaLocalhost.opened, true, viaLocalhost.error);
     viaLocalhost.client.close();
@@ -1042,7 +1103,7 @@ describe("the attach endpoint on a real server", { skip: SKIP_POSIX }, () => {
   test("any other upgrade address gets 403 and is never left hanging", async () => {
     for (const urlPath of ["/api/runs", "/", "/api/sessions"]) {
       expectRefused(
-        await tryUpgrade(main.port, urlPath, { origin: ownOrigin(main.port), cookie: cookieFor(main.port) }),
+        await tryUpgrade(main.port, urlPath, { origin: ownOrigin(main.port), ...authFor(main.port) }),
         urlPath
       );
     }
@@ -1390,7 +1451,7 @@ describe("the Vite dev origin on real servers", { skip: SKIP_POSIX }, () => {
   test("with AGENT_OS_DEV_ORIGIN=1 the Vite dev page attaches", async () => {
     await withDevServer({ AGENT_OS_DEV_ORIGIN: "1" }, async (port, id) => {
       for (const origin of ["http://127.0.0.1:5173", "http://localhost:5173", ownOrigin(port)]) {
-        const result = await tryUpgrade(port, attachPath(id), { origin, cookie: cookieFor(port) });
+        const result = await tryUpgrade(port, attachPath(id), { origin, ...authFor(port) });
         assert.equal(result.opened, true, `${origin}: ${result.error}`);
         result.client.close();
       }
@@ -1400,10 +1461,10 @@ describe("the Vite dev origin on real servers", { skip: SKIP_POSIX }, () => {
   test("AGENT_OS_DEV_ORIGIN=1 is ignored in a packaged run", async () => {
     await withDevServer({ AGENT_OS_DEV_ORIGIN: "1", AGENT_OS_PACKAGED: "1" }, async (port, id) => {
       expectRefused(
-        await tryUpgrade(port, attachPath(id), { origin: "http://127.0.0.1:5173", cookie: cookieFor(port) }),
+        await tryUpgrade(port, attachPath(id), { origin: "http://127.0.0.1:5173", ...authFor(port) }),
         "the Vite dev page in a packaged run"
       );
-      const own = await tryUpgrade(port, attachPath(id), { origin: ownOrigin(port), cookie: cookieFor(port) });
+      const own = await tryUpgrade(port, attachPath(id), { origin: ownOrigin(port), ...authFor(port) });
       assert.equal(own.opened, true, own.error);
       own.client.close();
     });

@@ -561,7 +561,7 @@ Each open socket on `/api/sessions/:id/attach` is one **attachment**. Any number
 1. **WebSocket upgrade:** its own check in `server.on('upgrade')`. Express middleware does not run on upgrades, and `originCheckMiddleware` is NOT reused (it lets GET and missing-Origin requests through and compares only the hostname, so any local port would pass).
    - Host allowlisted (`parseHostHeader` / `isAllowedHost`) and carrying the real bound port;
    - Origin required and exactly `http://127.0.0.1:<port>` or `http://localhost:<port>`; the Vite dev origin (`http://127.0.0.1:5173` or `http://localhost:5173`) is accepted only when `AGENT_OS_DEV_ORIGIN=1` is set (by the `dev` script in `package.json`), and that flag is ignored when `NODE_ENV=production` or `AGENT_OS_PACKAGED=1`;
-   - the session cookie, compared with `timingSafeEqual`;
+   - the session cookie and the page key (R32, sent as the WebSocket subprotocol `agent-os-key.<key>`), or the launch token in `x-agent-os-token` (a script), each compared with `timingSafeEqual`;
    - the path checked lower-cased;
    - no query-string tokens;
    - on any failure: write 403 and destroy the socket;
@@ -1003,6 +1003,8 @@ One line per ruling (R, from the orchestrator's `sp4/rulings.md`) and per plan c
 | K26 | Resume is refused once a session's separate copy was removed; a hand-off from such a session is refused too | Worktree offer; Hand-off | The folder no longer exists (X9) |
 | K27 | One Codex keep going per hold: a second confirmed press points to the session already opened and spends nothing | Plan ran out (Codex) | Each press would open another pay-per-use session (X10) |
 | K28 | The replay terminal is read-only and acts on nothing in a recording (no clipboard writes, no links opened, no title outside the player); seeking redraws in pieces of at most 256 KB with only the latest target kept | Recordings in Runs | A long recording must never freeze the app, incl. Hold to stop all (U11) |
+| R32 | The session cookie holds its own random secret (never the launch token), and the page also sends a random page key, returned by the login claim and kept in the page's own storage, with every API request (`x-agent-os-key`) and on the session WebSocket; a cookie alone is refused; scripts keep using the launch token in `x-agent-os-token` | Security 1; local session | Browsers send 127.0.0.1 cookies to every port, so a local page an agent started could receive the cookie and replay it without an Origin header (E1 review, 2026-10-30) |
+| R33 | A preview never hands the page a script-capable file as a `blob:` address of the app's origin: PNG, JPEG, GIF, WebP, audio, video and PDF are `blob:`, SVG is a `data:` address, the locked HTML preview is drawn from its text (`srcdoc`) in the same empty sandbox, and a downloaded file is saved as plain bytes; a preview over 200 MB is not fetched ("This file is larger than 200 MB, so Agent OS does not preview it here."); every answer forbids framing by another origin (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`), and `/api/workspace/raw` is never cached (`no-store`) | Workspace preview; Security 1 | A `blob:` copy drops the raw route's `sandbox` header, so an agent-written SVG or HTML opened in its own tab ran as Agent OS and could read the page key; another port could frame the signed-in app; the 30 s cache let another port load a previewed file without the key (E1 re-review 2, 2026-10-31) |
 
 ## Appendix B: Fidelity spike S0 results
 

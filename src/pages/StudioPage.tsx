@@ -12,6 +12,7 @@ import {
   videoRunDownloadUrl,
   writeWorkspaceFile
 } from "../api";
+import { saveApiFile } from "../apiBlob";
 import { navigateTo } from "../nav";
 import type { ExecutionGateStatus, SelfModuleItem, SelfModuleState, VideoJobResult, VideoWorkerStatus } from "../types";
 import { HonestNote, PageFrame } from "./PageFrame";
@@ -136,6 +137,7 @@ export default function StudioPage() {
 
   const run = result?.run || selected?.videoHistory?.[0];
   const sandboxNote = Boolean(run?.id);
+  const captionsFile = run?.id && run.output?.captions ? { url: videoRunDownloadUrl(run.id, run.output.captions), name: run.output.captions } : null;
 
   return (
     <PageFrame
@@ -205,7 +207,18 @@ export default function StudioPage() {
             ) : null}
           </div>
           <p>{run?.message || worker?.publicSummary || "Create a job, then dry-run. Live ffmpeg needs the execution gate."}</p>
-          {run?.output?.captions ? <a href={videoRunDownloadUrl(run.id, run.output.captions)}>{run.output.captions}</a> : null}
+          {captionsFile ? (
+            <a
+              href={captionsFile.url}
+              onClick={(event) => {
+                // A plain link would send the cookie without the page key (R32): fetch it with the key and save it.
+                event.preventDefault();
+                void saveApiFile(captionsFile.url, captionsFile.name).catch(() => {});
+              }}
+            >
+              {captionsFile.name}
+            </a>
+          ) : null}
         </article>
         <article className="aos-panel">
           <div className="aos-panel-head"><div><span>Not configured</span><h2><Mic size={18} /> Voice / audio</h2></div></div>

@@ -3,6 +3,7 @@
 // WebSocket protocol). The pure rules (frame sizes, acks, reading a frame) live in
 // src/ui/sessionsShared.ts, where test/sessions-shared.test.js checks them.
 import { ApiError, request } from "./api";
+import { apiFetch, pageKeyProtocols } from "./sessionKey";
 import type {
   AlertKind,
   ApprovalDecision,
@@ -211,7 +212,7 @@ export async function fetchRecording(sessionId: string, { signal }: { signal?: A
   else signal?.addEventListener("abort", stop, { once: true });
   const timer = setTimeout(stop, SESSION_LIMITS_MS.recording);
   try {
-    const response = await fetch(sessionPath(sessionId, "/recording"), { credentials: "same-origin", signal: controller.signal });
+    const response = await apiFetch(sessionPath(sessionId, "/recording"), { credentials: "same-origin", signal: controller.signal });
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       if (response.status === 401 && body?.error === "session_required") window.dispatchEvent(new CustomEvent("agentos:locked"));
@@ -331,8 +332,8 @@ export interface SessionSocket {
   close(): void;
 }
 
-// Same host as the page; no query string and no token in the address (the session cookie goes with the
-// upgrade; Security 1, planning decision Q40).
+// Same host as the page; no query string and no token or key in the address (the session cookie goes with the
+// upgrade, and the page key as a subprotocol; Security 1, planning decision Q40, R32).
 export function sessionSocketUrl(sessionId: string): string {
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${window.location.host}${sessionPath(sessionId, "/attach")}`;
@@ -349,7 +350,9 @@ async function checkStillSignedIn(): Promise<void> {
 }
 
 export function openSessionSocket(sessionId: string, handlers: SessionSocketHandlers): SessionSocket {
-  const ws = new WebSocket(sessionSocketUrl(sessionId));
+  // R32: a browser cannot set a header on a WebSocket, so the page key rides as the subprotocol "agent-os-key.<key>".
+  const protocols = pageKeyProtocols();
+  const ws = protocols ? new WebSocket(sessionSocketUrl(sessionId), protocols) : new WebSocket(sessionSocketUrl(sessionId));
   const acks = createAckCounter();
   let closedHere = false;
   let hadSnapshot = false;

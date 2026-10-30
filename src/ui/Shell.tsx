@@ -62,7 +62,7 @@ import type { ShellToastRequest, ShellToastTone } from "./shellToast";
 import { withTimeout } from "./homeShared";
 import { navigateTo } from "../nav";
 import type { SessionSummary } from "../types";
-import { alertToast, homeStripItems, waitingBadgeText, waitingCount } from "./alertsShared";
+import { alertToast, alertToastSessions, homeStripItems, toastStillAlerting, waitingBadgeText, waitingCount } from "./alertsShared";
 import { isDesktopApp } from "./desktop";
 import { revealGetStarted } from "./onboardingShared";
 import { createLatestRead } from "./latestRead";
@@ -210,14 +210,19 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   // In a browser tab, a session that newly needs you also gets a message at the bottom of the window (spec, Alerts UI:
   // "In browser mode, an in-app toast only"). The desktop app shows none: its Rust shell raises a notification while the
   // window is hidden or not focused (Task X4). The first read of the list is not news.
-  const [alertNote, setAlertNote] = useState<{ id: number; message: string } | null>(null);
+  // The message remembers which sessions it is about and goes away, like its ×, on the next read of the list where none of
+  // them waits or is held any more (M5; spec: alerts clear when the agent resolves, on user input, or when the session
+  // leaves that state). A list that could not be refreshed says nothing new, so the message stays.
+  const [alertNote, setAlertNote] = useState<{ id: number; message: string; sessionIds: string[] } | null>(null);
   const alertBase = useRef<SessionSummary[] | null>(null);
   useEffect(() => {
     if (sessionsList.source.state !== "ok" || sessionsList.source.stale) return;
     const next = sessionsList.source.data.sessions;
     const message = isDesktopApp() ? null : alertToast(alertBase.current, next);
+    const sessionIds = message ? alertToastSessions(alertBase.current, next) : [];
     alertBase.current = next;
-    if (message) setAlertNote({ id: Date.now(), message });
+    if (message) setAlertNote({ id: Date.now(), message, sessionIds });
+    else setAlertNote((note) => (note && !toastStillAlerting(note.sessionIds, next) ? null : note));
   }, [sessionsList.source]);
 
   const onboardingCounts = onboarding.data?.counts;

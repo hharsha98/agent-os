@@ -378,9 +378,12 @@ function brainSummary(agentId, resolved) {
   return model ? { kind, label: BRAIN_LABEL[kind], model } : { kind, label: BRAIN_LABEL[kind] };
 }
 
-function titleOf(meta) {
+// `withBranch`: a separate copy (R25) is named for its project, so its branch is what tells two copies of one project
+// apart. The quit question asks for it (the page's session titles do the same); the folder check does not.
+function titleOf(meta, { withBranch = false } = {}) {
   if (meta.kind === "update") return `${meta.agentLabel} update`;
-  return `${meta.agentLabel} · ${meta.folderShown === false ? "Set by OpenClaw" : meta.folderName}`;
+  const where = `${meta.agentLabel} · ${meta.folderShown === false ? "Set by OpenClaw" : meta.folderName}`;
+  return withBranch && meta.copyOf && meta.branch ? `${where} · ${meta.branch}` : where;
 }
 
 function byCreated(a, b) {
@@ -837,11 +840,14 @@ export function createSessionManager({
       addMarkerTo(state, { type: "permission", text: after.text }).catch(() => {});
     }
     if (typeof onAlertLine === "function") {
-      // B-M2: at most one notification per session in ALERT_LINE_GAP_MS. The frame above and the session's own alert
-      // already follow every change; only the desktop notification is held back.
-      const at = now();
-      if (state.alertLineAt !== null && at >= state.alertLineAt && at - state.alertLineAt < ALERT_LINE_GAP_MS) return;
-      state.alertLineAt = at;
+      // B-M2: at most one waiting or approval notification per session in ALERT_LINE_GAP_MS. The frame above and the
+      // session's own alert already follow every change; only the desktop notification is held back. A "limit" line
+      // (the plan ran out, with money attached) is never held back, and it does not use up the gap either.
+      if (after.kind === "waiting" || after.kind === "approval") {
+        const at = now();
+        if (state.alertLineAt !== null && at >= state.alertLineAt && at - state.alertLineAt < ALERT_LINE_GAP_MS) return;
+        state.alertLineAt = at;
+      }
       try {
         onAlertLine({ sessionId: state.meta.id, agent: state.meta.agentLabel, kind: after.kind, text: after.text });
       } catch {
@@ -2678,7 +2684,7 @@ export function createSessionManager({
       .sort(byCreated);
     // The kind lets the quit question leave out "you can resume them later"
     // when an update session is listed (an update is never resumed).
-    return { live: running.map((meta) => ({ id: meta.id, title: titleOf(meta), kind: meta.kind })) };
+    return { live: running.map((meta) => ({ id: meta.id, title: titleOf(meta, { withBranch: true }), kind: meta.kind })) };
   }
 
   // Whether this manager runs the session right now (ruling R8). A session

@@ -1134,6 +1134,42 @@ test("B-M2: a session raises at most one AGENT_OS_ALERT line in 10 s: later aler
   });
 });
 
+test("B-M2 (E1 round 2): the 10 s gap never drops a limit line (\"plan ran out\"), and a limit line does not use up the gap of the waiting and approval lines", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const lines = [];
+    const world = fakeWorld({ onAlertLine: (payload) => lines.push(payload) });
+    const { id } = await world.manager.create({ agentId: "claude", folder: project });
+    world.ptys[0].emit("ready");
+    const limitText = "Claude Code's plan limit was reached.";
+    const kinds = () => lines.map((line) => line.kind);
+
+    world.manager.applySignal(id, { kind: "waiting", text: "Wants to use Bash", source: "hook" });
+    // One second later, inside the gap, the plan runs out: that line is still sent.
+    world.clock = T0 + 1000;
+    assert.equal(world.manager.setHeld(id, { text: limitText, source: "hook" }), true);
+    assert.deepEqual(kinds(), ["waiting", "limit"], "the limit line is not dropped by the gap");
+
+    // The hold ends and a new question starts inside the first line's gap: dropped, as before.
+    world.manager.clearHeld(id);
+    world.clock = T0 + 2000;
+    world.manager.applySignal(id, { kind: "waiting", text: "Has a question for you", source: "hook" });
+    assert.deepEqual(kinds(), ["waiting", "limit"], "a second waiting line inside the gap is still dropped");
+
+    // 10 s after the FIRST waiting line (9 s after the limit line) a waiting line prints again: the limit line did
+    // not restart the gap.
+    world.manager.applySignal(id, { kind: "resolved", source: "hook" });
+    world.clock = T0 + ALERT_LINE_GAP_MS;
+    world.manager.applySignal(id, { kind: "waiting", text: "Wants to use Edit", source: "hook" });
+    assert.deepEqual(kinds(), ["waiting", "limit", "waiting"], "the gap counts waiting and approval lines only");
+
+    // And a limit right after that waiting line, inside its gap, is sent again.
+    world.manager.applySignal(id, { kind: "resolved", source: "hook" });
+    world.clock = T0 + ALERT_LINE_GAP_MS + 1;
+    assert.equal(world.manager.setHeld(id, { text: limitText, source: "hook" }), true);
+    assert.deepEqual(kinds(), ["waiting", "limit", "waiting", "limit"], "every limit line is sent");
+  });
+});
+
 test("held: setHeld shows the limit alert and the reset time in the summary and the state frame; output and other signals never clear it; user input makes it live; the reset timer makes it idle; a hold without a reset time stays until clearHeld", async (t) => {
   await withSessionEnv(async ({ project }) => {
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
@@ -3555,6 +3591,30 @@ test("worktree offer (X9): Separate copy makes <AGENT_OS_HOME>/worktrees/<id> (0
 
     for (const pty of world.ptys) pty.exit(0);
     for (const id of [claude.id, codex.id, a.id, b.id]) await ended(world, id);
+  });
+});
+
+test("E1 round 2: the quit question and the folder check name two copies of one project apart, by their branch, as the session titles do", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    const world = copyWorld(home, agentOsHome);
+    const plain = await world.manager.create({ agentId: "claude", folder: project });
+    const first = await world.manager.create({ agentId: "claude", folder: project, copy: true });
+    const second = await world.manager.create({ agentId: "claude", folder: project, copy: true });
+    assert.deepEqual([first.branch, second.branch], ["agentos/claude-1", "agentos/claude-2"]);
+
+    const titles = Object.fromEntries((await world.manager.quitCheck()).live.map((entry) => [entry.id, entry.title]));
+    assert.equal(titles[plain.id], "Claude Code · demo", "a session in the project's own folder has no branch");
+    assert.equal(titles[first.id], "Claude Code · demo · agentos/claude-1");
+    assert.equal(titles[second.id], "Claude Code · demo · agentos/claude-2");
+    assert.equal(new Set(Object.values(titles)).size, 3, "no two sessions are listed under the same words");
+
+    // The folder check is unchanged: it lists the live sessions that use that very folder.
+    const inUse = (await world.manager.folderCheck({ folder: project, agentId: "codex" })).inUse;
+    assert.deepEqual(inUse.map((entry) => entry.title), ["Claude Code · demo"]);
+
+    for (const pty of world.ptys) pty.exit(0);
+    for (const id of [plain.id, first.id, second.id]) await ended(world, id);
   });
 });
 

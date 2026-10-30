@@ -211,6 +211,40 @@ test("the browser message: once per session that newly needs you; nothing on the
   assert.equal(alerts.alertToast([], [waiting("x", { id: "u", kind: "update" })]), null, "update sessions never alert");
 });
 
+test("the browser message goes away with its alert: it names its sessions and is gone once none of them waits or is held (M5)", () => {
+  const before = [session({ id: "a" }), session({ id: "b", ...hermes })];
+  // Which sessions a message is about: the same pick as alertToast, so no message means none.
+  assert.deepEqual(alerts.alertToastSessions(null, [waiting("x", { id: "a" })]), [], "the first read has no message");
+  assert.deepEqual(alerts.alertToastSessions(before, before), []);
+  assert.deepEqual(alerts.alertToastSessions(before, [waiting("x", { id: "a" }), before[1]]), ["a"]);
+  assert.deepEqual(alerts.alertToastSessions(before, [session({ id: "a", status: "held", resetAt: at(17, 30) }), before[1]]), ["a"]);
+  assert.deepEqual(alerts.alertToastSessions(before, [waiting("x", { id: "a" }), waiting("May need you", { id: "b", ...hermes })]), ["a", "b"], "several at once give both");
+  assert.deepEqual(alerts.alertToastSessions([waiting("x", { id: "a" })], [waiting("new words", { id: "a" })]), [], "new words for a session already waiting: no message");
+  assert.deepEqual(alerts.alertToastSessions(before, [waiting("x", { id: "u", kind: "update" })]), [], "update sessions never alert");
+
+  const still = alerts.toastStillAlerting;
+  assert.equal(still(["a"], [waiting("Wants to use Bash", { id: "a" })]), true, "still waiting");
+  assert.equal(still(["a"], [session({ id: "a", status: "held", resetAt: at(17, 30) })]), true, "still held");
+  assert.equal(still(["a"], [waiting("Waiting for you", { id: "a", ...claw, alert: { kind: "approval", text: "npm test", at: iso(1000) } })]), true, "an OpenClaw approval is a waiting session");
+  assert.equal(still(["a"], [session({ id: "a", status: "live" })]), false, "user input or an answer: back to work");
+  assert.equal(still(["a"], [session({ id: "a", status: "idle" })]), false, "the agent finished");
+  assert.equal(still(["a"], [session({ id: "a", status: "exited" })]), false, "the session ended");
+  assert.equal(still(["a"], [session({ id: "b" })]), false, "the session is gone from the list");
+  assert.equal(still(["a"], []), false, "an empty list");
+  assert.equal(still(["a"], [session({ id: "a", status: "live" }), waiting("x", { id: "b" })]), false, "another session waiting does not keep it");
+  assert.equal(still(["a", "b"], [session({ id: "a", status: "live" }), waiting("x", { id: "b" })]), true, "a message about two stays while either still waits");
+  assert.equal(still(["a", "b"], [session({ id: "a", status: "live" }), session({ id: "b", status: "idle" })]), false, "and goes when neither does");
+  assert.equal(still([], [waiting("x", { id: "a" })]), false, "a message about no session");
+  assert.equal(still(["u"], [waiting("x", { id: "u", kind: "update" })]), false, "update sessions never alert");
+
+  // The page's loop: a message from one read, kept or taken away at each later read.
+  const first = [waiting("Wants to use Bash", { id: "a" }), before[1]];
+  const ids = alerts.alertToastSessions(before, first);
+  assert.equal(alerts.alertToast(before, first), "Claude Code · my-app is waiting for you. Wants to use Bash.");
+  assert.equal(still(ids, [waiting("Has a question for you", { id: "a" }), before[1]]), true, "new words for the same wait keep the message");
+  assert.equal(still(ids, [session({ id: "a", status: "live" }), before[1]]), false, "the session went back to work: the message goes");
+});
+
 test("the desktop note (K17): the desktop app only, until dismissed; macOS adds that it asks once", () => {
   assert.equal(alerts.NOTIFY_NOTE_KEY, "agentos.notifyNote.v1");
   assert.equal(

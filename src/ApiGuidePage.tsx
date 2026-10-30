@@ -25,6 +25,7 @@ import {
   TriangleAlert
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { apiFetch } from "./sessionKey";
 
 export interface CodexApiStatus {
   configured: boolean;
@@ -144,7 +145,7 @@ const SHOWCASE_GROUPS: ShowcaseGroup[] = [
 ];
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options

@@ -23,6 +23,35 @@ const CLAIM_MAX_FAILURES = 20;
 // logged anywhere except the one login line printed at startup.
 export const sessionToken = process.env.AGENT_OS_TOKEN?.trim() || crypto.randomBytes(24).toString("hex");
 
+// R32 (browser mode). Browsers send a 127.0.0.1 cookie to EVERY local port, so a page an agent started on another
+// port could read the session cookie and replay it from a script. So the cookie is not enough on its own:
+//   - cookieSecret is the cookie's value. It is its own random secret and never the launch token, so a stolen cookie
+//     cannot be turned into the script door (x-agent-os-token).
+//   - pageKey is handed to the page once, by the login claim, and the page keeps it in its OWN origin's storage (other
+//     ports cannot read it) and sends it with every request (x-agent-os-key; on the WebSocket as the subprotocol
+//     "agent-os-key.<key>", since browsers cannot set headers there).
+// A request is the person's page only when it carries BOTH; a script carries the launch token instead.
+// Random per process, never logged, never in an address.
+export const cookieSecret = (() => {
+  let value = crypto.randomBytes(24).toString("hex");
+  while (value === sessionToken) value = crypto.randomBytes(24).toString("hex");
+  return value;
+})();
+export const pageKey = crypto.randomBytes(32).toString("hex");
+
+export const PAGE_KEY_HEADER = "x-agent-os-key";
+export const PAGE_KEY_SUBPROTOCOL_PREFIX = "agent-os-key.";
+
+// The page key out of a Sec-WebSocket-Protocol header value ("agent-os-key.<key>", maybe among other offered
+// protocols), or "".
+export function pageKeyFromSubprotocols(header) {
+  for (const entry of String(header || "").split(",")) {
+    const protocol = entry.trim();
+    if (protocol.startsWith(PAGE_KEY_SUBPROTOCOL_PREFIX)) return protocol.slice(PAGE_KEY_SUBPROTOCOL_PREFIX.length);
+  }
+  return "";
+}
+
 export function cookieNameFor(port) {
   return `agent_os_session_${port}`;
 }
@@ -120,6 +149,11 @@ export function securityHeadersMiddleware() {
   return (_req, res, next) => {
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("X-Content-Type-Options", "nosniff");
+    // Only this server's own pages may frame it (R33). 'self' includes the port, so a page an agent serves on another
+    // local port cannot lay a decoy over a signed-in Agent OS. A route that sets its own Content-Security-Policy keeps
+    // frame-ancestors 'self' in it (the workspace raw route and the OpenRouter pages do).
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
     next();
   };
 }
@@ -148,9 +182,34 @@ export function timingSafeEqualStrings(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function providedSessionToken(req, cookieName) {
-  const cookies = parseCookieHeader(req.get("cookie") || "");
-  return cookies[cookieName] || req.get("x-agent-os-token") || "";
+// R32: the one rule for "is this the person's page or their script?", used by the REST gate, the session status and
+// the sessions WebSocket. A request passes with EITHER
+//   (a) the launch token in x-agent-os-token (scripts, the API guide's curl examples), OR
+//   (b) the session cookie AND the page key together.
+// A cookie without the key, or the key without the cookie, passes nothing. Every compare is constant time, and all of
+// them run (no early exit) so the answer's timing does not say which part was right.
+export function hasSessionProof({ cookieHeader, tokenHeader, keyHeader }, cookieName) {
+  let cookieValue = "";
+  try {
+    cookieValue = parseCookieHeader(cookieHeader || "")[cookieName] || "";
+  } catch {
+    cookieValue = ""; // not valid percent-encoding: no cookie
+  }
+  const tokenOk = Boolean(tokenHeader) && timingSafeEqualStrings(tokenHeader, sessionToken);
+  const cookieOk = Boolean(cookieValue) && timingSafeEqualStrings(cookieValue, cookieSecret);
+  const keyOk = Boolean(keyHeader) && timingSafeEqualStrings(keyHeader, pageKey);
+  return tokenOk || (cookieOk && keyOk);
+}
+
+function requestHasSessionProof(req, cookieName) {
+  return hasSessionProof(
+    {
+      cookieHeader: req.get("cookie") || "",
+      tokenHeader: req.get("x-agent-os-token") || "",
+      keyHeader: req.get(PAGE_KEY_HEADER) || ""
+    },
+    cookieName
+  );
 }
 
 // Local mode: neither the public demo (DEMO_PUBLIC=1) nor the admin-token
@@ -212,8 +271,7 @@ export function localSessionGate(port) {
       next();
       return;
     }
-    const provided = providedSessionToken(req, cookieName);
-    if (provided && timingSafeEqualStrings(provided, sessionToken)) {
+    if (requestHasSessionProof(req, cookieName)) {
       next();
       return;
     }
@@ -258,11 +316,13 @@ export function claimSessionHandler(port) {
       return;
     }
     const secure = process.env.HERMES_AGENT_OS_COOKIE_SECURE === "1";
+    // R32: the cookie holds its own secret, not the launch token; the page key comes back in the body, for the page to
+    // keep in its own storage and send with every request.
     res.setHeader(
       "Set-Cookie",
-      `${cookieName}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/${secure ? "; Secure" : ""}`
+      `${cookieName}=${encodeURIComponent(cookieSecret)}; HttpOnly; SameSite=Strict; Path=/${secure ? "; Secure" : ""}`
     );
-    res.json({ ok: true });
+    res.json({ ok: true, pageKey });
   };
 }
 
@@ -277,9 +337,7 @@ export function localSessionStatusHandler(port) {
       res.json({ mode: "public", authenticated: isAdminRequest(req) });
       return;
     }
-    const provided = providedSessionToken(req, cookieName);
-    const authenticated = Boolean(provided) && timingSafeEqualStrings(provided, sessionToken);
-    res.json({ mode: "local", authenticated });
+    res.json({ mode: "local", authenticated: requestHasSessionProof(req, cookieName) });
   };
 }
 

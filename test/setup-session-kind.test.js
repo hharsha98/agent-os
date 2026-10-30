@@ -103,6 +103,7 @@ const SUMMARY_KEYS = [
   "hooksOff",
   "meter",
   "copyOf",
+  "copyRemoved",
   "handoff",
   "keepGoingFailure",
   "recordingBytes"
@@ -669,6 +670,7 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
           hooksOff: { alerts: null, meter: null },
           meter: null,
           copyOf: null,
+          copyRemoved: false,
           handoff: null,
           keepGoingFailure: null,
           recordingBytes: 0

@@ -79,6 +79,7 @@ const SUMMARY_KEYS = [
   "hooksOff",
   "meter",
   "copyOf",
+  "copyRemoved",
   "handoff",
   "keepGoingFailure",
   "recordingBytes"
@@ -3678,11 +3679,13 @@ test("worktree offer (X9): Remove separate copy needs an ended session, refuses 
     world.ptys.at(-1).exit(0);
     await ended(world, copy.id);
 
+    assert.equal(copy.copyRemoved, false, "a copy that is still there says so (M6)");
     // Resume runs in the copy again, under the project's name.
     const resumed = await world.manager.resume(copy.id);
     assert.equal(resumed.folder, copyDir);
     assert.equal(resumed.folderName, "demo");
     assert.equal(resumed.copyOf, project);
+    assert.equal(resumed.copyRemoved, false);
     assert.equal(world.ptys.at(-1).opts.cwd, copyDir);
     world.ptys.at(-1).exit(0);
     await ended(world, copy.id);
@@ -3702,6 +3705,8 @@ test("worktree offer (X9): Remove separate copy needs an ended session, refuses 
     assert.equal(gitInRepo(home, project, "rev-parse", "agentos/claude-1").trim(), work, "its branch stays, with the work");
     const after = await world.manager.get(copy.id);
     assert.equal(after.copyOf, null, "no longer a copy, so the panel stops calling it one");
+    assert.equal(after.copyRemoved, true, "and the summary says the copy was removed, so the panel stops asking for its changes (M6)");
+    assert.equal((await world.manager.list()).find((session) => session.id === copy.id).copyRemoved, true, "in the list too");
     assert.equal(after.folderName, "demo", "the title still names the project");
     assert.equal(after.branch, "agentos/claude-1");
     assert.deepEqual(after.resume, { available: false, reason: COPY_REMOVED, fallback: false });
@@ -3719,6 +3724,7 @@ test("worktree offer (X9): Remove separate copy needs an ended session, refuses 
     await assert.rejects(world.manager.removeWorktree(plain.id), { status: 409, code: "session_live", message: COPY_LIVE });
     world.ptys.at(-1).exit(0);
     await ended(world, plain.id);
+    assert.equal((await world.manager.get(plain.id)).copyRemoved, false, "a session that never had a copy is not 'removed'");
     await assert.rejects(world.manager.removeWorktree(plain.id), { status: 404, code: "no_worktree" });
     await assert.rejects(world.manager.removeWorktree("00000000-0000-4000-8000-000000000000"), { status: 404, code: "unknown_session" });
   });

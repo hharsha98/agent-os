@@ -81,6 +81,40 @@ test("the section's words: loading, a first read that failed, not a git project,
   assert.deepEqual(ch.changesView(ok(result({ git: null, files: [], total: 0, at: null })), { copy: false, unread: true }), { count: "—", line: ch.UNREAD_LINE, files: [], more: null, stale: false });
 });
 
+test("a removed separate copy (M6): nothing is asked of the server, now or later, and the section says why in a new sentence", () => {
+  assert.equal(ch.COPY_REMOVED_LINE, "Its separate copy was removed, so its changes can't be shown.");
+  assert.doesNotMatch(ch.COPY_REMOVED_LINE, /—/, "no em dash in the sentence");
+  assert.equal(ch.changesWanted(session()), true);
+  assert.equal(ch.changesWanted({}), true, "a summary without the field is read as before");
+  assert.equal(ch.changesWanted(session({ copyRemoved: false })), true);
+  assert.equal(ch.changesWanted(session({ copyRemoved: true })), false);
+  // No 3 s polling and no 30 s retry, whatever the last read said.
+  for (const status of ["starting", "live", "waiting", "idle", "held", "exited"]) {
+    assert.equal(ch.changesPollMs({ status, copyRemoved: true }), null, `${status}: removed, so no polling`);
+    assert.equal(ch.changesRetryMs({ status, copyRemoved: true }, true), null, `${status}: removed, so no retry`);
+  }
+  assert.equal(ch.changesRetryMs({ status: "exited", copyRemoved: false }, true), ch.ENDED_RETRY_MS, "an ended session that still has its folder keeps its retry");
+  assert.equal(ch.changesRetryMs({ status: "exited" }, true), ch.ENDED_RETRY_MS);
+  assert.equal(ch.changesPollMs({ status: "live", copyRemoved: false }), 3000);
+  // The section: the count is unknown and the line says why, whatever was read before.
+  const removed = { count: "—", line: ch.COPY_REMOVED_LINE, files: [], more: null, stale: false };
+  for (const [what, source, unread] of [
+    ["loading", { state: "loading" }, false],
+    ["a failed read", { state: "error", message: "Couldn't reach Agent OS." }, false],
+    ["git could not be read", ok(result({ git: null, files: [], total: 0, at: null })), true],
+    ["a good list from before", ok(result()), false],
+    ["a stale list", ok(result(), true), false]
+  ]) {
+    assert.deepEqual(ch.changesView(source, { copy: false, unread, removed: true }), removed, what);
+  }
+  assert.equal(ch.changesView(ok(result({ git: null, files: [], total: 0, at: null })), { copy: false, unread: true }).line, ch.UNREAD_LINE, "without the flag it says what it did before");
+  // The panel asks for nothing when the copy is gone, and hands the view the same flag.
+  const panel = read("src/ui/components/SessionChanges.tsx");
+  assert.match(panel, /if \(wanted\) load\(true\)/, "the first read only when wanted");
+  assert.match(panel, /removed: !wanted/);
+  assert.match(panel, /changesRetryMs\(session, failed\)/);
+});
+
 test("a row: the folder part and the name, + and − counts (a real minus sign), — when git can't count, the full path as its tooltip (a rename shows both), and its accessible name", () => {
   assert.deepEqual(ch.splitPath("src/ui/app.ts"), { dir: "src/ui/", name: "app.ts" });
   assert.deepEqual(ch.splitPath("README.md"), { dir: "", name: "README.md" });

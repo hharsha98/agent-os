@@ -16,6 +16,7 @@ import {
   changesRetryMs,
   changesUnread,
   changesView,
+  changesWanted,
   fileCounts,
   fileRowLabel,
   fileRowTitle,
@@ -38,6 +39,9 @@ export default function SessionChanges({ session }: { session: SessionSummary })
 
 function ChangesList({ session }: { session: SessionSummary }) {
   const ended = session.status === "exited";
+  // An ended session whose separate copy was removed: its folder is gone, so nothing is asked of the server, now or
+  // later, and the section says why (M6).
+  const wanted = changesWanted(session);
   const [source, setSource] = useState<Source<ChangesResult>>({ state: "loading" });
   // How many answers in a row said "git not read" (`git: null`): the server could not read git in the folder (it keeps
   // trying while the session runs). Past a few, the section says so instead of "…" for ever.
@@ -69,14 +73,14 @@ function ChangesList({ session }: { session: SessionSummary }) {
   // A fresh read when the section appears, and again when the session ends (the list as the agent left it). A read
   // still waiting when the section goes away (another tab, a closed page) no longer counts.
   useEffect(() => {
-    load(true);
+    if (wanted) load(true);
     return () => reads.cancel();
-  }, [load, reads, ended]);
+  }, [load, reads, ended, wanted]);
   useInterval(() => load(false), changesPollMs(session));
   // An ended session is read once; when that read failed (no answer, or git could not be read) the page says "Try
   // again", so it is asked again every 30 s while it is shown, and at once when the window is shown again. A session
   // that has an answer is never asked again.
-  const failed = changesFailed(source);
+  const failed = wanted && changesFailed(source);
   useInterval(() => load(false), changesRetryMs(session, failed));
   useEffect(() => {
     if (!ended || !failed) return;
@@ -105,7 +109,7 @@ function ChangesList({ session }: { session: SessionSummary }) {
   // Stable, so the open dialog is not asked to re-render and re-subscribe its keys at every poll.
   const closeDialog = useCallback(() => setOpen(null), []);
   const readAgain = useCallback(() => load(true), [load]);
-  const view = changesView(source, { copy: Boolean(session.copyOf), unread: changesUnread(ended, notRead) });
+  const view = changesView(source, { copy: Boolean(session.copyOf), unread: changesUnread(ended, notRead), removed: !wanted });
   return (
     <section className="os-sess-panel__sec" aria-label="Files changed">
       <div className="os-sess-panel__rh">

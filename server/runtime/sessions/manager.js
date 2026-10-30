@@ -1785,6 +1785,8 @@ export function createSessionManager({
       // A session in a separate copy names the project it copies (R25). Once the copy was removed (Remove separate
       // copy), the session is no longer a copy, so null; meta.json keeps copyOf for recent folders.
       copyOf: typeof view.copyOf === "string" && view.copyOf && !view.worktreeRemovedAt ? view.copyOf : null,
+      // True once that copy's folder was removed: git can never be read for this session again (M6).
+      copyRemoved: typeof view.worktreeRemovedAt === "string" && view.worktreeRemovedAt !== "",
       handoff: extras.handoff,
       keepGoingFailure: extras.keepGoingFailure,
       recordingBytes: await recordingBytes(view.id)
@@ -2277,7 +2279,7 @@ export function createSessionManager({
   }
 
   // True when this session's separate copy was removed (meta.json's worktreeRemovedAt): the folder it ran in is gone.
-  // The summary carries no such flag (its keys are pinned), so a hand-off asks here (M8).
+  // The summary's copyRemoved says the same (M6); a hand-off reads meta.json itself, so it asks here (M8).
   async function copyRemoved(id) {
     if (!isSessionId(id)) return false;
     const meta = live.get(id)?.meta ?? (await readMeta(id));

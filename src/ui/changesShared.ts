@@ -20,6 +20,8 @@ export const STALE_LINE = "Showing what was last known.";
 // The Sessions page's own words for a request that failed without a reason of its own (sessionProblem in
 // sessionsApi.ts), used when the server answers but could not read git in the folder (Task X7: `git: null` that stays).
 export const UNREAD_LINE = "Agent OS couldn't do that. Try again.";
+// An ended session whose separate copy was removed: the folder it ran in is gone, so git can never be read there (M6).
+export const COPY_REMOVED_LINE = "Its separate copy was removed, so its changes can't be shown.";
 // The diff dialog's words; owner review at E1 (Q32). "Loading…" is the app's existing word (ModelPicker).
 export const DIFF_LOADING = "Loading…";
 export const DIFF_BINARY_LINE = "This is a binary file, so there is no text to show.";
@@ -35,10 +37,17 @@ export function showsChanges(s: Pick<SessionSummary, "kind" | "folderShown">): b
   return s.kind === "agent" && s.folderShown !== false;
 }
 
+// The session's own folder can be read. A session whose separate copy was removed (meta.json's worktreeRemovedAt, the
+// summary's copyRemoved) has none: the panel asks the server for nothing and says so instead (M6).
+type CopyRemovedField = Partial<Pick<SessionSummary, "copyRemoved">>;
+export function changesWanted(s: CopyRemovedField): boolean {
+  return s.copyRemoved !== true;
+}
+
 // Every 3 s while the session runs; an ended session is read once, when its section appears (and once more right
 // as it ends), and never again.
-export function changesPollMs(s: Pick<SessionSummary, "status">): number | null {
-  return s.status === "exited" ? null : CHANGES_UI_POLL_MS;
+export function changesPollMs(s: Pick<SessionSummary, "status"> & CopyRemovedField): number | null {
+  return s.status === "exited" || !changesWanted(s) ? null : CHANGES_UI_POLL_MS;
 }
 
 // An ended session is read once. When that read failed (no answer, or `git: null`) the panel asks again at this pace
@@ -54,8 +63,8 @@ export function changesFailed(source: Source<ChangesResult>): boolean {
 
 // How often an ended session is asked again: only when its last read failed. A running session already asks every 3 s
 // (changesPollMs), and an ended one that has an answer is never asked again.
-export function changesRetryMs(s: Pick<SessionSummary, "status">, failed: boolean): number | null {
-  return s.status === "exited" && failed ? ENDED_RETRY_MS : null;
+export function changesRetryMs(s: Pick<SessionSummary, "status"> & CopyRemovedField, failed: boolean): number | null {
+  return s.status === "exited" && failed && changesWanted(s) ? ENDED_RETRY_MS : null;
 }
 
 // How many "not read yet" answers in a row a running session may give before the section stops saying "…" (about
@@ -82,7 +91,12 @@ export interface ChangesView {
   stale: boolean;
 }
 
-export function changesView(source: Source<ChangesResult>, { copy, unread = false }: { copy: boolean; unread?: boolean }): ChangesView {
+export function changesView(
+  source: Source<ChangesResult>,
+  { copy, unread = false, removed = false }: { copy: boolean; unread?: boolean; removed?: boolean }
+): ChangesView {
+  // Nothing was asked and whatever was read before is about a folder that is gone: the count is unknown and the line says why.
+  if (removed) return { count: "—", line: COPY_REMOVED_LINE, files: [], more: null, stale: false };
   const waiting: ChangesView = { count: "…", line: null, files: [], more: null, stale: false };
   if (source.state === "loading") return waiting;
   // No good read yet: the reason, in the words sessionProblem gave it. The panel keeps asking.

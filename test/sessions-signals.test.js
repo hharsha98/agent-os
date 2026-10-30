@@ -183,10 +183,10 @@ test("cleanAlertText: every invisible reordering character goes (the bidi embedd
     assert.equal(cleanAlertText(`rm${String.fromCodePoint(code)} -rf build`), "rm -rf build", hex);
   }
   assert.equal(cleanAlertText(`${String.fromCodePoint(...reordering)}ok${String.fromCodePoint(...reordering)}`), "ok", "all twelve together");
-  assert.equal(cleanAlertText("run ‮txt.sh‬ now"), "run txt.sh now", "a right-to-left override can't make a name read backwards");
-  assert.equal(cleanAlertText("a ‎ ‏ b"), "a b", "the spaces around a removed character still collapse");
+  assert.equal(cleanAlertText("run \u202Etxt.sh\u202C now"), "run txt.sh now", "a right-to-left override can't make a name read backwards");
+  assert.equal(cleanAlertText("a \u200E \u200F b"), "a b", "the spaces around a removed character still collapse");
   // Neighbours that stay: the zero width joiner an emoji family needs, and a plain Arabic letter.
-  assert.equal(cleanAlertText("👨‍👩‍👧"), "👨‍👩‍👧");
+  assert.equal(cleanAlertText("👨\u200D👩\u200D👧"), "👨\u200D👩\u200D👧");
   assert.equal(cleanAlertText("ال"), "ال");
 });
 

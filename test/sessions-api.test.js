@@ -595,3 +595,92 @@ test("getSession: GET /api/sessions/:id with its own time limit; a gone session 
     removeFakes();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Files changed (Task U7): the section's list and one file's read-only diff
+// ---------------------------------------------------------------------------
+
+test("getChanges: GET /api/sessions/:id/changes with its own 20 s limit; an answer without a file list could not be read", async () => {
+  const answer = { git: true, files: [{ path: "src/app.ts", status: "modified", added: 2, removed: 1 }], total: 1, at: "2026-10-29T12:00:00.000Z" };
+  try {
+    const calls = fakeFetch(() => jsonAnswer(200, answer));
+    assert.deepEqual(await api.getChanges(SID), answer);
+    assert.deepEqual(calls, [{ url: `/api/sessions/${SID}/changes`, method: "GET" }]);
+    fakeFetch(() => jsonAnswer(200, { git: true, total: 0 }));
+    await assert.rejects(api.getChanges(SID), /could not be read/, "no file list: not an answer the section can show");
+    fakeFetch(() => jsonAnswer(404, { error: "unknown_session", message: "That session doesn't exist anymore." }));
+    const gone = await api.getChanges(SID).catch((error) => error);
+    assert.ok(gone instanceof ApiError && gone.status === 404, "a refusal stays an ApiError");
+  } finally {
+    removeFakes();
+  }
+
+  assert.equal(api.SESSION_LIMITS_MS.changes, 20000);
+  const clock = fakeClock();
+  try {
+    globalThis.fetch = () => new Promise(() => {});
+    let outcome = null;
+    void api.getChanges(SID).then(
+      () => {
+        outcome = "answered";
+      },
+      (error) => {
+        outcome = error.message;
+      }
+    );
+    clock.tick(19999);
+    await flush();
+    assert.equal(outcome, null, "still waiting just before 20 s");
+    clock.tick(1);
+    await flush();
+    assert.equal(outcome, "Agent OS did not answer in time.");
+  } finally {
+    clock.restore();
+    removeFakes();
+  }
+});
+
+test("getDiff: the path goes in the query string, encoded; change_missing keeps the server's sentence; its own 25 s limit", async () => {
+  const MISSING = "That file isn't in this session's changes anymore.";
+  const answer = { path: "docs/a b#1.md", diff: "diff --git a/docs/a b#1.md b/docs/a b#1.md\n", binary: false, cut: false };
+  try {
+    const calls = fakeFetch(() => jsonAnswer(200, answer));
+    assert.deepEqual(await api.getDiff(SID, "docs/a b#1.md"), answer);
+    assert.deepEqual(calls, [{ url: `/api/sessions/${SID}/changes/diff?path=docs%2Fa%20b%231.md`, method: "GET" }], "the repo-relative path, encoded, in the query");
+    fakeFetch(() => jsonAnswer(200, { path: "x", binary: false, cut: false }));
+    await assert.rejects(api.getDiff(SID, "x"), /could not be read/, "no diff text: not an answer the dialog can show");
+    fakeFetch(() => jsonAnswer(404, { error: "change_missing", message: MISSING }));
+    const missing = await api.getDiff(SID, "x").catch((error) => error);
+    assert.equal(api.changeMissing(missing), true);
+    assert.equal(api.sessionProblem(missing), MISSING, "the server's own sentence");
+    fakeFetch(() => jsonAnswer(404, { error: "unknown_session", message: "" }));
+    assert.equal(api.changeMissing(await api.getDiff(SID, "x").catch((error) => error)), false, "only change_missing means the file left the list");
+    assert.equal(api.changeMissing(new Error("change_missing")), false, "a plain error is not the server's answer");
+  } finally {
+    removeFakes();
+  }
+
+  assert.equal(api.SESSION_LIMITS_MS.diff, 25000);
+  const clock = fakeClock();
+  try {
+    globalThis.fetch = () => new Promise(() => {});
+    let outcome = null;
+    void api.getDiff(SID, "src/app.ts").then(
+      () => {
+        outcome = "answered";
+      },
+      (error) => {
+        outcome = error.message;
+      }
+    );
+    clock.tick(24999);
+    await flush();
+    assert.equal(outcome, null, "still waiting just before 25 s");
+    clock.tick(1);
+    await flush();
+    assert.equal(outcome, "Agent OS did not answer in time.");
+  } finally {
+    clock.restore();
+    removeFakes();
+  }
+});

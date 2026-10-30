@@ -19,6 +19,7 @@ import { meterRowLabel, meterRows, panelFolder, recordingKept } from "../session
 import { useApprovals } from "../useApprovals";
 import { ApprovalList } from "./ApprovalCard";
 import Meter from "./Meter";
+import SessionChanges from "./SessionChanges";
 import StatusWord from "./StatusWord";
 import { useInterval } from "./useInterval";
 
@@ -158,6 +159,9 @@ export default function SessionSidePanel({
             )
           )}
         </section>
+        {/* Files changed: after the Live meter, as in the spec's side panel table (Task U7). The key gives each session its
+            own list, so switching tabs or panes never shows the last session's files, even for a moment. */}
+        <SessionChanges key={session.id} session={session} />
       </div>
       <footer className="os-sess-panel__foot">
         <div className="os-sess-panel__rec">

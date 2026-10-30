@@ -7,6 +7,8 @@ import type {
   AlertKind,
   ApprovalDecision,
   ApprovalListResponse,
+  ChangesResult,
+  DiffResult,
   QuitCheckResponse,
   RecordingListResponse,
   SessionClientFrame,
@@ -44,6 +46,11 @@ export const SESSION_LIMITS_MS = {
   folders: 10000,
   quitCheck: 8000,
   recordings: 10000,
+  // Files changed (Task U7): a live session's list comes at once from the server's last git read; an ended session's
+  // is read fresh, up to three git calls of at most 5 s each (GIT_LIMIT_MS, Task X7).
+  changes: 20000,
+  // One file's diff: one git call, after an ended session's list may be read again to check the file is in it.
+  diff: 25000,
   signedIn: 5000,
   // One session's summary (the plan card's sign-in terminal asks every 5 s whether its session has ended).
   get: 8000,
@@ -127,6 +134,27 @@ export function listRecordings(): Promise<RecordingListResponse> {
 
 export function deleteRecording(sessionId: string): Promise<{ ok: true }> {
   return withTimeout(request<{ ok: true }>(sessionPath(sessionId, "/recording"), { method: "DELETE" }), SESSION_LIMITS_MS.recordings);
+}
+
+// Files changed (SP4, Task U7): the server's last read of git in the session's folder (Task X7). The section asks every
+// 3 s while the session runs; an ended session's list is read fresh by the server.
+export async function getChanges(sessionId: string): Promise<ChangesResult> {
+  const body = await withTimeout(request<ChangesResult>(sessionPath(sessionId, "/changes")), SESSION_LIMITS_MS.changes);
+  if (!body || !Array.isArray(body.files)) throw new Error(UNREADABLE);
+  return body;
+}
+
+// One changed file's diff, read-only. `path` is relative to the repository's top level, as the list gave it.
+export async function getDiff(sessionId: string, path: string): Promise<DiffResult> {
+  const body = await withTimeout(request<DiffResult>(sessionPath(sessionId, `/changes/diff?path=${encodeURIComponent(path)}`)), SESSION_LIMITS_MS.diff);
+  if (!body || typeof body.diff !== "string") throw new Error(UNREADABLE);
+  return body;
+}
+
+// The diff route's answer for a file that left the session's changes after the list was read (404 change_missing):
+// the section then reads the list again.
+export function changeMissing(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.message === "change_missing";
 }
 
 // OpenClaw's pending approvals (Task X3): the cards and, while OpenClaw can't be asked, the server's sentence.

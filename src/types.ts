@@ -2868,6 +2868,37 @@ export interface RecordingListResponse {
   removedByCap: number;
 }
 
+// Files changed (SP4): GET /api/sessions/:id/changes and /changes/diff (server/runtime/sessions/changes.js, Task X7),
+// shown by the side panel's Files changed section (Task U7). Paths are relative to the repository's top level, which
+// may be above the session's folder (contract K12).
+export interface ChangedFile {
+  path: string;
+  status: "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted" | "other";
+  // Lines added and removed; null when git can't count them (a binary file, or a new file too big to count).
+  added: number | null;
+  removed: number | null;
+  // Where a renamed file came from.
+  oldPath?: string;
+}
+
+export interface ChangesResult {
+  // false: the folder is not inside a git project; null: the server has not read git yet.
+  git: boolean | null;
+  // At most 200 files (CHANGES_MAX_FILES); `total` counts them all.
+  files: ChangedFile[];
+  total: number;
+  // When git was read (ISO time); null before the first read.
+  at: string | null;
+}
+
+export interface DiffResult {
+  path: string;
+  // The file's `git diff` as plain text (no colour); when `cut` is true, only its first 256 KB (DIFF_MAX_BYTES).
+  diff: string;
+  binary: boolean;
+  cut: boolean;
+}
+
 // The terminal modes a snapshot carries (mirror.js), put back on reattach (spec, Browser terminal).
 export type MouseTrackingMode = "none" | "x10" | "vt200" | "drag" | "any";
 export type MouseEncodingMode = "default" | "sgr" | "sgr-pixels";

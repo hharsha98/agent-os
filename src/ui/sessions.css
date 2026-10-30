@@ -849,3 +849,164 @@
   padding: 0 var(--os-sp-3);
   font-size: var(--os-fs-12);
 }
+
+/* ---- Files changed and the read-only diff (SP4, Task U7; the prototype's .ss-file rows) --------------------------- */
+/* A row: the file icon, the path (its folder part dimmer; a long path ends in "…", the tooltip has it all) and the + and
+   − line counts. The buttons need two classes and an element (0,2,1) to win over `.os-shell button`. */
+.os-sess-changes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.os-shell button.os-sess-file {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  column-gap: var(--os-sp-2);
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--os-line-1);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-12);
+  font-weight: 450;
+  color: var(--os-text-1);
+}
+.os-shell .os-sess-changes li:first-child button.os-sess-file {
+  border-top: 0;
+}
+.os-shell button.os-sess-file:focus-visible {
+  outline-offset: 2px;
+  border-radius: var(--os-r-sm);
+}
+.os-sess-file svg {
+  color: var(--os-text-3);
+}
+.os-sess-file__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.os-sess-file__dir {
+  color: var(--os-text-2);
+}
+.os-sess-file__counts {
+  display: flex;
+  gap: var(--os-sp-2);
+  font-variant-numeric: tabular-nums;
+}
+.os-sess-file__add {
+  color: var(--os-ok);
+}
+.os-sess-file__del {
+  color: var(--os-danger);
+}
+.os-sess-file__zero {
+  color: var(--os-text-3);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-sess-file:hover .os-sess-file__path {
+    text-decoration: underline;
+    text-decoration-color: var(--os-line-2);
+    text-underline-offset: 3px;
+  }
+}
+.os-sess-file:active .os-sess-file__path {
+  color: var(--os-text-2);
+}
+.os-sess-changes__line,
+.os-sess-changes__more {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-sess-changes__more {
+  margin-top: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+}
+.os-sess-panel__sec > .os-sess-panel__note {
+  margin: 0 0 var(--os-sp-2);
+}
+/* The diff dialog: wider than a question, the diff in its own scrolling box so Close stays on screen at 1280×720, and
+   long lines wrapped so nothing scrolls sideways. */
+.os-modal:has(.os-diff-view) {
+  width: min(880px, 100%);
+}
+.os-diff-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  min-width: 0;
+}
+.os-diff-view__path {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-diff-view__state,
+.os-diff-view__note {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-diff {
+  max-height: min(60svh, 560px);
+  margin: 0;
+  padding: var(--os-sp-2) 0;
+  overflow: auto;
+  border: 1px solid var(--os-line-1);
+  border-radius: var(--os-r-sm);
+  background: var(--os-bg-0);
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-12);
+  line-height: 1.5;
+  color: var(--os-text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.os-diff:focus-visible {
+  outline-offset: 2px;
+}
+.os-diff__line {
+  display: block;
+  min-height: 1.5em;
+  padding: 0 var(--os-sp-3);
+}
+.os-diff__line--add {
+  background: var(--os-ok-wash);
+  color: var(--os-ok);
+}
+.os-diff__line--del {
+  background: var(--os-danger-wash);
+  color: var(--os-danger);
+}
+.os-diff__line--hunk {
+  color: var(--os-accent-strong);
+}
+.os-diff__line--meta {
+  color: var(--os-text-3);
+}
+/* A hidden character drawn as a visible token (`<U+202E>`, `\x1B`; VisibleText): dim amber on its own wash, so it reads
+   as "something is here" on a row, in the dialog's title and on a green or red diff line alike. */
+.os-hidden-char {
+  padding: 0 2px;
+  border-radius: var(--os-r-sm);
+  background: var(--os-warn-wash);
+  color: var(--os-warn);
+  font-style: normal;
+}
+/* A very long file name in the dialog's title wraps (the full path under it wraps too); nothing leaves the dialog. */
+.os-modal:has(.os-diff-view) .os-modal__title {
+  overflow-wrap: anywhere;
+}
+/* ---- end Files changed ------------------------------------------------------------------------------------------- */

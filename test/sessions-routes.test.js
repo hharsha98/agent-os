@@ -29,6 +29,7 @@ import { brainError } from "../server/runtime/builders/brain-launch.js";
 import { isLocalMode, requireLocalMode } from "../server/runtime/local-session.js";
 import { SESSION_ID_RE, sessionError } from "../server/runtime/sessions/errors.js";
 import { createSessionManager } from "../server/runtime/sessions/manager.js";
+import { deleteRecording } from "../server/runtime/sessions/recorder.js";
 import { createRecordingsRouter, createSessionsRouter } from "../server/runtime/sessions/routes.js";
 import { FALLBACK_NOTICE, NESTED_MARKERS, resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
@@ -196,6 +197,11 @@ function stubManager() {
     // recordings routes ask it, and the fixed-path test counts only quitCheck.
     isLive(id) {
       return id === KNOWN_ID;
+    },
+    // Like the real one (Task U11): recorder.js's own checks and removal, with this stub's isLive.
+    async deleteRecording(id) {
+      calls.push(["deleteRecording", id]);
+      return deleteRecording(id, { isLive: (sessionId) => sessionId === KNOWN_ID });
     }
   };
   return { manager, calls };
@@ -836,7 +842,7 @@ test("recordings: the manager, not meta.json, says which session is live; delete
     const liveDir = await writeSessionFixture(agentOsHome, KNOWN_ID);
     const endedId = crypto.randomUUID();
     const endedDir = await writeSessionFixture(agentOsHome, endedId);
-    const { manager } = stubManager();
+    const { manager, calls } = stubManager();
     await withSessionsApp(manager, async (api) => {
       const list = await api("GET", "/api/recordings");
       assert.equal(list.status, 200);
@@ -864,6 +870,12 @@ test("recordings: the manager, not meta.json, says which session is live; delete
       const unknown = await api("DELETE", `/api/sessions/${OTHER_ID}/recording`);
       assert.equal(unknown.status, 404);
       assert.deepEqual(unknown.json, UNKNOWN_SESSION);
+
+      // Task U11: every delete goes through the manager (which also removes the recording's moments).
+      assert.deepEqual(
+        calls.filter(([name]) => name === "deleteRecording").map(([, sessionId]) => sessionId),
+        [KNOWN_ID, endedId, endedId, OTHER_ID]
+      );
     });
   });
 });

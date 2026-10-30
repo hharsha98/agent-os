@@ -16,7 +16,7 @@ import { handOver, keepGoing, keepGoingInfo } from "./keep-going.js";
 import { getSessionManager } from "./manager.js";
 import { createOpenclawApprovals } from "./openclaw-approvals.js";
 import { ptyAvailable } from "./pty-host.js";
-import { deleteRecording, listRecordings, openRecording, recordingsRemovedByCap } from "./recorder.js";
+import { listRecordings, openRecording, recordingsRemovedByCap } from "./recorder.js";
 import { readSessionSettings, writeSessionSettings } from "./settings.js";
 import { getLoginShellEnv } from "./shell-env.js";
 
@@ -413,10 +413,12 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     })
   );
 
+  // Delete recording (Task U11): through the manager, which removes the recording's moments with its files and
+  // refuses while the session runs or is being resumed or dismissed.
   router.delete(
     "/:id/recording",
     handle(async (req, res) => {
-      res.json(await deleteRecording(req.params.id, { isLive: liveCheck(manager) }));
+      res.json(await manager.deleteRecording(req.params.id));
     })
   );
 

@@ -18,6 +18,7 @@ import type {
   SessionClientFrame,
   SessionFolderList,
   SessionListResponse,
+  SessionMarker,
   SessionSettings,
   SessionSnapshot,
   SessionStateFrame,
@@ -50,6 +51,9 @@ export const SESSION_LIMITS_MS = {
   folders: 10000,
   quitCheck: 8000,
   recordings: 10000,
+  // A replay reads a whole recording, which can be tens of MB (two 25 MB segments).
+  recording: 60000,
+  markers: 10000,
   // Files changed (Task U7): a live session's list comes at once from the server's last git read; an ended session's
   // is read fresh, up to three git calls of at most 5 s each (GIT_LIMIT_MS, Task X7).
   changes: 20000,
@@ -188,6 +192,40 @@ export function listRecordings(): Promise<RecordingListResponse> {
 
 export function deleteRecording(sessionId: string): Promise<{ ok: true }> {
   return withTimeout(request<{ ok: true }>(sessionPath(sessionId, "/recording"), { method: "DELETE" }), SESSION_LIMITS_MS.recordings);
+}
+
+// A recording's moments for its replay (Task X1a's route): { markers }, from meta.json, or from memory while the
+// session runs.
+export function getMarkers(sessionId: string): Promise<{ markers: SessionMarker[] }> {
+  return withTimeout(request<{ markers: SessionMarker[] }>(sessionPath(sessionId, "/markers")), SESSION_LIMITS_MS.markers);
+}
+
+// The recording itself, as the asciicast text GET /api/sessions/:id/recording streams (request() reads JSON only).
+// The download is stopped at its time limit, or when `signal` aborts (the replay closed), so a big recording never
+// keeps coming for nobody. A refusal is an ApiError, made the way request() makes one (a 401 session_required locks
+// the app).
+export async function fetchRecording(sessionId: string, { signal }: { signal?: AbortSignal } = {}): Promise<string> {
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  if (signal?.aborted) stop();
+  else signal?.addEventListener("abort", stop, { once: true });
+  const timer = setTimeout(stop, SESSION_LIMITS_MS.recording);
+  try {
+    const response = await fetch(sessionPath(sessionId, "/recording"), { credentials: "same-origin", signal: controller.signal });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      if (response.status === 401 && body?.error === "session_required") window.dispatchEvent(new CustomEvent("agentos:locked"));
+      throw new ApiError(body?.error || `${response.status} ${response.statusText}`, typeof body?.message === "string" ? body.message : "", response.status);
+    }
+    return await response.text();
+  } catch (error) {
+    // Stopped by the time limit, not by the caller: the words every other request uses.
+    if (controller.signal.aborted && !signal?.aborted) throw new Error(TIMEOUT_WORDS);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", stop);
+  }
 }
 
 // Files changed (SP4, Task U7): the server's last read of git in the session's folder (Task X7). The section asks every

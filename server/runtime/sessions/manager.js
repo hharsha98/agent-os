@@ -72,7 +72,7 @@ import {
 } from "./mirror-signals.js";
 import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, SETUP_ACTIONS, buildSessionProfile } from "./profiles.js";
 import { ptyAvailable, spawnPty } from "./pty-host.js";
-import { CAST_FILE, createRecorder, enforceRecordingCap } from "./recorder.js";
+import { CAST_FILE, createRecorder, deleteRecording as deleteRecordingFiles, enforceRecordingCap } from "./recorder.js";
 import { readSessionSettings } from "./settings.js";
 import { getLoginShellEnv } from "./shell-env.js";
 import {
@@ -2110,6 +2110,34 @@ export function createSessionManager({
     }
   }
 
+  // Delete recording (spec SP4 "Recordings in Runs", Task U11): the recording's files and its moments (the markers in
+  // meta.json) go together, so a later Resume starts a recording that shows none of the deleted one's moments. The
+  // session stays: its ended tab and Resume keep working. recorder.js refuses while the session runs (409
+  // recording_live) and when there is nothing to delete (404 recording_missing, unknown_session); a session another
+  // request is resuming or dismissing right now gets session_busy, so nothing else writes meta.json between the two
+  // steps. Moments that can't be removed after the files went are only logged: they are older than any recording a
+  // Resume starts, so the replay leaves them out.
+  async function deleteRecording(id) {
+    assertSessionId(id);
+    if (busy.has(id)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+    busy.add(id);
+    try {
+      const result = await deleteRecordingFiles(id, { isLive });
+      try {
+        const meta = await readMeta(id);
+        if (meta && Array.isArray(meta.markers) && meta.markers.length > 0) {
+          meta.markers = [];
+          await writeJson(path.join(sessionDir(id), META_FILE), meta);
+        }
+      } catch (error) {
+        console.error(`Agent OS: a deleted recording's moments could not be removed from meta.json: ${error?.message || error}`);
+      }
+      return result;
+    } finally {
+      busy.delete(id);
+    }
+  }
+
   // Hides an ended tab (decision Q37). The recording and Resume stay in Runs.
   async function dismiss(id) {
     assertSessionId(id);
@@ -2186,10 +2214,19 @@ export function createSessionManager({
       const at = iso(now());
       for (const otherId of await listSessionIds()) {
         if (isRunning(otherId)) continue;
-        const other = await readMeta(otherId);
-        if (!other || other.worktreeRemovedAt || (await worktreeIdOf(other.folder)) !== copyId) continue;
-        other.worktreeRemovedAt = at;
-        await writeJson(path.join(sessionDir(otherId), META_FILE), other);
+        // Another session's meta.json is rewritten under that session's own guard (Resume, Dismiss, Delete recording).
+        // One a request is changing right now is left to that request; the rest are held while this loop writes.
+        const own = otherId === id;
+        if (!own && busy.has(otherId)) continue;
+        if (!own) busy.add(otherId);
+        try {
+          const other = await readMeta(otherId);
+          if (!other || other.worktreeRemovedAt || (await worktreeIdOf(other.folder)) !== copyId) continue;
+          other.worktreeRemovedAt = at;
+          await writeJson(path.join(sessionDir(otherId), META_FILE), other);
+        } finally {
+          if (!own) busy.delete(otherId);
+        }
       }
       return { removed: true };
     } finally {
@@ -2893,6 +2930,7 @@ export function createSessionManager({
     ack,
     resume,
     dismiss,
+    deleteRecording,
     stop,
     shutdownAll,
     quitCheck,

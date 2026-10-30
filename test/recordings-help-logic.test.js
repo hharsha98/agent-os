@@ -85,8 +85,8 @@ test("a resumed session's row: Recorded is its first start and Length covers all
   assert.deepEqual(rec.recordingLength(row({ firstStartedAt: "" }), NOW), { value: "11 m 40 s", soFar: false });
 });
 
-test("the decided words: the replay note, the cap note, the empty state", () => {
-  assert.equal(rec.REPLAY_LATER, "Replay arrives in a later update");
+test("the decided words: the cap note and the empty state; the SP3 replay note is gone (Task U11 built the replay)", () => {
+  assert.equal("REPLAY_LATER" in rec, false);
   assert.equal(rec.CAP_NOTE, "Older recordings were removed to stay under 1 GB.");
   assert.equal(rec.EMPTY_TITLE, "No recordings yet");
   assert.equal(rec.EMPTY_BODY, "Every session is recorded here: what its terminal showed, including anything you typed that appeared on screen.");

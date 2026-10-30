@@ -29,8 +29,8 @@ export interface RecordingsBody {
 }
 
 // Decided words (decision Q38 and the Session recordings copy, Q32, owner). The recording holds output only, but an
-// agent echoes what you type, so typed text that appears on screen (a pasted secret too) is in the recording.
-export const REPLAY_LATER = "Replay arrives in a later update";
+// agent echoes what you type, so typed text that appears on screen (a pasted secret too) is in the recording. The SP3
+// note about a later replay is gone: Task U11 built the replay (replayShared.ts).
 export const CAP_NOTE = "Older recordings were removed to stay under 1 GB.";
 export const EMPTY_TITLE = "No recordings yet";
 export const EMPTY_BODY = "Every session is recorded here: what its terminal showed, including anything you typed that appeared on screen.";

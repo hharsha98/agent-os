@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1689,6 +1689,64 @@ test("dismiss: refused while live; an ended session is hidden and stays hidden a
   });
 });
 
+// Task U11: Delete recording goes through the manager, so the recording's moments (meta.json markers) go with its
+// files, and no Resume or Dismiss writes meta.json between the two (the busy guard).
+test("delete recording: refused while live; the files and the moments go together; the session and Resume stay; a session being resumed, a missing recording and unknown ids are refused", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const world = fakeWorld();
+    const summary = await world.manager.create({ agentId: "claude", folder: project });
+    const castPath = path.join(agentOsHome, "sessions", summary.id, "screen.cast");
+    // The fake recorder writes nothing, so the test puts a recording where the real one would be.
+    await writeFile(castPath, `${JSON.stringify({ version: 2, width: 120, height: 32, timestamp: 1 })}\n[0.1,"o","hi"]\n`);
+    assert.equal(await world.manager.addMarker(summary.id, { type: "permission", text: "Wants to use Bash" }), true);
+    const stillRunning = "That session is still running. Stop it first, then delete its recording.";
+    await assert.rejects(
+      world.manager.deleteRecording(summary.id),
+      (error) => error.status === 409 && error.code === "recording_live" && error.message === stillRunning
+    );
+    await stat(castPath);
+
+    world.ptys[0].exit(0);
+    await waitFor(() => !world.manager.isLive(summary.id));
+    // A Resume in flight: the delete is told to wait, and removes nothing.
+    const both = await Promise.allSettled([world.manager.resume(summary.id), world.manager.deleteRecording(summary.id)]);
+    assert.equal(both[0].status, "fulfilled", both[0].reason?.message);
+    assert.equal(both[1].status, "rejected");
+    assert.equal(both[1].reason.code, "session_busy");
+    await stat(castPath);
+    world.ptys[1].exit(0);
+    await waitFor(() => !world.manager.isLive(summary.id));
+    const metaBefore = await metaOnDisk(agentOsHome, summary.id);
+    assert.equal(metaBefore.markers.length, 1, "the moment survived the Resume");
+
+    // Fix round 1 (M-6): "removes nothing else". Another file in the session's folder stays, and a link where the older
+    // recording sits goes without the file it points at.
+    const sessionFolder = path.join(agentOsHome, "sessions", summary.id);
+    const settingsPath = path.join(sessionFolder, "claude-settings.json");
+    await writeFile(settingsPath, '{"hooks":{}}\n');
+    const outsidePath = path.join(agentOsHome, "outside-the-session.txt");
+    await writeFile(outsidePath, "not a recording\n");
+    const prevPath = path.join(sessionFolder, "screen.prev.cast");
+    await symlink(outsidePath, prevPath);
+
+    assert.deepEqual(await world.manager.deleteRecording(summary.id), { ok: true });
+    await assert.rejects(stat(castPath), "the recording is gone");
+    await assert.rejects(lstat(prevPath), "the link where the older recording sat is gone");
+    assert.equal(await readFile(outsidePath, "utf8"), "not a recording\n", "a link is removed, never the file it points at");
+    assert.equal(await readFile(settingsPath, "utf8"), '{"hooks":{}}\n', "the rest of the session's folder stays");
+    const meta = await metaOnDisk(agentOsHome, summary.id);
+    assert.deepEqual(meta.markers, [], "and so are its moments");
+    assert.deepEqual({ ...meta, markers: null }, { ...metaBefore, markers: null }, "every other key of meta.json is unchanged");
+    assert.equal(meta.status, "exited");
+    assert.deepEqual(await world.manager.markers(summary.id), []);
+    assert.equal((await world.manager.get(summary.id)).resume.available, true, "the session and its Resume stay");
+
+    await assert.rejects(world.manager.deleteRecording(summary.id), (error) => error.status === 404 && error.code === "recording_missing");
+    await assert.rejects(world.manager.deleteRecording(crypto.randomUUID()), (error) => error.status === 404 && error.code === "unknown_session");
+    await assert.rejects(world.manager.deleteRecording("not-a-uuid"), (error) => error.status === 404 && error.code === "unknown_session");
+  });
+});
+
 test("restart after a hard kill: sessions still marked running come back ended by quit with Resume; when a folder is gone, Resume refuses with the folder sentence and the recent folders drop it", async () => {
   await withSessionEnv(async ({ agentOsHome, project, other }) => {
     const world = fakeWorld();
@@ -2606,6 +2664,7 @@ test("getSessionManager: one manager per server, with every method the routes an
     "quitCheck",
     "isLive",
     "recoverStaleSessions",
+    "deleteRecording",
     "applySignal",
     "markSourceSeen",
     "markNewTurn",

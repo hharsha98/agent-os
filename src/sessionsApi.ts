@@ -9,6 +9,7 @@ import type {
   ApprovalListResponse,
   ChangesResult,
   DiffResult,
+  FolderCheck,
   HandoffResult,
   QuitCheckResponse,
   RecordingListResponse,
@@ -60,7 +61,15 @@ export const SESSION_LIMITS_MS = {
   // OpenClaw's pending approvals (the server answers from its last poll).
   approvals: 8000,
   // An approval's answer: the server runs `openclaw approvals resolve` with a 10 s limit (Task X3).
-  approvalResolve: 15000
+  approvalResolve: 15000,
+  // The worktree offer (SP4), each a little longer than the server's own worst case, so the person hears the server's
+  // sentence and not "Agent OS did not answer in time": the first folder check after the server starts waits for the
+  // login-shell environment (10 s) and two git reads (5 s each); a separate copy is the normal start (30 s) plus the
+  // add and checkout (2 minutes for both) plus the clean-up of a cut-off add (about 70 s); removing a copy is two
+  // reads, a status and a prune (5 s each) around the remove (1 minute).
+  folderCheck: 22000,
+  createCopy: 240000,
+  removeWorktree: 90000
 } as const;
 
 const TIMEOUT_WORDS = "Agent OS did not answer in time.";
@@ -83,8 +92,12 @@ export function getSession(sessionId: string): Promise<SessionSummary> {
 
 // `folder` is null for OpenClaw, which picks its own folder until spike S5. The server checks the folder
 // (planning decision Q14) and answers 400 folder_refused with a sentence when it is not allowed.
-export function createSession({ agentId, folder }: { agentId: string; folder: string | null }): Promise<SessionSummary> {
-  return withTimeout(request<SessionSummary>("/api/sessions", postJson({ agentId, folder })), SESSION_LIMITS_MS.create);
+//
+// `copy: true` asks for a separate copy (SP4 worktree offer): the server makes a git worktree on a new branch and
+// starts the agent there, which can take a while for a big project. Without it the body is exactly as before.
+export function createSession({ agentId, folder, copy = false }: { agentId: string; folder: string | null; copy?: boolean }): Promise<SessionSummary> {
+  const body = copy ? { agentId, folder, copy: true } : { agentId, folder };
+  return withTimeout(request<SessionSummary>("/api/sessions", postJson(body)), copy ? SESSION_LIMITS_MS.createCopy : SESSION_LIMITS_MS.create);
 }
 
 export function stopSession(sessionId: string): Promise<StopSessionResult> {
@@ -118,6 +131,17 @@ export function putSessionSettings(patch: Partial<SessionSettings>): Promise<Ses
 
 export function listSessionFolders(): Promise<SessionFolderList> {
   return withTimeout(request<SessionFolderList>("/api/sessions/folders"), SESSION_LIMITS_MS.folders);
+}
+
+// The worktree offer's folder check: read-only, nothing is made.
+export function checkFolder(folder: string, agentId: string): Promise<FolderCheck> {
+  return withTimeout(request<FolderCheck>("/api/sessions/folder-check", postJson({ folder, agentId })), SESSION_LIMITS_MS.folderCheck);
+}
+
+// Remove separate copy. The server refuses while a session runs in the copy and while it has changes that aren't
+// committed (its sentence comes back as the error's detail); the copy's branch always stays.
+export function removeWorktree(sessionId: string): Promise<{ removed: true }> {
+  return withTimeout(request<{ removed: true }>(sessionPath(sessionId, "/worktree"), { method: "DELETE" }), SESSION_LIMITS_MS.removeWorktree);
 }
 
 // Every live session of both kinds, with its title, for the quit question (planning decision Q27).

@@ -246,13 +246,15 @@ function isStandardLfs(driver) {
 // changed could otherwise make this server run it every few seconds. The
 // driver named "lfs" is left alone only while it holds exactly git-lfs's
 // standard values; any other value there is switched off like the rest.
+// `all: true` (Task X9, separate copies: a checkout runs smudge filters) leaves
+// no driver alone, git-lfs's included, so large-file pointers stay pointers.
 // Returns [key, value] pairs for runGit's `config` option.
-export function filterOverrides(text) {
+export function filterOverrides(text, { all = false } = {}) {
   const drivers = parseFilterConfig(text);
   if (drivers.size > FILTER_DRIVERS_MAX) throw readError("git_failed");
   const config = [];
   for (const [name, driver] of drivers) {
-    if (name === "lfs" && isStandardLfs(driver)) continue;
+    if (!all && name === "lfs" && isStandardLfs(driver)) continue;
     config.push(
       [`filter.${name}.clean`, ""],
       [`filter.${name}.smudge`, ""],
@@ -266,12 +268,12 @@ export function filterOverrides(text) {
 // Lists the filter drivers configured for this repository, then returns the
 // settings that switch them off. A filter someone adds between this call and
 // the status call that follows is not caught (accepted).
-async function filterConfig(top, env, run) {
+async function filterConfig(top, env, run, options) {
   const result = await run(top, [...FILTER_LIST_ARGS], { env, okCodes: [0, 1], maxChars: LIST_OUTPUT_CHARS });
   if (!result.ok) throw readError(result.timedOut ? "git_timeout" : "git_failed");
   // A list cut at LIST_OUTPUT_CHARS may miss drivers: switch off nothing less than all of them.
   if (result.stdout.length >= LIST_OUTPUT_CHARS) throw readError("git_failed");
-  return filterOverrides(result.stdout);
+  return filterOverrides(result.stdout, options);
 }
 
 // "git version 2.39.5 (Apple Git-154)" -> { major: 2, minor: 39 }; null when
@@ -322,8 +324,10 @@ async function gitReadsConfigFromEnv(top, env, run) {
 // "=", so a driver whose name holds one cannot be switched off that way: the
 // read does not run (git_failed, the last result stays) rather than run git
 // with that filter active.
-async function filterSettings(top, env, run) {
-  const overrides = await filterConfig(top, env, run);
+// Exported for Task X9 (separate copies), which passes `{ all: true }` so that
+// git-lfs's driver is switched off too; it throws the same internal errors.
+export async function filterSettings(top, env, run, options = {}) {
+  const overrides = await filterConfig(top, env, run, options);
   if (overrides.length === 0) return { config: [], prefix: [] };
   if (await gitReadsConfigFromEnv(top, env, run)) return { config: overrides, prefix: [] };
   if (overrides.some(([key]) => key.includes("="))) throw readError("git_failed");

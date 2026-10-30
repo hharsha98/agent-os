@@ -13,16 +13,17 @@
 // went to.
 import { useState } from "react";
 import type { RefObject } from "react";
-import { CircleDot, Folder, GitBranch, History, Info, OctagonX } from "lucide-react";
+import { CircleDot, Folder, GitBranch, GitFork, History, Info, OctagonX } from "lucide-react";
 import type { SessionSummary } from "../../types";
 import { collapseHomePath } from "../agentsShared";
 import { APPROVALS_STALE, approvalsForSession, panelAlertLines } from "../alertsShared";
 import { resumeConfirmCopy, sessionPanelLine, sessionStateWord } from "../sessionsShared";
-import { meterRowLabel, meterRows, panelFolder, recordingKept } from "../sessionsPageShared";
+import { canRemoveCopy, copyLine, meterRowLabel, meterRows, panelFolder, recordingKept } from "../sessionsPageShared";
 import { useApprovals } from "../useApprovals";
 import { ApprovalList } from "./ApprovalCard";
 import Meter from "./Meter";
 import HandoffSection from "./HandoffSection";
+import RemoveCopyButton from "./RemoveCopyButton";
 import SessionChanges from "./SessionChanges";
 import StatusWord from "./StatusWord";
 import { useInterval } from "./useInterval";
@@ -62,6 +63,8 @@ export default function SessionSidePanel({
   // Why Resume can't be pressed: the server's reason (decision Q36), as the Resume confirm words it (Task U1).
   const blocked = ended ? resumeConfirmCopy(session).blocked : null;
   const where = panelFolder(session);
+  // A session in a separate copy (SP4 worktree offer): the fork icon and the spec's copy line under the branch.
+  const copy = copyLine(session);
   return (
     <aside className="os-sess-panel" aria-label="Session details">
       <div className="os-sess-panel__scroll">
@@ -75,11 +78,19 @@ export default function SessionSidePanel({
           </div>
           {session.branch ? (
             <p className="os-sess-panel__branch">
-              <GitBranch size={16} aria-hidden="true" />
+              {copy ? <GitFork size={16} aria-hidden="true" /> : <GitBranch size={16} aria-hidden="true" />}
               <code className="os-mono os-trunc" title={session.branch}>
                 {session.branch}
               </code>
             </p>
+          ) : null}
+          {copy ? (
+            <div className="os-sess-panel__copy">
+              <p className="os-sess-panel__copyline" title={session.copyOf ? collapseHomePath(session.copyOf) : undefined}>
+                {copy}
+              </p>
+              {canRemoveCopy(session) ? <RemoveCopyButton session={session} focusAfter={headingRef} /> : null}
+            </div>
           ) : null}
           <p className="os-sess-panel__stat">
             <StatusWord state={word.state} label={word.label} />

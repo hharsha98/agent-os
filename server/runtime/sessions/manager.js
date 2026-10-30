@@ -87,6 +87,15 @@ import {
   printAlertLine
 } from "./signals.js";
 import { runSoftStop } from "./soft-stop.js";
+import {
+  copyAllowed,
+  copyPlan,
+  createWorktree,
+  discardFreshWorktree,
+  removeWorktree as removeCopyFolder,
+  worktreeIdOf,
+  worktreePath
+} from "./worktrees.js";
 
 // Each shared name has one home: errors.js (the id pattern and the error
 // shape) and profiles.js (the agents' short names). Re-exported here so
@@ -146,6 +155,12 @@ const UNKNOWN_KIND_MESSAGE = "Agent OS can't start that kind of session.";
 const QUITTING_MESSAGE = "Agent OS is quitting, so no new session can start.";
 // The answer to a second sign-in start (plan-brains contract, 409 setup_running).
 const SETUP_RUNNING_MESSAGE = "A ChatGPT sign-in is already open in Agent OS.";
+// The worktree offer (spec SP4). Every one is a new sentence for the owner's review at E1 (Q32).
+const COPY_NOT_AVAILABLE_MESSAGE = "OpenClaw picks its own folder, so it can't use a separate copy.";
+const NO_WORKTREE_MESSAGE = "This session doesn't use a separate copy.";
+const COPY_LIVE_MESSAGE = "That session is still running. Stop it first, then remove its separate copy.";
+const COPY_IN_USE_MESSAGE = "Another session is still running in this separate copy. Stop it first, then remove the copy.";
+const COPY_REMOVED_MESSAGE = "Its separate copy was removed, so this conversation can't be resumed.";
 // A Claude Code session in which nothing was ever sent saves no conversation (and
 // Claude deletes old transcripts itself): `claude --resume <uuid>` then prints "No conversation found with session ID: <uuid>"
 // and exits 1 at once. Without this, the tab would offer Resume again, forever
@@ -556,12 +571,68 @@ export function createSessionManager({
   async function resolveFolder(agentId, kind, folder) {
     if (kind === "agent" && agentId === "openclaw" && !OPENCLAW_FOLDER_HONOURED) return { folder: null, shown: false };
     const checked = await checkFolder(typeof folder === "string" ? folder : "");
-    if (!checked?.ok) {
-      throw sessionError(400, "folder_refused", checked?.message || "That folder can't be used.", {
-        code: checked?.code || "refused"
-      });
-    }
+    if (!checked?.ok) throw folderRefused(checked);
     return { folder: checked.path, shown: true };
+  }
+
+  // The folder policy's refusal (D12), with its own code (decision Q14).
+  function folderRefused(checked) {
+    return sessionError(400, "folder_refused", checked?.message || "That folder can't be used.", {
+      code: checked?.code || "refused"
+    });
+  }
+
+  // ---- separate copies (spec SP4, Worktree offer) ----
+
+  // The copies being removed right now, by copy id (removeWorktreeOf): nothing may start or resume in one.
+  const removingCopies = new Set();
+  // Copies are made one at a time, so two starts never pick the same agentos/<agent>-<n>.
+  let copyQueue = Promise.resolve();
+
+  // The project a folder inside an existing copy belongs to: the copy's own session's copyOf (R25). A hand-off
+  // target opened in the copy, or the copy's path typed by hand, then shows the project's name too.
+  async function copyOfFolder(folder) {
+    const copyId = await worktreeIdOf(folder);
+    if (!copyId) return null;
+    const owner = live.get(copyId)?.meta ?? (await readMeta(copyId));
+    return typeof owner?.copyOf === "string" && owner.copyOf ? owner.copyOf : null;
+  }
+
+  // Makes a start's separate copy. The copy passes the folder policy like any folder (D12 allows
+  // <AGENT_OS_HOME>/worktrees inside HOME); a refusal removes it again. Answers createWorktree's
+  // { path, folder, branch, copyOf } with `folder` as the policy's real path and `copyOf` as the project (a copy made
+  // from inside a copy is a copy of the same project), plus the git environment for a later clean-up.
+  function makeCopy({ folder, agentId, sessionId }) {
+    const work = async () => {
+      const env = await loginEnv();
+      // The wait in the queue may have been long: a removal that began meanwhile still stops this copy.
+      await assertCopyNotRemoving(folder);
+      const copyOf = (await copyOfFolder(folder)) ?? folder;
+      const made = await createWorktree({ folder, agentId, sessionId, env, run: runGit });
+      const checked = await checkFolder(made.folder);
+      if (!checked?.ok) {
+        await discardFreshWorktree({ path: made.path, copyOf: made.copyOf, branch: made.branch, env, run: runGit });
+        throw folderRefused(checked);
+      }
+      // gitFolder: where git ran (the folder that was copied, inside the copy when this is a copy of a copy). A clean-up
+      // goes there too: the new branch starts at that folder's HEAD, so `git branch -d` only agrees from there (M5).
+      return { ...made, folder: checked.path, copyOf, gitFolder: made.copyOf, env };
+    };
+    const next = copyQueue.then(work, work);
+    copyQueue = next.catch(() => {});
+    return next;
+  }
+
+  // A start that failed after its copy was made: the fresh copy and its branch go (K14). Never throws.
+  async function discardCopy(made) {
+    await discardFreshWorktree({ path: made.path, copyOf: made.gitFolder, branch: made.branch, env: made.env, run: runGit });
+  }
+
+  // While a copy is being removed, nothing may start or resume in it.
+  async function assertCopyNotRemoving(folder) {
+    if (removingCopies.size === 0) return;
+    const copyId = await worktreeIdOf(folder);
+    if (copyId && removingCopies.has(copyId)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
   }
 
   function newState(dir, meta) {
@@ -1608,6 +1679,10 @@ export function createSessionManager({
     if (view.kind !== "agent" || view.status !== "exited") return { available: false, reason: null, fallback };
     // Claude Code saved nothing: a Resume would fail the same way every time.
     if (view.nothingToResume === true) return { available: false, reason: NOTHING_TO_RESUME_MESSAGE, fallback };
+    // Its separate copy was removed (Remove separate copy): the folder its conversation ran in is gone.
+    if (typeof view.worktreeRemovedAt === "string" && view.worktreeRemovedAt) {
+      return { available: false, reason: COPY_REMOVED_MESSAGE, fallback };
+    }
     const label = view.agentLabel;
     if (installed.get(view.agentId) === false) {
       return { available: false, reason: `${label} isn't installed anymore.`, fallback };
@@ -1664,7 +1739,9 @@ export function createSessionManager({
       trustNeeded: extras.trustNeeded,
       hooksOff: extras.hooksOff,
       meter: extras.meter,
-      copyOf: typeof view.copyOf === "string" && view.copyOf ? view.copyOf : null,
+      // A session in a separate copy names the project it copies (R25). Once the copy was removed (Remove separate
+      // copy), the session is no longer a copy, so null; meta.json keeps copyOf for recent folders.
+      copyOf: typeof view.copyOf === "string" && view.copyOf && !view.worktreeRemovedAt ? view.copyOf : null,
       handoff: extras.handoff,
       recordingBytes: await recordingBytes(view.id)
     };
@@ -1715,7 +1792,7 @@ export function createSessionManager({
     if (closing) throw sessionError(409, "agent_os_quitting", QUITTING_MESSAGE);
   }
 
-  async function startNew({ kind, agentId, folder }) {
+  async function startNew({ kind, agentId, folder, copy = false }) {
     assertNotClosing();
     if (!SESSION_AGENTS.includes(agentId)) {
       throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
@@ -1723,11 +1800,14 @@ export function createSessionManager({
     if (kind === "update" && agentId !== "hermes") {
       throw sessionError(400, "update_not_available", "Only Hermes is updated in a session.");
     }
+    if (copy && !copyAllowed(agentId)) throw sessionError(400, "copy_not_available", COPY_NOT_AVAILABLE_MESSAGE);
     if (kind === "agent" && !(await isExecutionAllowed())) {
       throw sessionError(409, "execution_gate_off", LOOK_ONLY_MESSAGE);
     }
     const slot = reserveSlot(kind);
     let id = null;
+    // The separate copy this start made, if any (removed again when the start fails).
+    let made = null;
     try {
       await requirePty();
       const where = await resolveFolder(agentId, kind, folder);
@@ -1739,10 +1819,24 @@ export function createSessionManager({
       const dir = sessionDir(id);
       await ensurePrivateDir(sessionsRoot());
       await ensurePrivateDir(dir);
+      // A separate copy is made last, after every check that can refuse the start, and the session runs in it.
+      // Without one, a folder inside an existing copy still names the project it copies (R25).
+      let place = where;
+      let copyOf = null;
+      // A folder inside a copy that is being removed can't be started in or copied from (M9).
+      if (where.folder) await assertCopyNotRemoving(where.folder);
+      if (copy) {
+        made = await makeCopy({ folder: where.folder, agentId, sessionId: id });
+        place = { folder: made.folder, shown: true };
+        copyOf = made.copyOf;
+        slot.claim(agentId, made.folder);
+      } else if (where.folder) {
+        copyOf = await copyOfFolder(where.folder);
+      }
       const hook = hookFor(kind, agentId);
       const profile = await buildProfile({
         agentId,
-        folder: where.folder,
+        folder: place.folder,
         sessionId: id,
         kind,
         resume: null,
@@ -1754,8 +1848,8 @@ export function createSessionManager({
         ...(managedSettingsPath === undefined ? {} : { managedSettingsPath })
       });
       const at = iso(now());
-      const folderPath = where.folder ?? profile.cwd;
-      const shown = profile.folderShown ?? where.shown;
+      const folderPath = place.folder ?? profile.cwd;
+      const shown = profile.folderShown ?? place.shown;
       const meta = {
         version: META_VERSION,
         id,
@@ -1763,8 +1857,12 @@ export function createSessionManager({
         agentId,
         agentLabel: SESSION_AGENT_LABEL[agentId],
         folder: folderPath,
-        folderName: path.basename(folderPath),
+        folderName: copyOf ? path.basename(copyOf) : path.basename(folderPath),
         folderShown: shown,
+        // R25: the project a separate copy was made from (null for every other session), and when that copy was
+        // removed (Remove separate copy). A resume keeps both (it starts from the saved meta.json).
+        copyOf,
+        worktreeRemovedAt: null,
         branch: shown ? await readGitBranch(folderPath) : null,
         status: "starting",
         createdAt: at,
@@ -1788,6 +1886,7 @@ export function createSessionManager({
       await saveStarted(state);
       return get(id);
     } catch (error) {
+      if (made && !live.has(id)) await discardCopy(made);
       if (id && !live.has(id)) await fs.rm(sessionDir(id), { recursive: true, force: true }).catch(() => {});
       throw error;
     } finally {
@@ -1795,8 +1894,10 @@ export function createSessionManager({
     }
   }
 
-  function create({ agentId, folder } = {}) {
-    return startNew({ kind: "agent", agentId, folder });
+  // `copy: true` asks for a separate copy (spec SP4, Worktree offer): only POST /api/sessions passes it, and only a
+  // literal true.
+  function create({ agentId, folder, copy = false } = {}) {
+    return startNew({ kind: "agent", agentId, folder, copy: copy === true });
   }
 
   // The update kind (spec "Session kinds"): made only by the update service,
@@ -1933,6 +2034,7 @@ export function createSessionManager({
       const slot = reserveSlot("agent");
       slot.claim(meta.agentId, meta.folder, id);
       try {
+        await assertCopyNotRemoving(meta.folder);
         await requirePty();
         const views = await collectViews();
         const view = views.find((candidate) => candidate.id === id) || viewOfMeta(meta);
@@ -1966,7 +2068,7 @@ export function createSessionManager({
         const state = newState(dir, {
           ...meta,
           folder: folderPath,
-          folderName: path.basename(folderPath),
+          folderName: typeof meta.copyOf === "string" && meta.copyOf ? path.basename(meta.copyOf) : path.basename(folderPath),
           folderShown: shown,
           branch: shown ? await readGitBranch(folderPath) : null,
           status: "starting",
@@ -2022,6 +2124,77 @@ export function createSessionManager({
       busy.delete(id);
     }
     return get(id);
+  }
+
+  // ---- the worktree offer (spec SP4) ------------------------------------------------------------------------
+
+  // The New session dialog's folder check (POST /api/sessions/folder-check): the live agent sessions that already use
+  // the folder, whether it is a git project, and the branch a separate copy would get for this agent. Read-only.
+  async function folderCheck({ folder, agentId } = {}) {
+    if (!SESSION_AGENTS.includes(agentId)) {
+      throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
+    }
+    const checked = await checkFolder(typeof folder === "string" ? folder : "");
+    if (!checked?.ok) throw folderRefused(checked);
+    const inUse = [...live.values()]
+      .filter((state) => state.meta.kind === "agent" && state.status !== "exited" && state.meta.folder === checked.path)
+      .map((state) => state.meta)
+      .sort(byCreated)
+      .map((meta) => ({ id: meta.id, agentLabel: meta.agentLabel, title: titleOf(meta) }));
+    const plan = await copyPlan(checked.path, agentId, { env: await loginEnv(), run: runGit });
+    return { path: checked.path, name: checked.name || path.basename(checked.path), git: plan.git, branch: plan.branch, inUse };
+  }
+
+  // Remove separate copy (spec: "asks first and refuses when there are uncommitted changes"; the page asks). Any ended
+  // session that ran in the copy may ask. The copy goes only when no session runs or is starting in it and git status
+  // in it prints nothing; its branch stays (K14). Every ended session that ran there is marked, so none offers Resume
+  // in a folder that is gone.
+  async function removeWorktreeOf(id) {
+    assertSessionId(id);
+    if (busy.has(id)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+    if (isRunning(id)) throw sessionError(409, "session_live", COPY_LIVE_MESSAGE);
+    busy.add(id);
+    let claimed = null;
+    try {
+      await finishedExit(id);
+      const meta = await readMeta(id);
+      if (!meta) throw unknownSession();
+      if (meta.status !== "exited") throw sessionError(409, "session_live", COPY_LIVE_MESSAGE);
+      const hasCopy = typeof meta.copyOf === "string" && meta.copyOf !== "" && !meta.worktreeRemovedAt;
+      const copyId = hasCopy ? await worktreeIdOf(meta.folder) : null;
+      if (!copyId) throw sessionError(404, "no_worktree", NO_WORKTREE_MESSAGE);
+      if (removingCopies.has(copyId)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+      removingCopies.add(copyId);
+      claimed = copyId;
+      for (const state of live.values()) {
+        if (state.status === "exited" || state.meta.id === id) continue;
+        if ((await worktreeIdOf(state.meta.folder)) === copyId) throw sessionError(409, "session_live", COPY_IN_USE_MESSAGE);
+      }
+      for (const start of openStarts) {
+        if (start.folder && (await worktreeIdOf(start.folder)) === copyId) throw sessionError(409, "session_live", COPY_IN_USE_MESSAGE);
+      }
+      await removeCopyFolder({ path: worktreePath(copyId), copyOf: meta.copyOf, env: await loginEnv(), run: runGit });
+      const at = iso(now());
+      for (const otherId of await listSessionIds()) {
+        if (isRunning(otherId)) continue;
+        const other = await readMeta(otherId);
+        if (!other || other.worktreeRemovedAt || (await worktreeIdOf(other.folder)) !== copyId) continue;
+        other.worktreeRemovedAt = at;
+        await writeJson(path.join(sessionDir(otherId), META_FILE), other);
+      }
+      return { removed: true };
+    } finally {
+      if (claimed) removingCopies.delete(claimed);
+      busy.delete(id);
+    }
+  }
+
+  // True when this session's separate copy was removed (meta.json's worktreeRemovedAt): the folder it ran in is gone.
+  // The summary carries no such flag (its keys are pinned), so a hand-off asks here (M8).
+  async function copyRemoved(id) {
+    if (!isSessionId(id)) return false;
+    const meta = live.get(id)?.meta ?? (await readMeta(id));
+    return typeof meta?.worktreeRemovedAt === "string" && meta.worktreeRemovedAt !== "";
   }
 
   // ---- windows ------------------------------------------------------------------------------------------
@@ -2727,6 +2900,9 @@ export function createSessionManager({
     markers,
     liveAgentSessions,
     onLiveChange,
+    folderCheck,
+    removeWorktree: removeWorktreeOf,
+    copyRemoved,
     // The limit this manager was created with (the sessions list reports it).
     get maxLive() {
       return maxLive;

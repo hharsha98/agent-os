@@ -20,6 +20,9 @@ export const TYPED_MAX_BYTES = 32 * 1024;
 export const HANDOFF_WAIT_MS = 60 * 1000;
 export const PASTE_START = "\x1b[200~";
 export const PASTE_END = "\x1b[201~";
+// The folder policy's own words for a folder that is not there (folders.js, code "missing"): what a session in a removed
+// separate copy gets as the reason under Copy.
+const FOLDER_MISSING_MESSAGE = "That folder doesn't exist.";
 
 // Every C0 control except "\n" (0x0A), DEL, and every C1 control. ESC (0x1B) is a C0 control, so it goes too. A file
 // name in the note can also carry characters that reorder or hide text, so these go with the controls (orchestrator's
@@ -128,6 +131,12 @@ export async function sendTo(manager, fromId, to) {
     files = [];
   }
   const text = cleanTypedText(buildReviewNote({ fromLabel: from.agentLabel, files }));
+  // A session whose separate copy was removed (Task X9, Remove separate copy) has no folder left to hand this to: the
+  // answer is the folder policy's own sentence for a missing folder, without starting anything in a path that is gone.
+  // (The summary carries no such flag, so the manager is asked; a stub manager without the question is not affected.)
+  if (typeof manager.copyRemoved === "function" && (await manager.copyRemoved(fromId))) {
+    return { result: "copy", targetId: null, text, reason: FOLDER_MISSING_MESSAGE };
+  }
   const target = findHandoffTarget(manager.liveAgentSessions(to), { agentId: to, folder: from.folder });
   if (target) {
     // A session already waiting for its text (a Send a moment ago, maybe from another window) gets nothing more.

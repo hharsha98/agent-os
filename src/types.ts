@@ -2846,6 +2846,17 @@ export interface SessionFolderList {
   folders: SessionFolder[];
 }
 
+// POST /api/sessions/folder-check (SP4 worktree offer): the live sessions that already use a folder, whether it is a
+// git project, and the branch a separate copy would get for the agent asked about (agentos/<agent>-<n>; null when
+// the folder isn't a git project or that agent can't use a copy).
+export interface FolderCheck {
+  path: string;
+  name: string;
+  git: boolean;
+  branch: string | null;
+  inUse: Array<{ id: string; agentLabel: string; title: string }>;
+}
+
 export interface QuitCheckItem {
   id: string;
   title: string;

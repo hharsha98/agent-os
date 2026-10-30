@@ -246,6 +246,25 @@ export function panelFolder(s: Pick<SessionSummary, "folderShown" | "folderName"
   return s.folderShown === false ? "Set by OpenClaw" : s.folderName || "—";
 }
 
+// A session in a separate copy (spec SP4, Worktree offer): the panel names the project it copies, by the project's
+// folder name (the server keeps the copy's own folder out of every title, ruling R25). The server sends copyOf null
+// once the copy was removed, so a removed copy shows neither this line nor Remove separate copy.
+export function copyLine(s: Pick<SessionSummary, "copyOf" | "folderName">): string | null {
+  return s.copyOf ? `Separate copy of ${s.folderName || "—"} (a git worktree)` : null;
+}
+
+// Remove separate copy: only for an ended session in a copy. The server refuses while any session runs in the copy
+// and while the copy has changes that aren't committed; the copy's branch always stays.
+export const REMOVE_COPY_LABEL = "Remove separate copy";
+export const IGNORED_FILES_NOTE = "Files that git ignores in the copy, such as installed packages, are deleted with it.";
+export function canRemoveCopy(s: Pick<SessionSummary, "status" | "copyOf">): boolean {
+  return s.status === "exited" && Boolean(s.copyOf);
+}
+export function removeCopyConfirm(s: Pick<SessionSummary, "folderName" | "branch">): { title: string; lines: string[] } {
+  const lines = s.branch ? [`Its branch ${s.branch} stays in the project.`, IGNORED_FILES_NOTE] : [IGNORED_FILES_NOTE];
+  return { title: `Remove the separate copy of ${s.folderName || "—"}?`, lines };
+}
+
 // After Stop, OpenClaw's Gateway may still finish its step (until spike S5 brings its abort): the spec's honest note.
 // Used only for an ended OpenClaw tab opened later (after a reload, or stopped from another window); right after a
 // Stop from this page the panel shows the server's own note instead (panelStopNote below).

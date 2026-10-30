@@ -765,6 +765,108 @@
   color: var(--os-text-2);
 }
 
+/* ---- Worktree offer (spec SP4): the New session dialog's two choices, and the panel's copy line ---------------- */
+.os-newsess__offer-title {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  margin: 0;
+  font-size: var(--os-fs-14);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--os-text-1);
+  overflow-wrap: anywhere;
+}
+.os-newsess__offer-title svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--os-text-3);
+}
+.os-newsess__choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  margin-top: var(--os-sp-1);
+}
+/* A choice's edge in a dialog (surface-2) needs 3:1, as the chips above: text-3 resting, text-1 when picked. */
+.os-newsess__choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-3) var(--os-sp-4);
+  border: 1px solid var(--os-text-3);
+  border-radius: var(--os-r-md);
+  cursor: pointer;
+  transition:
+    border-color 140ms var(--os-ease-out),
+    background-color 140ms var(--os-ease-out);
+}
+.os-newsess__choice--on {
+  border-color: var(--os-text-1);
+  background: var(--os-surface-3);
+}
+.os-newsess__choice:has(input:focus-visible) {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
+}
+.os-newsess__choice input[type="radio"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--os-accent);
+}
+.os-newsess__choice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-newsess__choice-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-newsess__choice-body strong {
+  font-size: var(--os-fs-13);
+  font-weight: 600;
+  color: var(--os-text-1);
+  overflow-wrap: anywhere;
+}
+.os-newsess__tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--os-sp-2);
+  border: 1px solid var(--os-accent-line);
+  border-radius: var(--os-r-pill);
+  background: var(--os-accent-soft);
+  color: var(--os-accent-strong);
+  font-size: var(--os-fs-11);
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* Under the branch, lined up with the branch's text (its 16 px icon and the gap). */
+.os-sess-panel__copy {
+  min-width: 0;
+  margin: 2px 0 0 calc(16px + var(--os-sp-2));
+}
+.os-sess-panel__copyline {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-shell .os-sess-panel__copy .os-btn {
+  min-height: 30px;
+  margin-top: var(--os-sp-2);
+}
+
 /* ---- Laptops and short windows (the prototype's breakpoints) --------------------------------------- */
 @media (max-width: 1320px) {
   .os-sess-panel {

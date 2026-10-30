@@ -234,7 +234,11 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     "/",
     handle(async (req, res) => {
       const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
-      const session = await manager.create({ agentId: body.agentId, folder: body.folder });
+      // copy: only a literal true asks for a separate copy (spec SP4, Worktree offer); the server picks the copy's
+      // folder and branch, never the page.
+      const input = { agentId: body.agentId, folder: body.folder };
+      if (body.copy === true) input.copy = true;
+      const session = await manager.create(input);
       res.status(201).json(session);
     })
   );
@@ -287,6 +291,16 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
       const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
       const { message } = await approvalsSource.resolve(body.id, body.decision);
       res.json({ ok: true, message: message ?? null });
+    })
+  );
+
+  // The worktree offer (spec SP4): which live sessions already use a folder, whether it is a git project, and the
+  // branch a separate copy would get. Read-only: nothing is made. Only the folder and the agent reach the manager.
+  router.post(
+    "/folder-check",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      res.json(await manager.folderCheck({ folder: body.folder, agentId: body.agentId }));
     })
   );
 
@@ -375,6 +389,15 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     "/:id/recording",
     handle(async (req, res) => {
       res.json(await deleteRecording(req.params.id, { isLive: liveCheck(manager) }));
+    })
+  );
+
+  // Remove separate copy (spec SP4). The page asks first; the manager refuses while a session runs in the copy and
+  // while the copy has changes that aren't committed, and keeps the copy's branch.
+  router.delete(
+    "/:id/worktree",
+    handle(async (req, res) => {
+      res.json(await manager.removeWorktree(req.params.id));
     })
   );
 

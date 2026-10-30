@@ -7,7 +7,9 @@
 // start the TUI-like fake agents from test/helpers/fake-agents.js. No real
 // agent ever starts.
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +17,8 @@ import test from "node:test";
 import { LIMIT_MESSAGE } from "../server/runtime/builders/limits.js";
 import * as sessionErrors from "../server/runtime/sessions/errors.js";
 import { recentSessionFolders } from "../server/runtime/sessions/folders.js";
+import { runGit } from "../server/runtime/sessions/git.js";
+import { findHandoffTarget, sendTo } from "../server/runtime/sessions/handoff.js";
 import {
   CLOSE_LAG_BYTES,
   IDLE_AFTER_MS,
@@ -3164,5 +3168,408 @@ test("real PTY: a fake Hermes's BEL and its window title starting with ⚠ each 
       killLeftovers(running);
       if (id) await settled(agentOsHome, id).catch(() => {});
     }
+  });
+});
+
+// ---- SP4 Task X9: the worktree offer (separate copies), with real git in a temp repo ----------------------------
+
+const GIT_ONLY = {
+  skip: isWindows
+    ? "POSIX paths and modes"
+    : spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0
+      ? false
+      : "git is not installed here"
+};
+const COPY_LIVE = "That session is still running. Stop it first, then remove its separate copy.";
+const COPY_IN_USE = "Another session is still running in this separate copy. Stop it first, then remove the copy.";
+const COPY_REMOVED = "Its separate copy was removed, so this conversation can't be resumed.";
+const COPY_DIRTY = "The separate copy has changes that aren't committed. Commit or discard them, then try again.";
+
+// git with a temp HOME and no system settings, so the owner's own git setup never takes part.
+function worktreeGitEnv(home) {
+  return { PATH: SYSTEM_PATH_DIRS.join(path.delimiter), HOME: home, USERPROFILE: home, GIT_CONFIG_NOSYSTEM: "1", LANG: "C" };
+}
+
+function gitInRepo(home, cwd, ...args) {
+  return execFileSync("git", ["-C", cwd, ...args], { env: worktreeGitEnv(home), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function commitInRepo(home, cwd, message) {
+  gitInRepo(home, cwd, "-c", "user.name=Agent OS test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", message);
+}
+
+async function makeGitRepo(home, dir) {
+  gitInRepo(home, dir, "init", "-q", "-b", "main");
+  await writeFile(path.join(dir, "README.md"), "hello\n");
+  gitInRepo(home, dir, "add", "README.md");
+  commitInRepo(home, dir, "first");
+}
+
+// withSessionEnv keeps AGENT_OS_HOME outside HOME, where the real folder policy refuses its worktrees/ (D12 allows
+// them only inside HOME, as AGENT_OS_HOME is by default; the worktree probe checks that end to end). This stand-in
+// allows the copies and gives fakeCheckFolder's answers for everything else.
+function copyAwareCheckFolder(agentOsHome) {
+  const copies = path.join(agentOsHome, "worktrees") + path.sep;
+  return async (input) => {
+    try {
+      const real = await realpath(String(input || ""));
+      if (real.startsWith(copies)) return { ok: true, path: real, name: path.basename(real) };
+    } catch {
+      // fakeCheckFolder answers for a folder that doesn't exist
+    }
+    return fakeCheckFolder(input);
+  };
+}
+
+// fakeWorld with real git (runGit), a git environment without a login shell (X7's loginEnv), no timed changes read
+// during the test (X7's own tests do the same), and the copies' folder policy.
+function copyWorld(home, agentOsHome, over = {}) {
+  return fakeWorld({
+    runGit,
+    loginEnv: async () => worktreeGitEnv(home),
+    changesPollMs: 60000,
+    checkFolder: copyAwareCheckFolder(agentOsHome),
+    ...over
+  });
+}
+
+test("worktree offer (X9): folderCheck names the live sessions in the folder, says whether it is a git project and which branch a copy would get", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project, other }) => {
+    await makeGitRepo(home, project);
+    const world = copyWorld(home, agentOsHome);
+    assert.equal(typeof world.manager.folderCheck, "function");
+    assert.equal(typeof world.manager.removeWorktree, "function");
+    assert.deepEqual(await world.manager.folderCheck({ folder: project, agentId: "codex" }), {
+      path: project,
+      name: "demo",
+      git: true,
+      branch: "agentos/codex-1",
+      inUse: []
+    });
+
+    const claude = await world.manager.create({ agentId: "claude", folder: project });
+    const busyFolder = await world.manager.folderCheck({ folder: project, agentId: "codex" });
+    assert.deepEqual(busyFolder.inUse, [{ id: claude.id, agentLabel: "Claude Code", title: "Claude Code · demo" }]);
+    assert.equal(busyFolder.branch, "agentos/codex-1");
+    assert.equal(
+      (await world.manager.folderCheck({ folder: project, agentId: "claude" })).branch,
+      "agentos/claude-1",
+      "a second session of the same agent is offered a copy too"
+    );
+    assert.equal((await world.manager.folderCheck({ folder: project, agentId: "openclaw" })).branch, null, "OpenClaw: never a copy");
+    assert.deepEqual(await world.manager.folderCheck({ folder: other, agentId: "codex" }), {
+      path: other,
+      name: "other",
+      git: false,
+      branch: null,
+      inUse: []
+    });
+    await assert.rejects(world.manager.folderCheck({ folder: project, agentId: "bash" }), { status: 400, code: "unknown_agent" });
+    await assert.rejects(world.manager.folderCheck({ folder: home, agentId: "codex" }), { status: 400, code: "folder_refused" });
+
+    world.ptys[0].exit(0);
+    await ended(world, claude.id);
+    assert.deepEqual((await world.manager.folderCheck({ folder: project, agentId: "codex" })).inUse, [], "an ended session no longer uses the folder");
+  });
+});
+
+test("worktree offer (X9): Separate copy makes <AGENT_OS_HOME>/worktrees/<id> (0700) on agentos/<agent>-<n> from HEAD, starts the agent there, and keeps the project's name", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    const head = gitInRepo(home, project, "rev-parse", "HEAD").trim();
+    const world = copyWorld(home, agentOsHome);
+    const claude = await world.manager.create({ agentId: "claude", folder: project });
+    const codex = await world.manager.create({ agentId: "codex", folder: project, copy: true });
+    const copyDir = path.join(agentOsHome, "worktrees", codex.id);
+
+    assert.equal(codex.folder, copyDir);
+    assert.equal(codex.folderName, "demo", "titles name the project, never the copy's id");
+    assert.equal(codex.branch, "agentos/codex-1");
+    assert.equal(codex.copyOf, project);
+    assert.equal(claude.copyOf, null);
+    assert.equal(world.profileInputs.at(-1).folder, copyDir, "the profile is built for the copy");
+    assert.equal(world.ptys.at(-1).opts.cwd, copyDir, "and the agent runs there");
+    assert.equal(gitInRepo(home, copyDir, "rev-parse", "HEAD").trim(), head, "the copy branches from HEAD");
+    assert.equal(gitInRepo(home, copyDir, "rev-parse", "--abbrev-ref", "HEAD").trim(), "agentos/codex-1");
+    assert.equal(gitInRepo(home, project, "rev-parse", "--abbrev-ref", "HEAD").trim(), "main", "the project keeps its branch");
+    if (!isWindows) assert.equal((await stat(copyDir)).mode & 0o777, 0o700);
+
+    const meta = await metaOnDisk(agentOsHome, codex.id);
+    assert.equal(meta.folder, copyDir);
+    assert.equal(meta.folderName, "demo");
+    assert.equal(meta.branch, "agentos/codex-1");
+    assert.equal(meta.copyOf, project);
+    assert.equal(meta.worktreeRemovedAt, null);
+    assert.equal((await metaOnDisk(agentOsHome, claude.id)).copyOf, null);
+
+    // Two copies asked for at once never get the same number: they are made one after the other.
+    const [a, b] = await Promise.all([
+      world.manager.create({ agentId: "codex", folder: project, copy: true }),
+      world.manager.create({ agentId: "codex", folder: project, copy: true })
+    ]);
+    assert.deepEqual([a.branch, b.branch].sort(), ["agentos/codex-2", "agentos/codex-3"]);
+
+    for (const pty of world.ptys) pty.exit(0);
+    for (const id of [claude.id, codex.id, a.id, b.id]) await ended(world, id);
+  });
+});
+
+test("worktree offer (X9): OpenClaw never gets a copy, a folder that isn't a git project can't be copied, and a refused copy leaves nothing behind", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project, other }) => {
+    await makeGitRepo(home, project);
+    const world = copyWorld(home, agentOsHome);
+    await assert.rejects(world.manager.create({ agentId: "openclaw", folder: null, copy: true }), {
+      status: 400,
+      code: "copy_not_available",
+      message: "OpenClaw picks its own folder, so it can't use a separate copy."
+    });
+    await assert.rejects(world.manager.create({ agentId: "codex", folder: other, copy: true }), {
+      status: 409,
+      code: "not_git",
+      message: "This folder isn't a git project, so Agent OS can't make a separate copy."
+    });
+    assert.equal(world.ptys.length, 0, "nothing started");
+    assert.deepEqual(await readdir(path.join(agentOsHome, "sessions")).catch(() => []), [], "no session folder is left");
+    assert.deepEqual(await readdir(path.join(agentOsHome, "worktrees")).catch(() => []), [], "no copy is left");
+
+    const next = await world.manager.create({ agentId: "codex", folder: project, copy: true });
+    assert.equal(next.branch, "agentos/codex-1", "the slots came back, and the number was never taken");
+    world.ptys[0].exit(0);
+    await ended(world, next.id);
+  });
+});
+
+test("worktree offer (X9): a start that fails after the copy was made removes the copy and its branch", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    const failing = copyWorld(home, agentOsHome, {
+      spawn: async () => {
+        throw Object.assign(new Error("Agent OS could not start the fake agent."), { code: "spawn_failed" });
+      }
+    });
+    await assert.rejects(failing.manager.create({ agentId: "claude", folder: project, copy: true }), { status: 500, code: "start_failed" });
+    assert.deepEqual(await readdir(path.join(agentOsHome, "worktrees")), [], "the copy is gone");
+    assert.equal(gitInRepo(home, project, "for-each-ref", "--format=%(refname)", "refs/heads/agentos/"), "", "and so is its branch");
+    assert.ok(
+      !gitInRepo(home, project, "worktree", "list", "--porcelain").includes(path.join(agentOsHome, "worktrees")),
+      "git forgot the copy"
+    );
+    assert.deepEqual(await readdir(path.join(agentOsHome, "sessions")), [], "no session folder is left");
+
+    const world = copyWorld(home, agentOsHome);
+    const again = await world.manager.create({ agentId: "claude", folder: project, copy: true });
+    assert.equal(again.branch, "agentos/claude-1");
+    world.ptys[0].exit(0);
+    await ended(world, again.id);
+  });
+});
+
+test("worktree offer (X9): Remove separate copy needs an ended session, refuses changes that aren't committed, keeps the branch and its commits, and Resume then says why it can't", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    const world = copyWorld(home, agentOsHome);
+    const copy = await world.manager.create({ agentId: "claude", folder: project, copy: true });
+    const copyDir = copy.folder;
+    await assert.rejects(world.manager.removeWorktree(copy.id), { status: 409, code: "session_live", message: COPY_LIVE });
+    world.ptys.at(-1).exit(0);
+    await ended(world, copy.id);
+
+    // Resume runs in the copy again, under the project's name.
+    const resumed = await world.manager.resume(copy.id);
+    assert.equal(resumed.folder, copyDir);
+    assert.equal(resumed.folderName, "demo");
+    assert.equal(resumed.copyOf, project);
+    assert.equal(world.ptys.at(-1).opts.cwd, copyDir);
+    world.ptys.at(-1).exit(0);
+    await ended(world, copy.id);
+
+    // Work committed in the copy stays on its branch; a file that isn't committed blocks the removal.
+    await writeFile(path.join(copyDir, "work.txt"), "done\n");
+    gitInRepo(home, copyDir, "add", "work.txt");
+    commitInRepo(home, copyDir, "work in the copy");
+    const work = gitInRepo(home, copyDir, "rev-parse", "HEAD").trim();
+    await writeFile(path.join(copyDir, "draft.txt"), "not yet\n");
+    await assert.rejects(world.manager.removeWorktree(copy.id), { status: 409, code: "worktree_dirty", message: COPY_DIRTY });
+    assert.ok(existsSync(path.join(copyDir, "draft.txt")), "nothing was deleted");
+    await rm(path.join(copyDir, "draft.txt"));
+
+    assert.deepEqual(await world.manager.removeWorktree(copy.id), { removed: true });
+    assert.equal(existsSync(copyDir), false, "the copy's folder is gone");
+    assert.equal(gitInRepo(home, project, "rev-parse", "agentos/claude-1").trim(), work, "its branch stays, with the work");
+    const after = await world.manager.get(copy.id);
+    assert.equal(after.copyOf, null, "no longer a copy, so the panel stops calling it one");
+    assert.equal(after.folderName, "demo", "the title still names the project");
+    assert.equal(after.branch, "agentos/claude-1");
+    assert.deepEqual(after.resume, { available: false, reason: COPY_REMOVED, fallback: false });
+    const removedMeta = await metaOnDisk(agentOsHome, copy.id);
+    assert.equal(removedMeta.worktreeRemovedAt, "2026-10-14T09:00:00.000Z");
+    assert.equal(removedMeta.copyOf, project, "meta.json keeps the project for recent folders");
+    await assert.rejects(world.manager.resume(copy.id), { status: 409, code: "not_resumable", message: COPY_REMOVED });
+    await assert.rejects(world.manager.removeWorktree(copy.id), {
+      status: 404,
+      code: "no_worktree",
+      message: "This session doesn't use a separate copy."
+    });
+
+    const plain = await world.manager.create({ agentId: "codex", folder: project });
+    await assert.rejects(world.manager.removeWorktree(plain.id), { status: 409, code: "session_live", message: COPY_LIVE });
+    world.ptys.at(-1).exit(0);
+    await ended(world, plain.id);
+    await assert.rejects(world.manager.removeWorktree(plain.id), { status: 404, code: "no_worktree" });
+    await assert.rejects(world.manager.removeWorktree("00000000-0000-4000-8000-000000000000"), { status: 404, code: "unknown_session" });
+  });
+});
+
+test("worktree offer (X9): a session opened inside a copy (a hand-off target) shows the project, keeps the copy while it runs, and either session can remove it", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    const world = copyWorld(home, agentOsHome);
+    const owner = await world.manager.create({ agentId: "claude", folder: project, copy: true });
+    world.ptys.at(-1).exit(0);
+    await ended(world, owner.id);
+
+    const joiner = await world.manager.create({ agentId: "codex", folder: owner.folder });
+    assert.equal(joiner.folder, owner.folder);
+    assert.equal(joiner.copyOf, project, "the project, from the copy's own session");
+    assert.equal(joiner.folderName, "demo");
+    assert.equal(joiner.branch, "agentos/claude-1");
+    assert.deepEqual((await world.manager.folderCheck({ folder: owner.folder, agentId: "cursor" })).inUse, [
+      { id: joiner.id, agentLabel: "Codex", title: "Codex · demo" }
+    ]);
+    await assert.rejects(world.manager.removeWorktree(owner.id), { status: 409, code: "session_live", message: COPY_IN_USE });
+    assert.ok(existsSync(owner.folder), "the copy stays while a session runs in it");
+
+    world.ptys.at(-1).exit(0);
+    await ended(world, joiner.id);
+    assert.deepEqual(await world.manager.removeWorktree(joiner.id), { removed: true });
+    assert.equal(existsSync(owner.folder), false);
+    for (const id of [owner.id, joiner.id]) {
+      const which = id === owner.id ? "the copy's own session" : "the session opened in it";
+      assert.equal((await metaOnDisk(agentOsHome, id)).worktreeRemovedAt, "2026-10-14T09:00:00.000Z", which);
+      const summary = await world.manager.get(id);
+      assert.equal(summary.copyOf, null, which);
+      assert.equal(summary.resume.available, false, which);
+      assert.equal(summary.resume.reason, COPY_REMOVED, which);
+    }
+    assert.match(gitInRepo(home, project, "rev-parse", "--verify", "-q", "refs/heads/agentos/claude-1").trim(), /^[0-9a-f]{40,64}$/, "the branch stays");
+  });
+});
+
+test("worktree offer (X9): a session in a separate copy and one in the original folder are not hand-off targets for each other (K13)", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    const world = copyWorld(home, agentOsHome);
+    const claude = await world.manager.create({ agentId: "claude", folder: project });
+    const codex = await world.manager.create({ agentId: "codex", folder: project, copy: true });
+    const sessions = await world.manager.list();
+
+    // Handing off from Claude in the project: Codex in the copy is not a target in the project's folder.
+    assert.equal(findHandoffTarget(sessions, { agentId: "codex", folder: claude.folder }), null);
+    // Handing off from Codex in the copy: Claude in the project is not a target in the copy's folder.
+    assert.equal(findHandoffTarget(sessions, { agentId: "claude", folder: codex.folder }), null);
+    assert.equal(findHandoffTarget(sessions, { agentId: "codex", folder: codex.folder })?.id, codex.id);
+    assert.equal(findHandoffTarget(sessions, { agentId: "claude", folder: claude.folder })?.id, claude.id);
+
+    // X8 opens the missing target with manager.create({ agentId, folder: from.folder }): in the copy, that joins the copy.
+    const joiner = await world.manager.create({ agentId: "claude", folder: codex.folder });
+    assert.equal(joiner.copyOf, project);
+    const after = await world.manager.list();
+    assert.equal(findHandoffTarget(after, { agentId: "claude", folder: codex.folder })?.id, joiner.id, "the new target is in the copy");
+    assert.equal(findHandoffTarget(after, { agentId: "claude", folder: claude.folder })?.id, claude.id, "and the project's own session stays the project's");
+
+    for (const pty of world.ptys) pty.exit(0);
+    for (const id of [claude.id, codex.id, joiner.id]) await ended(world, id);
+  });
+});
+
+test("worktree offer (X9): while a copy is being removed, nothing may start in it and a second removal of it waits (session_busy)", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    let reached = () => {};
+    const atRemove = new Promise((resolve) => {
+      reached = resolve;
+    });
+    let release = () => {};
+    const hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    // Holds only git's own `worktree remove` (never the --force clean-up), so a test can act while a removal is under way.
+    const slowRemove = async (folder, args, options) => {
+      const argv = args.filter((arg) => arg !== "-c" && !String(arg).includes("="));
+      if (argv[0] === "worktree" && argv[1] === "remove" && !argv.includes("--force")) {
+        reached();
+        await hold;
+      }
+      return runGit(folder, args, options);
+    };
+    const world = copyWorld(home, agentOsHome, { runGit: slowRemove });
+    const owner = await world.manager.create({ agentId: "claude", folder: project, copy: true });
+    world.ptys.at(-1).exit(0);
+    await ended(world, owner.id);
+    const joiner = await world.manager.create({ agentId: "codex", folder: owner.folder });
+    world.ptys.at(-1).exit(0);
+    await ended(world, joiner.id);
+
+    const removing = world.manager.removeWorktree(owner.id);
+    await atRemove;
+    await assert.rejects(world.manager.create({ agentId: "cursor", folder: owner.folder }), { status: 409, code: "session_busy" });
+    // A copy made from inside that copy is refused the same way (M9): git worktree add would run from a folder that is going.
+    await assert.rejects(world.manager.create({ agentId: "cursor", folder: owner.folder, copy: true }), { status: 409, code: "session_busy" });
+    await assert.rejects(world.manager.removeWorktree(joiner.id), { status: 409, code: "session_busy" });
+    assert.equal(world.ptys.length, 2, "nothing new started in the copy");
+    release();
+    assert.deepEqual(await removing, { removed: true });
+    assert.equal(existsSync(owner.folder), false);
+  });
+});
+
+test("worktree offer (X9 review M5): a copy of a copy that fails to start is cleaned up from the folder git ran in, so its branch goes too", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    let failNext = false;
+    const world = copyWorld(home, agentOsHome, {
+      buildProfile: async (input) => {
+        if (failNext) throw new Error("The profile could not be built.");
+        return fakeProfile(input);
+      }
+    });
+    const owner = await world.manager.create({ agentId: "claude", folder: project, copy: true });
+    world.ptys.at(-1).exit(0);
+    await ended(world, owner.id);
+    // The agent committed in its copy, so the copy's HEAD is ahead of the project's.
+    await writeFile(path.join(owner.folder, "work.txt"), "done\n");
+    gitInRepo(home, owner.folder, "add", "work.txt");
+    commitInRepo(home, owner.folder, "work in the copy");
+
+    failNext = true;
+    await assert.rejects(world.manager.create({ agentId: "codex", folder: owner.folder, copy: true }), /The profile could not be built/);
+    assert.equal(
+      gitInRepo(home, project, "for-each-ref", "--format=%(refname)", "refs/heads/agentos/").trim(),
+      "refs/heads/agentos/claude-1",
+      "only the first copy's branch is left; the failed start's own branch went with its copy"
+    );
+    assert.deepEqual(await readdir(path.join(agentOsHome, "worktrees")), [owner.id], "and only the first copy's folder");
+  });
+});
+
+test("worktree offer (X9 review M8): a hand-off from a session whose copy was removed answers with the folder policy's sentence and starts nothing", GIT_ONLY, async () => {
+  await withSessionEnv(async ({ home, agentOsHome, project }) => {
+    await makeGitRepo(home, project);
+    const world = copyWorld(home, agentOsHome);
+    const owner = await world.manager.create({ agentId: "codex", folder: project, copy: true });
+    world.ptys.at(-1).exit(0);
+    await ended(world, owner.id);
+    assert.equal(await world.manager.copyRemoved(owner.id), false);
+    await world.manager.removeWorktree(owner.id);
+    assert.equal(await world.manager.copyRemoved(owner.id), true);
+    assert.equal(await world.manager.copyRemoved("not-a-session-id"), false);
+
+    const before = world.ptys.length;
+    const answer = await sendTo(world.manager, owner.id, "claude");
+    assert.equal(answer.result, "copy");
+    assert.equal(answer.targetId, null);
+    assert.equal(answer.reason, "That folder doesn't exist.");
+    assert.equal(typeof answer.text, "string");
+    assert.equal(world.ptys.length, before, "no session was started in the path that is gone");
   });
 });

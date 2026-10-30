@@ -8,6 +8,9 @@
 // one-second clock for "Running for", so the page (and its terminal) is not re-rendered for it. `note` is the Stop result
 // note the page picks (panelStopNote: the server's own answer right after a Stop here, otherwise the session's own rule),
 // shown under the state line.
+// Under Files changed, the Hand-off section (Task X8, HandoffSection): Send to Codex for review or Send to Claude
+// Code, and what happened to text handed to this session. After a Send, onOpenSession shows the session the text
+// went to.
 import { useState } from "react";
 import type { RefObject } from "react";
 import { CircleDot, Folder, GitBranch, History, Info, OctagonX } from "lucide-react";
@@ -19,6 +22,7 @@ import { meterRowLabel, meterRows, panelFolder, recordingKept } from "../session
 import { useApprovals } from "../useApprovals";
 import { ApprovalList } from "./ApprovalCard";
 import Meter from "./Meter";
+import HandoffSection from "./HandoffSection";
 import SessionChanges from "./SessionChanges";
 import StatusWord from "./StatusWord";
 import { useInterval } from "./useInterval";
@@ -30,7 +34,8 @@ export default function SessionSidePanel({
   headingRef,
   onStop,
   onResume,
-  onOpenRecording
+  onOpenRecording,
+  onOpenSession
 }: {
   session: SessionSummary;
   note: string | null;
@@ -39,6 +44,9 @@ export default function SessionSidePanel({
   onStop: () => void;
   onResume: () => void;
   onOpenRecording: () => void;
+  // Shows another session: after a Send in the Hand-off section the page selects that session's tab and focuses its
+  // terminal (Task X8).
+  onOpenSession: (id: string) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const ended = session.status === "exited";
@@ -162,6 +170,8 @@ export default function SessionSidePanel({
         {/* Files changed: after the Live meter, as in the spec's side panel table (Task U7). The key gives each session its
             own list, so switching tabs or panes never shows the last session's files, even for a moment. */}
         <SessionChanges key={session.id} session={session} />
+        {/* Its own key: SessionChanges above is keyed by the same session id, and two siblings with one key are duplicated. */}
+        <HandoffSection key={`handoff-${session.id}`} session={session} onOpenSession={onOpenSession} />
       </div>
       <footer className="os-sess-panel__foot">
         <div className="os-sess-panel__rec">

@@ -1010,3 +1010,74 @@
   overflow-wrap: anywhere;
 }
 /* ---- end Files changed ------------------------------------------------------------------------------------------- */
+
+/* The side panel's Hand-off section (Task X8): the Send buttons, their caption, and handed-over text in a read-only
+   box with a Copy button. */
+.os-handoff__send {
+  width: 100%;
+  justify-content: center;
+}
+.os-handoff__send + .os-handoff__send {
+  margin-top: var(--os-sp-2);
+}
+.os-shell .os-handoff__send,
+.os-shell .os-handoff__copy {
+  min-height: 30px;
+}
+.os-handoff__cap {
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-handoff__status,
+.os-handoff__why {
+  margin: 0 0 var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-1);
+  overflow-wrap: anywhere;
+}
+/* What follows the caption (the "…" while the agent is not ready, the typed text, the Copy fallback). */
+.os-handoff__cap ~ .os-handoff__status,
+.os-handoff__cap ~ .os-handoff__box,
+.os-handoff__cap ~ .os-handoff__fallback {
+  margin-top: var(--os-sp-3);
+}
+/* The Files changed list is bounded inside the side panel (two rows and a peek of the third at 1280x720, then it
+   scrolls inside itself), so the Hand-off section and its Send button below it stay on screen at 1280x720 whatever the
+   number of changed files (the server lists up to 200), even under a full Live meter and the trust line. It grows with
+   a taller window. The rows are buttons, so keyboard focus scrolls them into view; the focus ring is drawn inside the
+   list so the scroll box does not clip it. */
+.os-sess-panel .os-sess-changes {
+  max-height: clamp(72px, 10svh, 144px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.os-shell .os-sess-panel button.os-sess-file:focus-visible {
+  outline-offset: -2px;
+}
+.os-handoff__box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  margin-bottom: var(--os-sp-3);
+}
+.os-shell .os-handoff__text {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 88px;
+  max-height: 220px;
+  padding: var(--os-sp-2) var(--os-sp-3);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-sm);
+  background: var(--os-surface-1);
+  color: var(--os-text-1);
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: vertical;
+}

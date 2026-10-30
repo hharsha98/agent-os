@@ -9,6 +9,7 @@ import type {
   ApprovalListResponse,
   ChangesResult,
   DiffResult,
+  HandoffResult,
   QuitCheckResponse,
   RecordingListResponse,
   SessionClientFrame,
@@ -52,6 +53,8 @@ export const SESSION_LIMITS_MS = {
   // One file's diff: one git call, after an ended session's list may be read again to check the file is in it.
   diff: 25000,
   signedIn: 5000,
+  // A hand-off may start a session first (the login-shell environment, up to 10 s, H2), like create.
+  send: 30000,
   // One session's summary (the plan card's sign-in terminal asks every 5 s whether its session has ended).
   get: 8000,
   // OpenClaw's pending approvals (the server answers from its last poll).
@@ -94,6 +97,12 @@ export function resumeSession(sessionId: string): Promise<SessionSummary> {
 
 export function dismissSession(sessionId: string): Promise<SessionSummary> {
   return withTimeout(request<SessionSummary>(sessionPath(sessionId, "/dismiss"), postJson()), SESSION_LIMITS_MS.dismiss);
+}
+
+// Send to Codex for review / Send to Claude Code (SP4 Hand-off). The server types the note into a session of the other
+// agent in the same folder and never presses Enter; it may start that session first, so the limit is create's.
+export function sendTo(sessionId: string, to: "claude" | "codex"): Promise<HandoffResult> {
+  return withTimeout(request<HandoffResult>(sessionPath(sessionId, "/send"), postJson({ to })), SESSION_LIMITS_MS.send);
 }
 
 export function getSessionSettings(): Promise<SessionSettings> {

@@ -114,7 +114,20 @@ test("help: closing the window says what it really does on a Mac, on Windows and
   assert.ok(!tab.steps.some((s) => /asks first/.test(s.body)), "a browser tab has no quit question");
 });
 
-test("help: every sentence is true today; nothing promises alerts, the Home strip, the badge, notifications or hand-offs", () => {
+test("help: the first list ends with the hand-off step (Task X8), which promises typing only, never sending", () => {
+  const items = help.ROUTE_WORDS.map((parts) => parts.map((part) => part.text).join(""));
+  assert.equal(items.length, 4);
+  assert.equal(
+    items[3],
+    "A hand-off, like Send to Codex for review, uses the same route. It types a prepared request into the other agent and stops. You press Enter."
+  );
+  assert.deepEqual(
+    help.ROUTE_WORDS[3].filter((part) => part.bold).map((part) => part.text),
+    ["types a prepared request"]
+  );
+});
+
+test("help: every sentence is true today; nothing promises alerts, the Home strip, the badge or notifications", () => {
   const sections = [true, false].flatMap((desktop) => [true, false].map((isMac) => help.lifeSection({ desktop, isMac })));
   const all = [
     help.HELP_TITLE, help.HELP_LEDE, help.ROUTE_TITLE, help.ROUTE_QUIET,
@@ -123,7 +136,7 @@ test("help: every sentence is true today; nothing promises alerts, the Home stri
     ...help.GLOSSARY.flatMap((g) => [g.term, g.text]),
     ...sections.flatMap((s) => [s.title, s.quiet, s.engineNote, ...s.steps.flatMap((x) => [x.title, x.body])])
   ].join("\n");
-  for (const later of [/tab marker/i, /home strip/i, /badge/i, /notification/i, /hand-off/i, /\balert/i, /send to codex/i, /review guide/i, /watches for/i, /\bhook\b/i, /this Mac/]) {
+  for (const later of [/tab marker/i, /home strip/i, /badge/i, /notification/i, /\balert/i, /review guide/i, /watches for/i, /\bhook\b/i, /this Mac/]) {
     assert.doesNotMatch(all, later);
   }
   assert.doesNotMatch(all, /—/, "no em dash in the help words");

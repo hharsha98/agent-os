@@ -1,7 +1,8 @@
 // Help: "How a session works" (the prototype's how-it-works.html). Not in the menu: Safety's "How stopping works" and
 // the Sessions page's "How a session works" link here. Every sentence is true today: the alerts lane is told in words
-// (alertWords, SP4), while the prototype's Lane B drawing, its hand-off item (Task X8) and its "Review guide" button are
-// left out. What closing the window does depends on where Agent OS runs (lifeSection, helpShared.ts). The diagrams are
+// (alertWords, SP4) and the hand-off is the route's fourth step (Task X8), while the prototype's Lane B drawing and its
+// "Review guide" button are left out. What closing the window does depends on where Agent OS runs (lifeSection,
+// helpShared.ts). The diagrams are
 // the prototype's SVGs on the app's tokens.
 import { useEffect } from "react";
 import type { CSSProperties } from "react";

@@ -692,6 +692,10 @@ export default function SessionsPage() {
           onStop={() => setStopping({ session: selected, busy: false, error: "", toSafety: false })}
           onResume={() => setResuming({ session: selected, busy: false, error: "", toSafety: false })}
           onOpenRecording={() => navigateTo("runs", { tab: "recordings", highlight: selected.id })}
+          onOpenSession={(id) => {
+            refresh();
+            select(id, true);
+          }}
         />
       </div>
 

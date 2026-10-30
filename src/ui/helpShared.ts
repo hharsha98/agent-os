@@ -1,6 +1,6 @@
 // The Help page's words ("How a session works": the prototype's how-it-works.html). Every sentence is true today: the
-// alerts lane is here since SP4 (alertWords, tested in test/sessions-alerts-ui-logic.test.js); hand-offs arrive with
-// Task X8, so they are not (test/recordings-help-logic.test.js checks the rest). What closing the window does depends on where Agent OS
+// alerts lane is here since SP4 (alertWords, tested in test/sessions-alerts-ui-logic.test.js), and so is the route's
+// fourth step, the hand-off (Task X8; test/recordings-help-logic.test.js checks the rest). What closing the window does depends on where Agent OS
 // runs: on a Mac the window hides and the sessions keep running; on Windows and Linux closing the window quits after
 // asking (there is no tray, spec "Persistence, quit and Stop"); in a browser tab, closing the tab only leaves the page.
 // No imports, so the test loads this file straight from src/.
@@ -10,7 +10,7 @@ export const HELP_LEDE = "The agent's own terminal program runs inside Agent OS.
 export const ROUTE_TITLE = "From your keyboard to the agent, and back";
 export const ROUTE_QUIET = "Everything on this diagram runs on your computer";
 
-// The prototype's Lane A, in words. (Its fourth item, the hand-off, arrives with Task X8; Lane B is alertWords below.)
+// The prototype's Lane A, in words, with its fourth item, the hand-off (Task X8). Lane B is alertWords below.
 export const ROUTE_WORDS: Array<Array<{ text: string; bold?: boolean }>> = [
   [{ text: "You type", bold: true }, { text: " in the Agent OS window. The keys travel over a private connection to the engine." }],
   [{ text: "The engine types them into the agent's " }, { text: "real terminal", bold: true }, { text: ". The agent answers by drawing on it." }],
@@ -18,6 +18,11 @@ export const ROUTE_WORDS: Array<Array<{ text: string; bold?: boolean }>> = [
     { text: "The engine keeps an " },
     { text: "invisible copy", bold: true },
     { text: " of that screen, saves a recording on this computer, and streams the screen back to your window." }
+  ],
+  [
+    { text: "A hand-off, like Send to Codex for review, uses the same route. It " },
+    { text: "types a prepared request", bold: true },
+    { text: " into the other agent and stops. You press Enter." }
   ]
 ];
 

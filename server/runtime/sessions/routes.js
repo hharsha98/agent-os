@@ -11,6 +11,7 @@ import express from "express";
 import { builderErrorResponse } from "../builders/resolve.js";
 import { errorBody, isSessionId } from "./errors.js";
 import { recentSessionFolders } from "./folders.js";
+import { sendTo } from "./handoff.js";
 import { getSessionManager } from "./manager.js";
 import { createOpenclawApprovals } from "./openclaw-approvals.js";
 import { ptyAvailable } from "./pty-host.js";
@@ -317,6 +318,17 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     "/:id/dismiss",
     handle(async (req, res) => {
       res.json(await manager.dismiss(req.params.id));
+    })
+  );
+
+  // Send to Codex for review / Send to Claude Code (SP4 Hand-off). The body names the other agent and nothing else:
+  // the note, the target session and every write rule are the server's (handoff.js). The answer is a HandoffResult:
+  // "typed", "opening" (a new session starts and is typed into once it is ready) or "copy".
+  router.post(
+    "/:id/send",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      res.json(await sendTo(manager, req.params.id, body.to));
     })
   );
 

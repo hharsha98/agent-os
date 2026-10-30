@@ -2821,6 +2821,17 @@ export interface StopSessionResult extends SessionSummary {
   note: string | null;
 }
 
+// POST /api/sessions/:id/send (SP4 Hand-off): "typed" (written into an open session of the other agent, never sent),
+// "opening" (a new session of that agent started; the text is typed once it is ready, and that session's own
+// `handoff` shows how it went), or "copy" (nothing could take it: `text` goes in a box with a Copy button and `reason`
+// says why).
+export interface HandoffResult {
+  result: "typed" | "opening" | "copy";
+  targetId: string | null;
+  text: string;
+  reason: string | null;
+}
+
 export interface SessionSettings {
   claudeFullscreen: boolean;
 }

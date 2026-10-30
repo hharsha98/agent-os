@@ -9,8 +9,10 @@
 //
 // Hard rules (spec "SP3 Sessions engine and page", Security 6):
 // - The only bytes this file writes into a PTY are the writer's input
-//   (write()) and the mirror's replies to terminal queries, which the mirror
-//   sends only while no window is the writer (startProcess()).
+//   (write()), the mirror's replies to terminal queries, which the mirror
+//   sends only while no window is the writer (startProcess()), and the
+//   hand-off's typed text (typeInto(), SP4: only under the write rules, in
+//   paste markers, never followed by Enter, never user input).
 // - The screen is read only for the Claude Code and Codex limit texts (spec
 //   SP4, Task X1b), at most once per LIMIT_SCAN_MS after output.
 // - An agent session starts or resumes only when Safety allows running agents
@@ -55,6 +57,7 @@ import { CLAUDE_HOOK_EVENTS, parseStatusLine, transcriptExists as defaultTranscr
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
 import { runGit as defaultRunGit } from "./git.js";
+import { cleanTypedText, pasteBody } from "./handoff.js";
 import { BACKUP_WAITING_QUIET_MS } from "./hooks.js";
 import { COUNTED_CHECK_MS, createMirror, isUserInput } from "./mirror.js";
 import {
@@ -122,6 +125,14 @@ const START_ROWS = 32;
 // After a resize the agent redraws for the new size, and the mirror may count
 // that reflow; for this long it is not activity (Task S4 Notes item 4).
 const RESIZE_QUIET_MS = 1000;
+// Hand-off (SP4, Task X8): how often a wait for a target that is not ready yet looks again (a waiting that
+// resolves, Claude Code's folder trust); ?2004 itself is seen at once through the mirror's onModeChange.
+const TYPING_CHECK_MS = 250;
+// A target with one of these alerts is "waiting or in an approval" (spec, Hand-off write rules).
+const TYPING_BLOCKING_ALERTS = new Set(["waiting", "approval"]);
+const HANDOFF_STATES = new Set(["pending", "typed", "copy"]);
+// How many ended sessions keep a hand-off copy in memory (the newest stay).
+const ENDED_COPIES_MAX = 20;
 const META_FILE = "meta.json";
 const META_VERSION = 1;
 const RECORDING_FILES = ["screen.cast", "screen.prev.cast"];
@@ -205,9 +216,13 @@ function iso(ms) {
 }
 
 // The SP4 summary fields that only memory knows (R22). An ended session sends
-// the defaults: its alert, meter and hand-off ended with its process.
+// the defaults: its alert and meter ended with its process, and so did its
+// hand-off, except a "copy" (Task X8: the text a new session never got because
+// it ended before it was ready).
 function memoryFields(view) {
-  const memory = view.status === "exited" ? null : view.memory ?? null;
+  const ended = view.status === "exited";
+  const memory = ended ? null : view.memory ?? null;
+  const keptCopy = ended && view.memory?.handoff?.state === "copy" ? view.memory.handoff : null;
   const activity = memory?.activity ?? null;
   const alert = activity?.alert ?? null;
   return {
@@ -218,7 +233,7 @@ function memoryFields(view) {
     trustNeeded: memory?.trustNeeded === true,
     hooksOff: { alerts: memory?.hooksOff?.alerts ?? null, meter: memory?.hooksOff?.meter ?? null },
     meter: memory?.meter ?? null,
-    handoff: memory?.handoff ?? null
+    handoff: ended ? keptCopy : memory?.handoff ?? null
   };
 }
 
@@ -451,6 +466,9 @@ export function createSessionManager({
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
   const live = new Map();
+  // id -> the hand-off "copy" of an ended session (SP4 Task X8): the text a new session never got because it ended
+  // before it was ready, so the text is not lost. Memory only (never in meta.json), the newest ENDED_COPIES_MAX.
+  const endedCopies = new Map();
   // ids being resumed or dismissed right now, so two requests never race: a
   // second request for one of them is answered "session_busy".
   const busy = new Set();
@@ -1152,6 +1170,8 @@ export function createSessionManager({
     } catch {
       // recovery at the next start covers a failed write
     }
+    // A hand-off copy outlives the session (its text would be lost with it); anything else of it ends here.
+    if (state.handoff?.state === "copy") rememberEndedCopy(state.meta.id, state.handoff);
     live.delete(state.meta.id);
     state.resolveExited();
     try {
@@ -1231,6 +1251,8 @@ export function createSessionManager({
     state.recorder =
       state.meta.kind === "setup" ? NO_RECORDER : recorderFactory({ dir: state.dir, cols: state.cols, rows: state.rows, append, now });
     live.set(state.meta.id, state);
+    // A resumed session starts clean: the copy of its earlier run is gone.
+    endedCopies.delete(state.meta.id);
     releaseSlot();
     state.offs.push(state.handle.onData((data) => onOutput(state, data)));
     state.offs.push(
@@ -1547,13 +1569,24 @@ export function createSessionManager({
         trustNeeded: state.trustNeeded,
         hooksOff: state.hooksOff,
         meter: state.meter,
-        handoff: state.handoff
+        handoff: handoffOf(state)
       }
     };
   }
 
   function viewOfMeta(meta) {
-    return { ...meta, stateSince: meta.status === "exited" ? meta.endedAt || meta.startedAt : meta.startedAt };
+    return {
+      ...meta,
+      stateSince: meta.status === "exited" ? meta.endedAt || meta.startedAt : meta.startedAt,
+      // Only the hand-off copy of an ended session is memory (memoryFields drops the rest for an ended session).
+      ...(meta.status === "exited" ? { memory: { handoff: endedCopies.get(meta.id) ?? null } } : {})
+    };
+  }
+
+  function rememberEndedCopy(id, handoff) {
+    endedCopies.delete(id);
+    endedCopies.set(id, { ...handoff });
+    while (endedCopies.size > ENDED_COPIES_MAX) endedCopies.delete(endedCopies.keys().next().value);
   }
 
   async function collectViews() {
@@ -1983,6 +2016,8 @@ export function createSessionManager({
         meta.dismissed = true;
         await writeJson(path.join(sessionDir(id), META_FILE), meta);
       }
+      // A dismissed session's kept hand-off text goes too (memory only).
+      endedCopies.delete(id);
     } finally {
       busy.delete(id);
     }
@@ -2248,6 +2283,128 @@ export function createSessionManager({
     return () => {
       liveListeners.delete(listener);
     };
+  }
+
+  // ---- hand-off (SP4) -----------------------------------------------------------------------------------
+
+  // Why text can't be typed into this session now, or null when it can. Spec "SP4 Session extras", Hand-off, write
+  // rules: the target's mirror shows DECSET ?2004 (bracketed paste) on AND the target is not waiting or in an
+  // approval. A Claude Code session whose folder trust Agent OS has not seen yet counts as waiting too: Claude's trust
+  // question takes no typed text and sends no signal. When the person's Claude settings switch the Live meter off,
+  // trust can't be seen, so only the spec's two rules apply.
+  function typingBlock(state) {
+    if (!state || state.meta.kind !== "agent" || state.exitSeen || !state.handle || !state.mirror) return "not_live";
+    const { activity } = state;
+    if (activity.status === "exited") return "not_live";
+    if (activity.status === "waiting" || TYPING_BLOCKING_ALERTS.has(activity.alert?.kind)) return "waiting";
+    if (state.trustNeeded === true && !state.hooksOff?.meter) return "waiting";
+    let modes = null;
+    try {
+      modes = state.mirror.modes();
+    } catch {
+      modes = null;
+    }
+    return modes?.bracketedPaste === true ? null : "no_paste_mode";
+  }
+
+  function readyForTyping(id) {
+    return typingBlock(live.get(id)) === null;
+  }
+
+  // Security 6: besides the writer's input and the mirror's query replies, this is the only write into a PTY. The
+  // text goes in once, cleaned and between the paste markers (handoff.js), and nothing follows it: no Enter. It is
+  // not user input, so the activity state, lastInputAt and the idle timer are left alone. The typed text is kept in
+  // memory for the panel (`handoff`), never in meta.json.
+  function typeInto(id, text, { fromId = null } = {}) {
+    const state = live.get(id);
+    const block = typingBlock(state);
+    if (block) return { ok: false, reason: block };
+    const clean = cleanTypedText(text);
+    if (!clean) throw new TypeError("typeInto needs some text to type");
+    try {
+      state.handle.write(pasteBody(clean));
+    } catch {
+      return { ok: false, reason: "not_live" };
+    }
+    state.handoff = { state: "typed", text: clean, fromId: isSessionId(fromId) ? fromId : null, at: iso(now()) };
+    return { ok: true };
+  }
+
+  // Resolves true as soon as the session takes typed text, false at `timeoutMs` or as soon as the session is gone.
+  // ?2004 is seen the moment the mirror reports a mode change; everything else (a waiting that resolves, the first
+  // hook that shows Claude's folder trust) at the next check, every TYPING_CHECK_MS.
+  function whenReadyForTyping(id, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      let stopListening = () => {};
+      let poll = null;
+      let limit = null;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        clearInterval(poll);
+        clearTimeout(limit);
+        stopListening();
+        resolve(value);
+      };
+      const check = () => {
+        const state = live.get(id);
+        if (!state || state.exitSeen || state.activity.status === "exited") finish(false);
+        else if (typingBlock(state) === null) finish(true);
+      };
+      check();
+      if (done) return;
+      poll = setInterval(check, TYPING_CHECK_MS);
+      poll.unref?.();
+      // Kept referenced: it is at most `timeoutMs`, and it is what settles the wait.
+      limit = setTimeout(() => finish(false), Math.max(0, Number(timeoutMs) || 0));
+      try {
+        const off = live.get(id).mirror.onModeChange(() => check());
+        if (typeof off === "function") stopListening = off;
+      } catch {
+        // No mode reports: the regular check still sees ?2004.
+      }
+      if (done) stopListening();
+    });
+  }
+
+  // Memory only (spec Security 5: nothing typed is kept on disk). null clears it. A session that already ended takes
+  // only a "copy" (a new session that ended before it was ready: the text is shown with a Copy button instead of
+  // being lost), kept in memory for the newest ENDED_COPIES_MAX ended sessions; for it, anything else is left alone.
+  // The time is this manager's own.
+  function setHandoff(id, handoff) {
+    const state = live.get(id);
+    if (handoff === null) {
+      if (state && !state.exitSeen) state.handoff = null;
+      return;
+    }
+    if (!handoff || !HANDOFF_STATES.has(handoff.state)) throw new TypeError("setHandoff needs a state: pending, typed or copy");
+    const made = {
+      state: handoff.state,
+      text: cleanTypedText(handoff.text),
+      fromId: isSessionId(handoff.fromId) ? handoff.fromId : null,
+      at: iso(now())
+    };
+    if (state && !state.exitSeen) {
+      state.handoff = made;
+    } else if (made.state === "copy" && made.text && isSessionId(id)) {
+      rememberEndedCopy(id, made);
+    }
+  }
+
+  // What the summary shows as `handoff` (through viewOfState's `memory`): a copy of the memory. An ended session shows
+  // only a "copy" (see setHandoff). A typed one goes at the person's first input after it: the caption has done its
+  // job then.
+  function handoffOf(state) {
+    if (!state) return null;
+    if (state.exitSeen) {
+      const kept = state.handoff?.state === "copy" ? state.handoff : endedCopies.get(state.meta.id);
+      return kept ? { ...kept } : null;
+    }
+    if (!state.handoff) return null;
+    const { handoff } = state;
+    if (handoff.state === "typed" && Number.isFinite(state.lastInputAt) && state.lastInputAt > Date.parse(handoff.at)) return null;
+    return { ...handoff };
   }
 
   // ---- quit check and recovery ------------------------------------------------------------------------
@@ -2550,6 +2707,11 @@ export function createSessionManager({
     quitCheck,
     isLive,
     recoverStaleSessions,
+    // Hand-off (SP4, Task X8): handoff.js's sendTo and deliverTyped use these, and so does Task X10.
+    typeInto,
+    readyForTyping,
+    whenReadyForTyping,
+    setHandoff,
     changes,
     diff,
     checkHookToken,

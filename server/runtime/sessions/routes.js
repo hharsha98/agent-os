@@ -12,6 +12,7 @@ import { builderErrorResponse } from "../builders/resolve.js";
 import { errorBody, isSessionId } from "./errors.js";
 import { recentSessionFolders } from "./folders.js";
 import { sendTo } from "./handoff.js";
+import { handOver, keepGoing, keepGoingInfo } from "./keep-going.js";
 import { getSessionManager } from "./manager.js";
 import { createOpenclawApprovals } from "./openclaw-approvals.js";
 import { ptyAvailable } from "./pty-host.js";
@@ -178,7 +179,8 @@ function unknownSessionOnBadEncoding(error, _req, res, next) {
   res.status(404).json(UNKNOWN_SESSION);
 }
 
-export function createSessionsRouter({ manager = getSessionManager(), approvals = null } = {}) {
+// keepGoingDeps: what keep going asks outside the manager (keep-going.js's KEEP_GOING_DEFAULTS); tests pass fakes.
+export function createSessionsRouter({ manager = getSessionManager(), approvals = null, keepGoingDeps = undefined } = {}) {
   // OpenClaw approvals (SP4, Task X3): server/index.js hands in its one poller.
   const approvalsSource = approvals ?? createOpenclawApprovals({ manager: NO_OPEN_SESSIONS });
   // Case sensitive like the app ("/api/sessions/FOLDERS" is not the folders
@@ -375,6 +377,32 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     "/:id/markers",
     handle(async (req, res) => {
       res.json({ markers: await manager.markers(req.params.id) });
+    })
+  );
+
+  // Plan ran out, keep going (SP4, Task X10): what keeping going would do and
+  // cost, and doing it once the person confirmed in the page. The body is
+  // never read: the brain and the model come from the server (ruling R26).
+  router.get(
+    "/:id/keep-going",
+    handle(async (req, res) => {
+      res.json(await keepGoingInfo(manager, req.params.id, keepGoingDeps));
+    })
+  );
+
+  router.post(
+    "/:id/keep-going",
+    handle(async (req, res) => {
+      res.json(await keepGoing(manager, req.params.id, keepGoingDeps));
+    })
+  );
+
+  // Cursor's "Hand to Claude Code or Codex": only `to` is read from the body.
+  router.post(
+    "/:id/hand-over",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      res.json(await handOver(manager, req.params.id, body.to, keepGoingDeps));
     })
   );
 

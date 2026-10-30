@@ -249,6 +249,9 @@ const EVERY_ROUTE = [
   ["GET", `/api/sessions/${KNOWN_ID}/recording`],
   ["DELETE", `/api/sessions/${KNOWN_ID}/recording`],
   ["GET", `/api/sessions/${KNOWN_ID}/markers`],
+  ["GET", `/api/sessions/${KNOWN_ID}/keep-going`],
+  ["POST", `/api/sessions/${KNOWN_ID}/keep-going`, {}],
+  ["POST", `/api/sessions/${KNOWN_ID}/hand-over`, { to: "claude" }],
   ["GET", "/api/recordings"]
 ];
 
@@ -278,6 +281,28 @@ test("outside local mode every sessions and recordings address is 404 not_availa
       await assert.rejects(stat(path.join(agentOsHome, "config", "sessions.json")), "the settings were not written");
     }, vars);
   }
+});
+
+test("no route takes a brain from the page (ruling R26): POST /api/sessions and POST /:id/resume pass none on to the manager, whatever the body says", async () => {
+  await withSessionsEnv(async () => {
+    const { manager, calls } = stubManager();
+    const resumed = [];
+    manager.resume = async (...args) => {
+      resumed.push(args);
+      return summary(KNOWN_ID, { status: "starting" });
+    };
+    const brain = { mode: "openrouter", model: "openai/gpt-5.5" };
+    await withSessionsApp(manager, async (api) => {
+      const created = await api("POST", "/api/sessions", { agentId: "claude", folder: "/tmp", brainOverride: brain, brain });
+      assert.equal(created.status, 201);
+      const answer = await api("POST", `/api/sessions/${KNOWN_ID}/resume`, { brainOverride: brain, brain });
+      assert.equal(answer.status, 200);
+    });
+    const [, input] = calls.find(([name]) => name === "create");
+    assert.equal(Object.hasOwn(input, "brainOverride"), false, JSON.stringify(input));
+    assert.equal(Object.hasOwn(input, "brain"), false, JSON.stringify(input));
+    assert.deepEqual(resumed, [[KNOWN_ID]], "resume is asked with the id alone");
+  });
 });
 
 test("an id that is not a lower-case version 4 uuid is 404 unknown_session before the manager or the disk is asked", async () => {

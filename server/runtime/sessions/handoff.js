@@ -137,7 +137,16 @@ export async function sendTo(manager, fromId, to) {
   if (typeof manager.copyRemoved === "function" && (await manager.copyRemoved(fromId))) {
     return { result: "copy", targetId: null, text, reason: FOLDER_MISSING_MESSAGE };
   }
-  const target = findHandoffTarget(manager.liveAgentSessions(to), { agentId: to, folder: from.folder });
+  return handTyped(manager, { fromId, to, folder: from.folder, text });
+}
+
+// The delivery half of a hand-off, shared by sendTo and Task X10's Cursor hand-over (one code path, so both get the
+// same guards): an open target of `to` in exactly `folder` that is waiting for text, or still holds this very note,
+// gets nothing more; one that can take typed text now gets `text` (never Enter); otherwise one new session starts
+// (one start at a time for each agent and folder) and the text is typed once it is ready. The answer is the
+// HandoffResult: "typed", "opening", or "copy" with the refusal's own sentence when the new session can't start.
+export async function handTyped(manager, { fromId, to, folder, text }) {
+  const target = findHandoffTarget(manager.liveAgentSessions(to), { agentId: to, folder });
   if (target) {
     // A session already waiting for its text (a Send a moment ago, maybe from another window) gets nothing more.
     const current = await manager.get(target.id).catch(() => null);
@@ -159,10 +168,10 @@ export async function sendTo(manager, fromId, to) {
   // so two Sends never open two sessions. The entry goes as soon as the start has answered: from then on the new
   // session is in the live list, and its own `handoff` (pending, then typed or copy) tells later Sends what to do.
   const starts = startsOf(manager);
-  const key = `${to}:${from.folder}`;
+  const key = `${to}:${folder}`;
   const running = starts.get(key);
   if (running) return { ...(await running) };
-  const start = startAndDeliver(manager, { to, folder: from.folder, text, fromId });
+  const start = startAndDeliver(manager, { to, folder, text, fromId });
   starts.set(key, start);
   try {
     return { ...(await start) };

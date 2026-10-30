@@ -129,14 +129,21 @@ export function isStopAnswer(answer: unknown): boolean {
 
 // A resumed session starts a new process under the same id. Each time a session comes back from ended, its
 // generation goes up, so the page attaches a fresh terminal instead of reusing the ended one. Ending does not
-// change it, so the terminal that was on screen when the session ended keeps its last screen.
-export type Generations = Record<string, { status: string; gen: number }>;
-export function nextGenerations(prev: Generations, sessions: Array<Pick<SessionSummary, "id" | "status">>): Generations {
+// change it, so the terminal that was on screen when the session ended keeps its last screen. A new run under the same
+// id also counts when the list never showed the ended state in between (Plan ran out, keep going: its Stop and Resume
+// are one request, so a list read can miss "exited"): the run's own start time (`startedAt`) is different.
+export type Generations = Record<string, { status: string; gen: number; startedAt?: string }>;
+export function nextGenerations(
+  prev: Generations,
+  sessions: Array<Pick<SessionSummary, "id" | "status"> & { startedAt?: string }>
+): Generations {
   const out: Generations = {};
   for (const session of sessions) {
     const before = prev[session.id];
-    const gen = before ? before.gen + (before.status === "exited" && session.status !== "exited" ? 1 : 0) : 0;
-    out[session.id] = { status: session.status, gen };
+    const comesBack = Boolean(before) && before.status === "exited" && session.status !== "exited";
+    const newRun = Boolean(before?.startedAt && session.startedAt && before.startedAt !== session.startedAt) && session.status !== "exited";
+    const gen = before ? before.gen + (comesBack || newRun ? 1 : 0) : 0;
+    out[session.id] = session.startedAt === undefined ? { status: session.status, gen } : { status: session.status, gen, startedAt: session.startedAt };
   }
   return out;
 }

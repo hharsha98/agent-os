@@ -146,10 +146,11 @@ const META_FILE = "meta.json";
 const META_VERSION = 1;
 const RECORDING_FILES = ["screen.cast", "screen.prev.cast"];
 const BRAIN_LABEL = { plan: "Plan", openrouter: "OpenRouter", local: "Local" };
-const LOOK_ONLY_MESSAGE = "Safety is on Look only, so no session can start. Allow running agents in Safety, then try again.";
+// keep-going.js (SP4) refuses with this sentence and BUSY_MESSAGE too, so each has one home.
+export const LOOK_ONLY_MESSAGE = "Safety is on Look only, so no session can start. Allow running agents in Safety, then try again.";
 const PTY_MESSAGE = "Agent OS could not load its terminal module on this computer, so sessions can't start.";
 const UNKNOWN_MESSAGE = "That session doesn't exist anymore.";
-const BUSY_MESSAGE = "This session is already being changed. Try again in a moment.";
+export const BUSY_MESSAGE = "This session is already being changed. Try again in a moment.";
 const SAVE_FAILED_MESSAGE = "Agent OS could not save this session, so it was stopped. Check the free disk space, then try again.";
 const UNKNOWN_KIND_MESSAGE = "Agent OS can't start that kind of session.";
 const QUITTING_MESSAGE = "Agent OS is quitting, so no new session can start.";
@@ -409,8 +410,11 @@ function defaultDetect(agentId) {
   return adapter ? adapter.detect() : Promise.resolve({ installed: false, path: "" });
 }
 
-function defaultResolveBrain(agentId) {
-  return resolveBrainForRun(agentId, undefined, { prepare: true });
+// `override` is the brain keep going asks for (ruling R26: only
+// server/runtime/sessions/keep-going.js passes one, and no route does);
+// without one, the saved brain.
+function defaultResolveBrain(agentId, override = null) {
+  return resolveBrainForRun(agentId, override ?? undefined, { prepare: true });
 }
 
 // A new hook token for one Claude Code run (spec Security 4): 32 random bytes,
@@ -1792,7 +1796,7 @@ export function createSessionManager({
     if (closing) throw sessionError(409, "agent_os_quitting", QUITTING_MESSAGE);
   }
 
-  async function startNew({ kind, agentId, folder, copy = false }) {
+  async function startNew({ kind, agentId, folder, copy = false, brainOverride = null }) {
     assertNotClosing();
     if (!SESSION_AGENTS.includes(agentId)) {
       throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
@@ -1813,7 +1817,7 @@ export function createSessionManager({
       const where = await resolveFolder(agentId, kind, folder);
       if (kind === "agent") slot.claim(agentId, where.folder);
       const detected = await detect(agentId);
-      const brain = kind === "agent" ? await resolveBrain(agentId) : null;
+      const brain = kind === "agent" ? await resolveBrain(agentId, brainOverride) : null;
       const settings = await readSettings();
       id = crypto.randomUUID();
       const dir = sessionDir(id);
@@ -1896,8 +1900,10 @@ export function createSessionManager({
 
   // `copy: true` asks for a separate copy (spec SP4, Worktree offer): only POST /api/sessions passes it, and only a
   // literal true.
-  function create({ agentId, folder, copy = false } = {}) {
-    return startNew({ kind: "agent", agentId, folder, copy: copy === true });
+  // `brainOverride` (ruling R26) is keep going's OpenRouter brain for a new
+  // Codex session; POST /api/sessions never passes one.
+  function create({ agentId, folder, copy = false, brainOverride = null } = {}) {
+    return startNew({ kind: "agent", agentId, folder, copy: copy === true, brainOverride });
   }
 
   // The update kind (spec "Session kinds"): made only by the update service,
@@ -2012,7 +2018,10 @@ export function createSessionManager({
     if (state && state.status === "exited") await state.exited;
   }
 
-  async function resume(id) {
+  // `brainOverride` (ruling R26) is keep going's OpenRouter brain for a held
+  // Claude Code session: the same id, tab and conversation on another brain.
+  // POST /api/sessions/:id/resume never passes one.
+  async function resume(id, { brainOverride = null } = {}) {
     assertSessionId(id);
     assertNotClosing();
     // A session another request is resuming or dismissing right now is not
@@ -2044,7 +2053,7 @@ export function createSessionManager({
         }
         const where = await resolveFolder(meta.agentId, "agent", meta.folder);
         const detected = await detect(meta.agentId);
-        const brain = await resolveBrain(meta.agentId);
+        const brain = await resolveBrain(meta.agentId, brainOverride);
         const settings = await readSettings();
         const dir = sessionDir(id);
         await ensurePrivateDir(dir);
@@ -2630,6 +2639,15 @@ export function createSessionManager({
     return { recovered };
   }
 
+  // The visible screen of a running agent session as plain text, for the
+  // typed summaries of keep going and Cursor's hand-over (R24). An empty
+  // string for anything else.
+  function screenText(id) {
+    const state = live.get(id);
+    if (!state || state.status === "exited" || state.meta.kind !== "agent" || !state.mirror) return "";
+    return state.mirror.screenText(); // SCREEN READING (spec SP4)
+  }
+
   // ---- Stop and quit ------------------------------------------------------------------------------------
 
   function waitForExit(state, ms) {
@@ -2903,6 +2921,7 @@ export function createSessionManager({
     folderCheck,
     removeWorktree: removeWorktreeOf,
     copyRemoved,
+    screenText,
     // The limit this manager was created with (the sessions list reports it).
     get maxLive() {
       return maxLive;

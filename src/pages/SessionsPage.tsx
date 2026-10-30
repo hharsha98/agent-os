@@ -22,6 +22,7 @@ import PageHeader from "../ui/components/PageHeader";
 import SessionPaneHead from "../ui/components/SessionPaneHead";
 import SessionSettingsMenu from "../ui/components/SessionSettingsMenu";
 import SessionSidePanel from "../ui/components/SessionSidePanel";
+import SessionLimitBanner from "../ui/components/SessionLimitBanner";
 import SessionTabs, { sessionTabDomId } from "../ui/components/SessionTabs";
 import SessionTerminal from "../ui/components/SessionTerminal";
 import type { SessionTerminalHandle } from "../ui/components/SessionTerminal";
@@ -577,6 +578,7 @@ export default function SessionsPage() {
         {splitOn ? (
           <SessionPaneHead session={session} focused={focused} onPick={() => focusPane(session.id)} onEnter={() => enterPane(session.id)} />
         ) : null}
+        <SessionLimitBanner session={session} />
         {showIt ? (
           <div className="os-sess-term">
             <SessionTerminal

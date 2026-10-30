@@ -20,8 +20,10 @@ import { recentSessionFolders } from "../server/runtime/sessions/folders.js";
 import { runGit } from "../server/runtime/sessions/git.js";
 import { findHandoffTarget, sendTo } from "../server/runtime/sessions/handoff.js";
 import {
+  BUSY_MESSAGE,
   CLOSE_LAG_BYTES,
   IDLE_AFTER_MS,
+  LOOK_ONLY_MESSAGE,
   MAX_INPUT_BYTES,
   PAUSED_DROP_MS,
   PAUSE_LAG_BYTES,
@@ -2500,6 +2502,86 @@ test("ids: anything that is not a session id is unknown before any file is touch
   });
 });
 
+// ---- SP4 Task X10: keep going's brain override and the screen for typed summaries --------------------
+
+test("brain override (keep going only, ruling R26): create and resume hand it to resolveBrain and the profile, and the Brain row follows it; without one the saved brain is asked for, as before", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const asked = [];
+    const world = fakeWorld({
+      resolveBrain: async (agentId, override) => {
+        asked.push([agentId, override]);
+        return override ?? null;
+      }
+    });
+    const claudeOnOpenRouter = { mode: "openrouter", model: "anthropic/claude-sonnet-4.6" };
+    const codexOnOpenRouter = { mode: "openrouter", model: "openai/gpt-5.6-codex" };
+
+    const claude = await world.manager.create({ agentId: "claude", folder: project });
+    assert.deepEqual(claude.brain, { kind: "plan", label: "Plan" });
+    const codex = await world.manager.create({ agentId: "codex", folder: project, brainOverride: codexOnOpenRouter });
+    assert.deepEqual(codex.brain, { kind: "openrouter", label: "OpenRouter" });
+    assert.deepEqual(world.profileInputs[1].brain, codexOnOpenRouter);
+
+    world.ptys[0].exit(0);
+    await ended(world, claude.id);
+    const resumed = await world.manager.resume(claude.id, { brainOverride: claudeOnOpenRouter });
+    assert.equal(resumed.id, claude.id, "the same tab");
+    assert.deepEqual(resumed.brain, { kind: "openrouter", label: "OpenRouter" });
+    assert.deepEqual(world.profileInputs[2].brain, claudeOnOpenRouter, "the profile writes the OpenRouter settings from it");
+    assert.deepEqual(world.profileInputs[2].resume, { agentSessionId: CLAUDE_UUID }, "the same conversation");
+
+    world.ptys[2].exit(0);
+    await ended(world, claude.id);
+    const later = await world.manager.resume(claude.id);
+    assert.deepEqual(later.brain, { kind: "plan", label: "Plan" }, "a later Resume is back on the saved brain");
+    assert.deepEqual(asked, [
+      ["claude", null],
+      ["codex", codexOnOpenRouter],
+      ["claude", claudeOnOpenRouter],
+      ["claude", null]
+    ]);
+  });
+});
+
+test("screenText: a running agent session's screen from its mirror (for the typed summaries, R24); an empty string for an ended or unknown session", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const session = await world.manager.create({ agentId: "codex", folder: project });
+    world.mirrors[0].screen = "› fix the failing test\n• Ran npm test";
+    assert.equal(world.manager.screenText(session.id), "› fix the failing test\n• Ran npm test");
+    assert.equal(world.manager.screenText(crypto.randomUUID()), "");
+    assert.equal(world.manager.screenText("not-a-session"), "");
+    world.ptys[0].exit(0);
+    await ended(world, session.id);
+    assert.equal(world.manager.screenText(session.id), "");
+  });
+});
+
+test("a resume that the brain override makes impossible leaves the session ended and resumable (keep going's refusal after its stop, fix round 1): the conversation id is kept, nothing is started, and a plain Resume uses the saved brain", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const refusal = Object.assign(new Error("Agent OS doesn't have your OpenRouter key saved yet."), { status: 409, code: "openrouter_key_missing" });
+    const world = fakeWorld({
+      resolveBrain: async (agentId, override) => {
+        if (override) throw refusal;
+        return null;
+      }
+    });
+    const claude = await world.manager.create({ agentId: "claude", folder: project });
+    world.ptys[0].exit(0);
+    await ended(world, claude.id);
+    const started = world.ptys.length;
+    await assert.rejects(world.manager.resume(claude.id, { brainOverride: { mode: "openrouter", model: "anthropic/claude-sonnet-4.6" } }), (error) => error === refusal);
+    assert.equal(world.ptys.length, started, "nothing was started");
+    const after = await world.manager.get(claude.id);
+    assert.equal(after.status, "exited");
+    assert.equal(after.resume.available, true, "Resume conversation is still offered");
+    const again = await world.manager.resume(claude.id);
+    assert.equal(again.id, claude.id);
+    assert.deepEqual(again.brain, { kind: "plan", label: "Plan" });
+    assert.deepEqual(world.profileInputs.at(-1).resume, { agentSessionId: CLAUDE_UUID }, "the same conversation");
+  });
+});
+
 test("getSessionManager: one manager per server, with every method the routes and the socket use; the shared names are re-exported, never redefined", () => {
   assert.equal(SESSION_ID_RE, sessionErrors.SESSION_ID_RE);
   assert.equal(isSessionId, sessionErrors.isSessionId);
@@ -2533,11 +2615,15 @@ test("getSessionManager: one manager per server, with every method the routes an
     "markers",
     "liveAgentSessions",
     "onLiveChange",
-    "noteLimit"
+    "noteLimit",
+    "screenText"
   ]) {
     assert.equal(typeof manager[name], "function", name);
   }
   assert.equal(manager.isLive("00000000-0000-4000-8000-000000000000"), false);
+  // keep-going.js (SP4, Task X10) refuses with the manager's own two sentences.
+  assert.equal(LOOK_ONLY_MESSAGE, "Safety is on Look only, so no session can start. Allow running agents in Safety, then try again.");
+  assert.equal(BUSY_MESSAGE, "This session is already being changed. Try again in a moment.");
 });
 
 // ---- SP4 Task X1b: signals from the mirror and the limit rules -------------------------------------

@@ -11,6 +11,8 @@ import type {
   DiffResult,
   FolderCheck,
   HandoffResult,
+  KeepGoingInfo,
+  KeepGoingResult,
   QuitCheckResponse,
   RecordingListResponse,
   SessionClientFrame,
@@ -69,7 +71,12 @@ export const SESSION_LIMITS_MS = {
   // reads, a status and a prune (5 s each) around the remove (1 minute).
   folderCheck: 22000,
   createCopy: 240000,
-  removeWorktree: 90000
+  removeWorktree: 90000,
+  // Keep going (Task X10): its options read the model's price from OpenRouter (up to 10 s); keeping a Claude Code
+  // session going is a Stop (15 s) and a Resume (30 s); a hand-over may start a session (30 s, like create).
+  keepGoingInfo: 15000,
+  keepGoing: 45000,
+  handOver: 30000
 } as const;
 
 const TIMEOUT_WORDS = "Agent OS did not answer in time.";
@@ -116,6 +123,20 @@ export function dismissSession(sessionId: string): Promise<SessionSummary> {
 // agent in the same folder and never presses Enter; it may start that session first, so the limit is create's.
 export function sendTo(sessionId: string, to: "claude" | "codex"): Promise<HandoffResult> {
   return withTimeout(request<HandoffResult>(sessionPath(sessionId, "/send"), postJson({ to })), SESSION_LIMITS_MS.send);
+}
+
+// Plan ran out, keep going (SP4, Task X10). getKeepGoing stops, starts and types nothing; keepGoing and handOver
+// act, and only the confirm dialogs (KeepGoingDialog, HandOverButton) call them.
+export function getKeepGoing(sessionId: string): Promise<KeepGoingInfo> {
+  return withTimeout(request<KeepGoingInfo>(sessionPath(sessionId, "/keep-going")), SESSION_LIMITS_MS.keepGoingInfo);
+}
+
+export function keepGoing(sessionId: string): Promise<KeepGoingResult> {
+  return withTimeout(request<KeepGoingResult>(sessionPath(sessionId, "/keep-going"), postJson()), SESSION_LIMITS_MS.keepGoing);
+}
+
+export function handOver(sessionId: string, to: "claude" | "codex"): Promise<HandoffResult> {
+  return withTimeout(request<HandoffResult>(sessionPath(sessionId, "/hand-over"), postJson({ to })), SESSION_LIMITS_MS.handOver);
 }
 
 export function getSessionSettings(): Promise<SessionSettings> {

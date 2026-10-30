@@ -15,7 +15,9 @@ import { sendTo, sessionProblem } from "../../sessionsApi";
 import type { SessionSummary } from "../../types";
 import { HANDOFF_CAPTION, HANDOFF_TITLE, handoffStatus, sendOutcome, sendTargets } from "../handoffShared";
 import type { SendTarget } from "../handoffShared";
+import { canHandOver } from "../keepGoingShared";
 import HandoffCopyFallback, { HandoffText } from "./HandoffCopyFallback";
+import HandOverButton from "./HandOverButton";
 
 export default function HandoffSection({ session, onOpenSession }: { session: SessionSummary; onOpenSession: (id: string) => void }) {
   const id = useId();
@@ -49,7 +51,8 @@ export default function HandoffSection({ session, onOpenSession }: { session: Se
     }
   }
 
-  if (!targets.length && !status) return null;
+  // A running Cursor session has no send target, but it gets this section for "Hand to Claude Code or Codex" (Task X10).
+  if (!targets.length && !status && !canHandOver(session)) return null;
   return (
     <section className="os-sess-panel__sec os-handoff" aria-label={HANDOFF_TITLE}>
       <div className="os-sess-panel__rh">{HANDOFF_TITLE}</div>
@@ -73,6 +76,7 @@ export default function HandoffSection({ session, onOpenSession }: { session: Se
           {HANDOFF_CAPTION}
         </p>
       ) : null}
+      <HandOverButton session={session} />
       {status?.kind === "pending" ? (
         <p className="os-handoff__status" role="status" aria-busy="true">
           …

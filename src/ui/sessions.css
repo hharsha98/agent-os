@@ -1183,3 +1183,138 @@
   overflow-wrap: anywhere;
   resize: vertical;
 }
+
+/* --- Plan ran out, keep going (SP4, Task X10): a held session's banner above its terminal, the confirm dialog's
+   points, and Cursor's hand-over in its Hand-off section. Tokens only; nothing moves. --- */
+.os-sess-limit {
+  flex: none;
+  min-width: 0;
+}
+.os-sess-limit .os-banner__actions .os-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-sess-limit .os-banner__actions .os-btn svg {
+  flex: none;
+}
+.os-sess-limit__line,
+.os-sess-limit__sub {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.os-sess-limit__sub {
+  color: var(--os-text-2);
+}
+.os-sess-limit__note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-sess-limit__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--os-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.os-sess-limit__link:hover {
+  color: var(--os-accent-hover);
+}
+.os-keepgoing__points {
+  display: grid;
+  gap: var(--os-sp-3);
+  margin: var(--os-sp-3) 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--os-fs-14);
+  line-height: var(--os-lh-body);
+}
+.os-keepgoing__points li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-3);
+}
+.os-keepgoing__points svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--os-accent);
+}
+.os-keepgoing__points strong {
+  color: var(--os-text-1);
+}
+.os-keepgoing__model,
+.os-keepgoing__note {
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-keepgoing__warnings {
+  margin: var(--os-sp-2) 0 0;
+  padding-left: var(--os-sp-5);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-handover {
+  display: grid;
+  gap: var(--os-sp-2);
+}
+.os-handover__open {
+  width: 100%;
+  justify-content: center;
+}
+.os-handover__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--os-sp-4);
+  margin: var(--os-sp-3) 0 0;
+  padding: 0;
+  border: 0;
+}
+.os-handover__choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+  cursor: pointer;
+}
+.os-handover__choice input {
+  accent-color: var(--os-accent);
+}
+
+/* --- Fix round 1 (review of Task X10), tokens only. M8: the confirm dialog's body scrolls inside the dialog on a short
+   window (1280 by 720, split view), so the dialog always fits and Cancel and the main button stay on screen; 9 times
+   --os-sp-5 covers the dimmed page's padding, the dialog's padding, its title and its button row. M7 and split view:
+   in a narrow pane the buttons drop under the words instead of squeezing them; the failure banner (I1) takes the
+   keys, so it needs no outline of its own beyond the focus ring. --- */
+.os-keepgoing__scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  min-height: 0;
+  max-height: calc(100vh - 9 * var(--os-sp-5));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.os-sess-limit .os-banner {
+  flex-wrap: wrap;
+}
+.os-sess-limit .os-banner__text {
+  flex: 1 1 calc(var(--os-sp-10) * 3);
+}
+.os-sess-limit__failure {
+  border-radius: var(--os-r-md);
+}
+.os-sess-limit__failure:focus-visible {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
+}

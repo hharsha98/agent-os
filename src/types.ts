@@ -2814,6 +2814,29 @@ export interface SessionListResponse {
   maxLive: number;
 }
 
+// Plan ran out, keep going (SP4, Task X10): GET /api/sessions/:id/keep-going. `approach` is "resume" for Claude Code
+// (the same conversation: a Stop, then `claude --resume` on the OpenRouter brain in the same tab) and "new" for Codex
+// (a new session with a typed summary). The estimate is continue.js's own: what starting costs; the new work costs
+// extra. `needsKey`: no OpenRouter key is saved.
+export interface KeepGoingInfo {
+  agentId: "claude" | "codex";
+  approach: "resume" | "new";
+  available: boolean;
+  reason: string | null;
+  model: string | null;
+  estimateUsd: number | null;
+  estimateTokens: number | null;
+  estimateNote: string;
+  warnings: string[];
+  needsKey: boolean;
+}
+
+// POST /api/sessions/:id/keep-going: "resumed" (Claude Code, the same id and tab) or "opening" (Codex's new session).
+export interface KeepGoingResult {
+  result: "resumed" | "opening";
+  targetId: string;
+}
+
 // POST /api/sessions/:id/stop: the session (unchanged when it had already ended), plus Stop's note: OpenClaw's
 // honest "Stopped the terminal. OpenClaw may still be finishing its last step." when only its terminal could be
 // stopped, otherwise null.

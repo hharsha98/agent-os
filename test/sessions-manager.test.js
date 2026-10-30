@@ -36,6 +36,7 @@ import { createRecorder, enforceRecordingCap } from "../server/runtime/sessions/
 import { HELD_CHECK_MS, MARKERS_MAX, TURN_DONE_BACKSTOP_MS } from "../server/runtime/sessions/signals.js";
 import { RUNTIME_VERSION, writeJson } from "../server/runtime/store.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 
 const isWindows = process.platform === "win32";
 const SKIP_POSIX = { skip: isWindows ? "the fake agents are POSIX shell shims" : false };
@@ -389,6 +390,8 @@ function fakeWorld(over = {}) {
     killTree: async (pid, options) => {
       world.kills.push([pid, options]);
     },
+    // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
+    ...NO_GIT_OPTIONS,
     ...over
   };
   world.manager = createSessionManager(world.deps);
@@ -2932,6 +2935,7 @@ function ptyEnv(home, bin) {
 // can start.
 function realDeps(profile, running) {
   return {
+    ...NO_GIT_OPTIONS,
     isExecutionAllowed: async () => true,
     detect: async () => ({ installed: true, path: profile.command }),
     resolveBrain: async () => null,

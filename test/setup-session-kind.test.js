@@ -49,6 +49,7 @@ import {
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { fakeSiwcProfile, readFakeAgentState, setFakeKnob } from "./helpers/fake-knobs.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 import { H1_ENV_NAMES, withoutH1Env } from "./helpers/plan-brains-safety.js";
 
 const isWindows = process.platform === "win32";
@@ -394,6 +395,8 @@ function fakeWorld(over = {}) {
       world.softStops.push(input);
       return { outcome: "none", note: null };
     },
+    // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
+    ...NO_GIT_OPTIONS,
     ...over
   };
   world.manager = createSessionManager(world.deps);
@@ -1161,6 +1164,7 @@ test("a real sign-in in a PTY against W1's fake: the link and the code are shown
     // The real manager, PTY, mirror, login shell and profile. Only the spawn is tracked (for the clean-up),
     // the mirror's dispose is counted, and a recorder that is ever asked for fails the start.
     const manager = createSessionManager({
+      ...NO_GIT_OPTIONS,
       spawn: async (options) => track(running, await spawnPty(options)),
       mirrorFactory: (options) => {
         const real = createMirror(options);

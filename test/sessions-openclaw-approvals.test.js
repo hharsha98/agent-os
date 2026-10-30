@@ -43,6 +43,7 @@ import { cleanAlertText } from "../server/runtime/sessions/signals.js";
 import { runCli } from "../server/runtime/sessions/soft-stop.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { fakeApproval, pendingJson, setFakeApprovals, setFakeResolve } from "./helpers/fake-approvals.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 import { sourceProblems } from "./helpers/plan-brains-safety.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -900,7 +901,7 @@ test("end to end with the fake OpenClaw CLI: an approval for this session makes 
         clearDetectCaches();
         resetLoginShellEnvForTests();
         await setExecutionGateStatus({ enabled: true, reason: "approvals test" });
-        const manager = createSessionManager();
+        const manager = createSessionManager({ ...NO_GIT_OPTIONS });
         const approvals = createOpenclawApprovals({ manager, intervalMs: 150 });
         const app = express();
         app.use(express.json());

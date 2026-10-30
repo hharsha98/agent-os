@@ -42,6 +42,7 @@ import {
   spyOnFileAccess,
   withoutH1Env
 } from "./helpers/plan-brains-safety.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWindows = process.platform === "win32";
@@ -262,7 +263,7 @@ test("Safety 1, 3 and 4: OpenClaw's ChatGPT sign-in, started and stopped through
         clearDetectCaches();
         resetLoginShellEnvForTests();
         const running = new Set();
-        const manager = createSessionManager({ spawn: async (options) => track(running, await spawnPty(options)) });
+        const manager = createSessionManager({ ...NO_GIT_OPTIONS, spawn: async (options) => track(running, await spawnPty(options)) });
         const seen = [];
         try {
           await withApp(manager, async ({ call }) => {

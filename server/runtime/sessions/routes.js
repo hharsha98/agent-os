@@ -320,6 +320,28 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     })
   );
 
+  // The changes panel (SP4): a live session's last read, or one fresh read of
+  // an ended one. Read-only: nothing here writes to the folder or to git.
+  router.get(
+    "/:id/changes",
+    handle(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      res.json(await manager.changes(req.params.id));
+    })
+  );
+
+  // One file's read-only diff. `path` must name a file in the session's current
+  // changes; the manager checks it against that list, never against the disk.
+  // A repeated or nested `path` is not a string and reaches it as "".
+  router.get(
+    "/:id/changes/diff",
+    handle(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      const file = typeof req.query.path === "string" ? req.query.path : "";
+      res.json(await manager.diff(req.params.id, file));
+    })
+  );
+
   // The recording's moments (spec "Recordings in Runs"): the prompt, permission
   // asked and files changed markers from meta.json, read from memory while the
   // session runs. A prompt marker never holds the prompt's text (R23).

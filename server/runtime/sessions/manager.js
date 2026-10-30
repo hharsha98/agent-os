@@ -37,9 +37,24 @@ import { killProcessTree } from "../process-tree.js";
 import { getServerPort } from "../server-info.js";
 import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
+import {
+  CHANGES_POLL_MS,
+  CHANGES_REFRESH_DEBOUNCE_MS,
+  CHANGE_MISSING_MESSAGE,
+  ENDED_READ_REUSE_MS,
+  FILES_MARKER_GAP_MS,
+  GIT_UNAVAILABLE_LIMIT,
+  addPendingMarker,
+  filesMarker,
+  newPendingMarker,
+  pendingToMarker,
+  readChanges,
+  readDiff
+} from "./changes.js";
 import { CLAUDE_HOOK_EVENTS, parseStatusLine, transcriptExists as defaultTranscriptExists } from "./claude-session.js";
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
+import { runGit as defaultRunGit } from "./git.js";
 import { BACKUP_WAITING_QUIET_MS } from "./hooks.js";
 import { COUNTED_CHECK_MS, createMirror, isUserInput } from "./mirror.js";
 import {
@@ -56,6 +71,7 @@ import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, SETUP_AC
 import { ptyAvailable, spawnPty } from "./pty-host.js";
 import { CAST_FILE, createRecorder, enforceRecordingCap } from "./recorder.js";
 import { readSessionSettings } from "./settings.js";
+import { getLoginShellEnv } from "./shell-env.js";
 import {
   HELD_CHECK_MS,
   MARKERS_MAX,
@@ -323,6 +339,33 @@ function byCreated(a, b) {
   return String(a.createdAt || a.startedAt || "").localeCompare(String(b.createdAt || b.startedAt || ""));
 }
 
+// The changes panel's memory for one session (SP4): the last read, and the
+// poll's own bookkeeping. `result` starts as "not read yet" (git: null).
+// `stopped` starts true: nothing reads (not even after a hook) until the
+// session's first save succeeded and startChangesPoll turned it on (Q2).
+// `unavailable` counts git starts that failed in a row (Q5); `pending`,
+// `markedAt` and `markerTimer` hold the "files changed" moments that wait for
+// the 30 s gap between two markers (Q6).
+function freshChanges() {
+  return {
+    result: { git: null, files: [], total: 0, at: null },
+    timer: null,
+    soon: false,
+    running: false,
+    again: false,
+    stopped: true,
+    unavailable: 0,
+    pending: newPendingMarker(),
+    markedAt: null,
+    markerTimer: null
+  };
+}
+
+// The answer for a session whose folder is never read, or where git can't run.
+function notTracked(at = null) {
+  return { git: false, files: [], total: 0, at };
+}
+
 function safeSend(attachment, frame) {
   try {
     attachment.send(frame);
@@ -350,6 +393,14 @@ function defaultHookToken() {
 // event can only be forged (the token sits in the agent's environment), so
 // onHook ignores it entirely.
 const HOOK_EVENT_NAMES = new Set(CLAUDE_HOOK_EVENTS.map((entry) => entry.event));
+
+// The environment for git in an ended session: the login-shell environment
+// (H2), never the server's own, which holds AGENT_OS_TOKEN. git.js drops
+// Agent OS's own variables from it again.
+async function defaultLoginEnv() {
+  const result = await getLoginShellEnv();
+  return result && result.env && typeof result.env === "object" ? result.env : {};
+}
 
 // ---- the manager --------------------------------------------------------------------------------------
 
@@ -387,7 +438,15 @@ export function createSessionManager({
   transcriptExists = defaultTranscriptExists,
   // Tests only (Task X2b): where Claude's managed settings are read, handed to
   // buildProfile; unset, the profile reads the platform's real path.
-  managedSettingsPath = undefined
+  managedSettingsPath = undefined,
+  // The changes panel (SP4, Task X7): the git runner, how often a running
+  // session's repository is read, and the environment git gets for an ended
+  // session (a live one uses its own). The tests inject all three.
+  runGit = defaultRunGit,
+  changesPollMs = CHANGES_POLL_MS,
+  loginEnv = defaultLoginEnv,
+  // The least time between two "files changed" markers of one session (tests shorten it).
+  changesMarkerGapMs = FILES_MARKER_GAP_MS
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -516,6 +575,8 @@ export function createSessionManager({
       hookToken: null,
       // Set only for a resume of a Claude Code conversation (watchForNothingToResume).
       noConversation: null,
+      // The changes panel (SP4): see the "changes panel" section below.
+      changes: freshChanges(),
       // SP4 activity (signals.js). activity.status always equals `status`:
       // dispatch() changes both, and the two exit paths set both.
       activity: freshActivity(),
@@ -1033,6 +1094,7 @@ export function createSessionManager({
         // already unsubscribed
       }
     }
+    stopChangesPoll(state);
     const signal = signalName(event.signal);
     const endedAt = state.meta.endedAt || iso(now());
     state.meta.status = "exited";
@@ -1203,6 +1265,7 @@ export function createSessionManager({
     state.hookToken = null;
     state.trustNeeded = false;
     state.activity = activityAfter(state.activity, { type: "exit" });
+    stopChangesPoll(state);
     clearIdle(state);
     clearHeldTimers(state);
     clearPausedDrop(state);
@@ -1249,6 +1312,226 @@ export function createSessionManager({
       await abandonStarted(state);
       throw sessionError(500, "start_failed", SAVE_FAILED_MESSAGE);
     }
+    // Saved: the changes panel starts reading (a new start or a resume).
+    startChangesPoll(state);
+  }
+
+  // ---- changes panel (SP4) ----------------------------------------------------------------------------
+  //
+  // git status --porcelain=v2 and git diff --numstat for an agent session's
+  // repository (changes.js): once when the start is saved (the baseline, which
+  // never makes a marker), then every changesPollMs after the last read ended,
+  // and soon after Claude's PostToolUse(Edit|Write) hook. One read at a time per
+  // session, and every git call is cut at 5 s (git.js), so a big or slow folder
+  // never piles up git processes; changes() always answers the last result at
+  // once. The update kind, and OpenClaw while its folder is set by OpenClaw,
+  // are never read.
+
+  // An ended session's read in flight or just finished, by session id (Q4).
+  const endedReads = new Map();
+
+  function changesTracked(meta) {
+    return meta.kind === "agent" && meta.folderShown !== false && typeof meta.folder === "string" && meta.folder !== "";
+  }
+
+  function startChangesPoll(state) {
+    endedReads.delete(state.meta.id);
+    // The process ended while its first save ran: nothing to read any more.
+    if (state.exitSeen) return;
+    if (!changesTracked(state.meta)) {
+      state.changes.result = notTracked();
+      stopChangesPoll(state);
+      return;
+    }
+    state.changes.stopped = false;
+    scheduleChanges(state, 0);
+  }
+
+  // Stops the timers, and records a "files changed" moment that was still
+  // waiting for the gap between two markers (the session may be ending).
+  function stopChangesPoll(state) {
+    const track = state.changes;
+    track.stopped = true;
+    clearTimeout(track.timer);
+    track.timer = null;
+    track.soon = false;
+    flushMarker(state);
+  }
+
+  // `soon` marks the short wait after a hook, so a burst of edits never pushes
+  // the read further out.
+  function scheduleChanges(state, delayMs, soon = false) {
+    const track = state.changes;
+    if (track.stopped) return;
+    clearTimeout(track.timer);
+    track.soon = soon;
+    track.timer = setTimeout(() => {
+      track.timer = null;
+      track.soon = false;
+      runChanges(state);
+    }, delayMs);
+    track.timer.unref?.();
+  }
+
+  async function runChanges(state) {
+    const track = state.changes;
+    if (track.stopped) return;
+    if (track.running) {
+      track.again = true;
+      return;
+    }
+    track.running = true;
+    try {
+      const next = await readChanges(state.meta.folder, {
+        env: state.profile?.env,
+        run: runGit,
+        now,
+        isStopped: () => track.stopped
+      });
+      track.unavailable = 0;
+      if (!track.stopped) noteChanges(state, next);
+    } catch (error) {
+      if (error?.code === "git_unavailable") {
+        // git could not start. One failed spawn on a loaded Mac is not "git
+        // can't run here" (Q5): the last result stays and the next read tries
+        // again; only GIT_UNAVAILABLE_LIMIT in a row give up for this session
+        // (not installed, or the system asks to install it), so it is never
+        // asked again every 3 s.
+        track.unavailable += 1;
+        if (!track.stopped && track.unavailable >= GIT_UNAVAILABLE_LIMIT) {
+          track.result = notTracked(iso(now()));
+          stopChangesPoll(state);
+        }
+      } else if (error?.code !== "git_stopped") {
+        track.unavailable = 0;
+      }
+      // A read that was cut or failed keeps the last result; the next one tries again.
+    } finally {
+      track.running = false;
+      const again = track.again;
+      track.again = false;
+      // Edits that came during the read ask for one more, but never sooner than
+      // the debounce time after this one: git must not run all the time while
+      // an agent keeps editing (Q1).
+      if (again) scheduleChanges(state, CHANGES_REFRESH_DEBOUNCE_MS, true);
+      else scheduleChanges(state, changesPollMs);
+    }
+  }
+
+  // A "files changed" marker for what changed since the last read (K12), at
+  // most one per changesMarkerGapMs per session (Q6): what changes in between
+  // waits, merged, for the end of the gap (or the end of the session).
+  function noteChanges(state, next) {
+    const track = state.changes;
+    const previous = track.result;
+    track.result = next;
+    const marker = filesMarker(previous, next);
+    if (!marker) return;
+    addPendingMarker(track.pending, marker);
+    const wait = track.markedAt === null ? 0 : track.markedAt + changesMarkerGapMs - now();
+    if (wait <= 0) {
+      flushMarker(state);
+    } else if (!track.markerTimer) {
+      track.markerTimer = setTimeout(() => {
+        track.markerTimer = null;
+        flushMarker(state);
+      }, wait);
+      track.markerTimer.unref?.();
+    }
+  }
+
+  // Records the merged moment that is waiting, if any. addMarker starts
+  // synchronously, so this also works while a session is ending.
+  function flushMarker(state) {
+    const track = state.changes;
+    clearTimeout(track.markerTimer);
+    track.markerTimer = null;
+    const marker = pendingToMarker(track.pending);
+    if (!marker) return;
+    track.pending = newPendingMarker();
+    track.markedAt = now();
+    addMarker(state.meta.id, marker).catch(() => {});
+  }
+
+  // Claude's PostToolUse(Edit|Write) hook (onHook): read again soon, or right
+  // after the read that runs now.
+  function refreshChangesSoon(id) {
+    const state = live.get(id);
+    if (!state || state.status === "exited" || state.changes.stopped) return false;
+    if (state.changes.running) {
+      state.changes.again = true;
+      return true;
+    }
+    if (!state.changes.soon) scheduleChanges(state, CHANGES_REFRESH_DEBOUNCE_MS, true);
+    return true;
+  }
+
+  // An ended session is read once, fresh, with the login-shell environment.
+  // Answers { result, env }: the env is what a diff of this session runs with.
+  // Never rejects: a login environment that can't be read, or a read that is
+  // cut or fails, answers "not read" (git: null).
+  async function readEndedChanges(meta) {
+    if (!changesTracked(meta)) return { result: notTracked(), env: {} };
+    let env = {};
+    try {
+      env = await loginEnv();
+      return { result: await readChanges(meta.folder, { env, run: runGit, now }), env };
+    } catch (error) {
+      const result = error?.code === "git_unavailable" ? notTracked(iso(now())) : { git: null, files: [], total: 0, at: null };
+      return { result, env };
+    }
+  }
+
+  // Requests for an ended session share one read while it runs, and reuse its
+  // answer for ENDED_READ_REUSE_MS afterwards, so several windows or a retrying
+  // client never stack git reads on a slow folder (Q4).
+  function endedRead(meta) {
+    const known = endedReads.get(meta.id);
+    if (known) return known.promise;
+    const entry = { promise: null, timer: null };
+    entry.promise = readEndedChanges(meta).finally(() => {
+      entry.timer = setTimeout(() => {
+        if (endedReads.get(meta.id) === entry) endedReads.delete(meta.id);
+      }, ENDED_READ_REUSE_MS);
+      entry.timer.unref?.();
+    });
+    endedReads.set(meta.id, entry);
+    return entry.promise;
+  }
+
+  // GET /api/sessions/:id/changes: a live session's last read, at once.
+  async function changes(id) {
+    assertSessionId(id);
+    const state = live.get(id);
+    if (state && state.status !== "exited") return structuredClone(state.changes.result);
+    await finishedExit(id);
+    const meta = await readMeta(id);
+    if (!meta) throw unknownSession();
+    return structuredClone((await endedRead(meta)).result);
+  }
+
+  // GET /api/sessions/:id/changes/diff: only a path in the session's current
+  // changes is ever diffed (changes.js checks the path again before git runs).
+  async function diff(id, file) {
+    assertSessionId(id);
+    const wanted = typeof file === "string" ? file : "";
+    const state = live.get(id);
+    let meta;
+    let current;
+    let env;
+    if (state && state.status !== "exited") {
+      meta = state.meta;
+      current = state.changes.result;
+      env = state.profile?.env;
+    } else {
+      await finishedExit(id);
+      meta = await readMeta(id);
+      if (!meta) throw unknownSession();
+      ({ result: current, env } = await endedRead(meta));
+    }
+    const entry = current.git === true ? current.files.find((candidate) => candidate.path === wanted) : undefined;
+    if (!entry) throw sessionError(404, "change_missing", CHANGE_MISSING_MESSAGE);
+    return readDiff(meta.folder, entry, { env, run: runGit });
   }
 
   // ---- summaries ------------------------------------------------------------------------------------
@@ -2109,6 +2392,9 @@ export function createSessionManager({
     if (reason !== "stop") closing = true;
     const endedBy = reason === "stop" ? "stop" : "quit";
     const running = [...live.values()].filter((state) => state.status !== "exited");
+    // No new git run starts while the sessions are being stopped (Q3): the
+    // process of each one ends a little later, and its poll would go on until then.
+    for (const state of running) stopChangesPoll(state);
     let timer;
     const guard = new Promise((resolve) => {
       timer = setTimeout(resolve, SHUTDOWN_GUARD_MS);
@@ -2224,6 +2510,7 @@ export function createSessionManager({
     if (mapped.newTurn) markNewTurn(id);
     if (mapped.promptMarker) addMarker(id, { type: "prompt" }).catch(() => {});
     if (mapped.heldCleared) clearHeld(id);
+    if (mapped?.refreshChanges === true) refreshChangesSoon(id);
   }
 
   // POST /hooks/sessions/:id/status (SP4, H6): the statusLine wrapper's copy of Claude's status
@@ -2263,6 +2550,8 @@ export function createSessionManager({
     quitCheck,
     isLive,
     recoverStaleSessions,
+    changes,
+    diff,
     checkHookToken,
     onHook,
     onStatusLine,

@@ -24,6 +24,7 @@ import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { SOFT_STOP_LIMIT_MS, runSoftStop } from "../server/runtime/sessions/soft-stop.js";
 import { writeJson as writeJsonFile } from "../server/runtime/store.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 
 const isWindows = process.platform === "win32";
 const SKIP_POSIX = { skip: isWindows ? "the fake agents are POSIX shell shims" : false };
@@ -291,6 +292,8 @@ function fakeWorld(over = {}) {
       const pty = world.ptys.find((candidate) => candidate.pid === pid);
       if (pty && world.killMakesExit) pty.exit(null, "SIGTERM");
     },
+    // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
+    ...NO_GIT_OPTIONS,
     ...over
   };
   world.manager = createSessionManager(world.deps);
@@ -738,6 +741,7 @@ function killLeftovers(running, kill = (pid, signal) => process.kill(pid, signal
 // `running`; `outcomes` collects what each soft stop answered.
 function realDeps(profiles, { spawned, running, cliPids, outcomes = [] }) {
   return {
+    ...NO_GIT_OPTIONS,
     isExecutionAllowed: async () => true,
     detect: async (agentId) => ({ installed: true, path: profiles[agentId].command }),
     resolveBrain: async () => null,

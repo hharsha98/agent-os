@@ -37,6 +37,7 @@ import {
   parseClientFrame
 } from "../server/runtime/sessions/ws.js";
 import { FAKE_AGENT_NAMES, FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWindows = process.platform === "win32";
@@ -794,6 +795,7 @@ test("an attach to an ended or unknown session is refused from the live map: no 
         })
       );
       const manager = createSessionManager({
+        ...NO_GIT_OPTIONS,
         detect: async (agentId) => {
           detections.push(agentId);
           return { installed: true, path: "/fake/bin/claude" };

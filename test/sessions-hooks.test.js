@@ -48,6 +48,7 @@ import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { NESTED_MARKERS, resetLoginShellEnvForTests, sessionEnv } from "../server/runtime/sessions/shell-env.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { postHook } from "./helpers/hook-client.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWindows = process.platform === "win32";
@@ -1020,6 +1021,8 @@ async function withHookEnv(fn) {
 function hookManager(ctx, { getPort, now, onAlertLine, spawn: spawnFn, ptys = [] } = {}) {
   let nextPid = 930001;
   return createSessionManager({
+    // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
+    ...NO_GIT_OPTIONS,
     now,
     getPort,
     onAlertLine,

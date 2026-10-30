@@ -42,6 +42,7 @@ import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { postHook } from "./helpers/hook-client.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 import { spyOnFileAccess } from "./helpers/plan-brains-safety.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -979,7 +980,9 @@ async function withManagerWorld(fn, { realPty = false, startupLines } = {}) {
       readSettings: async () => ({ claudeFullscreen: false }),
       buildProfile: (options) => buildSessionProfile({ ...options, managedSettingsPath: ctx.managedPath }),
       getPort: () => port,
-      newHookToken: () => TOKEN
+      newHookToken: () => TOKEN,
+      // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
+      ...NO_GIT_OPTIONS
     };
     if (realPty) {
       deps.spawn = async (options) => track(running, await spawnPty(options));

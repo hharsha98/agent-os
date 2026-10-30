@@ -214,7 +214,7 @@ test("the palette key outside a terminal: ⌘K on a Mac, Ctrl+K elsewhere, never
   assert.equal(ss.isMacPlatform("Linux x86_64"), false);
 });
 
-test("inside a terminal only ⌘K/⌘T/⌘1-9 (Mac) or Ctrl+Shift+K/T/1-9 (elsewhere) are Agent OS's; Ctrl+K and Ctrl+R reach the agent", () => {
+test("inside a terminal only ⌘K/⌘T/⌘1-9/⌘\\ (Mac) or Ctrl+Shift+K/T/1-9/\\ (elsewhere) are Agent OS's; Ctrl+K and Ctrl+R reach the agent", () => {
   assert.deepEqual(ss.isAppShortcut(key({ key: "k", code: "KeyK", metaKey: true }), MAC), { action: "palette" });
   assert.deepEqual(ss.isAppShortcut(key({ key: "t", code: "KeyT", metaKey: true }), MAC), { action: "new-session" });
   assert.deepEqual(ss.isAppShortcut(key({ key: "3", code: "Digit3", metaKey: true }), MAC), { action: "switch", index: 2 });
@@ -222,7 +222,7 @@ test("inside a terminal only ⌘K/⌘T/⌘1-9 (Mac) or Ctrl+Shift+K/T/1-9 (elsew
   assert.equal(ss.isAppShortcut(key({ key: "0", code: "Digit0", metaKey: true }), MAC), null);
   assert.equal(ss.isAppShortcut(key({ key: "k", code: "KeyK", ctrlKey: true }), MAC), null, "Ctrl+K reaches the agent");
   assert.equal(ss.isAppShortcut(key({ key: "r", code: "KeyR", ctrlKey: true }), MAC), null, "Ctrl+R reaches the agent");
-  assert.equal(ss.isAppShortcut(key({ key: "\\", code: "Backslash", metaKey: true }), MAC), null, "⌘\\ (split) arrives with SP4");
+  assert.deepEqual(ss.isAppShortcut(key({ key: "\\", code: "Backslash", metaKey: true }), MAC), { action: "split" }, "⌘\\ toggles split view (SP4, Task U6)");
   assert.equal(ss.isAppShortcut(key({ key: "T", code: "KeyT", metaKey: true, shiftKey: true }), MAC), null);
   assert.equal(ss.isAppShortcut(key({ key: "c", code: "KeyC", metaKey: true }), MAC), null, "⌘C stays copy");
   assert.deepEqual(ss.isAppShortcut(key({ key: "K", code: "KeyK", ctrlKey: true, shiftKey: true }), PC), { action: "palette" });
@@ -240,8 +240,8 @@ test("in browser mode only the palette key is taken, and the panel footer shows 
   assert.equal(ss.isAppShortcut(key({ key: "1", code: "Digit1", metaKey: true }), MAC_BROWSER), null, "the browser keeps ⌘1-9");
   assert.deepEqual(ss.isAppShortcut(key({ key: "K", code: "KeyK", ctrlKey: true, shiftKey: true }), PC_BROWSER), { action: "palette" });
   assert.equal(ss.isAppShortcut(key({ key: "T", code: "KeyT", ctrlKey: true, shiftKey: true }), PC_BROWSER), null);
-  assert.deepEqual(ss.shortcutHints(MAC), [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }]);
-  assert.deepEqual(ss.shortcutHints(PC), [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }]);
+  assert.deepEqual(ss.shortcutHints(MAC), [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }, { keys: "⌘\\", word: "split" }]);
+  assert.deepEqual(ss.shortcutHints(PC), [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }, { keys: "Ctrl+Shift+\\", word: "split" }]);
   assert.deepEqual(ss.shortcutHints(MAC_BROWSER), []);
   assert.deepEqual(ss.shortcutHints(PC_BROWSER), []);
 });

@@ -233,7 +233,7 @@ export interface KeyLike {
   shiftKey: boolean;
 }
 
-export type AppShortcut = { action: "palette" } | { action: "new-session" } | { action: "switch"; index: number };
+export type AppShortcut = { action: "palette" } | { action: "new-session" } | { action: "switch"; index: number } | { action: "split" };
 
 // The letter pressed, also on a keyboard layout that types another letter in that place (for example
 // Cyrillic): then the key's place (event.code) decides.
@@ -257,10 +257,15 @@ export function isPaletteKey(event: KeyLike, { isMac }: { isMac: boolean }): boo
   return held && isLetter(event, "k");
 }
 
-// The only keys a terminal leaves to Agent OS: ⌘K, ⌘T and ⌘1-9 on a Mac; Ctrl+Shift+K/T/1-9 elsewhere.
-// Everything else goes to the agent, Ctrl+K and Ctrl+R included. A browser keeps ⌘T and ⌘1-9 (Ctrl+T,
-// Ctrl+1-9, Ctrl+Shift+T) for itself, so in browser mode only the palette key is Agent OS's. ⌘\ (split)
-// arrives with SP4 and is not taken yet.
+// The backslash key, by its place first: Shift turns it into "|" (Ctrl+Shift+\ on Windows and Linux).
+function isBackslash(event: KeyLike): boolean {
+  return event.code === "Backslash" || event.key === "\\";
+}
+
+// The only keys a terminal leaves to Agent OS: ⌘K, ⌘T, ⌘1-9 and ⌘\ on a Mac; Ctrl+Shift+K/T/1-9/\ elsewhere.
+// Everything else goes to the agent, Ctrl+K, Ctrl+R and Ctrl+\ (the terminal's quit key) included. A browser keeps
+// ⌘T and ⌘1-9 (Ctrl+T, Ctrl+1-9, Ctrl+Shift+T) for itself, so in browser mode only the palette key is Agent OS's;
+// split view has its Split view button there (Task U6).
 export function isAppShortcut(event: KeyLike, { isMac, desktop }: { isMac: boolean; desktop: boolean }): AppShortcut | null {
   if (event.altKey) return null;
   const held = isMac ? event.metaKey && !event.ctrlKey && !event.shiftKey : event.ctrlKey && event.shiftKey && !event.metaKey;
@@ -268,6 +273,7 @@ export function isAppShortcut(event: KeyLike, { isMac, desktop }: { isMac: boole
   if (isLetter(event, "k")) return { action: "palette" };
   if (!desktop) return null;
   if (isLetter(event, "t")) return { action: "new-session" };
+  if (isBackslash(event)) return { action: "split" };
   const digit = rowDigit(event);
   return digit === null ? null : { action: "switch", index: digit - 1 };
 }
@@ -275,9 +281,10 @@ export function isAppShortcut(event: KeyLike, { isMac, desktop }: { isMac: boole
 // The side panel footer's hints: desktop app only, nothing in browser mode (spec, Browser mode).
 export function shortcutHints({ isMac, desktop }: { isMac: boolean; desktop: boolean }): Array<{ keys: string; word: string }> {
   if (!desktop) return [];
+  // The split keys are written again in splitShared.ts (splitKeys); test/sessions-split-logic.test.js keeps them equal.
   return isMac
-    ? [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }]
-    : [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }];
+    ? [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }, { keys: "⌘\\", word: "split" }]
+    : [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }, { keys: "Ctrl+Shift+\\", word: "split" }];
 }
 
 // ---------------------------------------------------------------------------

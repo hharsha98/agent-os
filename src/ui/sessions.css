@@ -343,6 +343,204 @@
   color: var(--os-text-3);
 }
 
+/* ---- Split view (spec SP4, Split; Task U6) ------------------------------------------------------------ */
+/* The Split view button sits after New session, behind a thin rule (the prototype's .ss-vsep and .ss-splitbtn). */
+.os-sess__vsep {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--os-sp-2);
+  background: var(--os-line-2);
+}
+.os-shell .os-sess-splitbtn {
+  flex: none;
+  padding: 0 var(--os-sp-3);
+}
+.os-btn.os-btn--ghost.os-sess-splitbtn[aria-pressed="true"] {
+  background: var(--os-surface-3);
+  border-color: var(--os-line-2);
+  box-shadow: var(--os-e1);
+  color: var(--os-text-1);
+}
+.os-sess-splitbtn__kbd {
+  margin-left: 2px;
+}
+/* The tab of the session in the other pane: quieter than the selected tab, louder than the rest. */
+.os-sess-tab.is-in-split {
+  background: var(--os-surface-2);
+  border-color: var(--os-line-1);
+}
+.os-shell .os-sess-tab.is-in-split button.os-sess-tab__btn {
+  color: var(--os-text-1);
+}
+.os-sess-tab.is-in-split .os-sess-tab__btn svg {
+  color: var(--os-text-2);
+}
+/* The panes. One pane fills the work area as the terminal did before; in split view the first pane takes --os-split
+   (set by the page: its share, 28 % to 72 %, of the width left after the divider's own 20 px, SPLIT_GAP_PX), the
+   divider sits next to it, and the second takes the rest. In the page the divider is the FIRST child, so Tab from the
+   tab strip reaches it before any terminal (an open terminal keeps Tab for its agent); `order` puts it between the
+   panes. The panes are the two <section>s (first-of-type, last-of-type), the divider is a <div>. */
+.os-sess-panes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.os-sess-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-sess-panes--split > .os-sess-pane {
+  container-type: inline-size;
+}
+.os-sess-panes--split > .os-sess-pane:first-of-type {
+  order: 1;
+  flex: 0 0 var(--os-split, calc((100% - 20px) * 0.5));
+}
+.os-sess-panes--split > .os-sess-pane:last-of-type {
+  order: 3;
+}
+.os-sess-panes--split .os-sess-pane.is-focus .os-sess-term,
+.os-sess-panes--split .os-sess-pane.is-focus .os-sess-ended {
+  border-color: var(--os-accent);
+}
+/* A pane's header (the prototype's .ss-phd): a button that shows that pane's details in the side panel. */
+.os-shell button.os-sess-pane__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  min-width: 0;
+  height: 36px;
+  padding: 0 var(--os-sp-1);
+  border: 0;
+  border-radius: var(--os-r-sm);
+  background: transparent;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  text-align: left;
+  cursor: pointer;
+}
+.os-sess-pane__head > svg {
+  flex: none;
+  color: var(--os-text-3);
+}
+.os-sess-pane__head[aria-pressed="true"] > svg {
+  color: var(--os-text-1);
+}
+.os-sess-pane__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--os-text-1);
+}
+.os-sess-pane__branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-sess-pane__state {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--os-sp-2);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-sess-pane__head:hover .os-sess-pane__title {
+    text-decoration: underline;
+    text-decoration-color: var(--os-line-3);
+    text-underline-offset: 3px;
+  }
+}
+@container (max-width: 440px) {
+  .os-sess-pane__branch {
+    display: none;
+  }
+}
+/* The divider (the prototype's .ss-div): a hairline with a grip; the grip turns cobalt while it is dragged. */
+.os-sess-split__divider {
+  position: relative;
+  order: 2;
+  flex: none;
+  width: 16px;
+  margin: 0 2px;
+  display: grid;
+  place-items: center;
+  cursor: col-resize;
+  touch-action: none;
+  border-radius: var(--os-r-sm);
+}
+.os-sess-split__divider::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--os-line-1);
+}
+.os-sess-split__divider i {
+  position: relative;
+  width: 4px;
+  height: 40px;
+  border-radius: 2px;
+  background: var(--os-line-3);
+  transition: background var(--os-dur-quick) var(--os-ease-out), height var(--os-dur-quick) var(--os-ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-sess-split__divider:hover i {
+    height: 56px;
+    background: var(--os-text-2);
+  }
+}
+.os-sess-split__divider.is-drag i {
+  height: 56px;
+  background: var(--os-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .os-sess-split__divider i {
+    transition: none;
+  }
+}
+/* Laptops (the prototype's breakpoint): the Split view button keeps only its icon. */
+@media (max-width: 1320px) {
+  .os-shell .os-sess-splitbtn {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+  .os-sess-splitbtn__label,
+  .os-sess-splitbtn__kbd {
+    display: none;
+  }
+  .os-sess__vsep {
+    margin: 0 var(--os-sp-1);
+  }
+}
+/* The off-canvas menu range: the two panes stack, half each, and the divider goes (the side panel is under them). */
+@media (max-width: 900px) {
+  .os-sess-panes--split {
+    flex-direction: column;
+    gap: var(--os-sp-3);
+  }
+  .os-sess-panes--split > .os-sess-pane:first-of-type {
+    flex: 1 1 0;
+  }
+  .os-sess-split__divider {
+    display: none;
+  }
+}
+
 /* ---- Side panel ---------------------------------------------------------------------------------- */
 .os-sess-panel {
   flex: none;
@@ -511,6 +709,8 @@
   display: flex;
   align-items: center;
   gap: var(--os-sp-4);
+  flex-wrap: wrap;
+  row-gap: var(--os-sp-2);
   font-size: var(--os-fs-12);
   color: var(--os-text-2);
 }

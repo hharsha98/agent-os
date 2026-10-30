@@ -1,9 +1,9 @@
 // One session's real terminal (spec "Browser terminal"): xterm.js 6.1 shows what the agent's own program
 // draws, and the person's keys go straight to it. The server keeps the session; this view only attaches
 // (the snapshot first, then live output) and can be closed and opened again at any time (spec "Persistence").
-// Only Agent OS's own shortcuts are kept from the agent (⌘K, ⌘T, ⌘1-9 on a Mac; Ctrl+Shift+K/T/1-9 elsewhere;
-// isAppShortcut in sessionsShared.ts). The palette key is handled here; ⌘T and ⌘1-9 bubble on to the Sessions
-// page's own key handler. Every other key, Ctrl+K and Ctrl+R included, reaches the agent.
+// Only Agent OS's own shortcuts are kept from the agent (⌘K, ⌘T, ⌘1-9 and ⌘\ on a Mac; Ctrl+Shift+K/T/1-9/\
+// elsewhere; isAppShortcut in sessionsShared.ts). The palette key is handled here; ⌘T, ⌘1-9 and ⌘\ bubble on to the
+// Sessions page's own key handler. Every other key, Ctrl+K, Ctrl+R and Ctrl+\ included, reaches the agent.
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import type { ITerminalOptions, ITheme } from "@xterm/xterm";
@@ -76,6 +76,11 @@ export interface SessionTerminalProps {
   // ended session's attach with a bare 403, which reaches onClose as 1006 with no reason, so only the page
   // can tell a refused try from a dropped connection (planning decision Q40).
   ended?: boolean;
+  // Split view (Task U6): this terminal is one of two panes. Once its screen is restored and this window has the focus
+  // it becomes the writer of its own session, WITHOUT taking the keyboard, so its agent is sized to the pane. A viewer's
+  // size is never applied by the server, so without this a pane nobody clicked would keep the old, wider size. Keys
+  // still go only through the terminal whose text box has the focus.
+  sizesItself?: boolean;
   onState?: (state: SessionStateFrame) => void;
   // SP4: an alert was set or changed, or it cleared (kind "resolved"); the Sessions page reads its list again.
   onAlert?: (alert: { kind: AlertKind | "resolved"; text: string }) => void;
@@ -144,7 +149,7 @@ const CLIPBOARD: IClipboardProvider = {
 };
 
 const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(function SessionTerminal(props, ref) {
-  const { sessionId, label, kittyKeyboard, webgl, autoFocus = false, active = true, ended = false } = props;
+  const { sessionId, label, kittyKeyboard, webgl, autoFocus = false, active = true, ended = false, sizesItself = false } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -154,6 +159,8 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
   const rendererRef = useRef<((wantWebgl: boolean) => void) | null>(null);
   // Set while the terminal is mounted: the Reconnect button, and the page saying the session has ended.
   const actionsRef = useRef<{ reconnect(): void; pageSaysEnded(): void } | null>(null);
+  // Set while the terminal is mounted: takes the writer role quietly when `sizesItself` asks for it (see below).
+  const sizeSelfRef = useRef<(() => void) | null>(null);
   // The newest props, for callbacks that live as long as the terminal (a new callback never reconnects).
   const latest = useRef(props);
   latest.current = props;
@@ -222,6 +229,15 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       hasKeys = true;
       socket.focus();
     };
+    // Split view (`sizesItself`): the same {t:"focus"} and size, but without moving the keyboard focus, so a pane nobody
+    // clicked still sizes its agent to the pane. Only once the screen is shown (the snapshot is restored), only while
+    // this window has the focus (a background window must not take the writer role), and once per socket.
+    const sizeSelf = () => {
+      if (disposed || sessionEnded || shown !== "open" || hasKeys) return;
+      if (latest.current.sizesItself !== true || !document.hasFocus()) return;
+      takeKeys();
+    };
+    sizeSelfRef.current = sizeSelf;
     const cancelRetry = () => {
       if (retryTimer !== null) window.clearTimeout(retryTimer);
       retryTimer = null;
@@ -295,7 +311,7 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
 
       // Agent OS's own shortcuts never reach the agent; everything else does (spec, App shortcuts). xterm calls
       // this for keydown, keypress and keyup, and returning false keeps the key from the agent. The palette
-      // key is handled here (the Shell ignores keys typed in a terminal). ⌘T and ⌘1-9 are left untouched (not
+      // key is handled here (the Shell ignores keys typed in a terminal). ⌘T, ⌘1-9 and ⌘\ are left untouched (not
       // prevented, not stopped), so they bubble on to the Sessions page's window handler. There is no
       // Ctrl+Shift+C/V in SP3 (Q45): the spec's key list sends every other key to the agent. The one other
       // exception: while the terminal is not open, Tab and Shift+Tab are left to the browser, so the focus
@@ -334,6 +350,7 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       // webview does not fire the box's own focus event again.
       const onWindowFocus = () => {
         if (document.activeElement === t.textarea) takeKeys();
+        else sizeSelf();
       };
       window.addEventListener("focus", onWindowFocus);
       cleanups.push(() => window.removeEventListener("focus", onWindowFocus));
@@ -456,6 +473,9 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
               });
               if (takes) t.focus();
             }
+            // A split-view pane that was not given the keyboard still sizes its own session (a no-op when the
+            // focus above already took the keys).
+            sizeSelf();
           },
           onOut: (data) => (disposed ? Promise.resolve() : writeParsed(t, data)),
           onState: (state) => {
@@ -522,6 +542,7 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       socket = null;
       for (const cleanup of cleanups) cleanup();
       actionsRef.current = null;
+      sizeSelfRef.current = null;
       rendererRef.current = null;
       searchRef.current = null;
       termRef.current = null;
@@ -541,6 +562,13 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
   useEffect(() => {
     if (ended) actionsRef.current?.pageSaysEnded();
   }, [ended]);
+
+  // Split view turned on while this terminal is already open: it takes the writer role now (a pane that is mounted
+  // by split view itself does it when its first snapshot is restored). Turning it off needs nothing: a terminal that
+  // took the role keeps it and its size follows the wider box.
+  useEffect(() => {
+    if (sizesItself) sizeSelfRef.current?.();
+  }, [sizesItself]);
 
   // Shown again (its tab selected): fit the box, and take the keys when asked to.
   useEffect(() => {

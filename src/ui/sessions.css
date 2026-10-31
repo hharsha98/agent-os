@@ -343,6 +343,204 @@
   color: var(--os-text-3);
 }
 
+/* ---- Split view (spec SP4, Split; Task U6) ------------------------------------------------------------ */
+/* The Split view button sits after New session, behind a thin rule (the prototype's .ss-vsep and .ss-splitbtn). */
+.os-sess__vsep {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--os-sp-2);
+  background: var(--os-line-2);
+}
+.os-shell .os-sess-splitbtn {
+  flex: none;
+  padding: 0 var(--os-sp-3);
+}
+.os-btn.os-btn--ghost.os-sess-splitbtn[aria-pressed="true"] {
+  background: var(--os-surface-3);
+  border-color: var(--os-line-2);
+  box-shadow: var(--os-e1);
+  color: var(--os-text-1);
+}
+.os-sess-splitbtn__kbd {
+  margin-left: 2px;
+}
+/* The tab of the session in the other pane: quieter than the selected tab, louder than the rest. */
+.os-sess-tab.is-in-split {
+  background: var(--os-surface-2);
+  border-color: var(--os-line-1);
+}
+.os-shell .os-sess-tab.is-in-split button.os-sess-tab__btn {
+  color: var(--os-text-1);
+}
+.os-sess-tab.is-in-split .os-sess-tab__btn svg {
+  color: var(--os-text-2);
+}
+/* The panes. One pane fills the work area as the terminal did before; in split view the first pane takes --os-split
+   (set by the page: its share, 28 % to 72 %, of the width left after the divider's own 20 px, SPLIT_GAP_PX), the
+   divider sits next to it, and the second takes the rest. In the page the divider is the FIRST child, so Tab from the
+   tab strip reaches it before any terminal (an open terminal keeps Tab for its agent); `order` puts it between the
+   panes. The panes are the two <section>s (first-of-type, last-of-type), the divider is a <div>. */
+.os-sess-panes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.os-sess-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+}
+.os-sess-panes--split > .os-sess-pane {
+  container-type: inline-size;
+}
+.os-sess-panes--split > .os-sess-pane:first-of-type {
+  order: 1;
+  flex: 0 0 var(--os-split, calc((100% - 20px) * 0.5));
+}
+.os-sess-panes--split > .os-sess-pane:last-of-type {
+  order: 3;
+}
+.os-sess-panes--split .os-sess-pane.is-focus .os-sess-term,
+.os-sess-panes--split .os-sess-pane.is-focus .os-sess-ended {
+  border-color: var(--os-accent);
+}
+/* A pane's header (the prototype's .ss-phd): a button that shows that pane's details in the side panel. */
+.os-shell button.os-sess-pane__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  min-width: 0;
+  height: 36px;
+  padding: 0 var(--os-sp-1);
+  border: 0;
+  border-radius: var(--os-r-sm);
+  background: transparent;
+  color: var(--os-text-2);
+  font-size: var(--os-fs-13);
+  text-align: left;
+  cursor: pointer;
+}
+.os-sess-pane__head > svg {
+  flex: none;
+  color: var(--os-text-3);
+}
+.os-sess-pane__head[aria-pressed="true"] > svg {
+  color: var(--os-text-1);
+}
+.os-sess-pane__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--os-text-1);
+}
+.os-sess-pane__branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+.os-sess-pane__state {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--os-sp-2);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-sess-pane__head:hover .os-sess-pane__title {
+    text-decoration: underline;
+    text-decoration-color: var(--os-line-3);
+    text-underline-offset: 3px;
+  }
+}
+@container (max-width: 440px) {
+  .os-sess-pane__branch {
+    display: none;
+  }
+}
+/* The divider (the prototype's .ss-div): a hairline with a grip; the grip turns cobalt while it is dragged. */
+.os-sess-split__divider {
+  position: relative;
+  order: 2;
+  flex: none;
+  width: 16px;
+  margin: 0 2px;
+  display: grid;
+  place-items: center;
+  cursor: col-resize;
+  touch-action: none;
+  border-radius: var(--os-r-sm);
+}
+.os-sess-split__divider::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--os-line-1);
+}
+.os-sess-split__divider i {
+  position: relative;
+  width: 4px;
+  height: 40px;
+  border-radius: 2px;
+  background: var(--os-line-3);
+  transition: background var(--os-dur-quick) var(--os-ease-out), height var(--os-dur-quick) var(--os-ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-sess-split__divider:hover i {
+    height: 56px;
+    background: var(--os-text-2);
+  }
+}
+.os-sess-split__divider.is-drag i {
+  height: 56px;
+  background: var(--os-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .os-sess-split__divider i {
+    transition: none;
+  }
+}
+/* Laptops (the prototype's breakpoint): the Split view button keeps only its icon. */
+@media (max-width: 1320px) {
+  .os-shell .os-sess-splitbtn {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+  .os-sess-splitbtn__label,
+  .os-sess-splitbtn__kbd {
+    display: none;
+  }
+  .os-sess__vsep {
+    margin: 0 var(--os-sp-1);
+  }
+}
+/* The off-canvas menu range: the two panes stack, half each, and the divider goes (the side panel is under them). */
+@media (max-width: 900px) {
+  .os-sess-panes--split {
+    flex-direction: column;
+    gap: var(--os-sp-3);
+  }
+  .os-sess-panes--split > .os-sess-pane:first-of-type {
+    flex: 1 1 0;
+  }
+  .os-sess-split__divider {
+    display: none;
+  }
+}
+
 /* ---- Side panel ---------------------------------------------------------------------------------- */
 .os-sess-panel {
   flex: none;
@@ -511,6 +709,8 @@
   display: flex;
   align-items: center;
   gap: var(--os-sp-4);
+  flex-wrap: wrap;
+  row-gap: var(--os-sp-2);
   font-size: var(--os-fs-12);
   color: var(--os-text-2);
 }
@@ -565,6 +765,108 @@
   color: var(--os-text-2);
 }
 
+/* ---- Worktree offer (spec SP4): the New session dialog's two choices, and the panel's copy line ---------------- */
+.os-newsess__offer-title {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  margin: 0;
+  font-size: var(--os-fs-14);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--os-text-1);
+  overflow-wrap: anywhere;
+}
+.os-newsess__offer-title svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--os-text-3);
+}
+.os-newsess__choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  margin-top: var(--os-sp-1);
+}
+/* A choice's edge in a dialog (surface-2) needs 3:1, as the chips above: text-3 resting, text-1 when picked. */
+.os-newsess__choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-3);
+  padding: var(--os-sp-3) var(--os-sp-4);
+  border: 1px solid var(--os-text-3);
+  border-radius: var(--os-r-md);
+  cursor: pointer;
+  transition:
+    border-color 140ms var(--os-ease-out),
+    background-color 140ms var(--os-ease-out);
+}
+.os-newsess__choice--on {
+  border-color: var(--os-text-1);
+  background: var(--os-surface-3);
+}
+.os-newsess__choice:has(input:focus-visible) {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
+}
+.os-newsess__choice input[type="radio"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--os-accent);
+}
+.os-newsess__choice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-newsess__choice-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-newsess__choice-body strong {
+  font-size: var(--os-fs-13);
+  font-weight: 600;
+  color: var(--os-text-1);
+  overflow-wrap: anywhere;
+}
+.os-newsess__tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--os-sp-2);
+  border: 1px solid var(--os-accent-line);
+  border-radius: var(--os-r-pill);
+  background: var(--os-accent-soft);
+  color: var(--os-accent-strong);
+  font-size: var(--os-fs-11);
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* Under the branch, lined up with the branch's text (its 16 px icon and the gap). */
+.os-sess-panel__copy {
+  min-width: 0;
+  margin: 2px 0 0 calc(16px + var(--os-sp-2));
+}
+.os-sess-panel__copyline {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-shell .os-sess-panel__copy .os-btn {
+  min-height: 30px;
+  margin-top: var(--os-sp-2);
+}
+
 /* ---- Laptops and short windows (the prototype's breakpoints) --------------------------------------- */
 @media (max-width: 1320px) {
   .os-sess-panel {
@@ -613,4 +915,413 @@
     border-left: 0;
     border-top: 1px solid var(--os-line-1);
   }
+}
+
+/* SP4 (Task U5): the panel's alert lines (hooks switched off and why, the trust line, basic alerts), OpenClaw's cards in
+   the panel, the Live meter's gauges, and the desktop app's one-time notifications note. */
+.os-sess-panel__alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-sess-panel__alert svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--os-text-3);
+}
+.os-sess-panel__asks {
+  padding: var(--os-sp-4) var(--os-sp-5);
+  border-top: 1px solid var(--os-line-1);
+}
+.os-sess-panel__asks:empty {
+  display: none;
+}
+.os-sess-panel__gauge {
+  margin: var(--os-sp-2) 0;
+}
+.os-sess__notify .os-sess__notify-ok {
+  flex: none;
+  height: 28px;
+  margin-left: auto;
+  padding: 0 var(--os-sp-3);
+  font-size: var(--os-fs-12);
+}
+
+/* ---- Files changed and the read-only diff (SP4, Task U7; the prototype's .ss-file rows) --------------------------- */
+/* A row: the file icon, the path (its folder part dimmer; a long path ends in "…", the tooltip has it all) and the + and
+   − line counts. The buttons need two classes and an element (0,2,1) to win over `.os-shell button`. */
+.os-sess-changes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.os-shell button.os-sess-file {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  column-gap: var(--os-sp-2);
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--os-line-1);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-12);
+  font-weight: 450;
+  color: var(--os-text-1);
+}
+.os-shell .os-sess-changes li:first-child button.os-sess-file {
+  border-top: 0;
+}
+.os-shell button.os-sess-file:focus-visible {
+  outline-offset: 2px;
+  border-radius: var(--os-r-sm);
+}
+.os-sess-file svg {
+  color: var(--os-text-3);
+}
+.os-sess-file__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.os-sess-file__dir {
+  color: var(--os-text-2);
+}
+.os-sess-file__counts {
+  display: flex;
+  gap: var(--os-sp-2);
+  font-variant-numeric: tabular-nums;
+}
+.os-sess-file__add {
+  color: var(--os-ok);
+}
+.os-sess-file__del {
+  color: var(--os-danger);
+}
+.os-sess-file__zero {
+  color: var(--os-text-3);
+}
+@media (hover: hover) and (pointer: fine) {
+  .os-sess-file:hover .os-sess-file__path {
+    text-decoration: underline;
+    text-decoration-color: var(--os-line-2);
+    text-underline-offset: 3px;
+  }
+}
+.os-sess-file:active .os-sess-file__path {
+  color: var(--os-text-2);
+}
+.os-sess-changes__line,
+.os-sess-changes__more {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-sess-changes__more {
+  margin-top: var(--os-sp-2);
+  font-size: var(--os-fs-12);
+}
+.os-sess-panel__sec > .os-sess-panel__note {
+  margin: 0 0 var(--os-sp-2);
+}
+/* The diff dialog: wider than a question, the diff in its own scrolling box so Close stays on screen at 1280×720, and
+   long lines wrapped so nothing scrolls sideways. */
+.os-modal:has(.os-diff-view) {
+  width: min(880px, 100%);
+}
+.os-diff-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  min-width: 0;
+}
+.os-diff-view__path {
+  margin: 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-diff-view__state,
+.os-diff-view__note {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-diff {
+  max-height: min(60svh, 560px);
+  margin: 0;
+  padding: var(--os-sp-2) 0;
+  overflow: auto;
+  border: 1px solid var(--os-line-1);
+  border-radius: var(--os-r-sm);
+  background: var(--os-bg-0);
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-12);
+  line-height: 1.5;
+  color: var(--os-text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.os-diff:focus-visible {
+  outline-offset: 2px;
+}
+.os-diff__line {
+  display: block;
+  min-height: 1.5em;
+  padding: 0 var(--os-sp-3);
+}
+.os-diff__line--add {
+  background: var(--os-ok-wash);
+  color: var(--os-ok);
+}
+.os-diff__line--del {
+  background: var(--os-danger-wash);
+  color: var(--os-danger);
+}
+.os-diff__line--hunk {
+  color: var(--os-accent-strong);
+}
+.os-diff__line--meta {
+  color: var(--os-text-3);
+}
+/* A hidden character drawn as a visible token (`<U+202E>`, `\x1B`; VisibleText): dim amber on its own wash, so it reads
+   as "something is here" on a row, in the dialog's title and on a green or red diff line alike. */
+.os-hidden-char {
+  padding: 0 2px;
+  border-radius: var(--os-r-sm);
+  background: var(--os-warn-wash);
+  color: var(--os-warn);
+  font-style: normal;
+}
+/* A very long file name in the dialog's title wraps (the full path under it wraps too); nothing leaves the dialog. */
+.os-modal:has(.os-diff-view) .os-modal__title {
+  overflow-wrap: anywhere;
+}
+/* ---- end Files changed ------------------------------------------------------------------------------------------- */
+
+/* The side panel's Hand-off section (Task X8): the Send buttons, their caption, and handed-over text in a read-only
+   box with a Copy button. */
+.os-handoff__send {
+  width: 100%;
+  justify-content: center;
+}
+.os-handoff__send + .os-handoff__send {
+  margin-top: var(--os-sp-2);
+}
+.os-shell .os-handoff__send,
+.os-shell .os-handoff__copy {
+  min-height: 30px;
+}
+.os-handoff__cap {
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  color: var(--os-text-2);
+}
+.os-handoff__status,
+.os-handoff__why {
+  margin: 0 0 var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  line-height: 1.45;
+  color: var(--os-text-1);
+  overflow-wrap: anywhere;
+}
+/* What follows the caption (the "…" while the agent is not ready, the typed text, the Copy fallback). */
+.os-handoff__cap ~ .os-handoff__status,
+.os-handoff__cap ~ .os-handoff__box,
+.os-handoff__cap ~ .os-handoff__typed > .os-handoff__box,
+.os-handoff__cap ~ .os-handoff__fallback {
+  margin-top: var(--os-sp-3);
+}
+/* The Files changed list is bounded inside the side panel (two rows and a peek of the third at 1280x720, then it
+   scrolls inside itself), so the Hand-off section and its Send button below it stay on screen at 1280x720 whatever the
+   number of changed files (the server lists up to 200), even under a full Live meter and the trust line. It grows with
+   a taller window. The rows are buttons, so keyboard focus scrolls them into view; the focus ring is drawn inside the
+   list so the scroll box does not clip it. */
+.os-sess-panel .os-sess-changes {
+  max-height: clamp(72px, 10svh, 144px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.os-shell .os-sess-panel button.os-sess-file:focus-visible {
+  outline-offset: -2px;
+}
+.os-handoff__box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--os-sp-2);
+  margin-bottom: var(--os-sp-3);
+}
+.os-shell .os-handoff__text {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 88px;
+  max-height: 220px;
+  padding: var(--os-sp-2) var(--os-sp-3);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-sm);
+  background: var(--os-surface-1);
+  color: var(--os-text-1);
+  font-family: var(--os-font-mono);
+  font-size: var(--os-fs-12);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: vertical;
+}
+
+/* --- Plan ran out, keep going (SP4, Task X10): a held session's banner above its terminal, the confirm dialog's
+   points, and Cursor's hand-over in its Hand-off section. Tokens only; nothing moves. --- */
+.os-sess-limit {
+  flex: none;
+  min-width: 0;
+}
+.os-sess-limit .os-banner__actions .os-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+}
+.os-sess-limit .os-banner__actions .os-btn svg {
+  flex: none;
+}
+.os-sess-limit__line,
+.os-sess-limit__sub {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.os-sess-limit__sub {
+  color: var(--os-text-2);
+}
+.os-sess-limit__note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-sess-limit__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--os-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.os-sess-limit__link:hover {
+  color: var(--os-accent-hover);
+}
+.os-keepgoing__points {
+  display: grid;
+  gap: var(--os-sp-3);
+  margin: var(--os-sp-3) 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--os-fs-14);
+  line-height: var(--os-lh-body);
+}
+.os-keepgoing__points li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--os-sp-3);
+}
+.os-keepgoing__points svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--os-accent);
+}
+.os-keepgoing__points strong {
+  color: var(--os-text-1);
+}
+.os-keepgoing__model,
+.os-keepgoing__note {
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+  overflow-wrap: anywhere;
+}
+.os-keepgoing__warnings {
+  margin: var(--os-sp-2) 0 0;
+  padding-left: var(--os-sp-5);
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+.os-handover {
+  display: grid;
+  gap: var(--os-sp-2);
+}
+.os-handover__open {
+  width: 100%;
+  justify-content: center;
+}
+.os-handover__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--os-sp-4);
+  margin: var(--os-sp-3) 0 0;
+  padding: 0;
+  border: 0;
+}
+.os-handover__choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--os-sp-2);
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+  cursor: pointer;
+}
+.os-handover__choice input {
+  accent-color: var(--os-accent);
+}
+
+/* --- Fix round 1 (review of Task X10), tokens only. M8: the confirm dialog's body scrolls inside the dialog on a short
+   window (1280 by 720, split view), so the dialog always fits and Cancel and the main button stay on screen; 9 times
+   --os-sp-5 covers the dimmed page's padding, the dialog's padding, its title and its button row. M7 and split view:
+   in a narrow pane the buttons drop under the words instead of squeezing them; the failure banner (I1) takes the
+   keys, so it needs no outline of its own beyond the focus ring. --- */
+.os-keepgoing__scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  min-height: 0;
+  max-height: calc(100vh - 9 * var(--os-sp-5));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* The scrolling body is a Tab stop (tabIndex 0) so the keyboard can scroll it; it shows the focus ring. */
+.os-keepgoing__scroll:focus-visible {
+  border-radius: var(--os-r-sm);
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
+}
+.os-sess-limit .os-banner {
+  flex-wrap: wrap;
+}
+.os-sess-limit .os-banner__text {
+  flex: 1 1 calc(var(--os-sp-10) * 3);
+}
+.os-sess-limit__failure {
+  border-radius: var(--os-r-md);
+}
+.os-sess-limit__failure:focus-visible {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
 }

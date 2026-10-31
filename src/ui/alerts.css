@@ -1,0 +1,142 @@
+/* SP4 alerts (Task U5): Home's "Waiting for you" strip and OpenClaw's approval cards (Safety and the session panel).
+   Tokens only (src/ui/tokens.css). Motion: 160 ms, off under reduced motion. */
+.os-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-2);
+  margin-bottom: var(--os-sp-6);
+}
+.os-strip__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--os-sp-3);
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--os-warn-line);
+  border-radius: var(--os-r-md);
+  background: var(--os-warn-wash);
+}
+.os-strip__row > svg {
+  color: var(--os-warn);
+}
+.os-strip__text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--os-sp-2);
+  min-width: 0;
+  margin: 0;
+  font-size: var(--os-fs-14);
+  color: var(--os-text-1);
+}
+.os-strip__text b {
+  max-width: 100%;
+  font-weight: 600;
+}
+.os-strip__what {
+  overflow-wrap: anywhere;
+}
+.os-strip__quiet {
+  color: var(--os-text-2);
+}
+.os-strip__sep {
+  color: var(--os-text-3);
+}
+.os-strip__more {
+  margin: 0;
+  font-size: var(--os-fs-13);
+  color: var(--os-text-2);
+}
+@media (max-width: 900px) {
+  .os-strip__row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .os-strip__row > .os-btn {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+.os-approvals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--os-sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.os-approval {
+  padding: var(--os-sp-4);
+  border: 1px solid var(--os-warn-line);
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-1);
+}
+.os-approval.is-done {
+  border-color: var(--os-line-1);
+}
+.os-approval__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--os-sp-2);
+  margin: 0 0 var(--os-sp-2);
+  font-size: var(--os-fs-15);
+}
+.os-approval__title svg {
+  flex: none;
+  color: var(--os-warn);
+}
+.os-approval.is-done .os-approval__title svg {
+  color: var(--os-text-2);
+}
+.os-approval__from {
+  font-size: var(--os-fs-12);
+  font-weight: 500;
+  color: var(--os-text-2);
+}
+.os-approval__cmd,
+.os-approval__summary {
+  margin: 0 0 var(--os-sp-3);
+  font-size: var(--os-fs-13);
+  overflow-wrap: anywhere;
+}
+.os-approval__cmd {
+  padding: var(--os-sp-2) var(--os-sp-3);
+  border-radius: var(--os-r-sm);
+  background: var(--os-surface-2);
+}
+.os-approval__acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--os-sp-2);
+}
+.os-approval__why {
+  margin: var(--os-sp-2) 0 0;
+  font-size: var(--os-fs-12);
+  color: var(--os-text-2);
+}
+/* The confirm's sentence holds OpenClaw's command (up to 300 characters, maybe with no spaces): it wraps inside the dialog. */
+.os-approval__confirm {
+  overflow-wrap: anywhere;
+}
+.os-approval__error {
+  margin: var(--os-sp-2) 0 0;
+  color: var(--os-danger);
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .os-strip__row,
+  .os-approval {
+    animation: os-alert-in 160ms var(--os-ease-out);
+  }
+}
+@keyframes os-alert-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

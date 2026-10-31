@@ -205,14 +205,27 @@ test("login shell (Review Focus 1): the limit is 10 seconds, and a shell that ha
   await withShellWorld(async ({ base }) => {
     const pidFile = path.join(base, "hang.pid");
     const { file } = await fakeShell(base, "hanging-shell", `echo $$ > "${pidFile}"\nexec sleep 30`);
-    const started = Date.now();
-    const result = await resolveLoginShellEnv({ shell: file, timeoutMs: 1500 });
-    assert.ok(Date.now() - started < 6000, "gave up at the limit, not after the 30 s sleep");
+    // A shell can only be killed for hanging if it got going before the limit: it writes its pid first thing.
+    // On a busy machine the first start of a script that was only just written can take seconds (seen: more
+    // than 1.5 s with a dozen copies of this file running), and a shell the limit hit before it started has
+    // nothing to prove. So a run in which no pid was written is repeated with a longer limit (all still far
+    // short of the shell's 30 s sleep); on a quiet machine the first run, at 1.5 s, is the only one.
+    let result = null;
+    let limit = 0;
+    let took = 0;
+    for (limit of [1500, 5000, 15000]) {
+      await rm(pidFile, { force: true });
+      const started = Date.now();
+      result = await resolveLoginShellEnv({ shell: file, timeoutMs: limit });
+      took = Date.now() - started;
+      if ((await pidFrom(pidFile)) > 0) break;
+    }
+    assert.ok(took < limit + 10000, "gave up at the limit, not after the 30 s sleep");
     assert.equal(result.source, "fallback");
     assert.equal(result.notice, FALLBACK_NOTICE);
-    assert.ok(await waitFor(() => existsSync(pidFile)), "the fake shell started");
-    const pid = Number((await readFile(pidFile, "utf8")).trim());
-    assert.ok(await waitFor(() => !isAlive(pid)), "the hanging shell was killed");
+    const pid = await pidFrom(pidFile);
+    assert.ok(pid > 0, "the fake shell started");
+    assert.ok(await waitFor(() => !isAlive(pid), 15000), "the hanging shell was killed");
   });
 });
 

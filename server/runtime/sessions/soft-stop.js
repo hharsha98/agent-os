@@ -55,7 +55,10 @@ export function findBackgroundAgent(text, { agentSessionId = null, pid = null } 
 }
 
 // Runs one CLI call (argv only, never a shell, no input) with exactly the
-// environment it is handed. Never rejects: { ok, code, aborted, stdout }.
+// environment it is handed. Never rejects: { ok, code, aborted, stdout }, plus
+// `stderr` when `captureStderr` is true (SP4: OpenClaw's `approvals resolve`
+// shows OpenClaw's own error text). Without it the program's stderr is
+// ignored and the answer is exactly as before.
 // When `signal` aborts, the call's whole process tree is killed, unless the
 // call has already been seen exiting (its pid may belong to another process by
 // then). The call is answered when the program EXITS (with the output
@@ -63,18 +66,30 @@ export function findBackgroundAgent(text, { agentSessionId = null, pid = null } 
 // when its output closes: a helper the program left behind can hold the output
 // open long after the program itself is gone. `spawn` is injectable for tests.
 // `maxChars` stops collecting output once that many characters have arrived
-// (the last chunk may run over), for a caller that only wants a short answer.
-export function runCli(command, args, { env, cwd, signal, onSpawn, spawn = spawnTracked, maxChars = MAX_CLI_OUTPUT_CHARS } = {}) {
+// (the last chunk may run over), for a caller that only wants a short answer;
+// it applies to stdout and stderr each.
+export function runCli(
+  command,
+  args,
+  { env, cwd, signal, onSpawn, spawn = spawnTracked, maxChars = MAX_CLI_OUTPUT_CHARS, captureStderr = false } = {}
+) {
   return new Promise((resolve) => {
+    let stderr = "";
+    const answer = (result) => (captureStderr ? { ...result, stderr } : result);
     if (signal?.aborted) {
-      resolve({ ok: false, code: null, aborted: true, stdout: "" });
+      resolve(answer({ ok: false, code: null, aborted: true, stdout: "" }));
       return;
     }
     let child;
     try {
-      child = spawn(command, args, { cwd, env: env || {}, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+      child = spawn(command, args, {
+        cwd,
+        env: env || {},
+        stdio: ["ignore", "pipe", captureStderr ? "pipe" : "ignore"],
+        windowsHide: true
+      });
     } catch {
-      resolve({ ok: false, code: null, aborted: false, stdout: "" });
+      resolve(answer({ ok: false, code: null, aborted: false, stdout: "" }));
       return;
     }
     let stdout = "";
@@ -86,10 +101,11 @@ export function runCli(command, args, { env, cwd, signal, onSpawn, spawn = spawn
       settled = true;
       clearTimeout(flushTimer);
       signal?.removeEventListener("abort", onAbort);
-      // Let go of the output pipe: a helper that still holds the other end
+      // Let go of the output pipes: a helper that still holds the other end
       // must not keep this server's side open.
       child.stdout?.destroy();
-      resolve(result);
+      child.stderr?.destroy();
+      resolve(answer(result));
     };
     function onAbort() {
       if (child.pid && !exited) killProcessTree(child.pid, { graceMs: CLI_KILL_GRACE_MS }).catch(() => {});
@@ -109,6 +125,12 @@ export function runCli(command, args, { env, cwd, signal, onSpawn, spawn = spawn
     child.stdout.on("data", (chunk) => {
       if (stdout.length < maxChars) stdout += chunk;
     });
+    if (captureStderr && child.stderr) {
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        if (stderr.length < maxChars) stderr += chunk;
+      });
+    }
     child.once("exit", (code) => {
       exited = true;
       if (settled) return;

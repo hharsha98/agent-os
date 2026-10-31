@@ -364,6 +364,94 @@ describe("desktop folder picker (tauri-plugin-dialog)", () => {
   });
 });
 
+describe("desktop notifications (tauri-plugin-notification, SP4 rulings R20 and R21)", async () => {
+  const main = await read("desktop/src-tauri/src/main.rs");
+  // The text of main.rs from one marker to the next one after it; both must be there, in this order.
+  const between = (from, to) => {
+    const start = main.indexOf(from);
+    const end = main.indexOf(to, start);
+    assert.ok(start >= 0 && end > start, `main.rs has ${from} and, after it, ${to}`);
+    return main.slice(start, end);
+  };
+
+  test("the plugin is a Rust crate only: pinned exactly, registered, locked at 2.7.0, and no page package", async () => {
+    const cargoToml = await read("desktop/src-tauri/Cargo.toml");
+    assert.match(cargoToml, /^tauri-plugin-notification = "=2\.7\.0"$/m, "an exact pin (R20), not a range");
+    assert.match(main, /\.plugin\(tauri_plugin_notification::init\(\)\)/);
+    const lock = await read("desktop/src-tauri/Cargo.lock");
+    const locked = lock.match(/name = "tauri-plugin-notification"\r?\nversion = "([^"]+)"/);
+    assert.ok(locked, "Cargo.lock has tauri-plugin-notification: run cargo build in desktop/src-tauri");
+    assert.equal(locked[1], "2.7.0");
+    const pkg = JSON.parse(await read("package.json"));
+    for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+      assert.equal(pkg[field]?.["@tauri-apps/plugin-notification"], undefined, `no @tauri-apps/plugin-notification in ${field}: the page never sends notifications`);
+    }
+    const npmLock = JSON.parse(await read("package-lock.json"));
+    assert.equal(npmLock.packages["node_modules/@tauri-apps/plugin-notification"], undefined, "not in package-lock.json either");
+  });
+
+  test("the page gets no notification permission and never uses notifications itself", async () => {
+    const capability = JSON.parse(await read("desktop/src-tauri/capabilities/default.json"));
+    const names = capability.permissions.map((permission) => (typeof permission === "string" ? permission : permission.identifier));
+    assert.deepEqual(names.filter((name) => name.startsWith("notification:")), [], "no notification:* permission for the remote page (R20)");
+    assert.doesNotMatch(capability.description, /notification/i, "the description claims no notification IPC for the page");
+    // In the desktop window the plugin's init script replaces window.Notification, and without a permission every call
+    // there is refused; in a browser tab the page shows its own toast. So no page code uses either.
+    const files = (await readdir(path.join(root, "src"), { recursive: true })).filter((file) => /\.(tsx?|jsx?|mjs|html)$/.test(file));
+    assert.ok(files.length > 50, `the scan sees the page code (${files.length} files)`);
+    for (const file of files) {
+      const text = await readFile(path.join(root, "src", file), "utf8");
+      assert.doesNotMatch(text, /@tauri-apps\/plugin-notification|\bnew Notification\(|\bNotification\.requestPermission\b|\bwindow\.Notification\b/, file);
+    }
+  });
+
+  test("the shell reads the server's output as bytes, so a line that is not UTF-8 never stops it (R21)", () => {
+    const reader = between("fn read_lines_lossy<", "fn watch_server(");
+    assert.match(reader, /read_until\(b'\\n', &mut buf\)/);
+    assert.match(reader, /String::from_utf8_lossy\(&buf\)/);
+    const watch = between("fn watch_server(", "fn notify_alert(");
+    assert.match(watch, /read_lines_lossy\(BufReader::new\(stdout\), /);
+    assert.match(watch, /read_lines_lossy\(BufReader::new\(stderr\), /);
+    assert.doesNotMatch(watch, /\.lines\(\)/, "BufRead::lines() stops at the first line that is not UTF-8, and then nothing drains the pipe");
+  });
+
+  test("an alert line raises a notification only when the window is hidden or not focused, and a click shows the window", () => {
+    assert.match(main, /const ALERT_LINE_PREFIX: &str = "AGENT_OS_ALERT:";/);
+    assert.match(main, /fn should_notify\(visible: bool, focused: bool\) -> bool \{\s*!visible \|\| !focused\s*\}/);
+    const watch = between("fn watch_server(", "fn notify_alert(");
+    assert.match(watch, /parse_alert_line\(line\)/);
+    // The window check runs on the main thread, so the reader never waits on the window.
+    assert.match(watch, /run_on_main_thread\(move \|\| notify_alert\(&handle, &note\)\)/);
+    const notify = between("fn notify_alert(", "fn listen_for_notification_clicks(");
+    assert.match(notify, /is_visible\(\)/);
+    assert.match(notify, /is_focused\(\)/);
+    assert.match(notify, /if !should_notify\(visible, focused\) \{\s*return;\s*\}/);
+    assert.match(notify, /\.notification\(\)\.builder\(\)\.title\(title\)/);
+    const clicks = between("fn listen_for_notification_clicks(", "fn show_error(");
+    assert.match(clicks, /\.on_action\(/);
+    assert.match(clicks, /notification_click_shows_window\(performed\.action_id\(\)\)/);
+    assert.match(clicks, /show_main_window\(&handle\)/);
+    // The plugin reports clicks only on notifications shown after a handler exists, so it is set before the server starts.
+    const setup = between(".setup(|app| {", ".on_page_load(");
+    const listen = setup.indexOf("listen_for_notification_clicks(app);");
+    assert.ok(listen >= 0 && listen < setup.indexOf("start_server(app, &window);"), "the click handler is registered before start_server");
+    assert.doesNotMatch(main, /invoke_handler|#\[tauri::command\]/, "still no custom command");
+  });
+
+  test("the shell and the server agree on the alert line", async () => {
+    const { ALERT_LINE_PREFIX, alertLine } = await import("../server/runtime/sessions/signals.js");
+    assert.ok(main.includes(`const ALERT_LINE_PREFIX: &str = "${ALERT_LINE_PREFIX}";`), "one prefix on both sides");
+    // The two lines the Rust tests parse (main.rs, mod alert_tests) are exactly what the server prints.
+    const id = "3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b";
+    const lines = [
+      alertLine({ sessionId: id, agent: "Claude Code", kind: "waiting", text: "Wants to use Bash" }),
+      alertLine({ sessionId: id, agent: "Codex", kind: "approval", text: 'Approval requested: run "npm test" in café' })
+    ];
+    assert.equal(lines[0], String.raw`AGENT_OS_ALERT:{"sessionId":"3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b","agent":"Claude Code","kind":"waiting","text":"Wants to use Bash"}`);
+    for (const line of lines) assert.ok(main.includes(`r#"${line}"#`), `main.rs's Rust tests parse ${line}`);
+  });
+});
+
 describe("desktop quit plumbing (the page and the shell must agree on these names)", async () => {
   const main = await read("desktop/src-tauri/src/main.rs");
 

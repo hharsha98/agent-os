@@ -630,8 +630,11 @@ export function streamWorkspaceFile(file, res) {
   res.setHeader("X-Content-Type-Options", "nosniff");
   // No allow-* tokens: the served file gets a unique origin, so its scripts
   // (e.g. a saved .html note) can't call back into our API.
-  res.setHeader("Content-Security-Policy", "sandbox");
-  res.setHeader("Cache-Control", "private, max-age=30");
+  // frame-ancestors 'self' stays in here: this CSP replaces the one every response gets (R33).
+  res.setHeader("Content-Security-Policy", "sandbox; frame-ancestors 'self'");
+  // Not kept in the browser's shared cache: another local port could otherwise load the file from it without the page
+  // key. The page keeps its own copy (R33).
+  res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `inline; filename="${file.name.replace(/"/g, "")}"`);
   createReadStream(file.absolutePath).pipe(res);
 }

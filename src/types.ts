@@ -2343,6 +2343,10 @@ export interface AgentSafetyStatus {
   // false when Agent OS could not read the setting (the read failed, timed out or printed
   // nothing): `permissive` is then not a finding and screens show "—". Absent from older servers.
   known?: boolean;
+  // Optional switches the person may turn on (e.g. OpenClaw's exec-auto); never a finding, so never permissive.
+  choices?: AgentSafetyAction[];
+  // Calm facts about this safeguard, shown with an info mark (e.g. when OpenClaw can ask for approval).
+  notes?: string[];
 }
 
 export interface AgentDetail {
@@ -2362,10 +2366,13 @@ export interface AgentRunPreview {
 }
 
 // POST /api/agents/:id/safety/:actionId's response: the config-set run, plus
-// a best-effort gateway-restart run when the setting needed one to apply.
+// a best-effort follow-up run: a gateway restart when the setting needed one to
+// apply, or the second step of a two-step choice (Hermes's rule, then its mode).
 export interface AgentSafetyActionResult {
   run: RunMeta;
   followUp: RunMeta | null;
+  // The line shown above the follow-up's console; null without a follow-up. Absent from older servers.
+  followUpNote?: string | null;
 }
 
 export interface AgentSummary {
@@ -2692,11 +2699,74 @@ export interface TeamProposalDecisionResult {
 // question never see one; Hold to stop all does.
 export type SessionKind = "agent" | "update" | "setup";
 
-// "waiting" and "held" are never produced in SP3; they arrive with SP4's signals.
+// SP4's signals bring "waiting" (a question or an approval) and "held" (the plan ran out).
 export type SessionStatus = "starting" | "live" | "waiting" | "idle" | "held" | "exited";
 
 // "stop" or "quit" when Agent OS ended the session, otherwise null.
 export type SessionEndedBy = "stop" | "quit" | null;
+
+// SP4 (Task U5 adds these; the server fills them from Task X1a on): every session's alert state travels in GET
+// /api/sessions as well as on the WebSocket (ruling R22), so a tab that is not attached still shows its marker.
+export type SignalKind = "waiting" | "turn_done" | "limit" | "approval" | "resolved";
+export type AlertKind = "waiting" | "approval" | "limit";
+
+export interface SessionAlert {
+  kind: AlertKind;
+  // The server's cleaned short text (at most 200 characters): "Wants to use Bash", "May need you", OpenClaw's summary.
+  text: string;
+  at: string;
+}
+
+// Why Claude Code's own settings keep Agent OS's hooks or status line out of this session (ruling R9, K10).
+export type HooksOffCode = "managed_hooks_only" | "all_hooks_disabled" | "http_hook_urls" | "http_hook_env_vars" | "managed_status_line";
+
+// What Claude Code's own status line reports (Task X2b), for the Live meter.
+export interface SessionMeter {
+  model: string | null;
+  // 0-100.
+  contextPercent: number | null;
+  contextTokens: number | null;
+  // rate_limits.five_hour and .seven_day; absent on OpenRouter and Local brains (R11).
+  plan: { usedPercent: number; resetsAt: string | null } | null;
+  weekly: { usedPercent: number; resetsAt: string | null } | null;
+  // Claude's own estimate at list prices (R11).
+  costUsd: number | null;
+  at: string;
+}
+
+// A hand-off typed into this session (Task X8), kept in the server's memory only.
+export interface SessionHandoff {
+  state: "pending" | "typed" | "copy";
+  text: string;
+  fromId: string | null;
+  at: string;
+}
+
+// One of OpenClaw's pending approvals (Task X3). It never names a folder: OpenClaw's list has none (R16). `sessionId` is
+// the Agent OS session it came from, or null when OpenClaw did not say (then it shows in every OpenClaw panel, K11).
+export interface ApprovalCard {
+  id: string;
+  kind: "exec" | "plugin" | "system-agent";
+  summary: string;
+  createdAt: string;
+  expiresAt: string;
+  sessionId: string | null;
+}
+
+export interface ApprovalListResponse {
+  approvals: ApprovalCard[];
+  // The server's sentence while OpenClaw's approvals can't be read, else null.
+  error: string | null;
+}
+
+// The only two answers Agent OS ever sends to OpenClaw (R16).
+export type ApprovalDecision = "allow-once" | "deny";
+
+// A moment in a session's recording (meta.json): a prompt (label only, R23), a permission asked, files changed.
+export type SessionMarker =
+  | { at: string; type: "prompt" }
+  | { at: string; type: "permission"; text: string }
+  | { at: string; type: "files"; files: Array<{ path: string; added: number | null; removed: number | null }>; more: number };
 
 export interface SessionSummary {
   id: string;
@@ -2719,14 +2789,35 @@ export interface SessionSummary {
   signal: string | null;
   endedBy: SessionEndedBy;
   dismissed: boolean;
-  brain: { kind: "plan" | "openrouter" | "local"; label: string } | null;
+  // `model` is the launch profile's model (an OpenRouter or Local brain's, a chosen Cursor model), when there is one.
+  brain: { kind: "plan" | "openrouter" | "local"; label: string; model?: string } | null;
   resume: { available: boolean; reason: string | null; fallback: boolean };
   // true when Claude Code's resume found no saved conversation (nothing was ever sent in the session, or Claude
   // deleted an old transcript itself): there is nothing to resume. A server that doesn't send it means false.
   nothingToResume: boolean;
-  // Every session's alerts are "basic" in SP3 (the 20 s rule).
-  alerts: "basic";
+  // "full" once a turn-done session's first signal arrived (Claude Code's hooks, Codex's notifications); otherwise
+  // "basic" (the 20 s rule; Hermes, Cursor and OpenClaw always).
+  alerts: "full" | "basic";
   recordingBytes: number;
+  // SP4: what the session waits for, or null.
+  alert: SessionAlert | null;
+  // How idle began: "turn_done" reads "Ready for the next message." (K21).
+  idleBy: "turn_done" | "timer" | null;
+  // Held only: when the plan resets, when known.
+  resetAt: string | null;
+  // A Claude Code session whose first hook event or status post has not arrived (the folder is not trusted yet).
+  trustNeeded: boolean;
+  hooksOff: { alerts: HooksOffCode | null; meter: HooksOffCode | null };
+  meter: SessionMeter | null;
+  // The original folder of a separate copy (Task X9), else null.
+  copyOf: string | null;
+  // True once Remove separate copy took the copy's folder away (meta.json's worktreeRemovedAt): its changes can no
+  // longer be read, and the panel says so instead of asking (M6).
+  copyRemoved: boolean;
+  handoff: SessionHandoff | null;
+  // Task X10: the server's own sentence when a Keep going stopped this Claude Code session and could not resume it. Only
+  // an ended session has one, kept in memory until it runs again or is dismissed.
+  keepGoingFailure: string | null;
 }
 
 export interface SessionListResponse {
@@ -2737,11 +2828,45 @@ export interface SessionListResponse {
   maxLive: number;
 }
 
+// Plan ran out, keep going (SP4, Task X10): GET /api/sessions/:id/keep-going. `approach` is "resume" for Claude Code
+// (the same conversation: a Stop, then `claude --resume` on the OpenRouter brain in the same tab) and "new" for Codex
+// (a new session with a typed summary). The estimate is continue.js's own: what starting costs; the new work costs
+// extra. `needsKey`: no OpenRouter key is saved.
+export interface KeepGoingInfo {
+  agentId: "claude" | "codex";
+  approach: "resume" | "new";
+  available: boolean;
+  reason: string | null;
+  model: string | null;
+  estimateUsd: number | null;
+  estimateTokens: number | null;
+  estimateNote: string;
+  warnings: string[];
+  needsKey: boolean;
+}
+
+// POST /api/sessions/:id/keep-going: "resumed" (Claude Code, the same id and tab) or "opening" (Codex's new session).
+export interface KeepGoingResult {
+  result: "resumed" | "opening";
+  targetId: string;
+}
+
 // POST /api/sessions/:id/stop: the session (unchanged when it had already ended), plus Stop's note: OpenClaw's
 // honest "Stopped the terminal. OpenClaw may still be finishing its last step." when only its terminal could be
 // stopped, otherwise null.
 export interface StopSessionResult extends SessionSummary {
   note: string | null;
+}
+
+// POST /api/sessions/:id/send (SP4 Hand-off): "typed" (written into an open session of the other agent, never sent),
+// "opening" (a new session of that agent started; the text is typed once it is ready, and that session's own
+// `handoff` shows how it went), or "copy" (nothing could take it: `text` goes in a box with a Copy button and `reason`
+// says why).
+export interface HandoffResult {
+  result: "typed" | "opening" | "copy";
+  targetId: string | null;
+  text: string;
+  reason: string | null;
 }
 
 export interface SessionSettings {
@@ -2756,6 +2881,17 @@ export interface SessionFolder {
 
 export interface SessionFolderList {
   folders: SessionFolder[];
+}
+
+// POST /api/sessions/folder-check (SP4 worktree offer): the live sessions that already use a folder, whether it is a
+// git project, and the branch a separate copy would get for the agent asked about (agentos/<agent>-<n>; null when
+// the folder isn't a git project or that agent can't use a copy).
+export interface FolderCheck {
+  path: string;
+  name: string;
+  git: boolean;
+  branch: string | null;
+  inUse: Array<{ id: string; agentLabel: string; title: string }>;
 }
 
 export interface QuitCheckItem {
@@ -2789,6 +2925,37 @@ export interface RecordingListResponse {
   recordings: RecordingSummary[];
   // How many recordings were removed to stay under 1 GB since the server started (Q38).
   removedByCap: number;
+}
+
+// Files changed (SP4): GET /api/sessions/:id/changes and /changes/diff (server/runtime/sessions/changes.js, Task X7),
+// shown by the side panel's Files changed section (Task U7). Paths are relative to the repository's top level, which
+// may be above the session's folder (contract K12).
+export interface ChangedFile {
+  path: string;
+  status: "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted" | "other";
+  // Lines added and removed; null when git can't count them (a binary file, or a new file too big to count).
+  added: number | null;
+  removed: number | null;
+  // Where a renamed file came from.
+  oldPath?: string;
+}
+
+export interface ChangesResult {
+  // false: the folder is not inside a git project; null: the server has not read git yet.
+  git: boolean | null;
+  // At most 200 files (CHANGES_MAX_FILES); `total` counts them all.
+  files: ChangedFile[];
+  total: number;
+  // When git was read (ISO time); null before the first read.
+  at: string | null;
+}
+
+export interface DiffResult {
+  path: string;
+  // The file's `git diff` as plain text (no colour); when `cut` is true, only its first 256 KB (DIFF_MAX_BYTES).
+  diff: string;
+  binary: boolean;
+  cut: boolean;
 }
 
 // The terminal modes a snapshot carries (mirror.js), put back on reattach (spec, Browser terminal).
@@ -2825,7 +2992,7 @@ export type SessionServerFrame =
   | ({ t: "snapshot" } & SessionSnapshot)
   | { t: "out"; seq: number; d: string }
   | ({ t: "state" } & SessionStateFrame)
-  | { t: "alert"; raw: string };
+  | { t: "alert"; kind: AlertKind | "resolved"; text: string };
 
 // Client to server.
 export type SessionClientFrame =

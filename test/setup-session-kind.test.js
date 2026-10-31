@@ -49,6 +49,7 @@ import {
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { fakeSiwcProfile, readFakeAgentState, setFakeKnob } from "./helpers/fake-knobs.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 import { H1_ENV_NAMES, withoutH1Env } from "./helpers/plan-brains-safety.js";
 
 const isWindows = process.platform === "win32";
@@ -95,6 +96,16 @@ const SUMMARY_KEYS = [
   "resume",
   "nothingToResume",
   "alerts",
+  "alert",
+  "idleBy",
+  "resetAt",
+  "trustNeeded",
+  "hooksOff",
+  "meter",
+  "copyOf",
+  "copyRemoved",
+  "handoff",
+  "keepGoingFailure",
   "recordingBytes"
 ];
 const T0 = Date.parse("2026-10-16T09:00:00.000Z");
@@ -386,6 +397,8 @@ function fakeWorld(over = {}) {
       world.softStops.push(input);
       return { outcome: "none", note: null };
     },
+    // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
+    ...NO_GIT_OPTIONS,
     ...over
   };
   world.manager = createSessionManager(world.deps);
@@ -626,7 +639,7 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
       world.gate = false; // Look only: a sign-in is a Setup step, not agent work (spec §1, Limits)
       const summary = await world.manager.createSetupSession({ action: OPENCLAW_SIGNIN_ACTION, detected: DETECTED });
       assert.match(summary.id, UUID);
-      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 21 keys as every session, and no new one");
+      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 30 keys as every session, and no new one");
       assert.deepEqual(
         { ...summary, id: "-", stateSince: "-", startedAt: "-" },
         {
@@ -650,6 +663,16 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
           resume: { available: false, reason: null, fallback: false },
           nothingToResume: false,
           alerts: "basic",
+          alert: null,
+          idleBy: null,
+          resetAt: null,
+          trustNeeded: false,
+          hooksOff: { alerts: null, meter: null },
+          meter: null,
+          copyOf: null,
+          copyRemoved: false,
+          handoff: null,
+          keepGoingFailure: null,
           recordingBytes: 0
         }
       );
@@ -1145,6 +1168,7 @@ test("a real sign-in in a PTY against W1's fake: the link and the code are shown
     // The real manager, PTY, mirror, login shell and profile. Only the spawn is tracked (for the clean-up),
     // the mirror's dispose is counted, and a recorder that is ever asked for fails the start.
     const manager = createSessionManager({
+      ...NO_GIT_OPTIONS,
       spawn: async (options) => track(running, await spawnPty(options)),
       mirrorFactory: (options) => {
         const real = createMirror(options);

@@ -21,6 +21,7 @@ import { navigateTo } from "../../nav";
 import type { RunMeta } from "../../types";
 import { AGENT_LABEL } from "../agentsShared";
 import { explain, formatResetTime, isBuilderId, usd } from "../builderShared";
+import { runWaitingText } from "../keepGoingShared";
 import "../builders.css";
 
 // "Keep going on OpenRouter (~$0.42)" / "Keep going with Composer" / "Hand to Claude Code (~$0.01)"
@@ -105,7 +106,8 @@ export default function RunLimitBanner({ run, compact = false }: { run: RunMeta;
     info !== null && usable.length === 0
       ? "Wait for your plan to reset, then open this run again to see your choices."
       : "You can carry on now with a pay-per-use model, or wait for your plan.";
-  const waitingText = `Waiting for your plan to reset${reset ? ` (about ${reset})` : ""}. This run stays Held and nothing carries on by itself. After the reset, open this run again to see your choices.`;
+  // Spec SP4: Runs stay Held with "press Keep going after the reset"; nothing carries on by itself.
+  const waitingText = runWaitingText(reset);
 
   const choices = idle ? (
     <>

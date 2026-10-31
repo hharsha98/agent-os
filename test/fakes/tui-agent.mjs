@@ -25,6 +25,11 @@
 //   bell   osc9 <text>   osc9st <text>   osc99 <text>   osc777 <text>   title <text>
 //   ask (DA1 and DSR)   ask after <ms>   ask kitty   ask color
 //   lines <n>   flood <KiB>   bottom <text>   ticker <ms> <count>   exit <code>
+//   print <text>   prints <text> exactly as typed (spaces kept), then \r\n (SP4: limit texts)
+//   hook <EventName> [json]   hookbig <KiB>   (Claude Code's HTTP hooks, SP4 Task X2a: see below)
+//   statusline <json>  runs statusLine.command from its --settings file the way Claude Code runs a status
+//                      line (/bin/sh -c, <json> on stdin, this program's environment and folder) and prints
+//                      "STATUSLINE <exit code> <its stdout as a JSON string>", or "STATUSLINE none" (SP4 X2b)
 //   anything else prints "you said: <text>"
 // Replies to its questions (DA1, DSR, kitty flags, OSC 10/11 colour) and
 // focus reports print "REPLY <json>"; a bracketed paste prints
@@ -42,7 +47,8 @@
 //                                        a literal {AGENT_OS_SESSION_ID} in it becomes this
 //                                        process's AGENT_OS_SESSION_ID (the quit test knows
 //                                        the id only after the session starts)
-//   FAKE_CLAUDE_AGENTS_JSON              what `claude agents --json` prints (default "[]")
+//   FAKE_CLAUDE_AGENTS_JSON              what `claude agents --json` prints (default "[]"); read like the
+//                                        knobs below, so a test can change it while sessions run (SP4 X2b)
 //   FAKE_CURSOR_CREATE_CHAT              what `agent create-chat` does (spike S6): unset prints a fresh
 //                                        crypto.randomUUID() and exits 0; "fail" prints nothing and exits 1;
 //                                        "garbage" prints "not-a-uuid" and exits 0; "uuid-exit1" prints a fresh
@@ -53,6 +59,27 @@
 //                                        record (the id it printed, or null) with the fields of a start record.
 //   FAKE_AGENT_VERSION                   openclaw only: the whole line `--version` prints, verbatim
 //                                        (unset: "openclaw 9.9.9-fake", which reads as older than 2026.9.7)
+//
+// Claude Code's HTTP hooks (SP4, Task X2a): `hook <EventName> [json]` POSTs
+// { hook_event_name, session_id, transcript_path, cwd, ...json } to $AGENT_OS_HOOK_URL with
+// "Authorization: Bearer $AGENT_OS_HOOK_TOKEN", the way the per-session settings file makes the
+// real Claude Code post (session_id is its own --session-id or --resume value; transcript_path is
+// where Claude would keep it), then prints "HOOK <status>". `hookbig <KiB>` posts a Bash
+// PermissionRequest padded to that many KiB. Without the two variables (every agent but Claude
+// Code, and a session started before the server knew its port) it prints "HOOK no-hook". The
+// token is never printed or logged.
+//
+// OpenClaw approvals (SP4, Task X3), under the name openclaw only; both knobs are read like the
+// knobs below (test/helpers/fake-approvals.js writes them):
+//   FAKE_OPENCLAW_APPROVALS              what `approvals pending --json` prints (unset: {"approvals":[]});
+//                                        "fail" prints "gateway not running" on stderr and exits 1;
+//                                        "slow" waits 30 s, then answers like unset (a time-limit test
+//                                        must not wait for it)
+//   FAKE_OPENCLAW_RESOLVE                what `approvals resolve <id> <decision>` does: unset prints
+//                                        "resolved <id> <decision>" and exits 0; "fail" prints "approval
+//                                        expired" on stderr and exits 1; "slow" waits 30 s, then exits 0
+//   Every call is logged first, as { event: "approvals-pending" } or { event: "approvals-resolve", id,
+//   decision }, each with the fields of a start record (never as a "probe" record).
 //
 // Knobs (plan brains): FAKE_AGENT_VERSION is read from the environment, else from the trimmed
 // text of $HOME/.fake-knobs/FAKE_AGENT_VERSION (test/helpers/fake-knobs.js writes it), because
@@ -74,6 +101,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import path from "node:path";
 
 const name = process.env.FAKE_AGENT_NAME || "";
@@ -216,6 +244,47 @@ function createChat() {
   return answer(id);
 }
 
+// OpenClaw's approvals (SP4, Task X3): `approvals pending --json` and `approvals resolve <id>
+// <decision>`, picked by the two knobs in the header. Each call is logged first, never as a "probe"
+// record (those are agent detection's questions).
+const SLOW_APPROVALS_MS = 30 * 1000;
+
+function finishWith(code, { stdoutText = "", stderrText = "" } = {}) {
+  const exit = () => process.exit(code);
+  const toStdout = () => (stdoutText ? process.stdout.write(`${stdoutText}\n`, exit) : exit());
+  if (stderrText) process.stderr.write(`${stderrText}\n`, toStdout);
+  else toStdout();
+  return true;
+}
+
+function approvals() {
+  if (args[1] === "pending") {
+    const behaviour = knob("FAKE_OPENCLAW_APPROVALS");
+    log({ event: "approvals-pending", ...argvRecord() });
+    if (behaviour === "fail") return finishWith(1, { stderrText: "gateway not running" });
+    const listedText = behaviour && behaviour !== "slow" ? behaviour : '{"approvals":[]}';
+    if (behaviour === "slow") {
+      setTimeout(() => finishWith(0, { stdoutText: listedText }), SLOW_APPROVALS_MS);
+      return true;
+    }
+    return finishWith(0, { stdoutText: listedText });
+  }
+  if (args[1] === "resolve") {
+    const behaviour = knob("FAKE_OPENCLAW_RESOLVE");
+    const id = args[2] ?? null;
+    const decision = args[3] ?? null;
+    log({ event: "approvals-resolve", ...argvRecord(), id, decision });
+    if (behaviour === "fail") return finishWith(1, { stderrText: "approval expired" });
+    const done = () => finishWith(0, { stdoutText: `resolved ${id} ${decision}` });
+    if (behaviour === "slow") {
+      setTimeout(done, SLOW_APPROVALS_MS);
+      return true;
+    }
+    return done();
+  }
+  return finishWith(1, { stderrText: `unknown approvals command: ${args.slice(1).join(" ")}` });
+}
+
 // The quick, non-interactive questions that agent detection and the Stop
 // sequence ask. Each answers at once and exits, so nothing waits on a TUI.
 // Returns true when it handled the command line.
@@ -236,6 +305,7 @@ function oneShot() {
   if (args[0] === "doctor") return answer(args.includes("--json") ? "{}" : "ok");
   // Hermes's approvals setting reads as on ("manual"), as the earlier audit fake answered.
   if (args[0] === "config" && args[1] === "get") return answer(args[2] === "approvals.mode" ? "manual" : "");
+  if (name === "openclaw" && args[0] === "approvals") return approvals();
   if (args[0] === "gateway") {
     if (args[1] === "status") {
       return answer(args.includes("--json") ? JSON.stringify({ running: false }) : "gateway is not running");
@@ -252,7 +322,7 @@ function oneShot() {
       setTimeout(() => process.exit(0), MAX_LIFETIME_MS);
       return true;
     }
-    return answer(process.env.FAKE_CLAUDE_AGENTS_JSON || "[]");
+    return answer(knob("FAKE_CLAUDE_AGENTS_JSON") || "[]");
   }
   if (name === "claude" && args[0] === "stop") {
     log({ event: "stop", id: args[1] || null });
@@ -368,6 +438,65 @@ function onInput(chunk) {
   }
 }
 
+// --- Claude Code's HTTP hooks (SP4, Task X2a) ----------------------------------------------------
+
+function argAfter(flag) {
+  const index = args.indexOf(flag);
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : "";
+}
+
+// Posts one hook event as Claude Code's "type": "http" hooks do, then prints
+// "HOOK <status>" and a new prompt. `targetBytes` pads the body (a "pad" field) to that size.
+function postHookEvent(event, extra = {}, targetBytes = 0) {
+  const url = process.env.AGENT_OS_HOOK_URL || "";
+  const token = process.env.AGENT_OS_HOOK_TOKEN || "";
+  if (!url.startsWith("http://127.0.0.1:") || !token) {
+    line("HOOK no-hook");
+    prompt();
+    return;
+  }
+  const sessionId = argAfter("--session-id") || argAfter("--resume");
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || "", ".claude");
+  const body = {
+    hook_event_name: event,
+    session_id: sessionId,
+    transcript_path: path.join(configDir, "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"), `${sessionId}.jsonl`),
+    cwd: process.cwd(),
+    ...extra
+  };
+  if (targetBytes > 0) {
+    body.pad = "";
+    body.pad = "x".repeat(Math.max(0, targetBytes - Buffer.byteLength(JSON.stringify(body))));
+  }
+  const payload = Buffer.from(JSON.stringify(body));
+  log({ event: "hook", hookEvent: event, bytes: payload.length });
+  const target = new URL(url);
+  let done = false;
+  const finish = (text) => {
+    if (done) return;
+    done = true;
+    line(text);
+    prompt();
+  };
+  const request = http.request(
+    {
+      host: target.hostname,
+      port: target.port,
+      path: target.pathname,
+      method: "POST",
+      agent: false,
+      headers: { "Content-Type": "application/json", "Content-Length": payload.length, Authorization: `Bearer ${token}` }
+    },
+    (response) => {
+      response.resume();
+      response.on("end", () => finish(`HOOK ${response.statusCode}`));
+    }
+  );
+  request.setTimeout(5000, () => request.destroy(new Error("timeout")));
+  request.on("error", (error) => finish(`HOOK error ${error.code || error.message}`));
+  request.end(payload);
+}
+
 function handleLine(text) {
   log({ event: "line", text });
   if (updaterWaiting) {
@@ -416,6 +545,10 @@ function handleLine(text) {
     case "title":
       out(`${ESC}]0;${value}${BEL}`);
       break;
+    case "print":
+      // Exactly what follows "print " (spaces kept): the SP4 limit-text tests.
+      line(text.replace(/^\s*print ?/, ""));
+      break;
     case "ask":
       if (value === "kitty") out(`${ESC}[?u`);
       else if (value === "color") out(`${ESC}]11;?${BEL}`);
@@ -456,6 +589,26 @@ function handleLine(text) {
       }, intervalMs);
       return;
     }
+    case "hook": {
+      const [event = "", ...json] = rest;
+      let extra = {};
+      if (json.length) {
+        try {
+          extra = JSON.parse(json.join(" "));
+        } catch {
+          line("HOOK bad-json");
+          break;
+        }
+      }
+      postHookEvent(event, extra && typeof extra === "object" && !Array.isArray(extra) ? extra : {});
+      return; // postHookEvent prints the status and the next prompt
+    }
+    case "hookbig":
+      postHookEvent("PermissionRequest", { tool_name: "Bash", tool_input: { command: "echo big" } }, clampInt(value, 1, 65536, 300) * 1024);
+      return;
+    case "statusline":
+      runStatusLine(text.trim().slice("statusline".length).trim());
+      return; // prints its own line and the prompt when the status line ends
     case "exit": {
       const code = clampInt(value, 0, 255, 0);
       process.stdout.write("", () => process.exit(code));
@@ -467,6 +620,40 @@ function handleLine(text) {
       line(`you said: ${text}`);
   }
   prompt();
+}
+
+// SP4 (Task X2b): the statusLine of the --settings file, run the way Claude Code runs it. Only the
+// exit code is logged: the output may be anything the person's status line prints.
+function runStatusLine(json) {
+  const at = args.indexOf("--settings");
+  let command = null;
+  if (at !== -1 && args[at + 1]) {
+    try {
+      const settings = JSON.parse(readFileSync(args[at + 1], "utf8"));
+      if (typeof settings?.statusLine?.command === "string" && settings.statusLine.command) command = settings.statusLine.command;
+    } catch {
+      command = null;
+    }
+  }
+  if (!command) {
+    line("STATUSLINE none");
+    prompt();
+    return;
+  }
+  const chunks = [];
+  const child = spawn("/bin/sh", ["-c", command], { cwd: process.cwd(), env: process.env, stdio: ["pipe", "pipe", "ignore"] });
+  child.stdout.on("data", (chunk) => chunks.push(chunk));
+  child.once("error", () => {
+    line("STATUSLINE error");
+    prompt();
+  });
+  child.once("close", (code) => {
+    log({ event: "statusline", code });
+    line(`STATUSLINE ${code} ${JSON.stringify(Buffer.concat(chunks).toString("utf8"))}`);
+    prompt();
+  });
+  child.stdin.on("error", () => {});
+  child.stdin.end(json);
 }
 
 function startGrandchild() {

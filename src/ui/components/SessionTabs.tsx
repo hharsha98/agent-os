@@ -27,13 +27,21 @@ export default function SessionTabs({
   selectedId,
   panelId,
   onSelect,
-  onDismiss
+  onDismiss,
+  alsoShownId = "",
+  onEnterSelected
 }: {
   tabs: SessionTabItem[];
   selectedId: string;
   panelId: string;
   onSelect: (id: string) => void;
   onDismiss: (id: string) => void;
+  // Split view (Task U6): the session in the other pane. Its tab is marked as shown, quieter than the selected one.
+  alsoShownId?: string;
+  // Split view only: Enter or Space on the selected tab gives the keyboard to that pane's terminal. An open terminal
+  // keeps Tab for its agent, so this (with the arrow keys, which pick the other pane's tab) is how a keyboard-only
+  // person gets into either pane.
+  onEnterSelected?: (id: string) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -45,6 +53,12 @@ export default function SessionTabs({
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     // Leave Alt/Ctrl/Cmd + a key to the app shortcuts and the browser.
     if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (onEnterSelected && (event.key === "Enter" || event.key === " ") && tabs[index].id === selectedId) {
+      // No click follows (a click on the selected tab would only pick it again).
+      event.preventDefault();
+      onEnterSelected(tabs[index].id);
+      return;
+    }
     if (isDismissKey(event.key, tabs[index].status)) {
       event.preventDefault();
       onDismiss(tabs[index].id);
@@ -66,10 +80,11 @@ export default function SessionTabs({
       {tabs.map((tab, index) => {
         const selected = tab.id === selectedId;
         const ended = tab.status === "exited";
+        const inSplit = !selected && alsoShownId !== "" && tab.id === alsoShownId;
         const label = tabLabel(tab.title, tab.status, tab.recordingBytes);
         const marker = tabMarker(tab.status);
         return (
-          <div key={tab.id} className={`os-sess-tab${selected ? " is-selected" : ""}${ended ? " is-ended" : ""}`} role="presentation">
+          <div key={tab.id} className={`os-sess-tab${selected ? " is-selected" : ""}${inSplit ? " is-in-split" : ""}${ended ? " is-ended" : ""}`} role="presentation">
             <button
               type="button"
               role="tab"

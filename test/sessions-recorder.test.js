@@ -593,6 +593,8 @@ test("listRecordings lists every session that has a recording, newest first, wit
         folder: "/Users/you/hermes-agent",
         folderName: "hermes-agent",
         folderShown: true,
+        copyOf: null,
+        branch: null,
         startedAt: "2026-10-14T11:00:00.000Z",
         firstStartedAt: "2026-10-14T11:00:00.000Z",
         endedAt: "2026-10-14T11:05:00.000Z",
@@ -607,6 +609,8 @@ test("listRecordings lists every session that has a recording, newest first, wit
         folder: "/Users/you/projects/app",
         folderName: "app",
         folderShown: true,
+        copyOf: null,
+        branch: null,
         startedAt: "2026-10-14T10:00:00.000Z",
         firstStartedAt: "2026-10-14T10:00:00.000Z",
         endedAt: null,
@@ -621,6 +625,8 @@ test("listRecordings lists every session that has a recording, newest first, wit
         folder: "/Users/you/projects/api",
         folderName: "api",
         folderShown: true,
+        copyOf: null,
+        branch: null,
         startedAt: "2026-10-14T09:00:00.000Z",
         firstStartedAt: "2026-10-14T09:00:00.000Z",
         endedAt: "2026-10-14T09:30:00.000Z",
@@ -639,6 +645,28 @@ test("listRecordings lists every session that has a recording, newest first, wit
         [ended, true]
       ]
     );
+  });
+});
+
+// E1 A-M3: a session that ran in a separate copy names the project it copied (meta.json keeps copyOf after the copy is
+// removed) and the copy's branch, so Runs can show where the person works instead of the copy's own folder.
+test("listRecordings: a session in a separate copy carries the project it copied and the copy's branch, also after the copy was removed", async () => {
+  await withTempHome(async (home) => {
+    const copy = await makeSession(home, {
+      meta: {
+        folder: "/Users/you/.hermes-agent-os/worktrees/3f2c9a7e-1b4d-4c8e-9f00-0123456789ab",
+        folderName: "app",
+        copyOf: "/Users/you/projects/app",
+        branch: "agentos/claude-1",
+        worktreeRemovedAt: "2026-10-14T12:00:00.000Z",
+        startedAt: "2026-10-14T09:00:00.000Z"
+      },
+      cast: "x"
+    });
+    const plain = await makeSession(home, { meta: { startedAt: "2026-10-14T08:00:00.000Z", copyOf: null, branch: "main" }, cast: "x" });
+    const rows = Object.fromEntries((await listRecordings()).map((row) => [row.sessionId, row]));
+    assert.deepEqual([rows[copy].copyOf, rows[copy].branch, rows[copy].folderName], ["/Users/you/projects/app", "agentos/claude-1", "app"]);
+    assert.deepEqual([rows[plain].copyOf, rows[plain].branch], [null, "main"]);
   });
 });
 

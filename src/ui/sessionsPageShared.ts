@@ -1,9 +1,11 @@
 // The Sessions page's pure logic: the order of the tabs, which tab is selected, an ended tab's words, the side
-// panel's Live meter rows, the New session button's hint, the terminal's own settings, and the words for a
-// stop, resume or dismiss that went wrong. `import type` only (decision P14): test/sessions-page-logic.test.js
-// loads this file straight from src/. Runs → Session recordings (recordingsShared.ts) keeps a copy of
-// durationWords, checked by its test, because Node cannot follow an import written without a file extension.
-import type { SessionSummary } from "../types";
+// panel's Live meter rows, the New session button's hint, the terminal's own settings, and the words for a stop,
+// resume or dismiss that went wrong. `import type` only (decision P14), plus resetWords from sessionsShared.ts written
+// with its extension (the homeShared.ts pattern), so test/sessions-page-logic.test.js loads this file straight from src/.
+// Runs → Session recordings (recordingsShared.ts) keeps a copy of durationWords, checked by its test.
+import type { SessionMeter, SessionSummary } from "../types";
+// @ts-expect-error TS5097 (see homeShared.ts: Node needs the extension, tsconfig does not allow it; the types come through)
+import { resetWords } from "./sessionsShared.ts";
 
 type Tabbable = Pick<SessionSummary, "id" | "kind" | "status" | "dismissed">;
 
@@ -127,14 +129,21 @@ export function isStopAnswer(answer: unknown): boolean {
 
 // A resumed session starts a new process under the same id. Each time a session comes back from ended, its
 // generation goes up, so the page attaches a fresh terminal instead of reusing the ended one. Ending does not
-// change it, so the terminal that was on screen when the session ended keeps its last screen.
-export type Generations = Record<string, { status: string; gen: number }>;
-export function nextGenerations(prev: Generations, sessions: Array<Pick<SessionSummary, "id" | "status">>): Generations {
+// change it, so the terminal that was on screen when the session ended keeps its last screen. A new run under the same
+// id also counts when the list never showed the ended state in between (Plan ran out, keep going: its Stop and Resume
+// are one request, so a list read can miss "exited"): the run's own start time (`startedAt`) is different.
+export type Generations = Record<string, { status: string; gen: number; startedAt?: string }>;
+export function nextGenerations(
+  prev: Generations,
+  sessions: Array<Pick<SessionSummary, "id" | "status"> & { startedAt?: string }>
+): Generations {
   const out: Generations = {};
   for (const session of sessions) {
     const before = prev[session.id];
-    const gen = before ? before.gen + (before.status === "exited" && session.status !== "exited" ? 1 : 0) : 0;
-    out[session.id] = { status: session.status, gen };
+    const comesBack = Boolean(before) && before.status === "exited" && session.status !== "exited";
+    const newRun = Boolean(before?.startedAt && session.startedAt && before.startedAt !== session.startedAt) && session.status !== "exited";
+    const gen = before ? before.gen + (comesBack || newRun ? 1 : 0) : 0;
+    out[session.id] = session.startedAt === undefined ? { status: session.status, gen } : { status: session.status, gen, startedAt: session.startedAt };
   }
   return out;
 }
@@ -168,30 +177,102 @@ export interface MeterRow {
   // null: not known, shown as "—" (with "unknown" for screen readers).
   value: string | null;
   dim?: string;
+  // A figure drawn as a gauge (Context used, Plan used): its percent, its tone (spec, Side panel: warn at 70 %, critical
+  // at 100 %) and, for the plan, when it resets ("Resets 2:21 am").
+  gauge?: { percent: number; tone: MeterTone; detail?: string };
 }
 
-// Every Live meter row from SP3 (spec, Side panel). Model, Context used, Plan used and Cost so far come from
-// Claude's statusLine in SP4, so they are null today. Plan used is for a plan brain and Cost so far for an
-// OpenRouter brain, as in the prototype; neither applies to a Local brain or an agent with no brain choice.
-export function meterRows(s: Pick<SessionSummary, "brain" | "status" | "startedAt" | "endedAt">, now: number): MeterRow[] {
+export type MeterTone = "accent" | "warn" | "danger";
+
+// The row's name: a row that has no figure keeps its dim words ("Plan used · 5-hour limit", spec Side panel) because
+// there is no value for them to sit next to; a row with a figure shows its dim beside the value.
+export function meterRowLabel(row: Pick<MeterRow, "label" | "dim" | "value">): string {
+  return row.value === null && row.dim ? `${row.label} · ${row.dim}` : row.label;
+}
+
+export function meterTone(percent: number): MeterTone {
+  if (percent >= 100) return "danger";
+  return percent >= 70 ? "warn" : "accent";
+}
+
+// "$1.23"; "under $0.01" for a cost above nothing that would read $0.00.
+export function costWords(amount: number): string {
+  return amount > 0 && amount < 0.005 ? "under $0.01" : `$${amount.toFixed(2)}`;
+}
+
+const percentOf = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+
+// Every Live meter row (spec, Side panel). Model, Context used, Plan used · 5-hour limit and Cost so far come from Claude
+// Code's status line (Task X2b's `meter`, only while the session runs); Model falls back to the launch profile's model
+// (an OpenRouter or Local brain's, a chosen Cursor model); anything not known is "—". Plan used is there
+// for every brain: a gauge whenever the status line reports the 5-hour window, else "—". OpenRouter and Local brains
+// always show "—" there, because Claude sends them no rate_limits (R11). Cost so far is for an OpenRouter brain, as in
+// the prototype, and is Claude's own estimate.
+export function meterRows(
+  s: Pick<SessionSummary, "brain" | "status" | "startedAt" | "endedAt"> & { meter?: SessionMeter | null },
+  now: number
+): MeterRow[] {
   const brain = brainWords(s.brain);
   const ended = s.status === "exited";
   const endMs = ended ? (s.endedAt ? Date.parse(s.endedAt) : NaN) : now;
   const time = durationWords(s.startedAt, endMs);
+  const m = ended ? null : s.meter ?? null;
+  // Claude's status line names the model it runs; without one the launch profile's model (spec, Side panel).
+  const profileModel = typeof s.brain?.model === "string" && s.brain.model.trim() ? s.brain.model.trim() : null;
+  const model = m && typeof m.model === "string" && m.model.trim() ? m.model.trim() : profileModel;
+  const context = m ? percentOf(m.contextPercent) : null;
+  const plan = m && m.plan ? percentOf(m.plan.usedPercent) : null;
   const rows: MeterRow[] = [
     brain ? { id: "brain", label: "Brain", value: brain.main, dim: brain.dim } : { id: "brain", label: "Brain", value: null },
-    { id: "model", label: "Model", value: null },
+    { id: "model", label: "Model", value: model },
     { id: "time", label: ended ? "Ran for" : "Running for", value: time === "—" ? null : time },
-    { id: "context", label: "Context used", value: null }
+    context === null
+      ? { id: "context", label: "Context used", value: null }
+      : { id: "context", label: "Context used", value: `${context}%`, gauge: { percent: context, tone: meterTone(context) } }
   ];
-  if (s.brain?.kind === "plan") rows.push({ id: "plan", label: "Plan used", value: null });
-  if (s.brain?.kind === "openrouter") rows.push({ id: "cost", label: "Cost so far", value: null });
+  if (plan !== null) {
+    const when = resetWords(m?.plan?.resetsAt, now);
+    rows.push({
+      id: "plan",
+      label: "Plan used",
+      dim: "5-hour limit",
+      value: `${plan}%`,
+      gauge: { percent: plan, tone: meterTone(plan), ...(when ? { detail: `Resets ${when}` } : {}) }
+    });
+  } else if (s.brain) {
+    // R11's "—": the window is not known yet, or the brain is OpenRouter or Local, where Claude sends no rate_limits.
+    rows.push({ id: "plan", label: "Plan used", dim: "5-hour limit", value: null });
+  }
+  if (s.brain?.kind === "openrouter") {
+    const cost = m && typeof m.costUsd === "number" && Number.isFinite(m.costUsd) && m.costUsd >= 0 ? m.costUsd : null;
+    rows.push({ id: "cost", label: "Cost so far", value: cost === null ? null : `${costWords(cost)} (estimate)` });
+  }
   return rows;
 }
 
 // The panel's title: the folder's name, or "Set by OpenClaw" while OpenClaw picks its own folder (spec L388).
 export function panelFolder(s: Pick<SessionSummary, "folderShown" | "folderName">): string {
   return s.folderShown === false ? "Set by OpenClaw" : s.folderName || "—";
+}
+
+// A session in a separate copy (spec SP4, Worktree offer): the panel names the project it copies, by the project's
+// folder name (the server keeps the copy's own folder out of every title, ruling R25). The server sends copyOf null
+// once the copy was removed, so a removed copy shows neither this line nor Remove separate copy.
+export function copyLine(s: Pick<SessionSummary, "copyOf" | "folderName">): string | null {
+  return s.copyOf ? `Separate copy of ${s.folderName || "—"} (a git worktree)` : null;
+}
+
+// Remove separate copy: only for an ended session in a copy. The server refuses while any session runs in the copy
+// and while the copy has changes that aren't committed; the copy's branch always stays.
+export const REMOVE_COPY_LABEL = "Remove separate copy";
+export const IGNORED_FILES_NOTE = "Files that git ignores in the copy, such as installed packages, are deleted with it.";
+export function canRemoveCopy(s: Pick<SessionSummary, "status" | "copyOf">): boolean {
+  return s.status === "exited" && Boolean(s.copyOf);
+}
+export function removeCopyConfirm(s: Pick<SessionSummary, "folderName" | "branch">): { title: string; lines: string[] } {
+  const lines = s.branch ? [`Its branch ${s.branch} stays in the project.`, IGNORED_FILES_NOTE] : [IGNORED_FILES_NOTE];
+  return { title: `Remove the separate copy of ${s.folderName || "—"}?`, lines };
 }
 
 // After Stop, OpenClaw's Gateway may still finish its step (until spike S5 brings its abort): the spec's honest note.

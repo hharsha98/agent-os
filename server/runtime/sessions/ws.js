@@ -3,9 +3,9 @@
 //
 // Express middleware never runs for an upgrade request, so this endpoint has
 // its own check, run on every upgrade before anything else. The REST gate's
-// helpers are deliberately not reused: originCheckMiddleware lets GET and a
+// origin helper is deliberately not reused: originCheckMiddleware lets GET and a
 // missing Origin through and compares only the hostname (any local port would
-// pass), and the REST gate also accepts the x-agent-os-token header. Here:
+// pass). The session proof IS the REST gate's (hasSessionProof). Here:
 //   - local mode only (never the public demo or the admin-token public mode);
 //   - the path, checked lower-cased, must be exactly /api/sessions/<id>/attach,
 //     with no query string (planning decision Q40);
@@ -13,7 +13,11 @@
 //   - Origin is required and must be exactly http://127.0.0.1:<port> or
 //     http://localhost:<port>; the Vite dev page (port 5173) only when
 //     AGENT_OS_DEV_ORIGIN=1, and never in a production or packaged run;
-//   - the session cookie agent_os_session_<port>, compared in constant time;
+//   - the session proof (R32), compared in constant time: EITHER the launch
+//     token in an x-agent-os-token header (a script), OR the session cookie
+//     agent_os_session_<port> AND the page key, which a browser page sends as
+//     the WebSocket subprotocol "agent-os-key.<key>" (a browser cannot set a
+//     header on a WebSocket). The cookie alone, or the key alone, is refused;
 //   - the session must exist and still run (Q40: an unknown id and an ended
 //     session are refused like every other failure; an ended one has no live
 //     screen, and its recording is in Runs).
@@ -28,12 +32,15 @@
 import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import {
+  DEV_ORIGINS,
+  PAGE_KEY_SUBPROTOCOL_PREFIX,
   cookieNameFor,
+  devOriginAllowed,
+  hasSessionProof,
   isAllowedHost,
   isLocalMode,
-  parseCookieHeader,
-  parseHostHeader,
-  sessionToken
+  pageKeyFromSubprotocols,
+  parseHostHeader
 } from "../local-session.js";
 import { isSessionId } from "./errors.js";
 
@@ -48,13 +55,8 @@ export const MAX_CLIENT_FRAME_BYTES = 64 * 1024;
 // decide by the word, never by the number.
 export const CLOSE_CODES = { too_far_behind: 4000, session_ended: 4001, attach_failed: 4004 };
 
-const DEV_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
 const ATTACH_PATH = /^\/api\/sessions\/([^/]+)\/attach$/;
 const FORBIDDEN = "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-
-function devOriginAllowed(env) {
-  return env.AGENT_OS_DEV_ORIGIN === "1" && env.NODE_ENV !== "production" && env.AGENT_OS_PACKAGED !== "1";
-}
 
 // The exact Origin values an attach may carry, for the port this server is
 // bound to.
@@ -67,27 +69,6 @@ export function allowedOrigins(port, env = process.env) {
 function hostHeaderPort(value) {
   const match = /:(\d{1,5})$/.exec(String(value || "").trim());
   return match ? match[1] : "";
-}
-
-// One cookie's value, or "" when it is missing or not valid percent-encoding.
-// It is read by the REST gate's own parser, so both doors agree on a header
-// that carries the same name twice (another local page can set one with a
-// different path): the LAST one wins. (That parser throws on bad
-// percent-encoding; a throw here would stop the server, since no Express error
-// handler runs for an upgrade.)
-function cookieValue(header, name) {
-  try {
-    return parseCookieHeader(header)[name] || "";
-  } catch {
-    return "";
-  }
-}
-
-function sameSecret(provided, expected) {
-  const a = Buffer.from(String(provided || ""), "utf8");
-  const b = Buffer.from(String(expected || ""), "utf8");
-  if (a.length === 0 || a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
 }
 
 function refused(reason) {
@@ -117,7 +98,19 @@ export function checkUpgradeRequest(req, { port }) {
     return refused("origin");
   }
 
-  if (!sameSecret(cookieValue(headers.cookie, cookieNameFor(boundPort)), sessionToken)) return refused("cookie");
+  // Node lower-cases header names. A header sent twice arrives as one comma-joined string (or an array for
+  // some), which never equals a secret, so it is refused. The reason keeps the word "cookie" for every failure of
+  // the proof.
+  const text = (value) => (typeof value === "string" ? value : "");
+  const proven = hasSessionProof(
+    {
+      cookieHeader: text(headers.cookie),
+      tokenHeader: text(headers["x-agent-os-token"]),
+      keyHeader: pageKeyFromSubprotocols(text(headers["sec-websocket-protocol"]))
+    },
+    cookieNameFor(boundPort)
+  );
+  if (!proven) return refused("cookie");
 
   return { ok: true, sessionId: match[1] };
 }
@@ -257,7 +250,16 @@ function serveAttachment(ws, sessionId, manager) {
 // Node hands EVERY upgrade request to it, so anything that is not a correct
 // attach is refused here too.
 export function attachSessionsUpgrade(server, { getPort, manager }) {
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
+  // The page offers its key as the subprotocol "agent-os-key.<key>" and a browser fails the socket unless the answer
+  // names one of the offered subprotocols, so answer with exactly that one (never another protocol the client lists).
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_PAYLOAD_BYTES,
+    handleProtocols: (protocols) => {
+      for (const protocol of protocols) if (protocol.startsWith(PAGE_KEY_SUBPROTOCOL_PREFIX)) return protocol;
+      return false;
+    }
+  });
 
   server.on("upgrade", (req, socket, head) => {
     socket.on("error", () => socket.destroy());

@@ -43,6 +43,17 @@ test("a session's title is '<agent> · <folder>'; OpenClaw's folder reads 'Set b
   assert.equal(ss.sessionTitle(session({ kind: "setup", agentId: "openclaw", agentLabel: "" })), "openclaw · ChatGPT sign-in");
 });
 
+test("A-M6: a session in a separate copy adds the copy's branch to its title (R25), so two sessions in one project can be told apart; `branch: false` leaves it out", () => {
+  const copy = session({ copyOf: "/Users/you/my-app", branch: "agentos/claude-1", folder: "/Users/you/.hermes-agent-os/worktrees/x" });
+  assert.equal(ss.sessionTitle(copy), "Claude Code · my-app · agentos/claude-1");
+  assert.equal(ss.sessionTitle(copy, { branch: false }), "Claude Code · my-app");
+  assert.equal(ss.sessionTitle(session({ branch: "main" })), "Claude Code · my-app", "a branch alone is not a copy");
+  assert.equal(ss.sessionTitle(session({ copyOf: "/Users/you/my-app", branch: null })), "Claude Code · my-app");
+  assert.equal(ss.sessionTitle({ ...copy, kind: "update" }), "Claude Code update");
+  assert.equal(ss.sessionTitle({ ...copy, folderShown: false }), "Claude Code · Set by OpenClaw");
+  assert.equal(stopAll.sessionStopTitle(copy), ss.sessionTitle(copy), "Stop all's list uses the same words");
+});
+
 test("Stop all names a session with the same words as the Sessions page (S10's sessionStopTitle)", () => {
   // stopAllShared.ts cannot import this file (Node follows no extensionless import, P14), so this test keeps
   // the two copies of the rule equal.
@@ -58,7 +69,10 @@ test("Stop all names a session with the same words as the Sessions page (S10's s
     session({ agentLabel: "", agentId: "openclaw", folderShown: false }),
     // A setup session (OpenClaw's ChatGPT sign-in, plan brains): the same title in both copies.
     session({ kind: "setup", agentId: "openclaw", agentLabel: "OpenClaw", folderShown: false, folderName: "you" }),
-    session({ kind: "setup", agentId: "openclaw", agentLabel: "" })
+    session({ kind: "setup", agentId: "openclaw", agentLabel: "" }),
+    // A separate copy adds its branch in both copies of the rule (R25).
+    session({ copyOf: "/Users/you/my-app", branch: "agentos/codex-2", agentId: "codex", agentLabel: "Codex" }),
+    session({ copyOf: "/Users/you/my-app", branch: null })
   ]) {
     assert.equal(stopAll.sessionStopTitle(s), ss.sessionTitle(s), `${s.kind} "${s.agentLabel}" ${s.agentId} ${s.folderShown} "${s.folderName}"`);
   }
@@ -117,7 +131,7 @@ test("a Resume refused as impossible is told apart from one that may work on ano
 
 test("the side panel's line for each state, SP3 versions (spec, Session activity states)", () => {
   assert.equal(ss.sessionPanelLine(session({ status: "starting" }), NOW), "Starting Claude Code…");
-  assert.equal(ss.sessionPanelLine(session({ status: "live" }), NOW), "Working.");
+  assert.equal(ss.sessionPanelLine(session({ status: "live" }), NOW), "Working. Alerts for Claude Code are basic.", "SP4: a basic session says so (the full line: sessions-alerts-ui-logic.test.js)");
   assert.equal(ss.sessionPanelLine(session({ status: "idle", stateSince: iso(26 * 60_000) }), NOW), "Idle for 26 m. Nothing is running.");
   assert.equal(ss.sessionPanelLine(session({ status: "idle", stateSince: iso(20_000) }), NOW), "Idle for under 1 m. Nothing is running.");
   assert.equal(ss.sessionPanelLine(session({ status: "idle", stateSince: iso(65 * 60_000) }), NOW), "Idle for 1 h 05 m. Nothing is running.");
@@ -214,7 +228,7 @@ test("the palette key outside a terminal: ⌘K on a Mac, Ctrl+K elsewhere, never
   assert.equal(ss.isMacPlatform("Linux x86_64"), false);
 });
 
-test("inside a terminal only ⌘K/⌘T/⌘1-9 (Mac) or Ctrl+Shift+K/T/1-9 (elsewhere) are Agent OS's; Ctrl+K and Ctrl+R reach the agent", () => {
+test("inside a terminal only ⌘K/⌘T/⌘1-9/⌘\\ (Mac) or Ctrl+Shift+K/T/1-9/\\ (elsewhere) are Agent OS's; Ctrl+K and Ctrl+R reach the agent", () => {
   assert.deepEqual(ss.isAppShortcut(key({ key: "k", code: "KeyK", metaKey: true }), MAC), { action: "palette" });
   assert.deepEqual(ss.isAppShortcut(key({ key: "t", code: "KeyT", metaKey: true }), MAC), { action: "new-session" });
   assert.deepEqual(ss.isAppShortcut(key({ key: "3", code: "Digit3", metaKey: true }), MAC), { action: "switch", index: 2 });
@@ -222,7 +236,7 @@ test("inside a terminal only ⌘K/⌘T/⌘1-9 (Mac) or Ctrl+Shift+K/T/1-9 (elsew
   assert.equal(ss.isAppShortcut(key({ key: "0", code: "Digit0", metaKey: true }), MAC), null);
   assert.equal(ss.isAppShortcut(key({ key: "k", code: "KeyK", ctrlKey: true }), MAC), null, "Ctrl+K reaches the agent");
   assert.equal(ss.isAppShortcut(key({ key: "r", code: "KeyR", ctrlKey: true }), MAC), null, "Ctrl+R reaches the agent");
-  assert.equal(ss.isAppShortcut(key({ key: "\\", code: "Backslash", metaKey: true }), MAC), null, "⌘\\ (split) arrives with SP4");
+  assert.deepEqual(ss.isAppShortcut(key({ key: "\\", code: "Backslash", metaKey: true }), MAC), { action: "split" }, "⌘\\ toggles split view (SP4, Task U6)");
   assert.equal(ss.isAppShortcut(key({ key: "T", code: "KeyT", metaKey: true, shiftKey: true }), MAC), null);
   assert.equal(ss.isAppShortcut(key({ key: "c", code: "KeyC", metaKey: true }), MAC), null, "⌘C stays copy");
   assert.deepEqual(ss.isAppShortcut(key({ key: "K", code: "KeyK", ctrlKey: true, shiftKey: true }), PC), { action: "palette" });
@@ -240,8 +254,8 @@ test("in browser mode only the palette key is taken, and the panel footer shows 
   assert.equal(ss.isAppShortcut(key({ key: "1", code: "Digit1", metaKey: true }), MAC_BROWSER), null, "the browser keeps ⌘1-9");
   assert.deepEqual(ss.isAppShortcut(key({ key: "K", code: "KeyK", ctrlKey: true, shiftKey: true }), PC_BROWSER), { action: "palette" });
   assert.equal(ss.isAppShortcut(key({ key: "T", code: "KeyT", ctrlKey: true, shiftKey: true }), PC_BROWSER), null);
-  assert.deepEqual(ss.shortcutHints(MAC), [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }]);
-  assert.deepEqual(ss.shortcutHints(PC), [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }]);
+  assert.deepEqual(ss.shortcutHints(MAC), [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }, { keys: "⌘\\", word: "split" }]);
+  assert.deepEqual(ss.shortcutHints(PC), [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }, { keys: "Ctrl+Shift+\\", word: "split" }]);
   assert.deepEqual(ss.shortcutHints(MAC_BROWSER), []);
   assert.deepEqual(ss.shortcutHints(PC_BROWSER), []);
 });
@@ -515,7 +529,8 @@ test("server frames are read defensively", () => {
   }, "the manager's first state frame carries only the status");
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "state", status: "live", endedBy: "other" })).endedBy, null);
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "state", status: "nope" })), null);
-  assert.deepEqual(ss.parseServerFrame(JSON.stringify({ t: "alert", raw: "bel" })), { t: "alert", raw: "bel" });
+  assert.deepEqual(ss.parseServerFrame(JSON.stringify({ t: "alert", kind: "waiting", text: "May need you" })), { t: "alert", kind: "waiting", text: "May need you" });
+  assert.equal(ss.parseServerFrame(JSON.stringify({ t: "alert", raw: "bel" })), null, "SP4 replaced SP3's raw alert frame");
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "alert" })), null);
   assert.equal(ss.parseServerFrame(JSON.stringify({ t: "hello" })), null);
   assert.equal(ss.parseServerFrame("[]"), null);

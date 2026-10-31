@@ -9,12 +9,19 @@
 //
 // Hard rules (spec "SP3 Sessions engine and page", Security 6):
 // - The only bytes this file writes into a PTY are the writer's input
-//   (write()) and the mirror's replies to terminal queries, which the mirror
-//   sends only while no window is the writer (startProcess()).
+//   (write()), the mirror's replies to terminal queries, which the mirror
+//   sends only while no window is the writer (startProcess()), and the
+//   hand-off's typed text (typeInto(), SP4: only under the write rules, in
+//   paste markers, never followed by Enter, never user input).
+// - The screen is read only for the Claude Code and Codex limit texts (spec
+//   SP4, Task X1b), at most once per LIMIT_SCAN_MS after output.
 // - An agent session starts or resumes only when Safety allows running agents
 //   (decision Q15). The update and setup kinds are not gated.
 // - At most `maxLive` live agent sessions. Update and setup sessions are not
 //   counted; at most one update session and one setup session run at a time.
+// - Signals (SP4, signals.js) change only what a session shows: its status
+//   and its alert. Nothing here answers for the person, and update and setup
+//   sessions never alert.
 // - A setup session (plan-brains spec §1: OpenClaw's ChatGPT sign-in) lives in
 //   memory only: no session folder, no meta.json, no recording. Its input goes
 //   to the PTY unscanned, and its mirror is disposed the moment it ends.
@@ -24,19 +31,73 @@ import os from "node:os";
 import path from "node:path";
 import { getAdapter } from "../agents/index.js";
 import { BUILDER_AGENT_IDS } from "../builders/brains.js";
+import { LIMIT_MESSAGE } from "../builders/limits.js";
 import { resolveBrainForRun } from "../builders/resolve.js";
 import { isExecutionEnabled } from "../execution-gate.js";
+import { timingSafeEqualStrings } from "../local-session.js";
 import { killProcessTree } from "../process-tree.js";
+import { getServerPort } from "../server-info.js";
 import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
+import {
+  CHANGES_POLL_MS,
+  CHANGES_REFRESH_DEBOUNCE_MS,
+  CHANGE_MISSING_MESSAGE,
+  ENDED_READ_REUSE_MS,
+  FILES_MARKER_GAP_MS,
+  GIT_UNAVAILABLE_LIMIT,
+  addPendingMarker,
+  filesMarker,
+  newPendingMarker,
+  pendingToMarker,
+  readChanges,
+  readDiff
+} from "./changes.js";
+import { CLAUDE_HOOK_EVENTS, parseStatusLine, readRegularText, transcriptExists as defaultTranscriptExists } from "./claude-session.js";
 import { isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
-import { createMirror, isUserInput } from "./mirror.js";
+import { runGit as defaultRunGit } from "./git.js";
+import { cleanTypedText, pasteBody } from "./handoff.js";
+import { BACKUP_WAITING_QUIET_MS } from "./hooks.js";
+import { COUNTED_CHECK_MS, createMirror, isUserInput } from "./mirror.js";
+import {
+  CODEX_LIMIT_CONFIRM_MS,
+  LIMIT_SCAN_MS,
+  classifyMirrorAlert,
+  classifyTitle,
+  codexLimitConfirmed,
+  createClaudeLimitRule,
+  matchScreenLimit,
+  parseResetText
+} from "./mirror-signals.js";
 import { OPENCLAW_FOLDER_HONOURED, SESSION_AGENTS, SESSION_AGENT_LABEL, SETUP_ACTIONS, buildSessionProfile } from "./profiles.js";
 import { ptyAvailable, spawnPty } from "./pty-host.js";
-import { CAST_FILE, createRecorder, enforceRecordingCap } from "./recorder.js";
+import { CAST_FILE, createRecorder, deleteRecording as deleteRecordingFiles, enforceRecordingCap } from "./recorder.js";
 import { readSessionSettings } from "./settings.js";
+import { getLoginShellEnv } from "./shell-env.js";
+import {
+  ALERT_LINE_GAP_MS,
+  HELD_CHECK_MS,
+  MARKERS_MAX,
+  SIGNAL_SOURCES,
+  TURN_DONE_BACKSTOP_MS,
+  activityAfter,
+  cleanAlertText,
+  freshActivity,
+  makeMarker,
+  makeSignal,
+  printAlertLine
+} from "./signals.js";
 import { runSoftStop } from "./soft-stop.js";
+import {
+  copyAllowed,
+  copyPlan,
+  createWorktree,
+  discardFreshWorktree,
+  removeWorktree as removeCopyFolder,
+  worktreeIdOf,
+  worktreePath
+} from "./worktrees.js";
 
 // Each shared name has one home: errors.js (the id pattern and the error
 // shape) and profiles.js (the agents' short names). Re-exported here so
@@ -44,7 +105,9 @@ import { runSoftStop } from "./soft-stop.js";
 export { SESSION_ID_RE, isSessionId, sessionError } from "./errors.js";
 export { SESSION_AGENT_LABEL } from "./profiles.js";
 
-// The basic activity rule, used for every session in SP3.
+// The basic activity rule (spec "Session activity states"): 20 s without
+// counted output makes a live session idle, until the session is turn-done;
+// then signals.js's TURN_DONE_BACKSTOP_MS applies instead (K5).
 export const IDLE_AFTER_MS = 20 * 1000;
 // Flow control (spec "WebSocket protocol", Back-pressure).
 export const PAUSE_LAG_BYTES = 512 * 1024;
@@ -73,19 +136,36 @@ const START_ROWS = 32;
 // After a resize the agent redraws for the new size, and the mirror may count
 // that reflow; for this long it is not activity (Task S4 Notes item 4).
 const RESIZE_QUIET_MS = 1000;
+// Hand-off (SP4, Task X8): how often a wait for a target that is not ready yet looks again (a waiting that
+// resolves, Claude Code's folder trust); ?2004 itself is seen at once through the mirror's onModeChange.
+const TYPING_CHECK_MS = 250;
+// A target with one of these alerts is "waiting or in an approval" (spec, Hand-off write rules).
+const TYPING_BLOCKING_ALERTS = new Set(["waiting", "approval"]);
+const HANDOFF_STATES = new Set(["pending", "typed", "copy"]);
+// How many ended sessions keep a hand-off copy in memory (the newest stay).
+const ENDED_COPIES_MAX = 20;
+// The longest sentence a failed Keep going keeps (an error's own words; cleanAlertText also marks a cut with "…").
+const KEEP_GOING_FAILURE_MAX = 300;
 const META_FILE = "meta.json";
 const META_VERSION = 1;
 const RECORDING_FILES = ["screen.cast", "screen.prev.cast"];
 const BRAIN_LABEL = { plan: "Plan", openrouter: "OpenRouter", local: "Local" };
-const LOOK_ONLY_MESSAGE = "Safety is on Look only, so no session can start. Allow running agents in Safety, then try again.";
+// keep-going.js (SP4) refuses with this sentence and BUSY_MESSAGE too, so each has one home.
+export const LOOK_ONLY_MESSAGE = "Safety is on Look only, so no session can start. Allow running agents in Safety, then try again.";
 const PTY_MESSAGE = "Agent OS could not load its terminal module on this computer, so sessions can't start.";
 const UNKNOWN_MESSAGE = "That session doesn't exist anymore.";
-const BUSY_MESSAGE = "This session is already being changed. Try again in a moment.";
+export const BUSY_MESSAGE = "This session is already being changed. Try again in a moment.";
 const SAVE_FAILED_MESSAGE = "Agent OS could not save this session, so it was stopped. Check the free disk space, then try again.";
 const UNKNOWN_KIND_MESSAGE = "Agent OS can't start that kind of session.";
 const QUITTING_MESSAGE = "Agent OS is quitting, so no new session can start.";
 // The answer to a second sign-in start (plan-brains contract, 409 setup_running).
 const SETUP_RUNNING_MESSAGE = "A ChatGPT sign-in is already open in Agent OS.";
+// The worktree offer (spec SP4). Every one is a new sentence for the owner's review at E1 (Q32).
+const COPY_NOT_AVAILABLE_MESSAGE = "OpenClaw picks its own folder, so it can't use a separate copy.";
+const NO_WORKTREE_MESSAGE = "This session doesn't use a separate copy.";
+const COPY_LIVE_MESSAGE = "That session is still running. Stop it first, then remove its separate copy.";
+const COPY_IN_USE_MESSAGE = "Another session is still running in this separate copy. Stop it first, then remove the copy.";
+const COPY_REMOVED_MESSAGE = "Its separate copy was removed, so this conversation can't be resumed.";
 // A Claude Code session in which nothing was ever sent saves no conversation (and
 // Claude deletes old transcripts itself): `claude --resume <uuid>` then prints "No conversation found with session ID: <uuid>"
 // and exits 1 at once. Without this, the tab would offer Resume again, forever
@@ -116,6 +196,23 @@ const NO_RECORDER = Object.freeze({
 // before it is killed (the same grace as Stop).
 const FAILED_START_GRACE_MS = 3000;
 const SIGNAL_NAMES = signalNameTable();
+// The signal kinds applySignal takes. A limit is never one: limit evidence
+// goes through the agent's limit rule (Task X1b), which calls setHeld.
+const APPLIED_SIGNAL_KINDS = Object.freeze(["waiting", "turn_done", "approval", "resolved"]);
+// The events that start a live session's idle time again.
+const REARM_EVENTS = new Set(["counted", "input", "new_turn"]);
+// M5: the hook variables (every name starting with HOOK_PREFIX) belong to the Claude session's own environment only
+// (H2). A helper process built from a copy of that environment (the `claude agents` poller, git, a hand-off, the
+// Stop sequence's `claude agents --json` and `claude stop`) must never receive them. Dropped by prefix, so that this
+// file never names them (E1's guard on which files do).
+const HOOK_PREFIX = "AGENT_OS_HOOK_";
+function withoutHookVariables(env) {
+  return Object.fromEntries(Object.entries(env || {}).filter(([key]) => !key.startsWith(HOOK_PREFIX)));
+}
+// A held session's reset timer is set only for a reset time closer than this;
+// the wall-clock check covers one further away (setTimeout's own limit is
+// about 24.8 days).
+const HELD_TIMER_MAX_MS = 24 * 24 * 60 * 60 * 1000;
 
 // ---- small helpers ----------------------------------------------------------------------------------
 
@@ -144,6 +241,48 @@ function signalName(signal) {
 
 function iso(ms) {
   return new Date(ms).toISOString();
+}
+
+// The SP4 summary fields that only memory knows (R22). An ended session sends
+// the defaults: its alert and meter ended with its process, and so did its
+// hand-off, except a "copy" (Task X8: the text a new session never got because
+// it ended before it was ready).
+function memoryFields(view) {
+  const ended = view.status === "exited";
+  const memory = ended ? null : view.memory ?? null;
+  const keptCopy = ended && view.memory?.handoff?.state === "copy" ? view.memory.handoff : null;
+  const activity = memory?.activity ?? null;
+  const alert = activity?.alert ?? null;
+  return {
+    alerts: activity?.turnDone === true ? "full" : "basic",
+    alert: alert ? { kind: alert.kind, text: alert.text, at: alert.at } : null,
+    idleBy: activity?.idleBy ?? null,
+    resetAt: activity?.status === "held" ? activity.resetAt ?? null : null,
+    trustNeeded: memory?.trustNeeded === true,
+    hooksOff: { alerts: memory?.hooksOff?.alerts ?? null, meter: memory?.hooksOff?.meter ?? null },
+    meter: memory?.meter ?? null,
+    handoff: ended ? keptCopy : memory?.handoff ?? null,
+    keepGoingFailure: ended ? view.memory?.keepGoingFailure ?? null : null
+  };
+}
+
+// Markers read back from meta.json: only well-formed ones with a real time,
+// the newest MARKERS_MAX.
+function storedMarkers(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((entry) => entry && typeof entry.at === "string" && Number.isFinite(Date.parse(entry.at)))
+    .map((entry) => makeMarker(entry))
+    .filter(Boolean)
+    .slice(-MARKERS_MAX);
+}
+
+function logListenerError(error) {
+  try {
+    console.error(`Agent OS: a live-sessions listener failed: ${error?.message || error}`);
+  } catch {
+    // logging must never be the thing that throws
+  }
 }
 
 function sessionsRoot() {
@@ -211,12 +350,13 @@ export async function readGitBranch(folder) {
     if (info) {
       let gitDir = dotGit;
       if (info.isFile()) {
-        const pointer = await fs.readFile(dotGit, "utf8").catch(() => "");
+        // Regular files only, so a pipe planted in a project can't hang the server (E1 review).
+        const pointer = (await readRegularText(dotGit)) ?? "";
         const match = /^gitdir:\s*(.+?)\s*$/m.exec(pointer);
         if (!match) return null;
         gitDir = path.resolve(dir, match[1]);
       }
-      const head = await fs.readFile(path.join(gitDir, "HEAD"), "utf8").catch(() => "");
+      const head = (await readRegularText(path.join(gitDir, "HEAD"))) ?? "";
       const ref = /^ref:\s*refs\/heads\/(.+?)\s*$/.exec(head.trim());
       return ref ? ref[1].slice(0, 200) : null;
     }
@@ -228,20 +368,53 @@ export async function readGitBranch(folder) {
 }
 
 // The Brain row of the side panel. Hermes and OpenClaw keep their model in
-// their own config, so Agent OS shows no brain for them.
+// their own config, so Agent OS shows no brain for them. The launch profile's model (an OpenRouter or Local brain's,
+// a chosen Cursor model) goes with it, for the Live meter's Model row when Claude's status line has none (spec,
+// Side panel: "launch profile; Claude's statusLine when present"). A plan brain with no chosen model has no `model`.
 function brainSummary(agentId, resolved) {
   if (!BUILDER_AGENT_IDS.includes(agentId)) return null;
   const kind = resolved && Object.hasOwn(BRAIN_LABEL, resolved.mode) ? resolved.mode : "plan";
-  return { kind, label: BRAIN_LABEL[kind] };
+  const model = typeof resolved?.model === "string" ? resolved.model.trim() : "";
+  return model ? { kind, label: BRAIN_LABEL[kind], model } : { kind, label: BRAIN_LABEL[kind] };
 }
 
-function titleOf(meta) {
+// `withBranch`: a separate copy (R25) is named for its project, so its branch is what tells two copies of one project
+// apart. The quit question asks for it (the page's session titles do the same); the folder check does not.
+function titleOf(meta, { withBranch = false } = {}) {
   if (meta.kind === "update") return `${meta.agentLabel} update`;
-  return `${meta.agentLabel} · ${meta.folderShown === false ? "Set by OpenClaw" : meta.folderName}`;
+  const where = `${meta.agentLabel} · ${meta.folderShown === false ? "Set by OpenClaw" : meta.folderName}`;
+  return withBranch && meta.copyOf && meta.branch ? `${where} · ${meta.branch}` : where;
 }
 
 function byCreated(a, b) {
   return String(a.createdAt || a.startedAt || "").localeCompare(String(b.createdAt || b.startedAt || ""));
+}
+
+// The changes panel's memory for one session (SP4): the last read, and the
+// poll's own bookkeeping. `result` starts as "not read yet" (git: null).
+// `stopped` starts true: nothing reads (not even after a hook) until the
+// session's first save succeeded and startChangesPoll turned it on (Q2).
+// `unavailable` counts git starts that failed in a row (Q5); `pending`,
+// `markedAt` and `markerTimer` hold the "files changed" moments that wait for
+// the 30 s gap between two markers (Q6).
+function freshChanges() {
+  return {
+    result: { git: null, files: [], total: 0, at: null },
+    timer: null,
+    soon: false,
+    running: false,
+    again: false,
+    stopped: true,
+    unavailable: 0,
+    pending: newPendingMarker(),
+    markedAt: null,
+    markerTimer: null
+  };
+}
+
+// The answer for a session whose folder is never read, or where git can't run.
+function notTracked(at = null) {
+  return { git: false, files: [], total: 0, at };
 }
 
 function safeSend(attachment, frame) {
@@ -257,8 +430,30 @@ function defaultDetect(agentId) {
   return adapter ? adapter.detect() : Promise.resolve({ installed: false, path: "" });
 }
 
-function defaultResolveBrain(agentId) {
-  return resolveBrainForRun(agentId, undefined, { prepare: true });
+// `override` is the brain keep going asks for (ruling R26: only
+// server/runtime/sessions/keep-going.js passes one, and no route does);
+// without one, the saved brain.
+function defaultResolveBrain(agentId, override = null) {
+  return resolveBrainForRun(agentId, override ?? undefined, { prepare: true });
+}
+
+// A new hook token for one Claude Code run (spec Security 4): 32 random bytes,
+// 43 base64url characters. Never the main session token, never on disk.
+function defaultHookToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+// The events the per-session settings file registers. A post naming any other
+// event can only be forged (the token sits in the agent's environment), so
+// onHook ignores it entirely.
+const HOOK_EVENT_NAMES = new Set(CLAUDE_HOOK_EVENTS.map((entry) => entry.event));
+
+// The environment for git in an ended session: the login-shell environment
+// (H2), never the server's own, which holds AGENT_OS_TOKEN. git.js drops
+// Agent OS's own variables from it again.
+async function defaultLoginEnv() {
+  const result = await getLoginShellEnv();
+  return result && result.env && typeof result.env === "object" ? result.env : {};
 }
 
 // ---- the manager --------------------------------------------------------------------------------------
@@ -280,11 +475,43 @@ export function createSessionManager({
   writeJson = writeJsonFile,
   killTree = killProcessTree,
   softStop = runSoftStop,
-  attachSnapshotMs = ATTACH_SNAPSHOT_MS
+  attachSnapshotMs = ATTACH_SNAPSHOT_MS,
+  // SP4: prints the AGENT_OS_ALERT line when an alert starts. getSessionManager
+  // passes printAlertLine only when the desktop shell started this server.
+  onAlertLine = null,
+  // SP4 (K3): how often a held session compares the clock with its reset time.
+  heldCheckMs = HELD_CHECK_MS,
+  // Signals from the mirror (Task X1b): how long Codex's limit text must stay
+  // on screen, and how often the screen is read after output. Tests shorten both.
+  codexConfirmMs = CODEX_LIMIT_CONFIRM_MS,
+  limitScanMs = LIMIT_SCAN_MS,
+  // SP4 (Task X2a): the server's real port (0 until listen), this run's hook
+  // token, and the re-link rule's transcript check. The tests inject them.
+  getPort = getServerPort,
+  newHookToken = defaultHookToken,
+  transcriptExists = defaultTranscriptExists,
+  // Tests only (Task X2b): where Claude's managed settings are read, handed to
+  // buildProfile; unset, the profile reads the platform's real path.
+  managedSettingsPath = undefined,
+  // The changes panel (SP4, Task X7): the git runner, how often a running
+  // session's repository is read, and the environment git gets for an ended
+  // session (a live one uses its own). The tests inject all three.
+  runGit = defaultRunGit,
+  changesPollMs = CHANGES_POLL_MS,
+  loginEnv = defaultLoginEnv,
+  // The least time between two "files changed" markers of one session (tests shorten it).
+  changesMarkerGapMs = FILES_MARKER_GAP_MS
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
   const live = new Map();
+  // id -> the hand-off "copy" of an ended session (SP4 Task X8): the text a new session never got because it ended
+  // before it was ready, so the text is not lost. Memory only (never in meta.json), the newest ENDED_COPIES_MAX.
+  const endedCopies = new Map();
+  // id -> the sentence of a Keep going that stopped a Claude Code session and then could not resume it (SP4 Task X10, I1),
+  // shown on the ended session until it runs again or is dismissed, so leaving the pane meanwhile does not lose it. Memory
+  // only (never in meta.json), the newest ENDED_COPIES_MAX.
+  const keepGoingFailures = new Map();
   // ids being resumed or dismissed right now, so two requests never race: a
   // second request for one of them is answered "session_busy".
   const busy = new Set();
@@ -302,6 +529,8 @@ export function createSessionManager({
   // The same starts, by agent and folder (set once the folder is known), so the
   // fallback-resume rule also sees a New session that is still starting there.
   const openStarts = new Set();
+  // onLiveChange listeners: told after an agent session starts or ends.
+  const liveListeners = new Set();
 
   function liveCount(kind) {
     let count = 0;
@@ -370,12 +599,68 @@ export function createSessionManager({
   async function resolveFolder(agentId, kind, folder) {
     if (kind === "agent" && agentId === "openclaw" && !OPENCLAW_FOLDER_HONOURED) return { folder: null, shown: false };
     const checked = await checkFolder(typeof folder === "string" ? folder : "");
-    if (!checked?.ok) {
-      throw sessionError(400, "folder_refused", checked?.message || "That folder can't be used.", {
-        code: checked?.code || "refused"
-      });
-    }
+    if (!checked?.ok) throw folderRefused(checked);
     return { folder: checked.path, shown: true };
+  }
+
+  // The folder policy's refusal (D12), with its own code (decision Q14).
+  function folderRefused(checked) {
+    return sessionError(400, "folder_refused", checked?.message || "That folder can't be used.", {
+      code: checked?.code || "refused"
+    });
+  }
+
+  // ---- separate copies (spec SP4, Worktree offer) ----
+
+  // The copies being removed right now, by copy id (removeWorktreeOf): nothing may start or resume in one.
+  const removingCopies = new Set();
+  // Copies are made one at a time, so two starts never pick the same agentos/<agent>-<n>.
+  let copyQueue = Promise.resolve();
+
+  // The project a folder inside an existing copy belongs to: the copy's own session's copyOf (R25). A hand-off
+  // target opened in the copy, or the copy's path typed by hand, then shows the project's name too.
+  async function copyOfFolder(folder) {
+    const copyId = await worktreeIdOf(folder);
+    if (!copyId) return null;
+    const owner = live.get(copyId)?.meta ?? (await readMeta(copyId));
+    return typeof owner?.copyOf === "string" && owner.copyOf ? owner.copyOf : null;
+  }
+
+  // Makes a start's separate copy. The copy passes the folder policy like any folder (D12 allows
+  // <AGENT_OS_HOME>/worktrees inside HOME); a refusal removes it again. Answers createWorktree's
+  // { path, folder, branch, copyOf } with `folder` as the policy's real path and `copyOf` as the project (a copy made
+  // from inside a copy is a copy of the same project), plus the git environment for a later clean-up.
+  function makeCopy({ folder, agentId, sessionId }) {
+    const work = async () => {
+      const env = await loginEnv();
+      // The wait in the queue may have been long: a removal that began meanwhile still stops this copy.
+      await assertCopyNotRemoving(folder);
+      const copyOf = (await copyOfFolder(folder)) ?? folder;
+      const made = await createWorktree({ folder, agentId, sessionId, env, run: runGit });
+      const checked = await checkFolder(made.folder);
+      if (!checked?.ok) {
+        await discardFreshWorktree({ path: made.path, copyOf: made.copyOf, branch: made.branch, env, run: runGit });
+        throw folderRefused(checked);
+      }
+      // gitFolder: where git ran (the folder that was copied, inside the copy when this is a copy of a copy). A clean-up
+      // goes there too: the new branch starts at that folder's HEAD, so `git branch -d` only agrees from there (M5).
+      return { ...made, folder: checked.path, copyOf, gitFolder: made.copyOf, env };
+    };
+    const next = copyQueue.then(work, work);
+    copyQueue = next.catch(() => {});
+    return next;
+  }
+
+  // A start that failed after its copy was made: the fresh copy and its branch go (K14). Never throws.
+  async function discardCopy(made) {
+    await discardFreshWorktree({ path: made.path, copyOf: made.gitFolder, branch: made.branch, env: made.env, run: runGit });
+  }
+
+  // While a copy is being removed, nothing may start or resume in it.
+  async function assertCopyNotRemoving(folder) {
+    if (removingCopies.size === 0) return;
+    const copyId = await worktreeIdOf(folder);
+    if (copyId && removingCopies.has(copyId)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
   }
 
   function newState(dir, meta) {
@@ -403,8 +688,28 @@ export function createSessionManager({
       cols: START_COLS,
       rows: START_ROWS,
       endedBy: null,
+      // The run's hook token (spec Security 4): memory only, never in meta.json, a log or a recording.
+      hookToken: null,
       // Set only for a resume of a Claude Code conversation (watchForNothingToResume).
       noConversation: null,
+      // When this session last raised an AGENT_OS_ALERT line (B-M2), as now() read it; null: never.
+      alertLineAt: null,
+      // The changes panel (SP4): see the "changes panel" section below.
+      changes: freshChanges(),
+      // SP4 activity (signals.js). activity.status always equals `status`:
+      // dispatch() changes both, and the two exit paths set both.
+      activity: freshActivity(),
+      heldTimer: null,
+      heldCheck: null,
+      lastInputAt: 0,
+      lastCountedAt: 0,
+      // Memory only, never in meta.json or a recording; later SP4 tasks fill
+      // them (trust and hooks off: X2a and X2b; the meter: X2b; the hand-off:
+      // X8). The summary sends their defaults until then.
+      trustNeeded: false,
+      hooksOff: { alerts: null, meter: null },
+      meter: null,
+      handoff: null,
       exitSeen: false,
       exited,
       resolveExited
@@ -427,6 +732,7 @@ export function createSessionManager({
       frame.signal = state.meta.signal;
       frame.endedBy = state.meta.endedBy;
     }
+    if (state.status === "held" && state.activity.resetAt) frame.resetAt = state.activity.resetAt;
     return frame;
   }
 
@@ -447,20 +753,133 @@ export function createSessionManager({
     broadcast(state, stateFrame(state));
   }
 
-  function armIdle(state) {
+  // ---- activity and alerts (SP4; the transition table is activityAfter in signals.js) ----------------
+
+  function clearIdle(state) {
     clearTimeout(state.idleTimer);
+    state.idleTimer = null;
+  }
+
+  // A live session becomes idle after this long without counted output, user
+  // input or a new turn: IDLE_AFTER_MS for a basic session, and
+  // TURN_DONE_BACKSTOP_MS for a turn-done one, whose turn_done can fail to come
+  // after an API error or Esc (K5).
+  function armIdle(state) {
+    clearIdle(state);
+    const wait = state.activity.turnDone ? TURN_DONE_BACKSTOP_MS : IDLE_AFTER_MS;
     state.idleTimer = setTimeout(() => {
       state.idleTimer = null;
-      if (state.status === "live") setStatus(state, "idle");
-    }, IDLE_AFTER_MS);
+      dispatch(state, { type: "idle_timer" });
+    }, wait);
     state.idleTimer.unref?.();
   }
 
-  // Counted output or user input: the session is live, and the 20 s start again.
-  function markActive(state) {
-    if (state.status === "exited") return;
-    if (state.status !== "live") setStatus(state, "live");
-    armIdle(state);
+  function clearHeldTimers(state) {
+    clearTimeout(state.heldTimer);
+    clearInterval(state.heldCheck);
+    state.heldTimer = null;
+    state.heldCheck = null;
+  }
+
+  // A held session with a known reset time (K3): a timer at the reset time,
+  // and a wall-clock check every heldCheckMs, because Node's timers stop while
+  // a Mac sleeps; the first check after the lid opens sees that the clock has
+  // passed the reset time (Review Focus 3). Either one leaves held only once
+  // now() has reached the reset time; a timer that fires a little early by the
+  // wall clock is caught by the next check.
+  function armHeldTimers(state) {
+    clearHeldTimers(state);
+    const resetMs = Date.parse(state.activity.resetAt ?? "");
+    if (!Number.isFinite(resetMs)) return;
+    const check = () => {
+      if (state.status === "held" && now() >= resetMs) dispatch(state, { type: "held_cleared" });
+    };
+    const wait = Math.max(0, resetMs - now());
+    if (wait < HELD_TIMER_MAX_MS) {
+      state.heldTimer = setTimeout(check, wait);
+      state.heldTimer.unref?.();
+    }
+    state.heldCheck = setInterval(check, heldCheckMs);
+    state.heldCheck.unref?.();
+  }
+
+  // The one place an activity event changes a session. It keeps `status` and
+  // `activity.status` equal, sends the state frame (with resetAt while held)
+  // and the alert frames, and keeps the idle and held timers in step. An ended
+  // session takes no event.
+  function dispatch(state, event) {
+    if (state.status === "exited") return false;
+    const before = state.activity;
+    const after = activityAfter(before, event);
+    state.activity = after;
+    if (after.status !== before.status) setStatus(state, after.status);
+    else if (after.status === "held" && after.resetAt !== before.resetAt) broadcast(state, stateFrame(state));
+    alertChanged(state, before.alert, after.alert);
+    if (after.status !== "live") clearIdle(state);
+    else if (before.status !== "live" || before.turnDone !== after.turnDone || REARM_EVENTS.has(event.type)) armIdle(state);
+    if (after.status !== "held") clearHeldTimers(state);
+    else if (before.status !== "held" || after.resetAt !== before.resetAt) armHeldTimers(state);
+    return true;
+  }
+
+  // K7, K8: a frame for every change of the alert, queued like every alert
+  // frame for windows still waiting for their snapshot. When an alert starts or
+  // changes kind, also a "permission asked" marker (waiting and approval) and
+  // the AGENT_OS_ALERT line (onAlertLine). New text of the same kind and a
+  // cleared alert print nothing.
+  function alertChanged(state, before, after) {
+    if (!after) {
+      if (before) broadcast(state, { t: "alert", kind: "resolved", text: "" }, { queue: true });
+      return;
+    }
+    const sameKind = before?.kind === after.kind;
+    if (sameKind && before.text === after.text) return;
+    broadcast(state, { t: "alert", kind: after.kind, text: after.text }, { queue: true });
+    if (sameKind) return;
+    if (after.kind === "waiting" || after.kind === "approval") {
+      addMarkerTo(state, { type: "permission", text: after.text }).catch(() => {});
+    }
+    if (typeof onAlertLine === "function") {
+      // B-M2: at most one waiting or approval notification per session in ALERT_LINE_GAP_MS. The frame above and the
+      // session's own alert already follow every change; only the desktop notification is held back. A "limit" line
+      // (the plan ran out, with money attached) is never held back, and it does not use up the gap either.
+      if (after.kind === "waiting" || after.kind === "approval") {
+        const at = now();
+        if (state.alertLineAt !== null && at >= state.alertLineAt && at - state.alertLineAt < ALERT_LINE_GAP_MS) return;
+        state.alertLineAt = at;
+      }
+      try {
+        onAlertLine({ sessionId: state.meta.id, agent: state.meta.agentLabel, kind: after.kind, text: after.text });
+      } catch {
+        // a notification must never stop the session
+      }
+    }
+  }
+
+  // Adds a recording marker to the session's meta.json (spec "Recordings in
+  // Runs"), keeping the newest MARKERS_MAX (K20). Agent sessions only.
+  async function addMarkerTo(state, input) {
+    if (state.meta.kind !== "agent" || !input || typeof input !== "object") return false;
+    const marker = makeMarker({ ...input, at: input.at ?? iso(now()) });
+    if (!marker) return false;
+    const kept = Array.isArray(state.meta.markers) ? state.meta.markers : [];
+    state.meta.markers = [...kept, marker].slice(-MARKERS_MAX);
+    await persist(state);
+    return true;
+  }
+
+  // Tells every onLiveChange listener that an agent session started or ended
+  // (the SP4 pollers start and stop on it). A listener's error is logged and
+  // never reaches the session.
+  function notifyLiveChange() {
+    for (const listener of [...liveListeners]) {
+      try {
+        const result = listener();
+        if (result && typeof result.then === "function") result.then(undefined, logListenerError);
+      } catch (error) {
+        logListenerError(error);
+      }
+    }
   }
 
   // Pause reading the PTY only when every open window lags more than 512 KB;
@@ -568,6 +987,198 @@ export function createSessionManager({
     watch.tail = combined.slice(-NO_CONVERSATION_TAIL_CHARS);
   }
 
+  // ---- signals from the mirror (Task X1b) ---------------------------------------------------------
+  //
+  // Spec SP4 "Signals" and "Limit rule per agent"; rulings R12-R15, R17, R19.
+  // The mirror reports BELs, OSC 9/99/777 notifications and window titles raw;
+  // mirror-signals.js says what they mean for each agent; these functions hand
+  // the result to the activity state (applySignal, markSourceSeen, setHeld,
+  // clearHeld). Update and setup sessions never alert.
+
+  function onMirrorAlert(state, raw) {
+    if (state.meta.kind !== "agent") return;
+    const signal = classifyMirrorAlert(state.meta.agentId, raw);
+    if (!signal) return;
+    // Codex's first classified OSC 9 makes it a turn-done session.
+    if (signal.sourceSeen) markSourceSeen(state.meta.id);
+    applySignal(state.meta.id, { kind: signal.kind, text: signal.text, source: signal.source });
+  }
+
+  function onMirrorTitle(state, title) {
+    if (state.meta.kind !== "agent") return;
+    const signal = classifyTitle(state.meta.agentId, title, { waitingFromTitle: state.titleWaiting === true });
+    if (!signal) return;
+    if (signal.kind === "waiting") {
+      // Hermes sends the same title twice (OSC 1 and OSC 2) and again on each
+      // refresh: only the change to "⚠" is a new question, so a person who
+      // already typed is not asked again by a repeated title.
+      if (state.titleWaiting) return;
+      state.titleWaiting = true;
+    } else {
+      state.titleWaiting = false;
+    }
+    applySignal(state.meta.id, { kind: signal.kind, text: signal.text, source: signal.source });
+  }
+
+  // Claude Code and Codex agent sessions have a limit rule. Cursor, Hermes and
+  // OpenClaw have no limit signal, so they are never held (spec).
+  function limitWatchFor(meta) {
+    if (meta.kind !== "agent" || (meta.agentId !== "claude" && meta.agentId !== "codex")) return null;
+    return {
+      agentId: meta.agentId,
+      rule: meta.agentId === "claude" ? createClaudeLimitRule({ now }) : null,
+      holding: false, // this rule put the session in held
+      lastCount: 0, // how many limit lines the last screen read found
+      scanTimer: null,
+      moreOutput: false, // output arrived while the next read was already armed
+      confirmTimer: null,
+      seenAt: 0, // Codex: when a screen read saw its text appear
+      resetAt: null // Codex: the reset time its text gave
+    };
+  }
+
+  function stopLimitWatch(state) {
+    const watch = state.limitWatch;
+    if (!watch) return;
+    clearTimeout(watch.scanTimer);
+    clearTimeout(watch.confirmTimer);
+    watch.scanTimer = null;
+    watch.confirmTimer = null;
+  }
+
+  // At most one screen read per limitScanMs after output (K2). The first output
+  // arms a read limitScanMs later, by which time the mirror has read that
+  // output. Output that arrives after the read was armed may not have been read
+  // by the mirror yet when the read runs (xterm.js reads a write a tick later),
+  // so it arms one more read, limitScanMs after that one: the last output of a
+  // burst is always followed by a read at least limitScanMs later (M1).
+  function scheduleLimitScan(state) {
+    const watch = state.limitWatch;
+    if (state.exitSeen) return;
+    if (watch.scanTimer) {
+      watch.moreOutput = true;
+      return;
+    }
+    armLimitScan(state);
+  }
+
+  function armLimitScan(state) {
+    const watch = state.limitWatch;
+    watch.moreOutput = false;
+    watch.scanTimer = setTimeout(() => {
+      watch.scanTimer = null;
+      const outputSinceArmed = watch.moreOutput;
+      scanForLimitText(state);
+      if (outputSinceArmed && !state.exitSeen) armLimitScan(state);
+    }, limitScanMs);
+    watch.scanTimer.unref?.();
+  }
+
+  // A limit text counts once, when it appears: more limit lines on screen now
+  // than at the previous read (K2), so a line that stays on screen is one
+  // signal and a second identical line printed under it is a new one (M3).
+  function scanForLimitText(state) {
+    const watch = state.limitWatch;
+    if (!watch || state.exitSeen) return;
+    const match = readLimitLine(state, watch.agentId);
+    const count = match ? match.count : 0;
+    const appeared = count > watch.lastCount;
+    watch.lastCount = count;
+    if (!appeared) return;
+    noteLimit(state.meta.id, { source: "text", text: match.line, resetAt: parseResetText(match.resetText, now()) });
+  }
+
+  // A reset time already behind us leaves nothing to wait for: a session is
+  // never held on one, so no "plan ran out" flashes up and no notification is
+  // raised for a limit that is already over (M4).
+  function resetHasPassed(resetAt) {
+    return typeof resetAt === "string" && Date.parse(resetAt) <= now();
+  }
+
+  function readLimitLine(state, agentId) {
+    try {
+      return matchScreenLimit(agentId, state.mirror.screenText()); // SCREEN READING (spec SP4)
+    } catch {
+      return null;
+    }
+  }
+
+  // Limit evidence for a Claude Code or Codex agent session (spec "Limit rule
+  // per agent"): { source: "hook" | "text" | "status", ... }. It holds a
+  // session only through that agent's rule, never on one signal. True when
+  // the evidence was taken; false for an unknown, ended or non-agent session,
+  // an agent with no limit rule, or a source that agent's rule does not use.
+  function noteLimit(id, evidence) {
+    const state = live.get(id);
+    const watch = state?.limitWatch;
+    if (!watch || state.exitSeen || !evidence || typeof evidence !== "object") return false;
+    if (watch.holding && state.activity.status !== "held") {
+      // The hold ended some other way (input, the reset time, Claude's own
+      // auto-resume): its evidence is used up, so a status line that still says
+      // 100 % cannot hold the session again on its own.
+      watch.holding = false;
+      watch.rule?.reset();
+    }
+    return watch.agentId === "claude" ? noteClaudeLimit(state, watch, evidence) : noteCodexLimit(state, watch, evidence);
+  }
+
+  // Claude Code: a limit hook or the limit text, confirmed by the other one or
+  // by the status line at 100 % (K2); below 100 % the status line ends a hold
+  // it confirmed (R4).
+  function noteClaudeLimit(state, watch, evidence) {
+    if (!["hook", "text", "status"].includes(evidence.source)) return false;
+    const result = watch.rule.add(evidence);
+    if (result.cleared) {
+      watch.holding = false;
+      if (state.activity.status === "held") clearHeld(state.meta.id);
+      return true;
+    }
+    // A repeat hold keeps the reset time already known (the reducer's rule), so
+    // only a hold that starts, or brings a different reset time, is passed on.
+    const alreadyHeld = state.activity.status === "held";
+    if (!result.held) return true;
+    if (resetHasPassed(result.resetAt)) {
+      // Its reset time is already past (M4): never hold, and use up the
+      // evidence so it cannot hold the session later.
+      if (!alreadyHeld) watch.rule.reset();
+      return true;
+    }
+    if (!alreadyHeld || (result.resetAt !== null && state.activity.resetAt !== result.resetAt)) {
+      watch.holding = true;
+      setHeld(state.meta.id, { resetAt: result.resetAt, text: LIMIT_MESSAGE.claude, source: evidence.source });
+    }
+    return true;
+  }
+
+  // Codex: no hook and no status line, so its limit text is the only signal,
+  // confirmed only by the same text still on screen codexConfirmMs later, the
+  // process alive and no counted output since (R15).
+  function noteCodexLimit(state, watch, evidence) {
+    if (evidence.source !== "text") return false;
+    clearTimeout(watch.confirmTimer);
+    watch.seenAt = now();
+    watch.resetAt = typeof evidence.resetAt === "string" ? evidence.resetAt : null;
+    watch.confirmTimer = setTimeout(() => confirmCodexLimit(state), codexConfirmMs);
+    watch.confirmTimer.unref?.();
+    return true;
+  }
+
+  function confirmCodexLimit(state) {
+    const watch = state.limitWatch;
+    watch.confirmTimer = null;
+    const alive = !state.exitSeen;
+    const stillOnScreen = alive && readLimitLine(state, "codex") !== null;
+    // The text's own output is counted a little after the mirror read it, and
+    // the mirror read it before the screen read that saw it. The mirror's
+    // counted check runs at most every COUNTED_CHECK_MS, so a tail of the same
+    // frame can be counted up to two checks later (M2).
+    const countedSince = Number(state.lastCountedAt) > watch.seenAt + 2 * COUNTED_CHECK_MS;
+    if (!codexLimitConfirmed({ stillOnScreen, alive, countedSince })) return;
+    if (resetHasPassed(watch.resetAt)) return; // M4: its reset time is already past
+    watch.holding = true;
+    setHeld(state.meta.id, { resetAt: watch.resetAt, text: LIMIT_MESSAGE.codex, source: "text" });
+  }
+
   function onOutput(state, data) {
     const chunk = typeof data === "string" ? data : String(data ?? "");
     if (!chunk) return;
@@ -582,7 +1193,9 @@ export function createSessionManager({
     } catch {
       // nor must the mirror
     }
-    if (state.status === "starting") markActive(state);
+    // The Claude Code and Codex limit texts are looked for on screen (Task X1b).
+    if (state.limitWatch) scheduleLimitScan(state);
+    if (state.status === "starting") dispatch(state, { type: "output" });
     const bytes = Buffer.byteLength(chunk, "utf8");
     for (const attachment of [...state.attachments.values()]) {
       if (attachment.pending) attachment.pending.push({ chunk });
@@ -594,9 +1207,13 @@ export function createSessionManager({
   async function onProcessExit(state, event = {}) {
     if (state.exitSeen) return;
     state.exitSeen = true;
-    clearTimeout(state.idleTimer);
-    state.idleTimer = null;
+    // The hook token dies with the run (spec Security 4).
+    state.hookToken = null;
+    state.trustNeeded = false;
+    clearIdle(state);
+    clearHeldTimers(state);
     clearPausedDrop(state);
+    stopLimitWatch(state);
     for (const off of state.offs.splice(0)) {
       try {
         off();
@@ -604,6 +1221,7 @@ export function createSessionManager({
         // already unsubscribed
       }
     }
+    stopChangesPoll(state);
     const signal = signalName(event.signal);
     const endedAt = state.meta.endedAt || iso(now());
     state.meta.status = "exited";
@@ -621,11 +1239,20 @@ export function createSessionManager({
       state.meta.exitCode !== 0;
     state.noConversation = null;
     state.meta.lastUsedAt = endedAt;
+    // A session that ends while it waits or is held tells its windows the alert
+    // is gone, just before the exited state, so a page that clears an alert on
+    // a resolved frame clears this one too.
+    const hadAlert = state.activity.alert !== null;
     state.status = "exited";
+    state.activity = activityAfter(state.activity, { type: "exit" });
     state.stateSince = endedAt;
+    if (state.meta.kind === "agent") notifyLiveChange();
     const frame = stateFrame(state);
     for (const attachment of [...state.attachments.values()]) {
-      if (!attachment.pending) safeSend(attachment, frame);
+      if (!attachment.pending) {
+        if (hadAlert) safeSend(attachment, { t: "alert", kind: "resolved", text: "" });
+        safeSend(attachment, frame);
+      }
       dropAttachment(state, attachment.id, "session_ended");
     }
     try {
@@ -652,6 +1279,8 @@ export function createSessionManager({
     } catch {
       // recovery at the next start covers a failed write
     }
+    // A hand-off copy outlives the session (its text would be lost with it); anything else of it ends here.
+    if (state.handoff?.state === "copy") rememberEndedCopy(state.meta.id, state.handoff);
     live.delete(state.meta.id);
     state.resolveExited();
     try {
@@ -676,6 +1305,13 @@ export function createSessionManager({
   // pty-host.js, so nothing is lost.
   async function startProcess(state, profile, { append, releaseSlot }) {
     state.profile = profile;
+    // SP4 (R9): what the person's Claude settings keep out of this session, found with the profile.
+    if (profile.claude?.hooksOff) {
+      state.hooksOff = { alerts: profile.claude.hooksOff.alerts ?? null, meter: profile.claude.hooksOff.meter ?? null };
+    }
+    // Signals from the mirror (Task X1b), fresh for every start and resume.
+    state.titleWaiting = false;
+    state.limitWatch = limitWatchFor(state.meta);
     state.mirror = mirrorFactory({
       cols: state.cols,
       rows: state.rows,
@@ -685,7 +1321,10 @@ export function createSessionManager({
       onQueryReply: (reply) => {
         if (state.handle && state.status !== "exited") state.handle.write(reply);
       },
-      onAlert: (raw) => broadcast(state, { t: "alert", raw }, { queue: true })
+      // Spec SP4 "Signals": a BEL or an OSC 9, 99 or 777 from any agent, Codex's
+      // OSC 9 read by its text (R14, R19), and Hermes's window title (R17).
+      onAlert: (raw) => onMirrorAlert(state, raw),
+      onTitle: (title) => onMirrorTitle(state, title)
     });
     state.mirror.setWriterAttached(false);
     try {
@@ -721,6 +1360,9 @@ export function createSessionManager({
     state.recorder =
       state.meta.kind === "setup" ? NO_RECORDER : recorderFactory({ dir: state.dir, cols: state.cols, rows: state.rows, append, now });
     live.set(state.meta.id, state);
+    // A resumed session starts clean: the copy of its earlier run is gone, and so is a failed Keep going's sentence.
+    endedCopies.delete(state.meta.id);
+    keepGoingFailures.delete(state.meta.id);
     releaseSlot();
     state.offs.push(state.handle.onData((data) => onOutput(state, data)));
     state.offs.push(
@@ -728,13 +1370,16 @@ export function createSessionManager({
         onProcessExit(state, event);
       })
     );
-    // Counted output wakes the session, except the redraw right after a resize.
+    // Counted output goes to the activity, which decides whether it wakes the
+    // session; the redraw right after a resize is not counted at all.
     state.offs.push(
       state.mirror.onCountedOutput(() => {
         if (now() < state.ignoreCountedUntil) return;
-        markActive(state);
+        state.lastCountedAt = now();
+        dispatch(state, { type: "counted" });
       })
     );
+    if (state.meta.kind === "agent") notifyLiveChange();
   }
 
   // Stops a process that started but whose session could not be saved: its
@@ -747,10 +1392,17 @@ export function createSessionManager({
       return;
     }
     state.exitSeen = true;
+    const hadAlert = state.activity.alert !== null;
     state.status = "exited";
-    clearTimeout(state.idleTimer);
-    state.idleTimer = null;
+    state.hookToken = null;
+    state.trustNeeded = false;
+    state.activity = activityAfter(state.activity, { type: "exit" });
+    stopChangesPoll(state);
+    clearIdle(state);
+    clearHeldTimers(state);
     clearPausedDrop(state);
+    stopLimitWatch(state);
+    if (state.meta.kind === "agent") notifyLiveChange();
     for (const off of state.offs.splice(0)) {
       try {
         off();
@@ -758,7 +1410,11 @@ export function createSessionManager({
         // already unsubscribed
       }
     }
-    for (const attachment of [...state.attachments.values()]) dropAttachment(state, attachment.id, "session_ended");
+    for (const attachment of [...state.attachments.values()]) {
+      // Same as onProcessExit: the alert is gone before the window is dropped.
+      if (hadAlert && !attachment.pending) safeSend(attachment, { t: "alert", kind: "resolved", text: "" });
+      dropAttachment(state, attachment.id, "session_ended");
+    }
     try {
       await killTree(state.handle.pid, { graceMs: FAILED_START_GRACE_MS });
     } catch {
@@ -788,16 +1444,263 @@ export function createSessionManager({
       await abandonStarted(state);
       throw sessionError(500, "start_failed", SAVE_FAILED_MESSAGE);
     }
+    // Saved: the changes panel starts reading (a new start or a resume).
+    startChangesPoll(state);
+  }
+
+  // ---- changes panel (SP4) ----------------------------------------------------------------------------
+  //
+  // git status --porcelain=v2 and git diff --numstat for an agent session's
+  // repository (changes.js): once when the start is saved (the baseline, which
+  // never makes a marker), then every changesPollMs after the last read ended,
+  // and soon after Claude's PostToolUse(Edit|Write) hook. One read at a time per
+  // session, and every git call is cut at 5 s (git.js), so a big or slow folder
+  // never piles up git processes; changes() always answers the last result at
+  // once. The update kind, and OpenClaw while its folder is set by OpenClaw,
+  // are never read.
+
+  // An ended session's read in flight or just finished, by session id (Q4).
+  const endedReads = new Map();
+
+  function changesTracked(meta) {
+    return meta.kind === "agent" && meta.folderShown !== false && typeof meta.folder === "string" && meta.folder !== "";
+  }
+
+  function startChangesPoll(state) {
+    endedReads.delete(state.meta.id);
+    // The process ended while its first save ran: nothing to read any more.
+    if (state.exitSeen) return;
+    if (!changesTracked(state.meta)) {
+      state.changes.result = notTracked();
+      stopChangesPoll(state);
+      return;
+    }
+    state.changes.stopped = false;
+    scheduleChanges(state, 0);
+  }
+
+  // Stops the timers, and records a "files changed" moment that was still
+  // waiting for the gap between two markers (the session may be ending).
+  function stopChangesPoll(state) {
+    const track = state.changes;
+    track.stopped = true;
+    clearTimeout(track.timer);
+    track.timer = null;
+    track.soon = false;
+    flushMarker(state);
+  }
+
+  // `soon` marks the short wait after a hook, so a burst of edits never pushes
+  // the read further out.
+  function scheduleChanges(state, delayMs, soon = false) {
+    const track = state.changes;
+    if (track.stopped) return;
+    clearTimeout(track.timer);
+    track.soon = soon;
+    track.timer = setTimeout(() => {
+      track.timer = null;
+      track.soon = false;
+      runChanges(state);
+    }, delayMs);
+    track.timer.unref?.();
+  }
+
+  async function runChanges(state) {
+    const track = state.changes;
+    if (track.stopped) return;
+    if (track.running) {
+      track.again = true;
+      return;
+    }
+    track.running = true;
+    try {
+      const next = await readChanges(state.meta.folder, {
+        env: state.profile?.env,
+        run: runGit,
+        now,
+        isStopped: () => track.stopped
+      });
+      track.unavailable = 0;
+      if (!track.stopped) noteChanges(state, next);
+    } catch (error) {
+      if (error?.code === "git_unavailable") {
+        // git could not start. One failed spawn on a loaded Mac is not "git
+        // can't run here" (Q5): the last result stays and the next read tries
+        // again; only GIT_UNAVAILABLE_LIMIT in a row give up for this session
+        // (not installed, or the system asks to install it), so it is never
+        // asked again every 3 s.
+        track.unavailable += 1;
+        if (!track.stopped && track.unavailable >= GIT_UNAVAILABLE_LIMIT) {
+          track.result = notTracked(iso(now()));
+          stopChangesPoll(state);
+        }
+      } else if (error?.code !== "git_stopped") {
+        track.unavailable = 0;
+      }
+      // A read that was cut or failed keeps the last result; the next one tries again.
+    } finally {
+      track.running = false;
+      const again = track.again;
+      track.again = false;
+      // Edits that came during the read ask for one more, but never sooner than
+      // the debounce time after this one: git must not run all the time while
+      // an agent keeps editing (Q1).
+      if (again) scheduleChanges(state, CHANGES_REFRESH_DEBOUNCE_MS, true);
+      else scheduleChanges(state, changesPollMs);
+    }
+  }
+
+  // A "files changed" marker for what changed since the last read (K12), at
+  // most one per changesMarkerGapMs per session (Q6): what changes in between
+  // waits, merged, for the end of the gap (or the end of the session).
+  function noteChanges(state, next) {
+    const track = state.changes;
+    const previous = track.result;
+    track.result = next;
+    const marker = filesMarker(previous, next);
+    if (!marker) return;
+    addPendingMarker(track.pending, marker);
+    const wait = track.markedAt === null ? 0 : track.markedAt + changesMarkerGapMs - now();
+    if (wait <= 0) {
+      flushMarker(state);
+    } else if (!track.markerTimer) {
+      track.markerTimer = setTimeout(() => {
+        track.markerTimer = null;
+        flushMarker(state);
+      }, wait);
+      track.markerTimer.unref?.();
+    }
+  }
+
+  // Records the merged moment that is waiting, if any. addMarker starts
+  // synchronously, so this also works while a session is ending.
+  function flushMarker(state) {
+    const track = state.changes;
+    clearTimeout(track.markerTimer);
+    track.markerTimer = null;
+    const marker = pendingToMarker(track.pending);
+    if (!marker) return;
+    track.pending = newPendingMarker();
+    track.markedAt = now();
+    addMarker(state.meta.id, marker).catch(() => {});
+  }
+
+  // Claude's PostToolUse(Edit|Write) hook (onHook): read again soon, or right
+  // after the read that runs now.
+  function refreshChangesSoon(id) {
+    const state = live.get(id);
+    if (!state || state.status === "exited" || state.changes.stopped) return false;
+    if (state.changes.running) {
+      state.changes.again = true;
+      return true;
+    }
+    if (!state.changes.soon) scheduleChanges(state, CHANGES_REFRESH_DEBOUNCE_MS, true);
+    return true;
+  }
+
+  // An ended session is read once, fresh, with the login-shell environment.
+  // Answers { result, env }: the env is what a diff of this session runs with.
+  // Never rejects: a login environment that can't be read, or a read that is
+  // cut or fails, answers "not read" (git: null).
+  async function readEndedChanges(meta) {
+    if (!changesTracked(meta)) return { result: notTracked(), env: {} };
+    let env = {};
+    try {
+      env = await loginEnv();
+      return { result: await readChanges(meta.folder, { env, run: runGit, now }), env };
+    } catch (error) {
+      const result = error?.code === "git_unavailable" ? notTracked(iso(now())) : { git: null, files: [], total: 0, at: null };
+      return { result, env };
+    }
+  }
+
+  // Requests for an ended session share one read while it runs, and reuse its
+  // answer for ENDED_READ_REUSE_MS afterwards, so several windows or a retrying
+  // client never stack git reads on a slow folder (Q4).
+  function endedRead(meta) {
+    const known = endedReads.get(meta.id);
+    if (known) return known.promise;
+    const entry = { promise: null, timer: null };
+    entry.promise = readEndedChanges(meta).finally(() => {
+      entry.timer = setTimeout(() => {
+        if (endedReads.get(meta.id) === entry) endedReads.delete(meta.id);
+      }, ENDED_READ_REUSE_MS);
+      entry.timer.unref?.();
+    });
+    endedReads.set(meta.id, entry);
+    return entry.promise;
+  }
+
+  // GET /api/sessions/:id/changes: a live session's last read, at once.
+  async function changes(id) {
+    assertSessionId(id);
+    const state = live.get(id);
+    if (state && state.status !== "exited") return structuredClone(state.changes.result);
+    await finishedExit(id);
+    const meta = await readMeta(id);
+    if (!meta) throw unknownSession();
+    return structuredClone((await endedRead(meta)).result);
+  }
+
+  // GET /api/sessions/:id/changes/diff: only a path in the session's current
+  // changes is ever diffed (changes.js checks the path again before git runs).
+  async function diff(id, file) {
+    assertSessionId(id);
+    const wanted = typeof file === "string" ? file : "";
+    const state = live.get(id);
+    let meta;
+    let current;
+    let env;
+    if (state && state.status !== "exited") {
+      meta = state.meta;
+      current = state.changes.result;
+      env = state.profile?.env;
+    } else {
+      await finishedExit(id);
+      meta = await readMeta(id);
+      if (!meta) throw unknownSession();
+      ({ result: current, env } = await endedRead(meta));
+    }
+    const entry = current.git === true ? current.files.find((candidate) => candidate.path === wanted) : undefined;
+    if (!entry) throw sessionError(404, "change_missing", CHANGE_MISSING_MESSAGE);
+    return readDiff(meta.folder, entry, { env, run: runGit });
   }
 
   // ---- summaries ------------------------------------------------------------------------------------
 
   function viewOfState(state) {
-    return { ...state.meta, status: state.status, stateSince: state.stateSince };
+    return {
+      ...state.meta,
+      status: state.status,
+      stateSince: state.stateSince,
+      // What only memory knows (SP4); it is never written to meta.json.
+      memory: {
+        activity: state.activity,
+        trustNeeded: state.trustNeeded,
+        hooksOff: state.hooksOff,
+        meter: state.meter,
+        handoff: handoffOf(state),
+        keepGoingFailure: keepGoingFailures.get(state.meta.id) ?? null
+      }
+    };
   }
 
   function viewOfMeta(meta) {
-    return { ...meta, stateSince: meta.status === "exited" ? meta.endedAt || meta.startedAt : meta.startedAt };
+    return {
+      ...meta,
+      stateSince: meta.status === "exited" ? meta.endedAt || meta.startedAt : meta.startedAt,
+      // Only the hand-off copy and a failed Keep going of an ended session are memory (memoryFields drops the rest for an
+      // ended session).
+      ...(meta.status === "exited"
+        ? { memory: { handoff: endedCopies.get(meta.id) ?? null, keepGoingFailure: keepGoingFailures.get(meta.id) ?? null } }
+        : {})
+    };
+  }
+
+  function rememberEndedCopy(id, handoff) {
+    endedCopies.delete(id);
+    endedCopies.set(id, { ...handoff });
+    while (endedCopies.size > ENDED_COPIES_MAX) endedCopies.delete(endedCopies.keys().next().value);
   }
 
   async function collectViews() {
@@ -819,6 +1722,10 @@ export function createSessionManager({
     if (view.kind !== "agent" || view.status !== "exited") return { available: false, reason: null, fallback };
     // Claude Code saved nothing: a Resume would fail the same way every time.
     if (view.nothingToResume === true) return { available: false, reason: NOTHING_TO_RESUME_MESSAGE, fallback };
+    // Its separate copy was removed (Remove separate copy): the folder its conversation ran in is gone.
+    if (typeof view.worktreeRemovedAt === "string" && view.worktreeRemovedAt) {
+      return { available: false, reason: COPY_REMOVED_MESSAGE, fallback };
+    }
     const label = view.agentLabel;
     if (installed.get(view.agentId) === false) {
       return { available: false, reason: `${label} isn't installed anymore.`, fallback };
@@ -847,6 +1754,7 @@ export function createSessionManager({
   }
 
   async function toSummary(view, views, installed) {
+    const extras = memoryFields(view);
     return {
       id: view.id,
       kind: view.kind,
@@ -867,7 +1775,20 @@ export function createSessionManager({
       brain: view.brain ?? null,
       resume: resumeOf(view, views, installed),
       nothingToResume: view.nothingToResume === true,
-      alerts: "basic",
+      alerts: extras.alerts,
+      alert: extras.alert,
+      idleBy: extras.idleBy,
+      resetAt: extras.resetAt,
+      trustNeeded: extras.trustNeeded,
+      hooksOff: extras.hooksOff,
+      meter: extras.meter,
+      // A session in a separate copy names the project it copies (R25). Once the copy was removed (Remove separate
+      // copy), the session is no longer a copy, so null; meta.json keeps copyOf for recent folders.
+      copyOf: typeof view.copyOf === "string" && view.copyOf && !view.worktreeRemovedAt ? view.copyOf : null,
+      // True once that copy's folder was removed: git can never be read for this session again (M6).
+      copyRemoved: typeof view.worktreeRemovedAt === "string" && view.worktreeRemovedAt !== "",
+      handoff: extras.handoff,
+      keepGoingFailure: extras.keepGoingFailure,
       recordingBytes: await recordingBytes(view.id)
     };
   }
@@ -917,7 +1838,7 @@ export function createSessionManager({
     if (closing) throw sessionError(409, "agent_os_quitting", QUITTING_MESSAGE);
   }
 
-  async function startNew({ kind, agentId, folder }) {
+  async function startNew({ kind, agentId, folder, copy = false, brainOverride = null }) {
     assertNotClosing();
     if (!SESSION_AGENTS.includes(agentId)) {
       throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
@@ -925,36 +1846,56 @@ export function createSessionManager({
     if (kind === "update" && agentId !== "hermes") {
       throw sessionError(400, "update_not_available", "Only Hermes is updated in a session.");
     }
+    if (copy && !copyAllowed(agentId)) throw sessionError(400, "copy_not_available", COPY_NOT_AVAILABLE_MESSAGE);
     if (kind === "agent" && !(await isExecutionAllowed())) {
       throw sessionError(409, "execution_gate_off", LOOK_ONLY_MESSAGE);
     }
     const slot = reserveSlot(kind);
     let id = null;
+    // The separate copy this start made, if any (removed again when the start fails).
+    let made = null;
     try {
       await requirePty();
       const where = await resolveFolder(agentId, kind, folder);
       if (kind === "agent") slot.claim(agentId, where.folder);
       const detected = await detect(agentId);
-      const brain = kind === "agent" ? await resolveBrain(agentId) : null;
+      const brain = kind === "agent" ? await resolveBrain(agentId, brainOverride) : null;
       const settings = await readSettings();
       id = crypto.randomUUID();
       const dir = sessionDir(id);
       await ensurePrivateDir(sessionsRoot());
       await ensurePrivateDir(dir);
+      // A separate copy is made last, after every check that can refuse the start, and the session runs in it.
+      // Without one, a folder inside an existing copy still names the project it copies (R25).
+      let place = where;
+      let copyOf = null;
+      // A folder inside a copy that is being removed can't be started in or copied from (M9).
+      if (where.folder) await assertCopyNotRemoving(where.folder);
+      if (copy) {
+        made = await makeCopy({ folder: where.folder, agentId, sessionId: id });
+        place = { folder: made.folder, shown: true };
+        copyOf = made.copyOf;
+        slot.claim(agentId, made.folder);
+      } else if (where.folder) {
+        copyOf = await copyOfFolder(where.folder);
+      }
+      const hook = hookFor(kind, agentId);
       const profile = await buildProfile({
         agentId,
-        folder: where.folder,
+        folder: place.folder,
         sessionId: id,
         kind,
         resume: null,
         settings,
         detected,
         brain,
-        agentOsVersion: RUNTIME_VERSION
+        agentOsVersion: RUNTIME_VERSION,
+        hook,
+        ...(managedSettingsPath === undefined ? {} : { managedSettingsPath })
       });
       const at = iso(now());
-      const folderPath = where.folder ?? profile.cwd;
-      const shown = profile.folderShown ?? where.shown;
+      const folderPath = place.folder ?? profile.cwd;
+      const shown = profile.folderShown ?? place.shown;
       const meta = {
         version: META_VERSION,
         id,
@@ -962,8 +1903,12 @@ export function createSessionManager({
         agentId,
         agentLabel: SESSION_AGENT_LABEL[agentId],
         folder: folderPath,
-        folderName: path.basename(folderPath),
+        folderName: copyOf ? path.basename(copyOf) : path.basename(folderPath),
         folderShown: shown,
+        // R25: the project a separate copy was made from (null for every other session), and when that copy was
+        // removed (Remove separate copy). A resume keeps both (it starts from the saved meta.json).
+        copyOf,
+        worktreeRemovedAt: null,
         branch: shown ? await readGitBranch(folderPath) : null,
         status: "starting",
         createdAt: at,
@@ -981,11 +1926,13 @@ export function createSessionManager({
         lastUsedAt: at
       };
       const state = newState(dir, meta);
+      armHook(state, hook);
       // startProcess puts the session into `live` and gives the slot back.
       await startProcess(state, profile, { append: false, releaseSlot: slot.release });
       await saveStarted(state);
       return get(id);
     } catch (error) {
+      if (made && !live.has(id)) await discardCopy(made);
       if (id && !live.has(id)) await fs.rm(sessionDir(id), { recursive: true, force: true }).catch(() => {});
       throw error;
     } finally {
@@ -993,8 +1940,12 @@ export function createSessionManager({
     }
   }
 
-  function create({ agentId, folder } = {}) {
-    return startNew({ kind: "agent", agentId, folder });
+  // `copy: true` asks for a separate copy (spec SP4, Worktree offer): only POST /api/sessions passes it, and only a
+  // literal true.
+  // `brainOverride` (ruling R26) is keep going's OpenRouter brain for a new
+  // Codex session; POST /api/sessions never passes one.
+  function create({ agentId, folder, copy = false, brainOverride = null } = {}) {
+    return startNew({ kind: "agent", agentId, folder, copy: copy === true, brainOverride });
   }
 
   // The update kind (spec "Session kinds"): made only by the update service,
@@ -1109,7 +2060,10 @@ export function createSessionManager({
     if (state && state.status === "exited") await state.exited;
   }
 
-  async function resume(id) {
+  // `brainOverride` (ruling R26) is keep going's OpenRouter brain for a held
+  // Claude Code session: the same id, tab and conversation on another brain.
+  // POST /api/sessions/:id/resume never passes one.
+  async function resume(id, { brainOverride = null } = {}) {
     assertSessionId(id);
     assertNotClosing();
     // A session another request is resuming or dismissing right now is not
@@ -1131,6 +2085,7 @@ export function createSessionManager({
       const slot = reserveSlot("agent");
       slot.claim(meta.agentId, meta.folder, id);
       try {
+        await assertCopyNotRemoving(meta.folder);
         await requirePty();
         const views = await collectViews();
         const view = views.find((candidate) => candidate.id === id) || viewOfMeta(meta);
@@ -1140,10 +2095,11 @@ export function createSessionManager({
         }
         const where = await resolveFolder(meta.agentId, "agent", meta.folder);
         const detected = await detect(meta.agentId);
-        const brain = await resolveBrain(meta.agentId);
+        const brain = await resolveBrain(meta.agentId, brainOverride);
         const settings = await readSettings();
         const dir = sessionDir(id);
         await ensurePrivateDir(dir);
+        const hook = hookFor("agent", meta.agentId);
         const profile = await buildProfile({
           agentId: meta.agentId,
           folder: where.folder,
@@ -1153,7 +2109,9 @@ export function createSessionManager({
           settings,
           detected,
           brain,
-          agentOsVersion: RUNTIME_VERSION
+          agentOsVersion: RUNTIME_VERSION,
+          hook,
+          ...(managedSettingsPath === undefined ? {} : { managedSettingsPath })
         });
         const at = iso(now());
         const folderPath = where.folder ?? profile.cwd;
@@ -1161,7 +2119,7 @@ export function createSessionManager({
         const state = newState(dir, {
           ...meta,
           folder: folderPath,
-          folderName: path.basename(folderPath),
+          folderName: typeof meta.copyOf === "string" && meta.copyOf ? path.basename(meta.copyOf) : path.basename(folderPath),
           folderShown: shown,
           branch: shown ? await readGitBranch(folderPath) : null,
           status: "starting",
@@ -1179,6 +2137,7 @@ export function createSessionManager({
           resumes: (Number(meta.resumes) || 0) + 1,
           lastUsedAt: at
         });
+        armHook(state, hook);
         watchForNothingToResume(state);
         // The recorder writes the "--- resumed ---" marker itself (append: true).
         // startProcess puts the session into `live` and gives the slot back.
@@ -1188,6 +2147,34 @@ export function createSessionManager({
       } finally {
         slot.release();
       }
+    } finally {
+      busy.delete(id);
+    }
+  }
+
+  // Delete recording (spec SP4 "Recordings in Runs", Task U11): the recording's files and its moments (the markers in
+  // meta.json) go together, so a later Resume starts a recording that shows none of the deleted one's moments. The
+  // session stays: its ended tab and Resume keep working. recorder.js refuses while the session runs (409
+  // recording_live) and when there is nothing to delete (404 recording_missing, unknown_session); a session another
+  // request is resuming or dismissing right now gets session_busy, so nothing else writes meta.json between the two
+  // steps. Moments that can't be removed after the files went are only logged: they are older than any recording a
+  // Resume starts, so the replay leaves them out.
+  async function deleteRecording(id) {
+    assertSessionId(id);
+    if (busy.has(id)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+    busy.add(id);
+    try {
+      const result = await deleteRecordingFiles(id, { isLive });
+      try {
+        const meta = await readMeta(id);
+        if (meta && Array.isArray(meta.markers) && meta.markers.length > 0) {
+          meta.markers = [];
+          await writeJson(path.join(sessionDir(id), META_FILE), meta);
+        }
+      } catch (error) {
+        console.error(`Agent OS: a deleted recording's moments could not be removed from meta.json: ${error?.message || error}`);
+      }
+      return result;
     } finally {
       busy.delete(id);
     }
@@ -1210,10 +2197,93 @@ export function createSessionManager({
         meta.dismissed = true;
         await writeJson(path.join(sessionDir(id), META_FILE), meta);
       }
+      // A dismissed session's kept hand-off text and failed-Keep-going sentence go too (memory only).
+      endedCopies.delete(id);
+      keepGoingFailures.delete(id);
     } finally {
       busy.delete(id);
     }
     return get(id);
+  }
+
+  // ---- the worktree offer (spec SP4) ------------------------------------------------------------------------
+
+  // The New session dialog's folder check (POST /api/sessions/folder-check): the live agent sessions that already use
+  // the folder, whether it is a git project, and the branch a separate copy would get for this agent. Read-only.
+  async function folderCheck({ folder, agentId } = {}) {
+    if (!SESSION_AGENTS.includes(agentId)) {
+      throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
+    }
+    const checked = await checkFolder(typeof folder === "string" ? folder : "");
+    if (!checked?.ok) throw folderRefused(checked);
+    const inUse = [...live.values()]
+      .filter((state) => state.meta.kind === "agent" && state.status !== "exited" && state.meta.folder === checked.path)
+      .map((state) => state.meta)
+      .sort(byCreated)
+      .map((meta) => ({ id: meta.id, agentLabel: meta.agentLabel, title: titleOf(meta) }));
+    const plan = await copyPlan(checked.path, agentId, { env: await loginEnv(), run: runGit });
+    return { path: checked.path, name: checked.name || path.basename(checked.path), git: plan.git, branch: plan.branch, inUse };
+  }
+
+  // Remove separate copy (spec: "asks first and refuses when there are uncommitted changes"; the page asks). Any ended
+  // session that ran in the copy may ask. The copy goes only when no session runs or is starting in it and git status
+  // in it prints nothing; its branch stays (K14). Every ended session that ran there is marked, so none offers Resume
+  // in a folder that is gone.
+  async function removeWorktreeOf(id) {
+    assertSessionId(id);
+    if (busy.has(id)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+    if (isRunning(id)) throw sessionError(409, "session_live", COPY_LIVE_MESSAGE);
+    busy.add(id);
+    let claimed = null;
+    try {
+      await finishedExit(id);
+      const meta = await readMeta(id);
+      if (!meta) throw unknownSession();
+      if (meta.status !== "exited") throw sessionError(409, "session_live", COPY_LIVE_MESSAGE);
+      const hasCopy = typeof meta.copyOf === "string" && meta.copyOf !== "" && !meta.worktreeRemovedAt;
+      const copyId = hasCopy ? await worktreeIdOf(meta.folder) : null;
+      if (!copyId) throw sessionError(404, "no_worktree", NO_WORKTREE_MESSAGE);
+      if (removingCopies.has(copyId)) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+      removingCopies.add(copyId);
+      claimed = copyId;
+      for (const state of live.values()) {
+        if (state.status === "exited" || state.meta.id === id) continue;
+        if ((await worktreeIdOf(state.meta.folder)) === copyId) throw sessionError(409, "session_live", COPY_IN_USE_MESSAGE);
+      }
+      for (const start of openStarts) {
+        if (start.folder && (await worktreeIdOf(start.folder)) === copyId) throw sessionError(409, "session_live", COPY_IN_USE_MESSAGE);
+      }
+      await removeCopyFolder({ path: worktreePath(copyId), copyOf: meta.copyOf, env: await loginEnv(), run: runGit });
+      const at = iso(now());
+      for (const otherId of await listSessionIds()) {
+        if (isRunning(otherId)) continue;
+        // Another session's meta.json is rewritten under that session's own guard (Resume, Dismiss, Delete recording).
+        // One a request is changing right now is left to that request; the rest are held while this loop writes.
+        const own = otherId === id;
+        if (!own && busy.has(otherId)) continue;
+        if (!own) busy.add(otherId);
+        try {
+          const other = await readMeta(otherId);
+          if (!other || other.worktreeRemovedAt || (await worktreeIdOf(other.folder)) !== copyId) continue;
+          other.worktreeRemovedAt = at;
+          await writeJson(path.join(sessionDir(otherId), META_FILE), other);
+        } finally {
+          if (!own) busy.delete(otherId);
+        }
+      }
+      return { removed: true };
+    } finally {
+      if (claimed) removingCopies.delete(claimed);
+      busy.delete(id);
+    }
+  }
+
+  // True when this session's separate copy was removed (meta.json's worktreeRemovedAt): the folder it ran in is gone.
+  // The summary's copyRemoved says the same (M6); a hand-off reads meta.json itself, so it asks here (M8).
+  async function copyRemoved(id) {
+    if (!isSessionId(id)) return false;
+    const meta = live.get(id)?.meta ?? (await readMeta(id));
+    return typeof meta?.worktreeRemovedAt === "string" && meta.worktreeRemovedAt !== "";
   }
 
   // ---- windows ------------------------------------------------------------------------------------------
@@ -1298,7 +2368,11 @@ export function createSessionManager({
     found.state.handle.write(data);
     // A setup session's input is a byte pipe (plan-brains spec §1): it may hold a
     // sign-in code, so it is never scanned; its activity comes from output only.
-    if (found.state.meta.kind !== "setup" && isUserInput(data)) markActive(found.state);
+    // User input clears waiting and held (spec "Session activity states").
+    if (found.state.meta.kind !== "setup" && isUserInput(data)) {
+      found.state.lastInputAt = now();
+      dispatch(found.state, { type: "input" });
+    }
     return true;
   }
 
@@ -1337,6 +2411,271 @@ export function createSessionManager({
     return true;
   }
 
+  // ---- signals, alerts and markers: the SP4 entry points ----------------------------------------------
+  // The mirror (onMirrorAlert), the hooks endpoint and the pollers call these;
+  // no route passes page input to them. Each takes only a running agent
+  // session and answers false for any other (SP4 signals scope). A call that
+  // can never be right (a limit, an unknown kind or source) is a TypeError.
+
+  // The running agent session with this id, or null.
+  function liveAgent(id) {
+    if (!isSessionId(id)) return null;
+    const state = live.get(id);
+    return state && state.status !== "exited" && state.meta.kind === "agent" ? state : null;
+  }
+
+  function assertSource(source) {
+    if (!SIGNAL_SOURCES.includes(source)) throw new TypeError(`"${String(source)}" is not a signal source.`);
+  }
+
+  // A waiting, turn_done, approval or resolved signal.
+  function applySignal(id, { kind, text = "", source, resetAt = null } = {}) {
+    if (!APPLIED_SIGNAL_KINDS.includes(kind)) {
+      throw new TypeError(
+        kind === "limit"
+          ? "A limit goes through the agent's limit rule, which calls setHeld; it is never applied as a signal."
+          : `"${String(kind)}" is not a signal kind applySignal takes.`
+      );
+    }
+    assertSource(source);
+    const state = liveAgent(id);
+    if (!state) return false;
+    const signal = makeSignal({ sessionId: id, kind, text, source, at: iso(now()), resetAt });
+    dispatch(state, { type: "signal", kind: signal.kind, text: signal.text, source: signal.source, at: signal.at });
+    return true;
+  }
+
+  // The session has a turn_done source and its first signal arrived (Claude's
+  // first hook event, Codex's first classified OSC 9): turn-done from now on.
+  function markSourceSeen(id) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    dispatch(state, { type: "source_seen" });
+    return true;
+  }
+
+  // A hook that shows a new turn (UserPromptSubmit, PostToolUse(Edit|Write),
+  // the poller's busy): idle becomes live; waiting stays waiting.
+  function markNewTurn(id) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    dispatch(state, { type: "new_turn" });
+    return true;
+  }
+
+  // A limit the agent's limit rule confirmed: held, with the reset time when known.
+  function setHeld(id, { resetAt = null, text = "", source } = {}) {
+    assertSource(source);
+    const state = liveAgent(id);
+    if (!state) return false;
+    const signal = makeSignal({ sessionId: id, kind: "limit", text, source, at: iso(now()), resetAt });
+    dispatch(state, { type: "held", resetAt: signal.resetAt, text: signal.text, source: signal.source, at: signal.at });
+    return true;
+  }
+
+  // The hold ended before its reset time (R4: the status shows the window
+  // cleared, or Claude's own auto-resume fired). The reset time passing is
+  // armHeldTimers' job.
+  function clearHeld(id) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    dispatch(state, { type: "held_cleared" });
+    return true;
+  }
+
+  async function addMarker(id, marker) {
+    const state = liveAgent(id);
+    if (!state) return false;
+    try {
+      return await addMarkerTo(state, marker);
+    } catch {
+      return false; // meta.json could not be written; the marker goes with the next write
+    }
+  }
+
+  // A session's markers: from memory while it runs (and while its recording
+  // closes), from meta.json after it ended.
+  async function markers(id) {
+    assertSessionId(id);
+    const state = live.get(id);
+    if (state) return storedMarkers(state.meta.markers);
+    const meta = await readMeta(id);
+    if (!meta) throw unknownSession();
+    return storedMarkers(meta.markers);
+  }
+
+  // Copies of the running agent sessions, in start order (a resume moves a
+  // session to the end), for the pollers and the hand-off.
+  function liveAgentSessions(agentId = null) {
+    const found = [];
+    for (const state of live.values()) {
+      if (state.status === "exited" || state.meta.kind !== "agent") continue;
+      if (agentId !== null && state.meta.agentId !== agentId) continue;
+      const profile = state.profile || {};
+      // M5: no hook variable in the copy a helper process gets (withoutHookVariables).
+      const env = withoutHookVariables(profile.env);
+      found.push({
+        id: state.meta.id,
+        agentId: state.meta.agentId,
+        agentSessionId: state.meta.agentSessionId ?? null,
+        folder: state.meta.folder,
+        status: state.status,
+        alert: state.activity.alert ? { ...state.activity.alert } : null,
+        pid: state.handle?.pid ?? null,
+        lastInputAt: state.lastInputAt, // 0 before any user input (X2b's poller reads 0 as "no input")
+        profile: {
+          command: profile.command,
+          args: Array.isArray(profile.args) ? [...profile.args] : [],
+          cwd: profile.cwd,
+          env
+        }
+      });
+    }
+    return found;
+  }
+
+  function onLiveChange(listener) {
+    if (typeof listener !== "function") throw new TypeError("onLiveChange() needs a function.");
+    liveListeners.add(listener);
+    return () => {
+      liveListeners.delete(listener);
+    };
+  }
+
+  // ---- hand-off (SP4) -----------------------------------------------------------------------------------
+
+  // Why text can't be typed into this session now, or null when it can. Spec "SP4 Session extras", Hand-off, write
+  // rules: the target's mirror shows DECSET ?2004 (bracketed paste) on AND the target is not waiting or in an
+  // approval. A Claude Code session whose folder trust Agent OS has not seen yet counts as waiting too: Claude's trust
+  // question takes no typed text and sends no signal. When the person's Claude settings switch the Live meter off,
+  // trust can't be seen, so only the spec's two rules apply.
+  function typingBlock(state) {
+    if (!state || state.meta.kind !== "agent" || state.exitSeen || !state.handle || !state.mirror) return "not_live";
+    const { activity } = state;
+    if (activity.status === "exited") return "not_live";
+    if (activity.status === "waiting" || TYPING_BLOCKING_ALERTS.has(activity.alert?.kind)) return "waiting";
+    if (state.trustNeeded === true && !state.hooksOff?.meter) return "waiting";
+    let modes = null;
+    try {
+      modes = state.mirror.modes();
+    } catch {
+      modes = null;
+    }
+    return modes?.bracketedPaste === true ? null : "no_paste_mode";
+  }
+
+  function readyForTyping(id) {
+    return typingBlock(live.get(id)) === null;
+  }
+
+  // Security 6: besides the writer's input and the mirror's query replies, this is the only write into a PTY. The
+  // text goes in once, cleaned and between the paste markers (handoff.js), and nothing follows it: no Enter. It is
+  // not user input, so the activity state, lastInputAt and the idle timer are left alone. The typed text is kept in
+  // memory for the panel (`handoff`), never in meta.json.
+  function typeInto(id, text, { fromId = null } = {}) {
+    const state = live.get(id);
+    const block = typingBlock(state);
+    if (block) return { ok: false, reason: block };
+    const clean = cleanTypedText(text);
+    if (!clean) throw new TypeError("typeInto needs some text to type");
+    try {
+      state.handle.write(pasteBody(clean));
+    } catch {
+      return { ok: false, reason: "not_live" };
+    }
+    state.handoff = { state: "typed", text: clean, fromId: isSessionId(fromId) ? fromId : null, at: iso(now()) };
+    return { ok: true };
+  }
+
+  // Resolves true as soon as the session takes typed text, false at `timeoutMs` or as soon as the session is gone.
+  // ?2004 is seen the moment the mirror reports a mode change; everything else (a waiting that resolves, the first
+  // hook that shows Claude's folder trust) at the next check, every TYPING_CHECK_MS.
+  function whenReadyForTyping(id, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      let stopListening = () => {};
+      let poll = null;
+      let limit = null;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        clearInterval(poll);
+        clearTimeout(limit);
+        stopListening();
+        resolve(value);
+      };
+      const check = () => {
+        const state = live.get(id);
+        if (!state || state.exitSeen || state.activity.status === "exited") finish(false);
+        else if (typingBlock(state) === null) finish(true);
+      };
+      check();
+      if (done) return;
+      poll = setInterval(check, TYPING_CHECK_MS);
+      poll.unref?.();
+      // Kept referenced: it is at most `timeoutMs`, and it is what settles the wait.
+      limit = setTimeout(() => finish(false), Math.max(0, Number(timeoutMs) || 0));
+      try {
+        const off = live.get(id).mirror.onModeChange(() => check());
+        if (typeof off === "function") stopListening = off;
+      } catch {
+        // No mode reports: the regular check still sees ?2004.
+      }
+      if (done) stopListening();
+    });
+  }
+
+  // Memory only (spec Security 5: nothing typed is kept on disk). null clears it. A session that already ended takes
+  // only a "copy" (a new session that ended before it was ready: the text is shown with a Copy button instead of
+  // being lost), kept in memory for the newest ENDED_COPIES_MAX ended sessions; for it, anything else is left alone.
+  // The time is this manager's own.
+  function setHandoff(id, handoff) {
+    const state = live.get(id);
+    if (handoff === null) {
+      if (state && !state.exitSeen) state.handoff = null;
+      return;
+    }
+    if (!handoff || !HANDOFF_STATES.has(handoff.state)) throw new TypeError("setHandoff needs a state: pending, typed or copy");
+    const made = {
+      state: handoff.state,
+      text: cleanTypedText(handoff.text),
+      fromId: isSessionId(handoff.fromId) ? handoff.fromId : null,
+      at: iso(now())
+    };
+    if (state && !state.exitSeen) {
+      state.handoff = made;
+    } else if (made.state === "copy" && made.text && isSessionId(id)) {
+      rememberEndedCopy(id, made);
+    }
+  }
+
+  // Keep going's I1 sentence for a Claude Code session it stopped and then could not resume (keep-going.js): kept in memory
+  // for the newest ENDED_COPIES_MAX sessions and shown as `keepGoingFailure` while the session is ended; it goes when the
+  // session runs again or is dismissed. null (or blank text) clears it. Plain one-line text, as an alert's.
+  function setKeepGoingFailure(id, text) {
+    if (!isSessionId(id)) return;
+    const clean = text === null || text === undefined ? "" : cleanAlertText(text, KEEP_GOING_FAILURE_MAX);
+    keepGoingFailures.delete(id);
+    if (!clean) return;
+    keepGoingFailures.set(id, clean);
+    while (keepGoingFailures.size > ENDED_COPIES_MAX) keepGoingFailures.delete(keepGoingFailures.keys().next().value);
+  }
+
+  // What the summary shows as `handoff` (through viewOfState's `memory`): a copy of the memory. An ended session shows
+  // only a "copy" (see setHandoff). A typed one goes at the person's first input after it: the caption has done its
+  // job then.
+  function handoffOf(state) {
+    if (!state) return null;
+    if (state.exitSeen) {
+      const kept = state.handoff?.state === "copy" ? state.handoff : endedCopies.get(state.meta.id);
+      return kept ? { ...kept } : null;
+    }
+    if (!state.handoff) return null;
+    const { handoff } = state;
+    if (handoff.state === "typed" && Number.isFinite(state.lastInputAt) && state.lastInputAt > Date.parse(handoff.at)) return null;
+    return { ...handoff };
+  }
+
   // ---- quit check and recovery ------------------------------------------------------------------------
 
   async function quitCheck() {
@@ -1347,7 +2686,7 @@ export function createSessionManager({
       .sort(byCreated);
     // The kind lets the quit question leave out "you can resume them later"
     // when an update session is listed (an update is never resumed).
-    return { live: running.map((meta) => ({ id: meta.id, title: titleOf(meta), kind: meta.kind })) };
+    return { live: running.map((meta) => ({ id: meta.id, title: titleOf(meta, { withBranch: true }), kind: meta.kind })) };
   }
 
   // Whether this manager runs the session right now (ruling R8). A session
@@ -1387,6 +2726,15 @@ export function createSessionManager({
     return { recovered };
   }
 
+  // The visible screen of a running agent session as plain text, for the
+  // typed summaries of keep going and Cursor's hand-over (R24). An empty
+  // string for anything else.
+  function screenText(id) {
+    const state = live.get(id);
+    if (!state || state.status === "exited" || state.meta.kind !== "agent" || !state.mirror) return "";
+    return state.mirror.screenText(); // SCREEN READING (spec SP4)
+  }
+
   // ---- Stop and quit ------------------------------------------------------------------------------------
 
   function waitForExit(state, ms) {
@@ -1421,7 +2769,8 @@ export function createSessionManager({
       soft = await softStop({
         softStop: profile.softStop ?? null,
         command: profile.command,
-        env: profile.env,
+        // B-M1: `claude agents --json` and `claude stop` are helper processes, not the session: no hook token or address.
+        env: withoutHookVariables(profile.env),
         cwd: profile.cwd,
         agentSessionId: state.meta.agentSessionId ?? null,
         pid: state.handle?.pid ?? null
@@ -1479,6 +2828,9 @@ export function createSessionManager({
     if (reason !== "stop") closing = true;
     const endedBy = reason === "stop" ? "stop" : "quit";
     const running = [...live.values()].filter((state) => state.status !== "exited");
+    // No new git run starts while the sessions are being stopped (Q3): the
+    // process of each one ends a little later, and its poll would go on until then.
+    for (const state of running) stopChangesPoll(state);
     let timer;
     const guard = new Promise((resolve) => {
       timer = setTimeout(resolve, SHUTDOWN_GUARD_MS);
@@ -1508,6 +2860,112 @@ export function createSessionManager({
     return { stopped: running.length };
   }
 
+  // ---- Claude Code's hooks (SP4, Task X2a) -----------------------------------------------------------
+
+  // The hook a new run gets (H2, R7): Claude Code agent sessions only, and
+  // only once the server knows its real port (0 before listen and in tests
+  // that start no server). Every other start stays exactly as in SP3.
+  function hookFor(kind, agentId) {
+    if (kind !== "agent" || agentId !== "claude") return null;
+    const port = getPort();
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+    return { port, token: newHookToken() };
+  }
+
+  // The token lives in this run's memory only (never meta.json). Until the
+  // first hook event (or, from Task X2b, the first status post) arrives,
+  // Claude may still be waiting for the person to trust the folder: the panel
+  // says "Alerts start after you trust this folder in Claude".
+  function armHook(state, hook) {
+    state.hookToken = hook ? hook.token : null;
+    state.trustNeeded = Boolean(hook);
+  }
+
+  // "ok"; "unknown_session" for anything that is not a running Claude Code
+  // agent run with a hook (liveAgent: running, agent kind); "bad_token" for a
+  // missing or wrong token, another session's included. Timing-safe (spec
+  // "Hook endpoints").
+  function checkHookToken(id, presented) {
+    const state = liveAgent(id);
+    if (!state || state.meta.agentId !== "claude" || typeof state.hookToken !== "string" || state.hookToken === "") {
+      return "unknown_session";
+    }
+    if (typeof presented !== "string" || presented === "") return "bad_token";
+    return timingSafeEqualStrings(presented, state.hookToken) ? "ok" : "bad_token";
+  }
+
+  function msSinceInput(state) {
+    return Number.isFinite(state.lastInputAt) ? now() - state.lastInputAt : Infinity;
+  }
+
+  // R1: Claude's own session id moves to a new UUID after /clear or /resume
+  // inside Claude. Agent OS follows it only to a UUID whose transcript file
+  // exists in this session's own Claude project folder (one stat, never a
+  // read), so a forged event can at worst re-link to another conversation of
+  // the same folder. Used for hook events here and, from Task X2b, for the
+  // statusLine JSON. Never throws.
+  async function relinkClaudeSession(state, uuid) {
+    if (typeof uuid !== "string" || uuid === state.meta.agentSessionId) return false;
+    let found = false;
+    try {
+      found = await transcriptExists({ uuid, folder: state.meta.folder, env: state.profile?.env ?? {} });
+    } catch {
+      found = false;
+    }
+    // The run may have ended, or another event re-linked it, while the stat ran.
+    if (!found || live.get(state.meta.id) !== state || state.status === "exited" || uuid === state.meta.agentSessionId) return false;
+    state.meta.agentSessionId = uuid;
+    try {
+      await persist(state);
+    } catch {
+      // meta.json is written again when the run ends
+    }
+    return true;
+  }
+
+  // One Claude Code hook event, already mapped by hooks.js (mapHookEvent). It
+  // runs only after hooks.js checked this run's token and Claude got its 204
+  // (H5), so nothing here can slow Claude down; and everything it does is a
+  // hint (spec "Hook events are hints"): a waiting alert, a finished turn, a
+  // new turn, a label-only Prompt moment (R23), a limit hint that never holds
+  // on its own, the auto-continue that clears held (R4), and the re-link (R1).
+  function onHook(id, mapped) {
+    const state = liveAgent(id);
+    if (!state || state.meta.agentId !== "claude") return;
+    if (!mapped || typeof mapped !== "object" || !HOOK_EVENT_NAMES.has(mapped.event)) return;
+    markSourceSeen(id);
+    state.trustNeeded = false;
+    if (mapped.claudeSessionId) relinkClaudeSession(state, mapped.claudeSessionId).catch(() => {});
+    for (const signal of Array.isArray(mapped.signals) ? mapped.signals : []) {
+      // K6: Claude's backup Notification comes about 6 s after its prompt, so it
+      // can land just after the person answered; and not again while it waits.
+      if (signal.backup && (state.status === "waiting" || msSinceInput(state) < BACKUP_WAITING_QUIET_MS)) continue;
+      applySignal(id, { kind: signal.kind, text: signal.text, source: "hook" });
+    }
+    if (mapped.limit) noteLimit(id, { source: "hook", text: mapped.limit.text });
+    if (mapped.newTurn) markNewTurn(id);
+    if (mapped.promptMarker) addMarker(id, { type: "prompt" }).catch(() => {});
+    if (mapped.heldCleared) clearHeld(id);
+    if (mapped?.refreshChanges === true) refreshChangesSoon(id);
+  }
+
+  // POST /hooks/sessions/:id/status (SP4, H6): the statusLine wrapper's copy of Claude's status
+  // JSON. It fills the Live meter (R11), is the Claude limit rule's status signal (a level, K2;
+  // R4 clears a hold it confirmed), shows the folder is trusted (Claude runs a status line only
+  // after its trust dialog, so the trust line ends), and may re-link the conversation (R1). It
+  // never marks a hook source as seen: the status line also runs when the person's settings keep
+  // Agent OS's hooks out (allowedHttpHookUrls), and a session that waits for a Stop hook that never
+  // comes would say "Working." for far too long.
+  function onStatusLine(id, json) {
+    const state = liveAgent(id);
+    if (!state || state.meta.agentId !== "claude") return;
+    const status = parseStatusLine(json, now());
+    state.meter = status.meter;
+    state.trustNeeded = false;
+    if (status.claudeSessionId) relinkClaudeSession(state, status.claudeSessionId).catch(() => {});
+    noteLimit(id, { source: "status", atLimit: status.atLimit, resetAt: status.resetAt });
+  }
+
   return {
     create,
     createUpdateSession,
@@ -1523,11 +2981,37 @@ export function createSessionManager({
     ack,
     resume,
     dismiss,
+    deleteRecording,
     stop,
     shutdownAll,
     quitCheck,
     isLive,
     recoverStaleSessions,
+    // Hand-off (SP4, Task X8): handoff.js's sendTo and deliverTyped use these, and so does Task X10.
+    typeInto,
+    readyForTyping,
+    whenReadyForTyping,
+    setHandoff,
+    setKeepGoingFailure,
+    changes,
+    diff,
+    checkHookToken,
+    onHook,
+    onStatusLine,
+    noteLimit,
+    applySignal,
+    markSourceSeen,
+    markNewTurn,
+    setHeld,
+    clearHeld,
+    addMarker,
+    markers,
+    liveAgentSessions,
+    onLiveChange,
+    folderCheck,
+    removeWorktree: removeWorktreeOf,
+    copyRemoved,
+    screenText,
     // The limit this manager was created with (the sessions list reports it).
     get maxLive() {
       return maxLive;
@@ -1539,7 +3023,9 @@ let defaultManager = null;
 
 export function getSessionManager() {
   if (!defaultManager) {
-    const manager = createSessionManager();
+    // Only the desktop shell reads AGENT_OS_ALERT lines (spec "Desktop shell
+    // changes"), so a server started any other way prints none.
+    const manager = createSessionManager({ onAlertLine: process.env.AGENT_OS_PACKAGED === "1" ? printAlertLine : null });
     // Quitting Agent OS (SIGTERM or SIGINT, the desktop shell's stdin line, or
     // its Quit) ends every session with the Stop sequence, after writing
     // "ended (Agent OS quit)" into each meta.json. The task looks the method up

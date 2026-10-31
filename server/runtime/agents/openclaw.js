@@ -149,7 +149,12 @@ async function safetyStatus(detected) {
     runCommand(detected.path, ["config", "get", "tools.exec.mode"], EXEC_MODE_TIMEOUT_MS),
     runCommand(detected.path, ["config", "get", "browser.allowSystemProfileImport"], EXEC_MODE_TIMEOUT_MS)
   ]);
+  // `actions` are fixes for things that are too open; `choices` are optional
+  // switches that are never a finding; `notes` are calm facts shown with an
+  // info mark.
   const actions = [];
+  const choices = [];
+  const notes = [];
   const summaries = [];
   const execValue = configValue(execResult.stdout);
   // A missing value defaults to "full" upstream, which is the permissive one.
@@ -160,8 +165,29 @@ async function safetyStatus(detected) {
       label: "Make OpenClaw ask before running commands",
       description: "Sets tools.exec.mode to ask, so OpenClaw prompts before running shell commands."
     });
+  } else if (execValue === "ask") {
+    summaries.push("OpenClaw asks before each new command (tools.exec.mode = ask).");
+    // OpenClaw's own recommended mode: its reviewer lets routine commands run
+    // and asks only about risky ones. Offered, never applied by Agent OS itself.
+    choices.push({
+      id: "exec-auto",
+      label: "Ask only for risky commands",
+      description:
+        "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run and asks you about risky ones, like deleting."
+    });
+  } else if (execValue === "auto") {
+    summaries.push(
+      "OpenClaw runs routine commands on its own and asks only for risky ones (tools.exec.mode = auto)."
+    );
   } else {
     summaries.push(`OpenClaw tools.exec.mode is "${execValue}".`);
+  }
+  // In ask and auto, OpenClaw can only show an approval while one of its
+  // approval clients is connected to its Gateway; with none it refuses at once.
+  if (execValue === "ask" || execValue === "auto") {
+    notes.push(
+      "OpenClaw asks for approval only while its Control UI or Mac app is open. Without one, it says no to commands that need approval."
+    );
   }
   // Unset means the upstream default, which allows importing cookies from
   // the user's system browser profile.
@@ -174,7 +200,7 @@ async function safetyStatus(detected) {
       description: "Sets browser.allowSystemProfileImport to false, so OpenClaw cannot copy logins from your browser."
     });
   }
-  return { permissive: actions.length > 0, summary: summaries.join(" "), actions };
+  return { permissive: actions.length > 0, summary: summaries.join(" "), actions, choices, notes };
 }
 
 // `config get` prints a sentence instead of a value when the path is unset.
@@ -483,9 +509,12 @@ function parseLine(line) {
 
 // no-browser-cookies needs a gateway restart to take effect (the real CLI
 // prints "Restart the gateway to apply"); exec-ask applies without one (the
-// real CLI prints "will apply without restarting the gateway").
+// real CLI prints "will apply without restarting the gateway"), and so does
+// exec-auto, which changes the same setting (the CLI prints "Change will apply
+// without restarting the gateway.").
 const SAFETY_ACTIONS = {
   "exec-ask": { setting: ["tools.exec.mode", "ask"], restartsGateway: false },
+  "exec-auto": { setting: ["tools.exec.mode", "auto"], restartsGateway: false },
   "no-browser-cookies": { setting: ["browser.allowSystemProfileImport", "false"], restartsGateway: true }
 };
 

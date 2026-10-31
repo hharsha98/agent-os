@@ -11,6 +11,13 @@ const SECRET_VALUE_PATTERNS = [
   /gh[pousr]_[A-Za-z0-9_]{20,}/,
   /AIza[0-9A-Za-z_-]{20,}/
 ];
+// Global ("g") copies so redactText replaces every match, not only the first.
+// Kept separate on purpose: a "g" regex remembers where its last match ended
+// (lastIndex), so test() on one can answer differently on each call, and
+// redactValue runs test() on the shared list above.
+const SECRET_VALUE_PATTERNS_GLOBAL = SECRET_VALUE_PATTERNS.map(
+  (pattern) => new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`)
+);
 
 function startsWithNodeShebang(file) {
   let fd;
@@ -241,8 +248,8 @@ export function redactValue(key, value) {
 export function redactText(value, extraPatterns = []) {
   let text = String(value ?? "");
   text = text.replaceAll(os.homedir(), "~");
-  for (const pattern of SECRET_VALUE_PATTERNS) {
-    text = text.replace(pattern, "configured");
+  for (const pattern of SECRET_VALUE_PATTERNS_GLOBAL) {
+    text = text.replaceAll(pattern, "configured");
   }
   for (const item of extraPatterns) {
     const raw = String(item || "");

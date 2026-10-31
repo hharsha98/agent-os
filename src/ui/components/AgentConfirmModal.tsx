@@ -32,10 +32,13 @@ export default function AgentConfirmModal({
   cancelLabel = "Cancel",
   giveFocusBack = () => true
 }: {
-  title: string;
+  // Words, or (the read-only diff, SP4 Task U7) a file name whose hidden characters are drawn as visible tokens.
+  title: ReactNode;
   children: ReactNode;
-  confirmLabel: string;
-  onConfirm: () => void;
+  // Both left out for a dialog with nothing to confirm (the changes panel's read-only diff, SP4 Task U7): it then
+  // shows only the button that closes it, worded by `cancelLabel`.
+  confirmLabel?: string;
+  onConfirm?: () => void;
   onClose: () => void;
   confirmDisabled?: boolean;
   busy?: boolean;
@@ -119,14 +122,16 @@ export default function AgentConfirmModal({
           <button type="button" className="os-btn os-btn--ghost" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </button>
-          <button
-            type="button"
-            className={`os-btn ${danger ? "os-btn--danger" : "os-btn--primary"}`}
-            onClick={onConfirm}
-            disabled={confirmDisabled || busy}
-          >
-            {busy ? "Working…" : confirmLabel}
-          </button>
+          {onConfirm ? (
+            <button
+              type="button"
+              className={`os-btn ${danger ? "os-btn--danger" : "os-btn--primary"}`}
+              onClick={onConfirm}
+              disabled={confirmDisabled || busy}
+            >
+              {busy ? "Working…" : confirmLabel}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

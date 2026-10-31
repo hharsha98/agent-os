@@ -3,21 +3,18 @@ import ReactDOM from "react-dom/client";
 import DashboardRoot from "./DashboardRoot";
 import "./styles.css";
 import "./agent-os.css";
+import { claimSession } from "./sessionKey";
 
 // a "launch" query param carries the one-time local session
-// token printed in the terminal. Claim it, strip it from the URL (so it
-// never lingers in history or gets sent as a Referer), then render.
+// token printed in the terminal. Claim it (the server sets the session cookie
+// and answers with the page key, which claimSession keeps), strip it from the
+// URL (so it never lingers in history or gets sent as a Referer), then render.
 async function claimLaunchToken() {
   const params = new URLSearchParams(window.location.search);
   const token = params.get("launch");
   if (!token) return;
   try {
-    await fetch("/api/session/claim", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token })
-    });
+    await claimSession(token);
   } catch {
     // Network error: the LockedScreen still shows if the session stayed locked.
   } finally {

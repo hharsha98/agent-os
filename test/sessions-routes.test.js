@@ -29,6 +29,7 @@ import { brainError } from "../server/runtime/builders/brain-launch.js";
 import { isLocalMode, requireLocalMode } from "../server/runtime/local-session.js";
 import { SESSION_ID_RE, sessionError } from "../server/runtime/sessions/errors.js";
 import { createSessionManager } from "../server/runtime/sessions/manager.js";
+import { deleteRecording } from "../server/runtime/sessions/recorder.js";
 import { createRecordingsRouter, createSessionsRouter } from "../server/runtime/sessions/routes.js";
 import { FALLBACK_NOTICE, NESTED_MARKERS, resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
@@ -187,10 +188,20 @@ function stubManager() {
       calls.push(["quitCheck"]);
       return { live: [{ id: KNOWN_ID, title: "Claude Code · project", kind: "agent" }] };
     },
+    async markers(id) {
+      calls.push(["markers", id]);
+      if (id === KNOWN_ID) return [{ at: "2026-10-14T10:01:00.000Z", type: "prompt" }];
+      throw sessionError(404, "unknown_session", "That session doesn't exist anymore.");
+    },
     // Synchronous like the real one (ruling R8). Not recorded in `calls`: the
     // recordings routes ask it, and the fixed-path test counts only quitCheck.
     isLive(id) {
       return id === KNOWN_ID;
+    },
+    // Like the real one (Task U11): recorder.js's own checks and removal, with this stub's isLive.
+    async deleteRecording(id) {
+      calls.push(["deleteRecording", id]);
+      return deleteRecording(id, { isLive: (sessionId) => sessionId === KNOWN_ID });
     }
   };
   return { manager, calls };
@@ -243,7 +254,20 @@ const EVERY_ROUTE = [
   ["POST", `/api/sessions/${KNOWN_ID}/dismiss`, {}],
   ["GET", `/api/sessions/${KNOWN_ID}/recording`],
   ["DELETE", `/api/sessions/${KNOWN_ID}/recording`],
-  ["GET", "/api/recordings"]
+  ["GET", `/api/sessions/${KNOWN_ID}/markers`],
+  ["GET", `/api/sessions/${KNOWN_ID}/keep-going`],
+  ["POST", `/api/sessions/${KNOWN_ID}/keep-going`, {}],
+  ["POST", `/api/sessions/${KNOWN_ID}/hand-over`, { to: "claude" }],
+  ["GET", "/api/recordings"],
+  // SP4 (E1 test gap): the pending approvals, the folder check of the New session dialog, the hand-off, the changes
+  // panel and the separate copy. Each one answers as if it did not exist outside local mode (spec Security 1).
+  ["GET", "/api/sessions/approvals"],
+  ["POST", "/api/sessions/approvals/resolve", { id: "ap-1", decision: "allow-once" }],
+  ["POST", "/api/sessions/folder-check", { folder: "/tmp", agentId: "claude" }],
+  ["POST", `/api/sessions/${KNOWN_ID}/send`, { to: "codex" }],
+  ["GET", `/api/sessions/${KNOWN_ID}/changes`],
+  ["GET", `/api/sessions/${KNOWN_ID}/changes/diff?path=notes.md`],
+  ["DELETE", `/api/sessions/${KNOWN_ID}/worktree`]
 ];
 
 before(() => {
@@ -272,6 +296,28 @@ test("outside local mode every sessions and recordings address is 404 not_availa
       await assert.rejects(stat(path.join(agentOsHome, "config", "sessions.json")), "the settings were not written");
     }, vars);
   }
+});
+
+test("no route takes a brain from the page (ruling R26): POST /api/sessions and POST /:id/resume pass none on to the manager, whatever the body says", async () => {
+  await withSessionsEnv(async () => {
+    const { manager, calls } = stubManager();
+    const resumed = [];
+    manager.resume = async (...args) => {
+      resumed.push(args);
+      return summary(KNOWN_ID, { status: "starting" });
+    };
+    const brain = { mode: "openrouter", model: "openai/gpt-5.5" };
+    await withSessionsApp(manager, async (api) => {
+      const created = await api("POST", "/api/sessions", { agentId: "claude", folder: "/tmp", brainOverride: brain, brain });
+      assert.equal(created.status, 201);
+      const answer = await api("POST", `/api/sessions/${KNOWN_ID}/resume`, { brainOverride: brain, brain });
+      assert.equal(answer.status, 200);
+    });
+    const [, input] = calls.find(([name]) => name === "create");
+    assert.equal(Object.hasOwn(input, "brainOverride"), false, JSON.stringify(input));
+    assert.equal(Object.hasOwn(input, "brain"), false, JSON.stringify(input));
+    assert.deepEqual(resumed, [[KNOWN_ID]], "resume is asked with the id alone");
+  });
 });
 
 test("an id that is not a lower-case version 4 uuid is 404 unknown_session before the manager or the disk is asked", async () => {
@@ -688,6 +734,29 @@ async function writeSessionFixture(agentOsHome, id, { cast = true, status = "exi
   return dir;
 }
 
+test("GET /api/sessions/:id/markers answers { markers } from the manager; an unknown session keeps the manager's 404, and a bad id never reaches it", async () => {
+  await withSessionsEnv(async () => {
+    const { manager, calls } = stubManager();
+    await withSessionsApp(manager, async (api) => {
+      const known = await api("GET", `/api/sessions/${KNOWN_ID}/markers`);
+      assert.equal(known.status, 200, known.text);
+      assert.deepEqual(known.json, { markers: [{ at: "2026-10-14T10:01:00.000Z", type: "prompt" }] });
+
+      const unknown = await api("GET", `/api/sessions/${NEW_ID}/markers`);
+      assert.equal(unknown.status, 404);
+      assert.deepEqual(unknown.json, UNKNOWN_SESSION);
+
+      const bad = await api("GET", "/api/sessions/not-a-uuid/markers");
+      assert.equal(bad.status, 404);
+      assert.deepEqual(bad.json, UNKNOWN_SESSION);
+    });
+    assert.deepEqual(calls, [
+      ["markers", KNOWN_ID],
+      ["markers", NEW_ID]
+    ]);
+  });
+});
+
 test("GET /api/sessions/:id/recording streams the recorder's lines: the older segment, then the newer one without its header", async () => {
   await withSessionsEnv(async ({ agentOsHome }) => {
     const dir = path.join(agentOsHome, "sessions", KNOWN_ID);
@@ -782,7 +851,7 @@ test("recordings: the manager, not meta.json, says which session is live; delete
     const liveDir = await writeSessionFixture(agentOsHome, KNOWN_ID);
     const endedId = crypto.randomUUID();
     const endedDir = await writeSessionFixture(agentOsHome, endedId);
-    const { manager } = stubManager();
+    const { manager, calls } = stubManager();
     await withSessionsApp(manager, async (api) => {
       const list = await api("GET", "/api/recordings");
       assert.equal(list.status, 200);
@@ -810,6 +879,12 @@ test("recordings: the manager, not meta.json, says which session is live; delete
       const unknown = await api("DELETE", `/api/sessions/${OTHER_ID}/recording`);
       assert.equal(unknown.status, 404);
       assert.deepEqual(unknown.json, UNKNOWN_SESSION);
+
+      // Task U11: every delete goes through the manager (which also removes the recording's moments).
+      assert.deepEqual(
+        calls.filter(([name]) => name === "deleteRecording").map(([, sessionId]) => sessionId),
+        [KNOWN_ID, endedId, endedId, OTHER_ID]
+      );
     });
   });
 });
@@ -1152,7 +1227,7 @@ test("wiring: sessions mount behind requireLocalMode, recovery and the cap run b
     return index;
   };
   const sessionsMount = at(
-    'app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager }));'
+    'app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager, approvals: openclawApprovals }));'
   );
   const recordingsMount = at(
     'app.use("/api/recordings", requireLocalMode, createRecordingsRouter({ manager: sessionManager }));'

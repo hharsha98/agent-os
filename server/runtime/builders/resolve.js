@@ -130,6 +130,8 @@ const STATUS = {
   invalid_resume: 400,
   openrouter_key_missing: 409,
   base_url_without_credential: 409,
+  // A Claude settings key Agent OS never writes (assertSafeClaudeSettings, R27): only a bug gets here.
+  unsafe_settings: 500,
   local_model_missing: 409,
   ollama_unavailable: 409,
   ollama_too_old: 409,

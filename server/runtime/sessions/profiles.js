@@ -23,6 +23,15 @@ import { hasCursorForceFlag } from "../runs/run-manager.js";
 import { withSiblingNodePath } from "../safety.js";
 import { managedNodeRoot } from "../setup/managed-node.js";
 import { RUNTIME_VERSION, ensurePrivateDir, ensureRuntimeStore, runtimePaths } from "../store.js";
+import {
+  buildSessionClaudeSettings,
+  claudeHookUrl,
+  detectHooksOff,
+  findUserStatusLine,
+  readClaudeSettingsLayers,
+  statusLineCommand,
+  writeStatusLineHelper
+} from "./claude-session.js";
 import { SESSION_ID_RE, isSessionId, sessionError } from "./errors.js";
 import { checkSessionFolder } from "./folders.js";
 import { readSessionSettings } from "./settings.js";
@@ -63,9 +72,11 @@ const OPENCLAW_KEY = /^agentos-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-
 // The names detection looks for, in its order (cursor.js tries agent first).
 const BINARY_NAMES = { claude: ["claude"], codex: ["codex"], cursor: ["agent", "cursor-agent"], hermes: ["hermes"], openclaw: ["openclaw"] };
 // Codex's own notifications as OSC 9, so the mirror sees them (spec table).
+// plan-mode-prompt is its third type, its questions and plan prompts (ruling
+// R14); H3 allows any -c tui.notification* option.
 const CODEX_TUI_OPTIONS = [
   "-c", "tui.notification_method=osc9",
-  "-c", 'tui.notifications=["agent-turn-complete","approval-requested"]',
+  "-c", 'tui.notifications=["agent-turn-complete","approval-requested","plan-mode-prompt"]',
   "-c", "tui.notification_condition=always"
 ];
 
@@ -83,6 +94,24 @@ function ownValue(map, key) {
 
 function hasBrainKeys(brain) {
   return brain?.mode === "openrouter" || brain?.mode === "local";
+}
+
+// The hook a Claude Code agent session posts to (SP4, Task X2a): the server's
+// real port and this run's token, both made by the manager. Anything else is
+// a caller's bug, refused before anything is read or written.
+const HOOK_TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
+
+function checkedHook(hook) {
+  if (hook === null || hook === undefined) return null;
+  const ok =
+    typeof hook === "object" &&
+    Number.isInteger(hook.port) &&
+    hook.port >= 1 &&
+    hook.port <= 65535 &&
+    typeof hook.token === "string" &&
+    HOOK_TOKEN.test(hook.token);
+  if (!ok) throw new TypeError("buildSessionProfile: hook must be { port, token } (a port from 1 to 65535 and a base64url token)");
+  return { port: hook.port, token: hook.token };
 }
 
 async function findOnPath(names, pathValue) {
@@ -125,13 +154,18 @@ function insideManagedNode(command) {
 }
 
 // Spec "Launch profiles", Claude Code: <AGENT_OS_HOME>/sessions/<id>/claude-settings.json
-// (0600, in a 0700 folder) with only the brain keys, without
-// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (Q9). It holds the key's read command, never the key.
-// Two steps, so that a command line assertSessionArgvSafe refuses leaves
+// (0600, in a 0700 folder) with the observe-only hooks of an agent session
+// with a hook (SP4, `hookUrl`) and, for an OpenRouter or Local brain, the
+// brain keys without CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (Q9). It holds the key's
+// read command, never the key, and the hook token's variable name, never the
+// token. Two steps, so that a command line assertSessionArgvSafe refuses leaves
 // nothing on disk: prepare builds the settings and works out where the file
 // goes (no disk access); write runs once the argv has been accepted.
-async function prepareSessionClaudeSettings(sessionId, brain) {
-  const settings = buildClaudeSettings(brain, brain.mode === "openrouter" ? await keyHelper() : null, { forSession: true });
+async function prepareSessionClaudeSettings(sessionId, brain, { hookUrl = null, statusLine = null, withHooks = true } = {}) {
+  const brainSettings = hasBrainKeys(brain)
+    ? buildClaudeSettings(brain, brain.mode === "openrouter" ? await keyHelper() : null, { forSession: true })
+    : null;
+  const settings = hookUrl ? buildSessionClaudeSettings({ hookUrl, statusLine, brainSettings, withHooks }) : brainSettings;
   assertSafeClaudeSettings(settings);
   return { settings, file: path.join(runtimePaths().sessions, sessionId, "claude-settings.json") };
 }
@@ -151,6 +185,17 @@ async function writeSessionClaudeSettings({ settings, file }) {
     await fs.rm(temp, { force: true });
     throw error;
   }
+}
+
+// SP4 (H6, R10): the statusLine of the per-session settings file. Agent OS's wrapper, run by the
+// bundled Node, with the person's own padding, refresh interval and vim-mode choice copied
+// unchanged, so Claude lays the line out exactly as it does in Terminal.
+function sessionStatusLine(script, userStatusLine) {
+  const statusLine = { type: "command", command: statusLineCommand(script) };
+  for (const key of ["padding", "refreshInterval", "hideVimModeIndicator"]) {
+    if (userStatusLine && Object.hasOwn(userStatusLine, key)) statusLine[key] = userStatusLine[key];
+  }
+  return statusLine;
 }
 
 // Spike S6: asks Cursor for a new chat (`<command> create-chat`, argv only,
@@ -175,7 +220,10 @@ export async function cursorCreateChat(command, { cwd, env, timeoutMs = CURSOR_C
 }
 
 // The launch profile for one session start or resume:
-// { command, args, cwd, env, agentSessionId, settingsFile, softStop, resumeMode, folderShown, notes }.
+// { command, args, cwd, env, agentSessionId, settingsFile, softStop, resumeMode, folderShown, notes, claude }.
+// `hook` ({ port, token }, SP4) is passed by the manager for a Claude Code
+// agent run once the server knows its port; `claude` is then
+// { hookUrl, hooksOff, statusLineFrom }, and null for everything else.
 // `resume` is null for a fresh start, or { agentSessionId } (from meta.json)
 // to continue an ended agent session. `kind: "update"` is `hermes update`.
 // `kind: "setup"` runs the `setupAction` entry of SETUP_ACTIONS in HOME.
@@ -189,7 +237,10 @@ export async function buildSessionProfile({
   detected,
   brain = null,
   agentOsVersion = RUNTIME_VERSION,
-  setupAction = null
+  setupAction = null,
+  hook = null,
+  // Tests only: where Claude's managed settings are read (default: MANAGED_SETTINGS_PATHS).
+  managedSettingsPath = undefined
 } = {}) {
   if (!SESSION_AGENTS.includes(agentId)) throw sessionError(400, "unknown_agent", "Agent OS can't start a session for that agent.");
   if (!isSessionId(sessionId)) throw sessionError(404, "unknown_session", "That session doesn't exist anymore.");
@@ -200,6 +251,12 @@ export async function buildSessionProfile({
   if (kind === "setup" && (!setup || setup.agentId !== agentId)) {
     throw sessionError(400, "unknown_kind", "Agent OS can't start that kind of session.");
   }
+  // SP4 (H2, H3, R7): a Claude Code agent session with a hook posts to the
+  // literal hook URL of this session. Every other agent and kind, and a start
+  // before the server knows its port (hook null), stay exactly as in SP3.
+  const given = checkedHook(hook);
+  const claudeHook =
+    given && kind === "agent" && agentId === "claude" ? { url: claudeHookUrl(given.port, sessionId), token: given.token } : null;
   const label = ownValue(SESSION_AGENT_LABEL, agentId);
 
   const shell = await getLoginShellEnv();
@@ -221,7 +278,13 @@ export async function buildSessionProfile({
   }
 
   const current = settings ?? (await readSessionSettings());
-  let env = sessionEnv(shell.env, { sessionId, agentOsVersion, claudeFullscreen: current?.claudeFullscreen === true, agentId });
+  let env = sessionEnv(shell.env, {
+    sessionId,
+    agentOsVersion,
+    claudeFullscreen: current?.claudeFullscreen === true,
+    agentId,
+    hook: claudeHook
+  });
   if (insideManagedNode(command)) env = withSiblingNodePath(command, env);
   // What a shell sets after `cd <folder>`; the login shell's own PWD was dropped.
   env.PWD = cwd;
@@ -232,6 +295,10 @@ export async function buildSessionProfile({
   let agentSessionId = null;
   let settingsFile = null;
   let pendingSettings = null;
+  // SP4: the statusLine helper files, written after the argv check (H6, R10).
+  let pendingStatusLine = null;
+  let hooksOff = { alerts: null, meter: null };
+  let statusLineFrom = null;
   let softStop = null;
   let resumeMode = null;
   if (kind === "setup") {
@@ -252,9 +319,33 @@ export async function buildSessionProfile({
       agentSessionId = crypto.randomUUID(); // Q39: a second uuid, separate from the session id
       args = ["--session-id", agentSessionId];
     }
-    // H3: --settings only when the file has something to carry (SP3: an OpenRouter or Local brain).
-    if (hasBrainKeys(brain)) {
-      pendingSettings = await prepareSessionClaudeSettings(sessionId, brain);
+    // H3: --settings only when the file has something to carry: from SP4
+    // always for an agent session with a hook (the observe-only hooks,
+    // rewritten at every start and resume because the port changes at every
+    // launch, R7), and, as in SP3, with an OpenRouter or Local brain.
+    // SP4 (H6, R9, R10): the person's own status line, and the settings that keep Agent OS's
+    // hooks or the Live meter out, read from Claude's settings files at every start and resume
+    // (only SETTINGS_READ_KEYS; never ~/.claude.json). Nothing is written before the argv check.
+    // Only an agent session with a hook (claudeHook) gets a statusLine and the helper files.
+    let statusLine = null;
+    let withHooks = true;
+    if (claudeHook) {
+      const layers = await readClaudeSettingsLayers({ folder: cwd, env, managedPath: managedSettingsPath });
+      const userStatusLine = findUserStatusLine(layers);
+      hooksOff = detectHooksOff(layers, { hookUrl: claudeHook.url });
+      statusLineFrom = userStatusLine?.from ?? null;
+      // Only what can work goes into Agent OS's own --settings file (the person's settings are
+      // never touched): no event hooks while alerts are off, so their transcript never shows
+      // "hook error" for hooks Agent OS knows are refused; no wrapper while the meter is off.
+      withHooks = !hooksOff.alerts;
+      if (!hooksOff.meter) {
+        const helperDir = path.join(runtimePaths().sessions, sessionId);
+        statusLine = sessionStatusLine(path.join(helperDir, "statusline.mjs"), userStatusLine);
+        pendingStatusLine = { dir: helperDir, userStatusLine };
+      }
+    }
+    if (claudeHook || hasBrainKeys(brain)) {
+      pendingSettings = await prepareSessionClaudeSettings(sessionId, brain, { hookUrl: claudeHook?.url ?? null, statusLine, withHooks });
       settingsFile = pendingSettings.file;
       args.push("--settings", settingsFile);
     }
@@ -297,6 +388,8 @@ export async function buildSessionProfile({
     resumeMode = "id";
   }
   assertSessionArgvSafe(agentId, args, { kind, setupAction });
+  // The helper first, so Claude never finds a statusLine whose script is missing.
+  if (pendingStatusLine) await writeStatusLineHelper(pendingStatusLine);
   if (pendingSettings) await writeSessionClaudeSettings(pendingSettings);
   return {
     command,
@@ -308,7 +401,9 @@ export async function buildSessionProfile({
     softStop,
     resumeMode,
     folderShown,
-    notes: shell.notice ? [shell.notice] : []
+    notes: shell.notice ? [shell.notice] : [],
+    // hooksOff and statusLineFrom come from the person's Claude settings (Task X2b).
+    claude: claudeHook ? { hookUrl: claudeHook.url, hooksOff, statusLineFrom } : null
   };
 }
 
@@ -323,7 +418,7 @@ const QUOTED = '"(?:[^"\\\\]|\\\\.)*"';
 // session leaves out (Q9b).
 const CODEX_CONFIG = [
   /^tui\.notification_method=osc9$/,
-  /^tui\.notifications=\["agent-turn-complete","approval-requested"\]$/,
+  /^tui\.notifications=\["agent-turn-complete","approval-requested","plan-mode-prompt"\]$/,
   /^tui\.notification_condition=always$/,
   /^model_provider="openrouter"$/,
   /^model_providers\.openrouter\.name="OpenRouter"$/,

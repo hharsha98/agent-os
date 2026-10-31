@@ -2288,6 +2288,42 @@ test(
 );
 
 test(
+  "routes: OpenClaw's auto exec mode counts as a safeguard that is on, so the start is not refused as safeguards_off",
+  SKIP_POSIX,
+  async () => {
+    await setScript({ openclawExecMode: "auto", hermes: [{ text: "NOTE: h" }], openclaw: [{ text: "NOTE: o" }] });
+    await withTeamEnv(async (home) => {
+      await withRouter(async (api) => {
+        const res = await api("POST", "/", { task: "x", confirm: true, limits: { maxTurns: 2 } });
+        assert.notEqual(res.body.error, "safeguards_off");
+        assert.equal(res.status, 200);
+        assert.equal(await teamsCount(home), 1, "the room was created");
+        await roomEnded(res.body.id);
+      });
+    });
+  }
+);
+
+test(
+  "routes: Hermes in smart mode counts as a safeguard that is on, so the start is not refused as safeguards_off",
+  SKIP_POSIX,
+  async () => {
+    // The fake Hermes cannot answer `config get approvals.smart_policy`, so the policy is unread: nothing is
+    // offered, and the room must still start.
+    await setScript({ hermesApprovals: "smart", hermes: [{ text: "NOTE: h" }], openclaw: [{ text: "NOTE: o" }] });
+    await withTeamEnv(async (home) => {
+      await withRouter(async (api) => {
+        const res = await api("POST", "/", { task: "x", confirm: true, limits: { maxTurns: 2 } });
+        assert.notEqual(res.body.error, "safeguards_off");
+        assert.equal(res.status, 200);
+        assert.equal(await teamsCount(home), 1, "the room was created");
+        await roomEnded(res.body.id);
+      });
+    });
+  }
+);
+
+test(
   "routes: an invalid openclawModel gives 400 and no room; a valid one is stored; a cost cap adds the start warning",
   SKIP_POSIX,
   async () => {

@@ -3,12 +3,23 @@
 // WebSocket protocol). The pure rules (frame sizes, acks, reading a frame) live in
 // src/ui/sessionsShared.ts, where test/sessions-shared.test.js checks them.
 import { ApiError, request } from "./api";
+import { apiFetch, pageKeyProtocols } from "./sessionKey";
 import type {
+  AlertKind,
+  ApprovalDecision,
+  ApprovalListResponse,
+  ChangesResult,
+  DiffResult,
+  FolderCheck,
+  HandoffResult,
+  KeepGoingInfo,
+  KeepGoingResult,
   QuitCheckResponse,
   RecordingListResponse,
   SessionClientFrame,
   SessionFolderList,
   SessionListResponse,
+  SessionMarker,
   SessionSettings,
   SessionSnapshot,
   SessionStateFrame,
@@ -41,9 +52,36 @@ export const SESSION_LIMITS_MS = {
   folders: 10000,
   quitCheck: 8000,
   recordings: 10000,
+  // A replay reads a whole recording, which can be tens of MB (two 25 MB segments).
+  recording: 60000,
+  markers: 10000,
+  // Files changed (Task U7): a live session's list comes at once from the server's last git read; an ended session's
+  // is read fresh, up to three git calls of at most 5 s each (GIT_LIMIT_MS, Task X7).
+  changes: 20000,
+  // One file's diff: one git call, after an ended session's list may be read again to check the file is in it.
+  diff: 25000,
   signedIn: 5000,
+  // A hand-off may start a session first (the login-shell environment, up to 10 s, H2), like create.
+  send: 30000,
   // One session's summary (the plan card's sign-in terminal asks every 5 s whether its session has ended).
-  get: 8000
+  get: 8000,
+  // OpenClaw's pending approvals (the server answers from its last poll).
+  approvals: 8000,
+  // An approval's answer: the server runs `openclaw approvals resolve` with a 10 s limit (Task X3).
+  approvalResolve: 15000,
+  // The worktree offer (SP4), each a little longer than the server's own worst case, so the person hears the server's
+  // sentence and not "Agent OS did not answer in time": the first folder check after the server starts waits for the
+  // login-shell environment (10 s) and two git reads (5 s each); a separate copy is the normal start (30 s) plus the
+  // add and checkout (2 minutes for both) plus the clean-up of a cut-off add (about 70 s); removing a copy is two
+  // reads, a status and a prune (5 s each) around the remove (1 minute).
+  folderCheck: 22000,
+  createCopy: 240000,
+  removeWorktree: 90000,
+  // Keep going (Task X10): its options read the model's price from OpenRouter (up to 10 s); keeping a Claude Code
+  // session going is a Stop (15 s) and a Resume (30 s); a hand-over may start a session (30 s, like create).
+  keepGoingInfo: 15000,
+  keepGoing: 45000,
+  handOver: 30000
 } as const;
 
 const TIMEOUT_WORDS = "Agent OS did not answer in time.";
@@ -66,8 +104,12 @@ export function getSession(sessionId: string): Promise<SessionSummary> {
 
 // `folder` is null for OpenClaw, which picks its own folder until spike S5. The server checks the folder
 // (planning decision Q14) and answers 400 folder_refused with a sentence when it is not allowed.
-export function createSession({ agentId, folder }: { agentId: string; folder: string | null }): Promise<SessionSummary> {
-  return withTimeout(request<SessionSummary>("/api/sessions", postJson({ agentId, folder })), SESSION_LIMITS_MS.create);
+//
+// `copy: true` asks for a separate copy (SP4 worktree offer): the server makes a git worktree on a new branch and
+// starts the agent there, which can take a while for a big project. Without it the body is exactly as before.
+export function createSession({ agentId, folder, copy = false }: { agentId: string; folder: string | null; copy?: boolean }): Promise<SessionSummary> {
+  const body = copy ? { agentId, folder, copy: true } : { agentId, folder };
+  return withTimeout(request<SessionSummary>("/api/sessions", postJson(body)), copy ? SESSION_LIMITS_MS.createCopy : SESSION_LIMITS_MS.create);
 }
 
 export function stopSession(sessionId: string): Promise<StopSessionResult> {
@@ -80,6 +122,26 @@ export function resumeSession(sessionId: string): Promise<SessionSummary> {
 
 export function dismissSession(sessionId: string): Promise<SessionSummary> {
   return withTimeout(request<SessionSummary>(sessionPath(sessionId, "/dismiss"), postJson()), SESSION_LIMITS_MS.dismiss);
+}
+
+// Send to Codex for review / Send to Claude Code (SP4 Hand-off). The server types the note into a session of the other
+// agent in the same folder and never presses Enter; it may start that session first, so the limit is create's.
+export function sendTo(sessionId: string, to: "claude" | "codex"): Promise<HandoffResult> {
+  return withTimeout(request<HandoffResult>(sessionPath(sessionId, "/send"), postJson({ to })), SESSION_LIMITS_MS.send);
+}
+
+// Plan ran out, keep going (SP4, Task X10). getKeepGoing stops, starts and types nothing; keepGoing and handOver
+// act, and only the confirm dialogs (KeepGoingDialog, HandOverButton) call them.
+export function getKeepGoing(sessionId: string): Promise<KeepGoingInfo> {
+  return withTimeout(request<KeepGoingInfo>(sessionPath(sessionId, "/keep-going")), SESSION_LIMITS_MS.keepGoingInfo);
+}
+
+export function keepGoing(sessionId: string): Promise<KeepGoingResult> {
+  return withTimeout(request<KeepGoingResult>(sessionPath(sessionId, "/keep-going"), postJson()), SESSION_LIMITS_MS.keepGoing);
+}
+
+export function handOver(sessionId: string, to: "claude" | "codex"): Promise<HandoffResult> {
+  return withTimeout(request<HandoffResult>(sessionPath(sessionId, "/hand-over"), postJson({ to })), SESSION_LIMITS_MS.handOver);
 }
 
 export function getSessionSettings(): Promise<SessionSettings> {
@@ -95,6 +157,17 @@ export function putSessionSettings(patch: Partial<SessionSettings>): Promise<Ses
 
 export function listSessionFolders(): Promise<SessionFolderList> {
   return withTimeout(request<SessionFolderList>("/api/sessions/folders"), SESSION_LIMITS_MS.folders);
+}
+
+// The worktree offer's folder check: read-only, nothing is made.
+export function checkFolder(folder: string, agentId: string): Promise<FolderCheck> {
+  return withTimeout(request<FolderCheck>("/api/sessions/folder-check", postJson({ folder, agentId })), SESSION_LIMITS_MS.folderCheck);
+}
+
+// Remove separate copy. The server refuses while a session runs in the copy and while it has changes that aren't
+// committed (its sentence comes back as the error's detail); the copy's branch always stays.
+export function removeWorktree(sessionId: string): Promise<{ removed: true }> {
+  return withTimeout(request<{ removed: true }>(sessionPath(sessionId, "/worktree"), { method: "DELETE" }), SESSION_LIMITS_MS.removeWorktree);
 }
 
 // Every live session of both kinds, with its title, for the quit question (planning decision Q27).
@@ -120,6 +193,77 @@ export function listRecordings(): Promise<RecordingListResponse> {
 
 export function deleteRecording(sessionId: string): Promise<{ ok: true }> {
   return withTimeout(request<{ ok: true }>(sessionPath(sessionId, "/recording"), { method: "DELETE" }), SESSION_LIMITS_MS.recordings);
+}
+
+// A recording's moments for its replay (Task X1a's route): { markers }, from meta.json, or from memory while the
+// session runs.
+export function getMarkers(sessionId: string): Promise<{ markers: SessionMarker[] }> {
+  return withTimeout(request<{ markers: SessionMarker[] }>(sessionPath(sessionId, "/markers")), SESSION_LIMITS_MS.markers);
+}
+
+// The recording itself, as the asciicast text GET /api/sessions/:id/recording streams (request() reads JSON only).
+// The download is stopped at its time limit, or when `signal` aborts (the replay closed), so a big recording never
+// keeps coming for nobody. A refusal is an ApiError, made the way request() makes one (a 401 session_required locks
+// the app).
+export async function fetchRecording(sessionId: string, { signal }: { signal?: AbortSignal } = {}): Promise<string> {
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  if (signal?.aborted) stop();
+  else signal?.addEventListener("abort", stop, { once: true });
+  const timer = setTimeout(stop, SESSION_LIMITS_MS.recording);
+  try {
+    const response = await apiFetch(sessionPath(sessionId, "/recording"), { credentials: "same-origin", signal: controller.signal });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      if (response.status === 401 && body?.error === "session_required") window.dispatchEvent(new CustomEvent("agentos:locked"));
+      throw new ApiError(body?.error || `${response.status} ${response.statusText}`, typeof body?.message === "string" ? body.message : "", response.status);
+    }
+    return await response.text();
+  } catch (error) {
+    // Stopped by the time limit, not by the caller: the words every other request uses.
+    if (controller.signal.aborted && !signal?.aborted) throw new Error(TIMEOUT_WORDS);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", stop);
+  }
+}
+
+// Files changed (SP4, Task U7): the server's last read of git in the session's folder (Task X7). The section asks every
+// 3 s while the session runs; an ended session's list is read fresh by the server.
+export async function getChanges(sessionId: string): Promise<ChangesResult> {
+  const body = await withTimeout(request<ChangesResult>(sessionPath(sessionId, "/changes")), SESSION_LIMITS_MS.changes);
+  if (!body || !Array.isArray(body.files)) throw new Error(UNREADABLE);
+  return body;
+}
+
+// One changed file's diff, read-only. `path` is relative to the repository's top level, as the list gave it.
+export async function getDiff(sessionId: string, path: string): Promise<DiffResult> {
+  const body = await withTimeout(request<DiffResult>(sessionPath(sessionId, `/changes/diff?path=${encodeURIComponent(path)}`)), SESSION_LIMITS_MS.diff);
+  if (!body || typeof body.diff !== "string") throw new Error(UNREADABLE);
+  return body;
+}
+
+// The diff route's answer for a file that left the session's changes after the list was read (404 change_missing):
+// the section then reads the list again.
+export function changeMissing(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.message === "change_missing";
+}
+
+// OpenClaw's pending approvals (Task X3): the cards and, while OpenClaw can't be asked, the server's sentence.
+export async function listApprovals(): Promise<ApprovalListResponse> {
+  const body = await withTimeout(request<ApprovalListResponse>("/api/sessions/approvals"), SESSION_LIMITS_MS.approvals);
+  if (!body || !Array.isArray(body.approvals)) throw new Error(UNREADABLE);
+  return { approvals: body.approvals, error: typeof body.error === "string" && body.error ? body.error : null };
+}
+
+// Sends exactly the answer the person picked and confirmed (ruling R16). When OpenClaw refuses, the server answers 409
+// approval_failed with OpenClaw's own words (an ApiError whose detail is that sentence).
+export function resolveApproval(id: string, decision: ApprovalDecision): Promise<{ ok: true; message: string | null }> {
+  return withTimeout(
+    request<{ ok: true; message: string | null }>("/api/sessions/approvals/resolve", postJson({ id, decision })),
+    SESSION_LIMITS_MS.approvalResolve
+  );
 }
 
 // Words for a refused or failed request: the server's own sentence when it sent one (Q14, Q15, Q25),
@@ -171,8 +315,8 @@ export interface SessionSocketHandlers {
   // A returned promise means "not on screen yet": the bytes count as processed (for acks) when it settles.
   onOut: (data: string) => void | Promise<void>;
   onState: (state: SessionStateFrame) => void;
-  // SP3: the raw OSC 9 / 99 / 777 payload, or "bel".
-  onAlert: (raw: string) => void;
+  // SP4: an alert was set or changed ({ kind, text }), or it cleared (kind "resolved", text "").
+  onAlert: (alert: { kind: AlertKind | "resolved"; text: string }) => void;
   // Not called after close() from this side.
   onClose: (info: SessionSocketClose) => void;
 }
@@ -188,8 +332,8 @@ export interface SessionSocket {
   close(): void;
 }
 
-// Same host as the page; no query string and no token in the address (the session cookie goes with the
-// upgrade; Security 1, planning decision Q40).
+// Same host as the page; no query string and no token or key in the address (the session cookie goes with the
+// upgrade, and the page key as a subprotocol; Security 1, planning decision Q40, R32).
 export function sessionSocketUrl(sessionId: string): string {
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${window.location.host}${sessionPath(sessionId, "/attach")}`;
@@ -206,7 +350,9 @@ async function checkStillSignedIn(): Promise<void> {
 }
 
 export function openSessionSocket(sessionId: string, handlers: SessionSocketHandlers): SessionSocket {
-  const ws = new WebSocket(sessionSocketUrl(sessionId));
+  // R32: a browser cannot set a header on a WebSocket, so the page key rides as the subprotocol "agent-os-key.<key>".
+  const protocols = pageKeyProtocols();
+  const ws = protocols ? new WebSocket(sessionSocketUrl(sessionId), protocols) : new WebSocket(sessionSocketUrl(sessionId));
   const acks = createAckCounter();
   let closedHere = false;
   let hadSnapshot = false;
@@ -310,10 +456,10 @@ export function openSessionSocket(sessionId: string, handlers: SessionSocketHand
         .catch(() => undefined);
       return;
     }
-    const raw = frame.raw;
+    const alert = { kind: frame.kind, text: frame.text };
     void ready
       .then(() => {
-        if (!closedHere) handlers.onAlert(raw);
+        if (!closedHere) handlers.onAlert(alert);
       })
       .catch(() => undefined);
   };

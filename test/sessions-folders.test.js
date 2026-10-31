@@ -295,3 +295,48 @@ test("recent folders: none yet is an empty list", posixSkip, async () => {
     assert.deepEqual(await recentSessionFolders(), []);
   });
 });
+
+test("recent folders (R25): a session in a separate copy gives back the project it copied, and a folder inside worktrees/ is never offered", posixSkip, async () => {
+  await withFolders(async ({ agentOsHome, project, worktree }) => {
+    const copy = path.join(agentOsHome, "worktrees", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    await mkdir(copy, { recursive: true });
+    await writeMeta(agentOsHome, "11111111-1111-4111-8111-111111111111", {
+      kind: "agent",
+      folder: copy,
+      copyOf: project,
+      folderShown: true,
+      startedAt: "2026-10-14T09:00:00.000Z",
+      endedAt: null
+    });
+    // A copy's path typed by hand (no copyOf): the folder policy allows it, recent folders never offer it.
+    await writeMeta(agentOsHome, "22222222-2222-4222-8222-222222222222", {
+      kind: "agent",
+      folder: worktree,
+      folderShown: true,
+      startedAt: "2026-10-14T10:00:00.000Z",
+      endedAt: null
+    });
+    assert.deepEqual(await recentSessionFolders(), [{ path: project, name: "app", lastUsedAt: "2026-10-14T09:00:00.000Z" }]);
+  });
+});
+
+test("folder policy (X9 review M1): <AGENT_OS_HOME>/worktrees stays allowed when AGENT_OS_HOME is the managed Node folder, and nothing else in it is", posixSkip, async () => {
+  const home = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-folders-m1-")));
+  try {
+    const root = path.join(home, ".agent-os");
+    const copy = path.join(root, "worktrees", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    const node = path.join(root, "node");
+    await mkdir(copy, { recursive: true });
+    await mkdir(node, { recursive: true });
+    const options = { home, agentOsHome: root, managedRoot: root };
+    assert.deepEqual(await checkSessionFolder(copy, options), { ok: true, path: copy, name: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+    assert.equal((await checkSessionFolder(root, options)).code, "inside_agent_os", "Agent OS's own folder is still refused");
+    assert.equal((await checkSessionFolder(node, options)).code, "inside_agent_os", "and so is the managed Node folder inside it");
+    // A strange setup, a managed folder placed inside worktrees/ itself, stays refused.
+    const odd = path.join(root, "worktrees", "managed-here");
+    await mkdir(odd, { recursive: true });
+    assert.equal((await checkSessionFolder(odd, { home, agentOsHome: root, managedRoot: path.join(root, "worktrees") })).code, "inside_agent_os");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

@@ -201,9 +201,11 @@ test("4. session claim rejects a wrong token and accepts the right one", async (
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Strict/);
 
+  // R32: the cookie works together with the page key the claim answers with (the cookie alone is test 22).
+  const { pageKey } = await right.json();
   const cookieValue = setCookie.split(";")[0];
   const authed = await fetch(`${base}/api/local-agents`, {
-    headers: { cookie: cookieValue }
+    headers: { cookie: cookieValue, "x-agent-os-key": pageKey }
   });
   assert.notEqual(authed.status, 401);
 });
@@ -500,4 +502,298 @@ test("19. unreadable JSON never echoes the request text in the reply or the log"
 
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(logs.text.includes("NOTAREALKEY"), false);
+});
+
+// The routes a page on another local port could reach with the session cookie of a browser-mode server: every state-changing
+// session route (SP3 stop/resume/dismiss, SP4 keep-going, hand-over, send, approvals, worktree, recording).
+const SESSION_ID = "3f2c9a7e-1b4d-4c8e-9f00-0123456789ab";
+const STATE_CHANGING_SESSION_ROUTES = [
+  ["POST", `/api/sessions/${SESSION_ID}/stop`],
+  ["POST", `/api/sessions/${SESSION_ID}/resume`],
+  ["POST", `/api/sessions/${SESSION_ID}/dismiss`],
+  ["POST", `/api/sessions/${SESSION_ID}/keep-going`],
+  ["POST", `/api/sessions/${SESSION_ID}/hand-over`],
+  ["POST", `/api/sessions/${SESSION_ID}/send`],
+  ["POST", "/api/sessions/approvals/resolve"],
+  ["DELETE", `/api/sessions/${SESSION_ID}/worktree`],
+  ["DELETE", `/api/sessions/${SESSION_ID}/recording`]
+];
+
+test("20. B-C2: a page on another local port gets the session cookie sent but is refused on every state-changing session route; the server's own origin and a request with no Origin still work, and reads are unchanged", async () => {
+  const claim = await fetch(`${base}/api/session/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: TOKEN })
+  });
+  const cookie = (claim.headers.get("set-cookie") || "").split(";")[0];
+  assert.match(cookie, new RegExp(`^agent_os_session_${port}=`));
+  const { pageKey } = await claim.json();
+  const otherPort = port === 65535 ? port - 1 : port + 1;
+  const hostile = [`http://127.0.0.1:${otherPort}`, `http://localhost:${otherPort}`, `ftp://127.0.0.1:${port}`, "null"];
+  const send = (method, route, origin) =>
+    fetch(`${base}${route}`, {
+      method,
+      headers: { cookie, "x-agent-os-key": pageKey, "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
+      body: method === "POST" ? JSON.stringify({}) : undefined
+    });
+
+  for (const [method, route] of STATE_CHANGING_SESSION_ROUTES) {
+    for (const origin of hostile) {
+      const refused = await send(method, route, origin);
+      assert.equal(refused.status, 403, `${method} ${route} from ${origin}`);
+      assert.equal((await refused.json()).error, "origin_not_allowed", `${method} ${route} from ${origin}`);
+    }
+    // Its own page (the desktop app's window and the browser tab both send exactly this), and no Origin at all.
+    for (const origin of [`http://127.0.0.1:${port}`, undefined]) {
+      const answered = await send(method, route, origin);
+      assert.notEqual(answered.status, 403, `${method} ${route} with ${origin ?? "no Origin"}: not refused for its Origin`);
+      assert.notEqual(answered.status, 401, `${method} ${route} with ${origin ?? "no Origin"}: the cookie is accepted`);
+    }
+  }
+
+  // Reads do not change: a GET from another port is answered as before (the page cannot read it, the browser stops that).
+  const read = await fetch(`${base}/api/sessions`, { headers: { cookie, "x-agent-os-key": pageKey, Origin: `http://127.0.0.1:${otherPort}` } });
+  assert.equal(read.status, 200);
+});
+
+test("21. B-C2: the exact-origin rule is local mode only, compares scheme, host and port with the request's own Host, and lets the Vite page in only when the dev launcher set the flag", async () => {
+  const { originCheckMiddleware } = await import("../server/runtime/local-session.js");
+  const middleware = originCheckMiddleware();
+  const answer = (method, host, origin) => {
+    const headers = { host, ...(origin === undefined ? {} : { origin }) };
+    const result = { status: null, body: null, passed: false };
+    middleware(
+      { method, get: (name) => headers[String(name).toLowerCase()] },
+      {
+        status(code) {
+          result.status = code;
+          return this;
+        },
+        json(body) {
+          result.body = body;
+        }
+      },
+      () => {
+        result.passed = true;
+      }
+    );
+    return result;
+  };
+  const keys = ["HERMES_AGENT_OS_PUBLIC_MODE", "HERMES_AGENT_OS_REQUIRE_AUTH", "DEMO_PUBLIC", "HERMES_AGENT_OS_DEMO_PUBLIC", "AGENT_OS_DEV_ORIGIN", "AGENT_OS_PACKAGED", "NODE_ENV"];
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const reset = () => {
+    for (const key of keys) delete process.env[key];
+  };
+  try {
+    reset();
+    // Local mode.
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:8090").passed, true, "its own page");
+    assert.equal(answer("POST", "localhost:8090", "http://localhost:8090").passed, true, "its own page by the other name");
+    assert.equal(answer("POST", "127.0.0.1:8090", "HTTP://127.0.0.1:8090").passed, true, "letter case does not matter");
+    assert.equal(answer("POST", "[::1]:8090", "http://[::1]:8090").passed, true, "an IPv6 host");
+    assert.equal(answer("POST", "127.0.0.1:8090", "https://127.0.0.1:8090").passed, true, "the same host and port behind a TLS proxy");
+    assert.equal(answer("POST", "127.0.0.1:8090", undefined).passed, true, "no Origin: unchanged (it still needs the cookie or the token)");
+    assert.equal(answer("GET", "127.0.0.1:8090", "http://127.0.0.1:3000").passed, true, "reads are unchanged");
+    for (const origin of [
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1",
+      "http://localhost:8090",
+      "http://127.0.0.1:8090.evil.example",
+      "http://127.0.0.1:8090/",
+      "null",
+      "http://127.0.0.1:5173"
+    ]) {
+      const refused = answer("POST", "127.0.0.1:8090", origin);
+      assert.equal(refused.passed, false, origin);
+      assert.deepEqual([refused.status, refused.body], [403, { error: "origin_not_allowed" }], origin);
+    }
+    assert.equal(answer("DELETE", "127.0.0.1:8090", "http://127.0.0.1:3000").status, 403, "DELETE too");
+    // The Vite page of `npm run dev`: only with the launcher's flag, and never in a production or packaged run.
+    process.env.AGENT_OS_DEV_ORIGIN = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:5173").passed, true);
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://localhost:5173").passed, true);
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:5174").status, 403);
+    process.env.AGENT_OS_PACKAGED = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:5173").status, 403, "packaged: no dev page");
+    reset();
+    // A host that is not allowed is refused whatever the mode; a foreign Origin too.
+    assert.equal(answer("POST", "127.0.0.1:8090", "https://evil.example").status, 403);
+    // Public and demo modes are unchanged (the host name alone, as before): their own gates decide.
+    process.env.HERMES_AGENT_OS_PUBLIC_MODE = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:3000").passed, true, "public mode: unchanged");
+    delete process.env.HERMES_AGENT_OS_PUBLIC_MODE;
+    process.env.DEMO_PUBLIC = "1";
+    assert.equal(answer("POST", "127.0.0.1:8090", "http://127.0.0.1:3000").passed, true, "demo mode: unchanged");
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+});
+
+// ---- R32: a stolen session cookie must not be enough (browser mode) ----------------------------------------------------
+// Browsers send a 127.0.0.1 cookie to every local port, so a page an agent started can receive it and replay it from a
+// script with no Origin header. The cookie holds its own secret (never the launch token) and only works together with the
+// page key the claim answers with; scripts keep the launch token in x-agent-os-token.
+
+async function claimSession() {
+  const claim = await fetch(`${base}/api/session/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: TOKEN })
+  });
+  assert.equal(claim.status, 200);
+  const cookie = (claim.headers.get("set-cookie") || "").split(";")[0];
+  const { pageKey } = await claim.json();
+  return { cookie, pageKey, cookieValue: decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1)) };
+}
+
+const R32_SESSION_ID = "3f2c9a7e-1b4d-4c8e-9f00-0123456789ab";
+const R32_ROUTES = [
+  ["GET", "/api/local-agents"],
+  ["GET", "/api/sessions"],
+  ["GET", "/api/workspace/raw?id=workspace%2Fnope.txt"],
+  ["POST", `/api/sessions/${R32_SESSION_ID}/stop`],
+  ["POST", `/api/sessions/${R32_SESSION_ID}/keep-going`],
+  ["POST", "/api/sessions/approvals/resolve"],
+  ["POST", "/api/scheduler/tick"],
+  ["DELETE", `/api/sessions/${R32_SESSION_ID}/worktree`]
+];
+
+function r32Request(method, route, headers) {
+  return fetch(`${base}${route}`, {
+    method,
+    headers: { "Content-Type": "application/json", ...headers },
+    body: method === "POST" ? JSON.stringify({}) : undefined
+  });
+}
+
+test("22. R32: the claim answers with a page key, and the cookie holds its own secret, never the launch token", async () => {
+  const { cookie, pageKey, cookieValue } = await claimSession();
+  assert.match(pageKey, /^[0-9a-f]{64}$/, "the page key is 32 random bytes in hex");
+  assert.match(cookie, new RegExp(`^agent_os_session_${port}=`));
+  assert.notEqual(cookieValue, TOKEN, "the cookie is not the launch token");
+  assert.notEqual(cookieValue, pageKey, "the cookie is not the page key");
+  assert.equal(cookie.includes(TOKEN), false, "the launch token is nowhere in the Set-Cookie value");
+  assert.match(cookieValue, /^[0-9a-f]{48}$/);
+  // The secrets are per server start: a second claim hands out the same pair, not a new one per claim.
+  const again = await claimSession();
+  assert.deepEqual([again.cookieValue, again.pageKey], [cookieValue, pageKey]);
+  // The claim still refuses a wrong token and never answers a key to it.
+  const wrong = await fetch(`${base}/api/session/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: cookieValue })
+  });
+  assert.equal(wrong.status, 401, "the cookie secret is not a login token");
+  assert.equal((await wrong.text()).includes(pageKey), false);
+  // Neither secret is ever printed in the server's log.
+  assert.equal(logs.text.includes(pageKey), false, "the page key is not logged");
+  assert.equal(logs.text.includes(cookieValue), false, "the cookie secret is not logged");
+});
+
+test("23. R32: the cookie alone is refused on reads and state changes; the cookie with the page key, or the launch token header, is accepted; the key alone, a wrong key and a cookie holding the launch token are refused", async () => {
+  const { cookie, pageKey, cookieValue } = await claimSession();
+  const wrongKey = pageKey.slice(0, -1) + (pageKey.endsWith("0") ? "1" : "0");
+  const oldStyleCookie = `agent_os_session_${port}=${encodeURIComponent(TOKEN)}`;
+  const refusedCases = [
+    ["the cookie alone", { cookie }],
+    ["the page key alone", { "x-agent-os-key": pageKey }],
+    ["the cookie with a wrong key", { cookie, "x-agent-os-key": wrongKey }],
+    ["the cookie with an empty key", { cookie, "x-agent-os-key": "" }],
+    ["the cookie with a key one character longer", { cookie, "x-agent-os-key": `${pageKey}0` }],
+    ["a cookie holding the launch token, with the right key", { cookie: oldStyleCookie, "x-agent-os-key": pageKey }],
+    ["a wrong cookie with the right key", { cookie: `agent_os_session_${port}=${"0".repeat(48)}`, "x-agent-os-key": pageKey }],
+    ["the page key where the token goes", { "x-agent-os-token": pageKey }],
+    ["the cookie secret where the token goes", { "x-agent-os-token": cookieValue }]
+  ];
+  for (const [method, route] of R32_ROUTES) {
+    for (const [label, headers] of refusedCases) {
+      const answer = await r32Request(method, route, headers);
+      assert.equal(answer.status, 401, `${method} ${route} with ${label}`);
+      assert.equal((await answer.json()).error, "session_required", `${method} ${route} with ${label}`);
+    }
+    for (const [label, headers] of [
+      ["the cookie and the page key", { cookie, "x-agent-os-key": pageKey }],
+      ["the launch token header", { "x-agent-os-token": TOKEN }],
+      ["the launch token header and a stale cookie", { "x-agent-os-token": TOKEN, cookie: `agent_os_session_${port}=stale` }]
+    ]) {
+      const answer = await r32Request(method, route, headers);
+      assert.notEqual(answer.status, 401, `${method} ${route} with ${label}`);
+    }
+  }
+});
+
+test("24. R32: GET /api/session says authenticated only for the cookie with the page key or the launch token header", async () => {
+  const { cookie, pageKey } = await claimSession();
+  const authenticated = async (headers) => (await (await fetch(`${base}/api/session`, { headers })).json()).authenticated;
+  assert.equal(await authenticated({}), false, "nothing");
+  assert.equal(await authenticated({ cookie }), false, "the cookie alone");
+  assert.equal(await authenticated({ "x-agent-os-key": pageKey }), false, "the key alone");
+  assert.equal(await authenticated({ cookie, "x-agent-os-key": "wrong" }), false, "a wrong key");
+  assert.equal(await authenticated({ cookie, "x-agent-os-key": pageKey }), true, "the cookie and the key");
+  assert.equal(await authenticated({ "x-agent-os-token": TOKEN }), true, "the launch token header");
+});
+
+test("25. R32: every compare is constant time and none is skipped when another part is wrong", async (t) => {
+  const crypto = await import("node:crypto");
+  const { hasSessionProof, cookieNameFor, sessionToken, cookieSecret, pageKey } = await import("../server/runtime/local-session.js");
+  const name = cookieNameFor(1234);
+  const cookieHeader = `${name}=${encodeURIComponent(cookieSecret)}`;
+  assert.notEqual(cookieSecret, sessionToken);
+  assert.notEqual(cookieSecret, pageKey);
+  const spy = t.mock.method(crypto.default, "timingSafeEqual");
+  // The right cookie with a wrong key: both compared, refused.
+  assert.equal(hasSessionProof({ cookieHeader, keyHeader: "x".repeat(pageKey.length) }, name), false);
+  assert.equal(spy.mock.callCount(), 2, "cookie and key both compared");
+  // A wrong cookie of the right length with the right key: both compared, refused.
+  spy.mock.resetCalls();
+  assert.equal(hasSessionProof({ cookieHeader: `${name}=${"x".repeat(cookieSecret.length)}`, keyHeader: pageKey }, name), false);
+  assert.equal(spy.mock.callCount(), 2);
+  // Right cookie and key: accepted.
+  assert.equal(hasSessionProof({ cookieHeader, keyHeader: pageKey }, name), true);
+  // The launch token alone is enough; the cookie alone and the key alone are not.
+  assert.equal(hasSessionProof({ tokenHeader: sessionToken }, name), true);
+  assert.equal(hasSessionProof({ cookieHeader }, name), false);
+  assert.equal(hasSessionProof({ keyHeader: pageKey }, name), false);
+  // A cookie that is not valid percent-encoding is "no cookie", not a thrown error.
+  assert.equal(hasSessionProof({ cookieHeader: `${name}=%E0%A4%A`, keyHeader: pageKey }, name), false);
+});
+
+// ---- R33: nobody else frames the app, and preview files are not kept in the shared cache ---------------------------------
+// A page an agent serves on another local port could otherwise frame a signed-in Agent OS and lay decoys over it.
+
+test("26. R33: the page and a gated /api/ answer (signed in or not) say only the server's own pages may frame them", async () => {
+  const { cookie, pageKey } = await claimSession();
+  const answers = {
+    "GET /": await fetch(`${base}/`),
+    "an /api/ answer, signed in": await fetch(`${base}/api/local-agents`, { headers: { cookie, "x-agent-os-key": pageKey } }),
+    "an /api/ answer, no session (401)": await fetch(`${base}/api/local-agents`)
+  };
+  assert.equal(answers["an /api/ answer, signed in"].status, 200);
+  assert.equal(answers["an /api/ answer, no session (401)"].status, 401);
+  for (const [what, answer] of Object.entries(answers)) {
+    assert.equal(answer.headers.get("x-frame-options"), "SAMEORIGIN", what);
+    assert.match(answer.headers.get("content-security-policy") || "", /(^|;)\s*frame-ancestors 'self'(;|$)/, what);
+  }
+});
+
+test("27. R33: a workspace file answer is never cached, stays sandboxed, and still says who may frame it", async () => {
+  const { cookie, pageKey } = await claimSession();
+  const write = await fetch(`${base}/api/workspace/files`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-agent-os-token": TOKEN },
+    body: JSON.stringify({ folder: "notes", name: "cache-check.html", content: "<html><body>hi</body></html>" })
+  });
+  assert.equal(write.status, 201);
+  const { file } = await write.json();
+  const raw = await fetch(`${base}/api/workspace/raw?id=${encodeURIComponent(file.id)}`, { headers: { cookie, "x-agent-os-key": pageKey } });
+  assert.equal(raw.status, 200);
+  assert.equal(raw.headers.get("cache-control"), "no-store");
+  const csp = raw.headers.get("content-security-policy") || "";
+  assert.match(csp, /^sandbox(;|$)/, "still starts with sandbox");
+  assert.match(csp, /(^|;)\s*frame-ancestors 'self'(;|$)/);
+  assert.equal(raw.headers.get("x-frame-options"), "SAMEORIGIN");
+  assert.equal(raw.headers.get("x-content-type-options"), "nosniff");
 });

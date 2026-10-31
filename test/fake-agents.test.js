@@ -352,6 +352,7 @@ test("it echoes typing, handles backspace, and answers typed commands with the t
       await session.type("osc99 Done\r", `${ESC}]99;;Done${ESC}\\`);
       await session.type("osc777 Done\r", `${ESC}]777;notify;Fake agent;Done\x07`);
       await session.type("title My task\r", `${ESC}]0;My task\x07`);
+      await session.type("print You’ve hit your usage limit.  Try again at 3:45 PM.\r", /\r+\nYou’ve hit your usage limit\.  Try again at 3:45 PM\.\r+\n/);
       await session.type("bottom status line\r", `${ESC}7${ESC}[24;1H${ESC}[2Kstatus line${ESC}8`);
       await session.type("lines 3\r", /line 1\r+\nline 2\r+\nline 3/);
       await session.type(`${ESC}[<0;10;5M`, `KEY ${JSON.stringify(`${ESC}[<0;10;5M`)}`);

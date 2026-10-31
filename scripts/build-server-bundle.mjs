@@ -82,6 +82,10 @@ async function main() {
   // Codex (server/runtime/secrets/keystore.js looks for it next to the bundle).
   await cp(path.join(root, "server", "runtime", "secrets", "print-key.mjs"), path.join(outDir, "print-key.mjs"));
 
+  // Claude Code's statusLine wrapper (SP4): claude-session.js looks for it next to the bundle and
+  // copies it into each Claude session's folder.
+  await cp(path.join(root, "server", "runtime", "sessions", "statusline-wrapper.mjs"), path.join(outDir, "statusline-wrapper.mjs"));
+
   // node-pty for the target computer, where Node looks for it from server.mjs:
   // ./node_modules/node-pty. Stops the build if the target has no prebuilt binary.
   const pty = await copyNodePty({

@@ -253,6 +253,7 @@
 .os-toast__text {
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .os-toast .os-toast__close {
   flex: 0 0 auto;
@@ -760,5 +761,37 @@
   }
   .os-holdstop.is-holding .os-holdstop__fill {
     transform: scaleX(0.5);
+  }
+}
+
+/* SP4 (Task U5): "Waiting for you (n)" between the Safety level and Hold to stop all, shown only while n > 0. */
+.os-statusbar .os-statusbar__wait {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--os-sp-2);
+  height: var(--os-bar-ctl-h);
+  min-height: var(--os-bar-ctl-h);
+  padding: 0 var(--os-sp-3);
+  border: 1px solid var(--os-warn-line);
+  border-radius: var(--os-r-sm);
+  background: var(--os-warn-wash);
+  color: var(--os-text-1);
+  font-family: var(--os-font-ui);
+  font-size: var(--os-fs-13);
+  font-weight: 560;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-statusbar .os-statusbar__wait:hover {
+  border-color: var(--os-warn);
+}
+.os-statusbar .os-statusbar__wait svg {
+  color: var(--os-warn);
+}
+@media (max-width: 900px) {
+  .os-statusbar .os-statusbar__wait span {
+    display: none;
   }
 }

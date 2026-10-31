@@ -1,7 +1,7 @@
 // Portability: the bundled server running outside a repo checkout, the
 // cross-platform executable lookup, process-tree kill, and graceful shutdown.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -11,7 +11,7 @@ import path from "node:path";
 import { before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { killProcessTree, spawnTracked } from "../server/runtime/process-tree.js";
-import { runCommand, which, withSiblingNodePath } from "../server/runtime/safety.js";
+import { redactText, redactValue, runCommand, which, withSiblingNodePath } from "../server/runtime/safety.js";
 import { shutdown } from "../server/runtime/shutdown.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 
@@ -73,13 +73,25 @@ function exitCodeWithin(term, seconds = 15) {
   return Promise.race([exit, late]).finally(() => clearTimeout(timer));
 }
 
+// "Is this process still running?" `kill(pid, 0)` alone over-reports: it also
+// succeeds for a process that is already dead but not yet removed from the
+// process table (a zombie, "Z", or on macOS one still exiting, "E"). On a busy
+// machine that leftover can outlive killProcessTree's own check, which made the
+// tests below flaky, so ask `ps` for the state. POSIX-only, like its callers.
 function isAlive(pid) {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  let state;
+  try {
+    state = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+  } catch (error) {
+    if (error.status === 1) return false; // ps found no such process: it is gone
+    throw error; // ps itself failed: fail loudly instead of guessing "dead"
+  }
+  return state !== "" && !/^[ZX]/.test(state) && !state.includes("E");
 }
 
 describe("bundled server runs outside the repo", () => {
@@ -179,6 +191,12 @@ describe("bundled server runs outside the repo", () => {
     // ws's optional speed-ups are not looked up on disk at run time: a bare require would search every
     // folder above the installed app (scripts/build-server-bundle.mjs swaps in a module that throws).
     assert.doesNotMatch(serverSource, /require\(["'](bufferutil|utf-8-validate)["']\)/, "no bare require of bufferutil or utf-8-validate");
+    // The statusLine wrapper (SP4) sits next to server.mjs, where claude-session.js looks for it.
+    assert.deepEqual(
+      await readFile(path.join(bundleDir, "statusline-wrapper.mjs")),
+      await readFile(path.join(root, "server", "runtime", "sessions", "statusline-wrapper.mjs")),
+      "statusline-wrapper.mjs is copied next to the bundle unchanged"
+    );
 
     let tmpServer = null;
     let tmpHome = null;
@@ -473,27 +491,35 @@ test(
       [
         "-e",
         "const { spawn } = require('node:child_process');" +
-          "const g = spawn(process.execPath, ['-e', \"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"]);" +
+          // The grandchild shares our stdout so it can say when its handler is in place.
+          "const g = spawn(process.execPath, ['-e', \"process.on('SIGTERM',()=>{});console.log('GRANDCHILD_READY');setInterval(()=>{},1000)\"], { stdio: ['ignore', 'inherit', 'ignore'] });" +
           "console.log('GRANDCHILD:' + g.pid);" +
           "setInterval(()=>{},1000);"
       ],
       { stdio: ["ignore", "pipe", "ignore"] }
     );
 
-    let grandchildPid = null;
     let buffer = "";
     child.stdout.on("data", (chunk) => {
       buffer += chunk;
     });
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline && grandchildPid == null) {
-      const match = buffer.match(/GRANDCHILD:(\d+)/);
-      if (match) grandchildPid = Number(match[1]);
-      else await new Promise((resolve) => setTimeout(resolve, 50));
+    // Wait for a real signal, not a fixed sleep: the grandchild's pid, and the
+    // grandchild saying its SIGTERM handler is installed. (A fixed 300ms sleep
+    // could end first on a slow machine; SIGTERM would then kill the grandchild
+    // outright and the test would pass without proving anything.) The deadline is
+    // generous because two Node processes boot one after the other here, which
+    // can take seconds while the full suite runs in parallel.
+    const bothReported = () => /GRANDCHILD:\d+/.test(buffer) && buffer.includes("GRANDCHILD_READY");
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline && !bothReported()) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    // Stop reading: the grandchild holds this pipe open too, and if a
+    // killProcessTree bug left it running, this test must fail, not hang.
+    child.stdout.destroy();
+    const grandchildPid = Number(buffer.match(/GRANDCHILD:(\d+)/)?.[1]) || null;
     assert.ok(grandchildPid, "expected the tracked child to report its grandchild pid");
-    // Give the grandchild time to install its SIGTERM handler.
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.ok(buffer.includes("GRANDCHILD_READY"), "expected the grandchild to report its SIGTERM handler is installed");
 
     await killProcessTree(child.pid, { graceMs: 500 });
 
@@ -595,3 +621,37 @@ test(
     }
   }
 );
+
+// Fake keys shaped like each kind redactText hides. Not real credentials.
+const FAKE_KEYS = {
+  openai: ["sk-REDACTTEST-first-0001", "sk-REDACTTEST-second-0002"],
+  slack: ["xoxb-REDACTTEST-slack-0001", "xoxb-REDACTTEST-slack-0002"],
+  github: ["ghp_REDACTTEST_github_000001", "ghp_REDACTTEST_github_000002"],
+  google: ["AIzaREDACTTEST_google_000001", "AIzaREDACTTEST_google_000002"]
+};
+
+test("redactText hides every key of the same kind on one line, not just the first", () => {
+  const [first, second] = FAKE_KEYS.openai;
+  assert.equal(redactText(`first ${first} then ${second}`), "first configured then configured");
+});
+
+test("redactText hides every key when different kinds are mixed on one line", () => {
+  const line = [0, 1].flatMap((i) => Object.values(FAKE_KEYS).map((pair) => pair[i])).join(" ");
+  const redacted = redactText(line);
+  assert.equal(redacted.includes("REDACTTEST"), false, redacted);
+  assert.equal(redacted, Array(8).fill("configured").join(" "));
+});
+
+test("redactValue gives the same safe answer every time it is called", () => {
+  const twoKeys = `use ${FAKE_KEYS.openai[0]} or ${FAKE_KEYS.openai[1]}`;
+  const answers = [];
+  for (let i = 0; i < 3; i += 1) {
+    answers.push(redactValue("note", twoKeys));
+    answers.push(redactValue("note", "nothing secret here"));
+    answers.push(redactValue("OPENAI_API_KEY", FAKE_KEYS.openai[0]));
+  }
+  for (let i = 3; i < answers.length; i += 1) assert.equal(answers[i], answers[i % 3]);
+  assert.equal(answers[0].includes("REDACTTEST"), false, answers[0]);
+  assert.equal(answers[1], "nothing secret here");
+  assert.equal(answers[2], "configured");
+});

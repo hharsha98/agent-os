@@ -6,6 +6,11 @@
 //   kitty keyboard flags) while no window is the writer, so an agent never
 //   waits forever for a reply after the window closes;
 // - reports alerts raw (SP3): BEL, and OSC 9, 99 and 777 notifications;
+// - reports window titles raw (SP4: OSC 0, 1 and 2, for Hermes's "⚠" marker);
+// - says which modes are on at any moment, and tells a listener when one
+//   changes (SP4: a hand-off waits for bracketed paste);
+// - gives the visible screen as plain text (SP4: the Claude Code and Codex
+//   limit texts and the typed summaries, the only screen reading);
 // - tells the session manager when real work shows on screen ("counted
 //   output"): text that changes above the bottom 6 rows, or a scroll, checked
 //   at most every 250 ms. Status lines, input boxes and key hints live in the
@@ -41,6 +46,9 @@ const DEFAULT_MODES = Object.freeze({
   cursorKeysApp: false,
   kittyFlags: 0
 });
+const MODE_KEYS = Object.keys(DEFAULT_MODES);
+// The window title (0, 2) and the icon name (1); Hermes sets 1 and 2 together.
+const TITLE_OSC_IDS = [0, 1, 2];
 
 function clampSize(value, fallback, min, max) {
   const number = Number(value);
@@ -66,9 +74,10 @@ function safeCall(listener, value) {
   }
 }
 
-export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now } = {}) {
+export function createMirror({ cols, rows, onQueryReply, onAlert, onTitle, now = Date.now } = {}) {
   const reply = typeof onQueryReply === "function" ? onQueryReply : () => {};
   const alert = typeof onAlert === "function" ? onAlert : () => {};
+  const titled = typeof onTitle === "function" ? onTitle : () => {};
   const term = new Terminal({
     cols: clampSize(cols, 120, 2, 500),
     rows: clampSize(rows, 32, 1, 200),
@@ -96,6 +105,9 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
   let lastCheckAt = now() - COUNTED_CHECK_MS;
   const disposables = [];
   const countedListeners = new Set();
+  const modeListeners = new Set();
+  // A mode sequence was seen; checked once xterm.js has read the write.
+  let modesDirty = false;
   // Snapshots waiting for a chunk to be read: { target, resolve, finish }.
   const pendingSnapshots = new Set();
   // Every chunk written gets a number; parsedSeq is the newest one xterm.js
@@ -136,6 +148,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
   }
 
   let baseline = readScreen();
+  let lastModes = currentModes();
 
   function checkCounted() {
     checkTimer = null;
@@ -160,10 +173,26 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     checkTimer.unref?.();
   }
 
+  function noteModes() {
+    modesDirty = true;
+  }
+
+  // Runs once a write has been read, so the listener sees what xterm.js
+  // applied; a change and its undo in one write are no change.
+  function checkModes() {
+    if (!modesDirty || disposed) return;
+    modesDirty = false;
+    const next = currentModes();
+    if (MODE_KEYS.every((key) => next[key] === lastModes[key])) return;
+    lastModes = next;
+    for (const listener of [...modeListeners]) safeCall(listener, { ...next });
+  }
+
   // Modes the serializer leaves out: the mouse encoding and the kitty keyboard
   // flags. Every handler returns false, so xterm.js still applies the
   // sequence itself; this copy follows xterm.js's own rules.
   function trackPrivateModes(params, on) {
+    noteModes();
     for (let index = 0; index < params.length; index += 1) {
       const mode = param(params, index, -1);
       if (mode === 1006) mouseEncoding = on ? "sgr" : "default";
@@ -191,6 +220,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => trackPrivateModes(params, false)),
     // CSI = flags ; mode u: 1 replaces, 2 sets bits, 3 clears bits.
     term.parser.registerCsiHandler({ prefix: "=", final: "u" }, (params) => {
+      noteModes();
       const value = param(params, 0, 0);
       const how = params.length > 1 ? param(params, 1, 1) || 1 : 1;
       if (how === 1) kitty.flags = value;
@@ -200,6 +230,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     }),
     // CSI > flags u: push the current flags, then use the new ones.
     term.parser.registerCsiHandler({ prefix: ">", final: "u" }, (params) => {
+      noteModes();
       const stack = kittyStack();
       if (stack.length >= KITTY_STACK_LIMIT) stack.shift();
       stack.push(kitty.flags);
@@ -208,6 +239,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     }),
     // CSI < count u: pop; an emptied stack means no flags.
     term.parser.registerCsiHandler({ prefix: "<", final: "u" }, (params) => {
+      noteModes();
       const count = Math.max(1, param(params, 0, 1) || 1);
       const stack = kittyStack();
       for (let index = 0; index < count && stack.length > 0; index += 1) kitty.flags = stack.pop();
@@ -216,6 +248,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     }),
     // ESC c (RIS, full reset) clears every mode.
     term.parser.registerEscHandler({ final: "c" }, () => {
+      noteModes();
       mouseEncoding = "default";
       kitty = freshKitty();
       return false;
@@ -223,6 +256,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     // CSI ! p (DECSTR, soft reset): xterm.js clears the kitty keyboard flags
     // and both stacks with it (and leaves the mouse encoding alone).
     term.parser.registerCsiHandler({ intermediates: "!", final: "p" }, () => {
+      noteModes();
       kitty = freshKitty();
       return false;
     }),
@@ -243,13 +277,24 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     }),
     ...ALERT_OSC_IDS.map((id) =>
       term.parser.registerOscHandler(id, (payload) => {
-        // Raw in SP3 (SP4 turns these into alert kinds). OSC 9;4 progress
-        // reports are forwarded too; SP4 decides what they mean.
+        // Raw: mirror-signals.js says what each one means for each agent
+        // (SP4). OSC 9;4 progress reports are forwarded too and mean nothing there.
         if (!disposed) safeCall(alert, `${id};${payload}`.slice(0, ALERT_RAW_LIMIT));
         return true;
       })
     ),
-    term.onWriteParsed(() => markDirty())
+    // Window titles, raw (SP4, ruling R17: Hermes marks a question with "⚠").
+    // Returning false lets xterm.js set the title as it always does.
+    ...TITLE_OSC_IDS.map((id) =>
+      term.parser.registerOscHandler(id, (payload) => {
+        if (!disposed) safeCall(titled, String(payload).slice(0, ALERT_RAW_LIMIT));
+        return false;
+      })
+    ),
+    term.onWriteParsed(() => {
+      checkModes();
+      markDirty();
+    })
   );
 
   // A chunk's write callback. xterm.js's resize() reads its queue again from
@@ -330,6 +375,34 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     };
   }
 
+  // A copy of the modes now (after dispose: the last ones).
+  function modes() {
+    if (disposed) return { ...(finalModes || DEFAULT_MODES) };
+    return currentModes();
+  }
+
+  function onModeChange(listener) {
+    if (typeof listener !== "function" || disposed) return () => {};
+    modeListeners.add(listener);
+    return () => {
+      modeListeners.delete(listener);
+    };
+  }
+
+  // Every row of the visible screen, right-trimmed, one line each (spec SP4:
+  // read only for the Claude Code and Codex limit texts and the typed summaries).
+  // translateToString(true) drops only empty cells, so spaces the program
+  // wrote at a row's end are trimmed here.
+  function screenText() {
+    if (disposed) return "";
+    const buffer = term.buffer.active;
+    const lines = [];
+    for (let y = 0; y < term.rows; y += 1) {
+      lines.push((buffer.getLine(buffer.baseY + y)?.translateToString(true) ?? "").trimEnd());
+    }
+    return lines.join("\n");
+  }
+
   function dispose() {
     if (disposed) return;
     finalSize = { cols: term.cols, rows: term.rows };
@@ -342,6 +415,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     if (checkTimer) clearTimeout(checkTimer);
     checkTimer = null;
     countedListeners.clear();
+    modeListeners.clear();
     for (const waiter of pendingSnapshots) waiter.resolve(emptySnapshot());
     pendingSnapshots.clear();
     for (const disposable of disposables) {
@@ -358,7 +432,7 @@ export function createMirror({ cols, rows, onQueryReply, onAlert, now = Date.now
     }
   }
 
-  return Object.freeze({ write, resize, snapshot, setWriterAttached, onCountedOutput, dispose });
+  return Object.freeze({ write, resize, snapshot, setWriterAttached, onCountedOutput, modes, onModeChange, screenText, dispose });
 }
 
 // Sequences a terminal sends by itself, never typed by a person. A frame

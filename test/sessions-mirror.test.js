@@ -1,8 +1,10 @@
 // The session mirror: the server's headless copy of a session's screen.
 // Snapshot and modes for reattach, the three standard terminal questions
 // answered only while no writer is attached, raw alerts, counted output for
-// the 20 s activity rule, and what counts as user input. No process runs here:
-// the tests write terminal output straight into the mirror.
+// the 20 s activity rule, and what counts as user input. SP4 (Task X1b): raw
+// window titles, the modes and their changes at any time, and the visible
+// screen as text. No process runs here: the tests write terminal output
+// straight into the mirror.
 import assert from "node:assert/strict";
 import test from "node:test";
 import xtermHeadless from "@xterm/headless";
@@ -305,6 +307,101 @@ test("a flood of BEL bytes is one alert per 250 ms; OSC alerts are not held back
   } finally {
     mirror.dispose();
   }
+});
+
+test("titles: OSC 0, 1 and 2 reach onTitle, cut to 4096 characters, and are never alerts (Hermes's title marker, R17)", async () => {
+  const titles = [];
+  const alerts = [];
+  const mirror = createMirror({ cols: 40, rows: 10, onTitle: (title) => titles.push(title), onAlert: (raw) => alerts.push(raw) });
+  try {
+    mirror.write("\x1b]0;plain title\x07");
+    mirror.write("\x1b]1;⚠ fix-tests · glm · ~/app\x07\x1b]2;⚠ fix-tests · glm · ~/app\x1b\\");
+    mirror.write("\x1b]2;");
+    mirror.write("✓ split across writes\x07");
+    mirror.write(`\x1b]2;${"t".repeat(6000)}\x07`);
+    mirror.write("\x1b]9;a notification\x07");
+    await mirror.snapshot();
+    assert.deepEqual(titles.slice(0, 4), ["plain title", "⚠ fix-tests · glm · ~/app", "⚠ fix-tests · glm · ~/app", "✓ split across writes"]);
+    assert.equal(titles.length, 5);
+    assert.equal(titles[4].length, 4096, "a huge title is cut");
+    assert.deepEqual(alerts, ["9;a notification"], "a title is never an alert, and a notification is never a title");
+  } finally {
+    mirror.dispose();
+  }
+});
+
+test("modes() is a copy of the modes now, and onModeChange runs once per real change after the sequence is read (a hand-off waits for ?2004)", async () => {
+  const mirror = createMirror({ cols: 40, rows: 10 });
+  const changes = [];
+  const off = mirror.onModeChange((modes) => changes.push(modes));
+  try {
+    assert.deepEqual(mirror.modes(), DEFAULT_MODES);
+    const copy = mirror.modes();
+    copy.bracketedPaste = true;
+    assert.equal(mirror.modes().bracketedPaste, false, "a copy, never the mirror's own object");
+
+    mirror.write("\x1b[?2004h");
+    await mirror.snapshot();
+    assert.deepEqual(changes, [{ ...DEFAULT_MODES, bracketedPaste: true }]);
+    assert.equal(mirror.modes().bracketedPaste, true);
+
+    mirror.write("\x1b[?2004h"); // already on
+    mirror.write("plain text\x1b[1m and colour\x1b[0m"); // no mode at all
+    await mirror.snapshot();
+    assert.equal(changes.length, 1, "no change, no call");
+
+    mirror.write("\x1b[?1049h\x1b[?1002h\x1b[?1006h");
+    await mirror.snapshot();
+    assert.deepEqual(changes.at(-1), { ...DEFAULT_MODES, bracketedPaste: true, altScreen: true, mouseTracking: "drag", mouseEncoding: "sgr" });
+
+    mirror.write("\x1b[?2004l");
+    await mirror.snapshot();
+    assert.equal(changes.at(-1).bracketedPaste, false);
+    const count = changes.length;
+
+    off();
+    mirror.write("\x1b[?2004h");
+    await mirror.snapshot();
+    assert.equal(changes.length, count, "an unsubscribed listener hears nothing");
+  } finally {
+    mirror.dispose();
+  }
+  assert.equal(mirror.modes().bracketedPaste, true, "after dispose: the last modes");
+  assert.equal(mirror.modes().altScreen, true);
+});
+
+test("screenText() is every row of the visible screen, bottom rows included, right-trimmed; the API is exactly SP4's; after dispose it is empty", async () => {
+  const mirror = createMirror({ cols: 30, rows: 6 });
+  try {
+    assert.deepEqual(Object.keys(mirror).sort(), [
+      "dispose",
+      "modes",
+      "onCountedOutput",
+      "onModeChange",
+      "resize",
+      "screenText",
+      "setWriterAttached",
+      "snapshot",
+      "write"
+    ]);
+    assert.ok(Object.isFrozen(mirror));
+    mirror.write("first line   \r\n\r\n\x1b[31mred\x1b[0m text\x1b[6;1Hbottom row");
+    await mirror.snapshot();
+    assert.equal(mirror.screenText(), "first line\n\nred text\n\n\nbottom row");
+
+    mirror.write("\x1b[?1049h\x1b[Hon the alt screen");
+    await mirror.snapshot();
+    assert.equal(mirror.screenText(), "on the alt screen\n\n\n\n\n");
+
+    mirror.write("\x1b[?1049l\x1b[6;1H\r\n\r\nafter a scroll");
+    await mirror.snapshot();
+    const lines = mirror.screenText().split("\n");
+    assert.equal(lines.length, 6, "always the visible rows only");
+    assert.deepEqual([lines[0], lines.at(-1)], ["red text", "after a scroll"]);
+  } finally {
+    mirror.dispose();
+  }
+  assert.equal(mirror.screenText(), "");
 });
 
 test("counted output: new text above the bottom 6 rows and scrolling count; the bottom rows, colours, cursor, titles, modes and identical redraws do not", async () => {

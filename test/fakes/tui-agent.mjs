@@ -81,6 +81,22 @@
 //   Every call is logged first, as { event: "approvals-pending" } or { event: "approvals-resolve", id,
 //   decision }, each with the fields of a start record (never as a "probe" record).
 //
+// Version checks (SP5, Task V1). Every knob below is read like the knobs above:
+//   FAKE_CLAUDE_VERSION, FAKE_CODEX_VERSION, FAKE_CURSOR_VERSION (for both Cursor names, agent and
+//   cursor-agent), FAKE_HERMES_VERSION: the whole line `--version` prints, verbatim, under that name
+//   (unset: "<name> 9.9.9-fake"). OpenClaw keeps FAKE_AGENT_VERSION; no other name reads it.
+//   FAKE_OPENCLAW_UPDATE_DRY_RUN         what `openclaw update --dry-run --json` prints, verbatim (a banner
+//                                        line may come before the JSON); unset prints a document with the
+//                                        same current and target version (nothing to update); "fail" prints
+//                                        "update check failed" on stderr and exits 1; "slow" waits 30 s, then
+//                                        answers like unset (a time-limit test must not wait for it)
+//   FAKE_HERMES_UPDATE_CHECK             what `hermes update --check` prints, verbatim; unset prints
+//                                        "✓ Already up to date."; "fail" prints "git fetch failed" on stderr
+//                                        and exits 1; "slow" waits 30 s, then answers like unset
+//   Both checks are logged first, as { event: "update-dry-run" } and { event: "update-check" }, each with the
+//   fields of a start record (so a test can read the HERMES_HOME the check ran with). Without --dry-run /
+//   --check these commands are not quick answers: they start the terminal program, like any other argv.
+//
 // Knobs (plan brains): FAKE_AGENT_VERSION is read from the environment, else from the trimmed
 // text of $HOME/.fake-knobs/FAKE_AGENT_VERSION (test/helpers/fake-knobs.js writes it), because
 // some callers hand an agent only an allow-listed environment that drops FAKE_* variables.
@@ -285,6 +301,32 @@ function approvals() {
   return finishWith(1, { stderrText: `unknown approvals command: ${args.slice(1).join(" ")}` });
 }
 
+// The update checks (SP5, Task V1): `openclaw update --dry-run --json` and `hermes update --check`,
+// each answered from its own knob (see the header). They are logged first, never as "probe" records.
+const SLOW_UPDATE_CHECK_MS = 30 * 1000;
+
+function updateCheck({ knobName, event, defaultText, failText }) {
+  const behaviour = knob(knobName);
+  log({ event, ...argvRecord() });
+  if (behaviour === "fail") return finishWith(1, { stderrText: failText });
+  const text = behaviour && behaviour !== "slow" ? behaviour : defaultText;
+  if (behaviour === "slow") {
+    setTimeout(() => finishWith(0, { stdoutText: text }), SLOW_UPDATE_CHECK_MS);
+    return true;
+  }
+  return finishWith(0, { stdoutText: text });
+}
+
+// Which knob holds the `--version` line of each name (OpenClaw's is FAKE_AGENT_VERSION, from plan brains).
+const VERSION_KNOBS = {
+  claude: "FAKE_CLAUDE_VERSION",
+  codex: "FAKE_CODEX_VERSION",
+  agent: "FAKE_CURSOR_VERSION",
+  "cursor-agent": "FAKE_CURSOR_VERSION",
+  hermes: "FAKE_HERMES_VERSION",
+  openclaw: "FAKE_AGENT_VERSION"
+};
+
 // The quick, non-interactive questions that agent detection and the Stop
 // sequence ask. Each answers at once and exits, so nothing waits on a TUI.
 // Returns true when it handled the command line.
@@ -292,9 +334,26 @@ function oneShot() {
   const joined = args.join(" ");
   if ((name === "agent" || name === "cursor-agent") && joined === "create-chat") return createChat();
   if (args.includes("--version") || joined === "-v") {
-    // Only `openclaw` takes FAKE_AGENT_VERSION (plan brains: its ChatGPT sign-in needs 2026.9.7 or newer).
-    const version = name === "openclaw" ? knob("FAKE_AGENT_VERSION") : undefined;
+    // OpenClaw's line comes from FAKE_AGENT_VERSION (plan brains: its ChatGPT sign-in needs 2026.9.7 or newer);
+    // the other names have a knob of their own (SP5 version checks), so that knob never changes another name.
+    const version = VERSION_KNOBS[name] ? knob(VERSION_KNOBS[name]) : undefined;
     return answer(version || `${name} 9.9.9-fake`);
+  }
+  if (name === "openclaw" && args[0] === "update" && args.includes("--dry-run")) {
+    return updateCheck({
+      knobName: "FAKE_OPENCLAW_UPDATE_DRY_RUN",
+      event: "update-dry-run",
+      defaultText: '{"currentVersion":"9.9.9","targetVersion":"9.9.9","restart":false,"downgradeRisk":false}',
+      failText: "update check failed"
+    });
+  }
+  if (name === "hermes" && args[0] === "update" && args.includes("--check")) {
+    return updateCheck({
+      knobName: "FAKE_HERMES_UPDATE_CHECK",
+      event: "update-check",
+      defaultText: "✓ Already up to date.",
+      failText: "git fetch failed"
+    });
   }
   if (args.includes("--help") || joined === "-h") {
     return answer(`Usage: ${name} [options]\n  --help     Show help\n  --version  Show version`);

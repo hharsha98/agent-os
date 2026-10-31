@@ -544,6 +544,59 @@ test("FAKE_AGENT_VERSION sets openclaw's whole --version line, from the environm
   });
 });
 
+// ---- SP5 (Task V1): the version checks' knobs ----------------------------------------------------
+
+test("SP5 version knobs: each name takes its own --version knob, and `openclaw update --dry-run` and `hermes update --check` answer from their knobs, logged first", POSIX_ONLY, async () => {
+  await withBin({}, async (bin, dir) => {
+    const log = path.join(dir, "fake.log");
+    const run = (name, args, extra = {}) => runProbe(bin.paths[name], args, baseEnv(dir, { FAKE_AGENT_LOG: log, ...extra }));
+    const version = async (name, extra) => (await run(name, ["--version"], extra)).stdout.trim();
+
+    // A version knob changes only its own name; unset is today's line.
+    assert.equal(await version("claude", { FAKE_CLAUDE_VERSION: "2.1.309 (Claude Code)" }), "2.1.309 (Claude Code)");
+    assert.equal(await version("codex", { FAKE_CODEX_VERSION: "codex-cli 0.154.0" }), "codex-cli 0.154.0");
+    assert.equal(await version("agent", { FAKE_CURSOR_VERSION: "2026.10.14-941492e" }), "2026.10.14-941492e");
+    assert.equal(await version("cursor-agent", { FAKE_CURSOR_VERSION: "2026.10.14-941492e" }), "2026.10.14-941492e", "both Cursor names");
+    assert.equal(await version("hermes", { FAKE_HERMES_VERSION: "Hermes Agent v0.22.5" }), "Hermes Agent v0.22.5");
+    assert.equal(await version("claude", { FAKE_CODEX_VERSION: "codex-cli 0.154.0" }), "claude 9.9.9-fake", "another name's knob changes nothing");
+    assert.equal(await version("openclaw", { FAKE_CLAUDE_VERSION: "2.1.309" }), "openclaw 9.9.9-fake");
+    assert.equal(await version("openclaw", { FAKE_AGENT_VERSION: "OpenClaw 2026.10.4" }), "OpenClaw 2026.10.4", "openclaw keeps FAKE_AGENT_VERSION");
+    await setFakeKnob(dir, "FAKE_CODEX_VERSION", "codex-cli 0.154.0\n");
+    assert.equal(await version("codex"), "codex-cli 0.154.0", "read from $HOME/.fake-knobs, trimmed");
+
+    // OpenClaw's dry run: unset is "nothing to update"; a knob is printed verbatim; "fail" exits 1.
+    const dry = ["update", "--dry-run", "--json"];
+    const unset = await run("openclaw", dry);
+    assert.equal(unset.code, 0);
+    assert.deepEqual(JSON.parse(unset.stdout), { currentVersion: "9.9.9", targetVersion: "9.9.9", restart: false, downgradeRisk: false });
+    const banner = 'OpenClaw dry run\n{"currentVersion":"2026.10.4","targetVersion":"2026.10.9","restart":true,"downgradeRisk":false}';
+    assert.equal((await run("openclaw", dry, { FAKE_OPENCLAW_UPDATE_DRY_RUN: banner })).stdout.trim(), banner);
+    assert.equal((await run("openclaw", dry, { FAKE_OPENCLAW_UPDATE_DRY_RUN: "fail" })).code, 1);
+
+    // Hermes's check: unset is up to date; a knob is printed verbatim; "fail" exits 1.
+    const check = ["update", "--check"];
+    const upToDate = await run("hermes", check);
+    assert.equal(upToDate.code, 0);
+    assert.equal(upToDate.stdout.trim(), "✓ Already up to date.");
+    const behind = "⚕ Update available: 3 commits behind origin/main.\nRun 'hermes update' to install.";
+    assert.equal((await run("hermes", check, { FAKE_HERMES_UPDATE_CHECK: behind })).stdout.trim(), behind);
+    assert.equal((await run("hermes", check, { FAKE_HERMES_UPDATE_CHECK: "fail" })).code, 1);
+
+    // Both are logged first, with the argv and the HERMES_HOME the call ran with.
+    await run("hermes", check, { HERMES_HOME: "/some/profile" });
+    const entries = await readLog(log);
+    assert.equal(entries.filter((entry) => entry.event === "update-dry-run").length, 3);
+    assert.deepEqual(entries.find((entry) => entry.event === "update-dry-run").argv, dry);
+    const checks = entries.filter((entry) => entry.event === "update-check");
+    assert.equal(checks.length, 4);
+    assert.deepEqual(checks[0].argv, check);
+    assert.equal(checks[0].env.HERMES_HOME, undefined);
+    assert.equal(checks.at(-1).env.HERMES_HOME, "/some/profile");
+    // They are not detection's questions, so openclaw's dry run is no "probe" record.
+    assert.equal(entries.some((entry) => entry.event === "probe" && entry.argv.includes("--dry-run")), false);
+  });
+});
+
 test("openclaw's ChatGPT sign-in, chosen by its argv: refuses without a terminal; in one it shows a link and a code, saves a siwc row on Enter, says Signed in. and exits 0; Ctrl+C saves nothing; its start record lists every OPENCLAW_* name; every quick answer of openclaw is logged as a probe record", POSIX_ONLY, async () => {
   await withBin({}, async (bin, dir) => {
     const log = path.join(dir, "fake.log");

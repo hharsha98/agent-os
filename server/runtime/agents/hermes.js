@@ -277,7 +277,9 @@ const service = {
 // Request input can never set HERMES_HOME: only the server's own env or its
 // local connection store may. When neither is configured, the child inherits
 // no HERMES_HOME and the hermes binary falls back to its own default.
-async function resolveHermesHome() {
+// Exported for the update checks (server/runtime/updates/), which must ask the
+// same Hermes profile that chat runs and safety reads use.
+export async function resolveHermesHome() {
   const stored = await getStoredConnectionConfig();
   const configured =
     getConfiguredValue(stored, "gateway", "HERMES_HOME") || getConfiguredValue(stored, "hermes", "HERMES_HOME");

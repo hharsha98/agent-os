@@ -291,7 +291,19 @@ function rawPost({ port, urlPath, headers = {}, declared = null, chunkedBytes = 
       while (written < total && !socket.destroyed) {
         const size = Math.min(piece.length, total - written);
         written += size;
-        if (!socket.write(piece.subarray(0, size))) await new Promise((resume) => (socket.once("drain", resume), socket.once("close", resume)));
+        if (!socket.write(piece.subarray(0, size))) {
+          // Both listeners go once either fires: Windows' smaller socket buffer means many waits per upload, and a
+          // close listener left behind each time trips Node's MaxListenersExceededWarning (CI, windows-latest).
+          await new Promise((resume) => {
+            const done = () => {
+              socket.off("drain", done);
+              socket.off("close", done);
+              resume();
+            };
+            socket.once("drain", done);
+            socket.once("close", done);
+          });
+        }
       }
     });
   });

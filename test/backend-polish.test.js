@@ -639,6 +639,18 @@ test(
       assert.equal(execAskBody.run.status, "succeeded");
       assert.equal(execAskBody.followUp, null);
 
+      // exec-auto is the same setting (tools.exec.mode), so it never restarts the gateway either.
+      const execAutoRes = await fetch(`${base}/api/agents/openclaw/safety/exec-auto`, {
+        method: "POST",
+        headers: authedJson,
+        body: JSON.stringify({ confirm: true })
+      });
+      assert.equal(execAutoRes.status, 200);
+      const execAutoBody = await execAutoRes.json();
+      assert.equal(execAutoBody.run.status, "succeeded");
+      assert.match(execAutoBody.run.commandPreview, /config set tools\.exec\.mode auto/);
+      assert.equal(execAutoBody.followUp, null);
+
       // Safety action with restartsGateway:true (no-browser-cookies) does not
       // restart when the fake gateway reports it isn't running.
       await writeFile(gatewayStateFile, JSON.stringify({ running: false }));

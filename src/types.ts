@@ -2343,6 +2343,10 @@ export interface AgentSafetyStatus {
   // false when Agent OS could not read the setting (the read failed, timed out or printed
   // nothing): `permissive` is then not a finding and screens show "—". Absent from older servers.
   known?: boolean;
+  // Optional switches the person may turn on (e.g. OpenClaw's exec-auto); never a finding, so never permissive.
+  choices?: AgentSafetyAction[];
+  // Calm facts about this safeguard, shown with an info mark (e.g. when OpenClaw can ask for approval).
+  notes?: string[];
 }
 
 export interface AgentDetail {

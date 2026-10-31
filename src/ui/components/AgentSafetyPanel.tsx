@@ -1,6 +1,7 @@
 // The hangar's Safety panel: the adapter's one-line safety finding plus a
 // "Fix" button per available safety action (e.g. OpenClaw's exec-ask,
-// no-browser-cookies). A fix's response may carry a gateway-restart
+// no-browser-cookies); optional choices (e.g. OpenClaw's exec-auto) get a
+// "Turn on" button instead. A fix's response may carry a gateway-restart
 // follow-up run, which gets its own mini-console right after the first one.
 import { useState } from "react";
 import { Info } from "lucide-react";
@@ -27,7 +28,8 @@ export default function AgentSafetyPanel({
   notes: string[];
   onFixed: () => void;
 }) {
-  const [confirming, setConfirming] = useState<AgentSafetyAction | null>(null);
+  // `choice` remembers which list the action came from (fixes say "Fix it", choices say "Turn on").
+  const [confirming, setConfirming] = useState<{ action: AgentSafetyAction; choice: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
@@ -89,6 +91,12 @@ export default function AgentSafetyPanel({
           <span>{note}</span>
         </p>
       ))}
+      {(safety.notes ?? []).map((note, index) => (
+        <p key={`safety-note-${index}`} className="os-agent-safety__note">
+          <Info size={14} aria-hidden="true" />
+          <span>{note}</span>
+        </p>
+      ))}
 
       {safety.actions.map((action) => (
         <div key={action.id} className="os-agent-safety__action">
@@ -99,10 +107,26 @@ export default function AgentSafetyPanel({
           <button
             type="button"
             className="os-btn os-btn--secondary"
-            onClick={() => setConfirming(action)}
+            onClick={() => setConfirming({ action, choice: false })}
             disabled={busy || Boolean(runId)}
           >
             Fix
+          </button>
+        </div>
+      ))}
+      {(safety.choices ?? []).map((choice) => (
+        <div key={choice.id} className="os-agent-safety__action">
+          <div className="os-agent-safety__action-text">
+            <strong>{choice.label}</strong>
+            {choice.description ? <span>{choice.description}</span> : null}
+          </div>
+          <button
+            type="button"
+            className="os-btn os-btn--secondary"
+            onClick={() => setConfirming({ action: choice, choice: true })}
+            disabled={busy || Boolean(runId)}
+          >
+            Turn on
           </button>
         </div>
       ))}
@@ -141,17 +165,17 @@ export default function AgentSafetyPanel({
 
       {confirming ? (
         <AgentConfirmModal
-          title={confirming.label}
-          confirmLabel="Fix it"
+          title={confirming.action.label}
+          confirmLabel={confirming.choice ? "Turn on" : "Fix it"}
           busy={busy}
-          onConfirm={() => handleConfirm(confirming)}
+          onConfirm={() => handleConfirm(confirming.action)}
           onClose={() => {
             if (busy) return;
             setConfirming(null);
             setError("");
           }}
         >
-          <p>{confirming.description || confirming.label}</p>
+          <p>{confirming.action.description || confirming.action.label}</p>
           {error ? <p className="os-launch__error">{error}</p> : null}
         </AgentConfirmModal>
       ) : null}

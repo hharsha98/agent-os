@@ -978,20 +978,61 @@ test(
   { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
   async () => {
     const detected = { installed: true, path: openclawShim, version: "1.0.0", features: {} };
+    const approvalClientNote =
+      "OpenClaw asks for approval only while its Control UI or Mac app is open. Without one, it says no to commands that need approval.";
     await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "full", FAKE_OPENCLAW_COOKIE_IMPORT: undefined }, async () => {
       const status = await openclaw.safetyStatus(detected);
       assert.equal(status.permissive, true);
       assert.ok(status.actions.some((action) => action.id === "exec-ask"));
       // Unset cookie import means the permissive upstream default.
       assert.ok(status.actions.some((action) => action.id === "no-browser-cookies"));
+      // "full" has nothing to choose and nothing to note: the fix is the only offer.
+      assert.deepEqual(status.choices, []);
+      assert.deepEqual(status.notes, []);
     });
+    // "ask" is safe, says when approvals can reach the person, and offers OpenClaw's own "auto" mode
+    // as a choice (never a finding: permissive stays false and actions stay empty).
     await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "ask", FAKE_OPENCLAW_COOKIE_IMPORT: "false" }, async () => {
       const status = await openclaw.safetyStatus(detected);
       assert.equal(status.permissive, false);
       assert.deepEqual(status.actions, []);
+      assert.equal(status.summary, "OpenClaw asks before each new command (tools.exec.mode = ask).");
+      assert.deepEqual(status.choices, [
+        {
+          id: "exec-auto",
+          label: "Ask only for risky commands",
+          description:
+            "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run and asks you about risky ones, like deleting."
+        }
+      ]);
+      assert.deepEqual(status.notes, [approvalClientNote]);
+    });
+    // "auto" counts as a safeguard that is on: no finding, no choice left, the same note.
+    await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "auto", FAKE_OPENCLAW_COOKIE_IMPORT: "false" }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.permissive, false);
+      assert.deepEqual(status.actions, []);
+      assert.deepEqual(status.choices, []);
+      assert.deepEqual(status.notes, [approvalClientNote]);
+      assert.equal(
+        status.summary,
+        "OpenClaw runs routine commands on its own and asks only for risky ones (tools.exec.mode = auto)."
+      );
+    });
+    // Any other value (allowlist, deny, ...) is shown as it is, with no choice and no note.
+    await withEnv({ FAKE_OPENCLAW_EXEC_MODE: "allowlist", FAKE_OPENCLAW_COOKIE_IMPORT: "false" }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.permissive, false);
+      assert.deepEqual(status.choices, []);
+      assert.deepEqual(status.notes, []);
+      assert.equal(status.summary, 'OpenClaw tools.exec.mode is "allowlist".');
     });
     const cookiePlan = openclaw.safetyAction("no-browser-cookies", detected);
     assert.deepEqual(cookiePlan.args, ["config", "set", "browser.allowSystemProfileImport", "false"]);
+    // exec-auto is the same setting as exec-ask, and applies without a Gateway restart too.
+    const autoPlan = openclaw.safetyAction("exec-auto", detected);
+    assert.deepEqual(autoPlan.args, ["config", "set", "tools.exec.mode", "auto"]);
+    assert.equal(autoPlan.restartsGateway, false);
     assert.equal(openclaw.safetyAction("not-a-real-action", detected), null);
   }
 );

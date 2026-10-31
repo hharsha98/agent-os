@@ -473,6 +473,38 @@
   margin-right: var(--os-sp-2);
 }
 
+/* SP5: the update dot, shown while an agent has a newer version. A quiet accent dot at the end of the footer that opens
+   Agents (a 24px square to press, the dot itself is 8px). Its words are its tooltip and its name for screen readers. */
+.os-sidebar__update {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--os-r-pill);
+  cursor: pointer;
+  transition: background-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-sidebar__update::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: var(--os-r-pill);
+  background: var(--os-accent);
+}
+.os-sidebar__update:hover {
+  background: var(--os-surface-2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .os-sidebar__update {
+    transition: none;
+  }
+}
+
 .os-menu-backdrop {
   display: none;
 }
@@ -700,6 +732,13 @@
     padding: var(--os-sp-3) 0 0;
     min-height: 32px;
     margin-top: var(--os-sp-3);
+  }
+  /* The update dot sits on the footer icon's corner instead of taking a place in the row. */
+  .os-sidebar:not(.is-expanded) .os-sidebar__update {
+    position: absolute;
+    top: var(--os-sp-1);
+    right: var(--os-sp-2);
+    margin: 0;
   }
 }
 

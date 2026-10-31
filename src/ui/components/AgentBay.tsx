@@ -1,7 +1,8 @@
-// The Agents page's detail for the selected agent: its head (name, maker and role), a Version block,
-// then sections laid out "title on the left, content on the right": Brain, Safeguards, Background
-// service and Its own dashboard (Hermes and OpenClaw only) and Configuration. It fetches the one
-// agent's detail (config + safety + service) itself, independent of the rail's list-level fetch.
+// The Agents page's detail for the selected agent: its head (name, maker and role), a Version block
+// (installed, latest and Update: AgentUpdatePanel), then sections laid out "title on the left, content
+// on the right": Brain, Safeguards, Background service and Its own dashboard (Hermes and OpenClaw
+// only) and Configuration. It fetches the one agent's detail (config + safety + service) itself,
+// independent of the rail's list-level fetch.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink, Plus, RefreshCw, SquareTerminal } from "lucide-react";
 import { getAgentDetail } from "../../api";
@@ -22,6 +23,7 @@ import OpenAddress from "./OpenAddress";
 import PlanLimitSettings from "./PlanLimitSettings";
 import AgentServicePanel from "./AgentServicePanel";
 import AgentSafetyPanel from "./AgentSafetyPanel";
+import AgentUpdatePanel from "./AgentUpdatePanel";
 
 const DETAIL_POLL_MS = 20000;
 // While the detail is failing the page tries again sooner, so it comes back by itself soon after
@@ -199,6 +201,11 @@ export default function AgentBay({
             <p className="os-agent-version__line">
               Installed <span className="os-agent-version__num os-mono" title={agent?.detected.version || undefined}>{agent?.detected.version || "—"}</span>
             </p>
+            {/* SP5: Latest, the state word, Update and Check for updates. It draws nothing until the version checks have an
+                answer for this agent (they are off in a plain `npm start`). Keyed by agent so a running update's console
+                never carries over to the next agent that is picked. An update that ends asks the page for the installed
+                version again (onRetryAgents reads the agents list with a fresh detection). */}
+            <AgentUpdatePanel key={agentId} agentId={agentId} label={label} installedVersion={agent?.detected.version || null} onChanged={onRetryAgents} />
             {versionFull ? (
               <details className="os-agent-version__details">
                 <summary>Details</summary>

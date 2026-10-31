@@ -113,6 +113,9 @@ export default function DashboardRoot() {
   const [page, setPage] = useState<ShellPage>(pageFromUrl);
   const [localAgents, setLocalAgents] = useState<LocalAgentRecord[]>([]);
   const [demoPublic, setDemoPublic] = useState(false);
+  // false until the product status has answered (or failed): `demoPublic` is false until then too, so a part that must not
+  // ask a public demo for anything (the version checks) waits for this instead of guessing "not a demo".
+  const [demoKnown, setDemoKnown] = useState(false);
   const [liveChat, setLiveChat] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -145,10 +148,14 @@ export default function DashboardRoot() {
         if (!cancelled) {
           setDemoPublic(Boolean(product.demoPublic));
           setLiveChat(Boolean(product.liveChat));
+          setDemoKnown(true);
         }
       })
       .catch(() => {
-        if (!cancelled) setDemoPublic(false);
+        if (!cancelled) {
+          setDemoPublic(false);
+          setDemoKnown(true);
+        }
       });
     void getAdminSession()
       .then((session) => {
@@ -258,7 +265,7 @@ export default function DashboardRoot() {
   }
 
   return (
-    <Shell page={page} onNavigate={(next) => go(next as ShellPage)} demoPublic={demoPublic}>
+    <Shell page={page} onNavigate={(next) => go(next as ShellPage)} demoPublic={demoPublic} demoKnown={demoKnown}>
       {page === "fleet" ? (
         <FleetPage />
       ) : page === "sessions" ? (

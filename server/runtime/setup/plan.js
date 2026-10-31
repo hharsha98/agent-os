@@ -7,19 +7,13 @@ import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS, agentGroup, getInstallRecipe } fr
 // operators; the coding agents are asked for by name (see routes.js, ?group=).
 export const ALL_PLAN_AGENT_IDS = [...OPERATOR_AGENT_IDS, ...CODING_AGENT_IDS];
 
-// Agents whose installed copy the plan never offers to update. Hermes is a git
-// checkout, and `hermes update` can overwrite changes a person made in it.
-// Until Agent OS can tell that a checkout is clean (SP5's Hermes clean check),
-// Setup offers Hermes only as "keep"; no Hermes update step exists, so a new job
-// cannot start one (jobs.js honours only ids the fresh plan holds). Retrying a
-// job stored before this change is refused too: jobs.js asks setupOffersUpdate()
-// before it runs any update step.
-const NO_UPDATE_STEP = new Set(["hermes"]);
-
-// Does Setup still update this agent? False for the agents in NO_UPDATE_STEP.
-export function setupOffersUpdate(agentId) {
-  return !NO_UPDATE_STEP.has(agentId);
-}
+// Hermes is a git checkout, and `hermes update` can overwrite changes a person
+// made in it. So its update step is offered only when the Hermes clean check
+// (server/runtime/updates/hermes-clean.js) says the checkout is an unchanged
+// official copy, and then it does not run as a job: Hermes may ask questions,
+// so it runs in a terminal session the person can type into (`runsIn:
+// "session"`, started through the update service). A job that names it is
+// refused (jobs.js builds its own plan, which never holds it).
 
 // The facts every step carries so the screen can group it, name it and add up
 // the size and time of what is ticked. Only installs have a size; Hermes and
@@ -95,7 +89,8 @@ function installerCommandPreview(recipe) {
   return `${runner} <installer downloaded to a temp file> ${recipe.args.join(" ")}`.trim();
 }
 
-export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS } = {}) {
+// hermesClean: the cached answer of the Hermes clean check. Unknown or false (the default) offers no Hermes update.
+export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean = false } = {}) {
   const steps = [];
   const warnings = [];
   const manualSteps = [];
@@ -137,7 +132,7 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS } = {}) {
         ...stepMeta(recipe),
         installedVersion: detected.version || ""
       });
-      if (NO_UPDATE_STEP.has(agentId)) continue;
+      if (agentId === "hermes" && hermesClean !== true) continue;
       steps.push({
         id: `${agentId}-update`,
         agentId,
@@ -149,7 +144,8 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS } = {}) {
         default: false,
         sourceUrl: recipe.sourceUrl,
         commandPreview: `${detected.path} ${recipe.updateArgs.join(" ")}`,
-        ...stepMeta(recipe)
+        ...stepMeta(recipe),
+        ...(agentId === "hermes" ? { runsIn: "session" } : {})
       });
       continue;
     }

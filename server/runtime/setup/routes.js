@@ -11,6 +11,8 @@ import { getServerPort } from "../server-info.js";
 import { errorBody, sessionError } from "../sessions/errors.js";
 import { getSessionManager } from "../sessions/manager.js";
 import { OPENCLAW_SIGNIN_ACTION } from "../sessions/profiles.js";
+import { getUpdateChecks } from "../updates/checks.js";
+import { updateAgentsOf, withUpdateGuard } from "../updates/update-service.js";
 import { systemCheck } from "./system-check.js";
 import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
 import { CODING_AGENT_IDS, OPERATOR_AGENT_IDS } from "./recipes.js";
@@ -161,13 +163,15 @@ function sendSessionError(error, res, next) {
   next(error);
 }
 
-// `sessionManager` is for tests. The server uses the one shared manager
-// (getSessionManager(), the same one server/index.js hands the sessions routes
-// and the WebSocket), looked up when a request needs it.
-export function createSetupRouter({ sessionManager = null } = {}) {
+// `sessionManager` and `updateChecks` are for tests. The server uses the one
+// shared manager (getSessionManager(), the same one server/index.js hands the
+// sessions routes and the WebSocket) and the one shared set of version checks,
+// looked up when a request needs them.
+export function createSetupRouter({ sessionManager = null, updateChecks = null } = {}) {
   // caseSensitive: "/check" and "/CHECK" are different addresses.
   const router = express.Router({ caseSensitive: true });
   const sessions = () => sessionManager ?? getSessionManager();
+  const checks = () => updateChecks ?? getUpdateChecks();
 
   router.get("/check", async (req, res, next) => {
     try {
@@ -184,7 +188,14 @@ export function createSetupRouter({ sessionManager = null } = {}) {
   router.get("/plan", async (req, res, next) => {
     try {
       const check = await systemCheck({});
-      res.json(buildSetupPlan(check, { agents: PLAN_GROUPS[req.query.group] || OPERATOR_AGENT_IDS }));
+      // Hermes's update step appears only when its checkout is an unchanged official copy. That answer is the
+      // cached one from the version checks: the git calls never run inside a page request.
+      res.json(
+        buildSetupPlan(check, {
+          agents: PLAN_GROUPS[req.query.group] || OPERATOR_AGENT_IDS,
+          hermesClean: checks().hermesClean().clean
+        })
+      );
     } catch (error) {
       next(error);
     }
@@ -197,10 +208,15 @@ export function createSetupRouter({ sessionManager = null } = {}) {
         return;
       }
       const steps = Array.isArray(req.body?.steps) ? req.body.steps.map(String) : [];
-      const job = await startSetupJob({ steps, acceptOpenClawRisk: req.body?.acceptOpenClawRisk === true });
+      // An update step takes the same one-update-per-agent guard as the Agents page (409 update_running).
+      const job = await withUpdateGuard(updateAgentsOf(steps), { manager: sessions() }, () =>
+        startSetupJob({ steps, acceptOpenClawRisk: req.body?.acceptOpenClawRisk === true })
+      );
       res.json(job);
     } catch (error) {
-      mapJobError(error, res, next);
+      // The guard's refusal is a sessionError and keeps its own status and sentence, as the sessions routes answer it.
+      if (Number.isInteger(error?.status)) sendSessionError(error, res, next);
+      else mapJobError(error, res, next);
     }
   });
 

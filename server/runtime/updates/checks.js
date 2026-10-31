@@ -11,9 +11,15 @@
 //   Cursor              no check command is known (spike S6): "unknown"
 //
 // Installed versions come from each adapter's detect() (server/runtime/agents).
+//
+// The Hermes clean check (hermes-clean.js, about nine git calls) is cached next to
+// these checks and computed in the same rounds, so a page request reads the
+// answer and never runs git. Only a person's click on Update asks it afresh.
 import { getAdapter } from "../agents/index.js";
 import { resolveHermesHome } from "../agents/hermes.js";
 import { runCommand } from "../safety.js";
+import { checkSessionFolder } from "../sessions/folders.js";
+import { hermesCleanCheck } from "./hermes-clean.js";
 import { compareVersions, parseDistTags, parseHermesCheck, parseOpenclawDryRun, versionNumber } from "./versions.js";
 
 /**
@@ -27,8 +33,26 @@ import { compareVersions, parseDistTags, parseHermesCheck, parseOpenclawDryRun, 
  * @property {boolean} [restartsGateway] - OpenClaw only: updating it restarts its Gateway
  */
 
+/**
+ * The Hermes clean check's reasons (hermes-clean.js) plus one this file adds:
+ * @typedef {import("./hermes-clean.js").HermesReason | "folder_refused"} HermesOfferReason
+ * folder_refused: the checkout is clean but is not a folder a session may work in (the sessions folder
+ * policy, D12), so no Update is offered. Its sentence: "Hermes's folder is outside the places Agent OS may work."
+ */
+
 // The agents that are checked, in the order they are listed.
 export const UPDATE_AGENT_IDS = Object.freeze(["claude", "codex", "cursor", "openclaw", "hermes"]);
+
+// May the version checks run at all? They reach the npm registry and run the agents' own CLIs, so they run
+// only where a launcher asked for them: the desktop app (AGENT_OS_PACKAGED=1) or `npm run dev`
+// (AGENT_OS_DEV_ORIGIN=1), or anywhere with AGENT_OS_UPDATE_CHECKS=1. AGENT_OS_UPDATE_CHECKS=0 switches them
+// off even there. Every way in honours this (start, refresh, and so the refresh after an update): when it is
+// false nothing is fetched and no agent is run, and what was found before is simply kept. A plain
+// `node server/index.js` (and so every server a test starts) never checks.
+export function updateChecksEnabled(env = process.env) {
+  if (env.AGENT_OS_UPDATE_CHECKS === "1") return true;
+  return (env.AGENT_OS_PACKAGED === "1" || env.AGENT_OS_DEV_ORIGIN === "1") && env.AGENT_OS_UPDATE_CHECKS !== "0";
+}
 
 const CHECK_LIMIT_MS = 30 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -131,10 +155,15 @@ async function openclawLookup({ detected, installed, runCli, signal, limitMs }) 
   if (!result?.ok) throw new Error("The OpenClaw dry run failed.");
   const dryRun = parseOpenclawDryRun(result.stdout);
   if (!dryRun) throw new Error("The OpenClaw dry run printed no readable answer.");
-  // A target that would go to an OLDER version is not an update (R37).
+  // A target that would go to an OLDER version is not an update (R37), and it is not a "Latest" to show
+  // either: the page must never print a Latest that is older than what is installed.
   const state = dryRun.downgradeRisk ? "up-to-date" : stateFor(installed || dryRun.current, dryRun.target);
   // The Gateway warning belongs to an update the person can actually take.
-  return { latest: dryRun.target, state, restartsGateway: state === "available" && dryRun.restartsGateway };
+  return {
+    latest: dryRun.downgradeRisk ? null : dryRun.target,
+    state,
+    restartsGateway: state === "available" && dryRun.restartsGateway
+  };
 }
 
 async function hermesLookup({ detected, runCli, signal, limitMs }) {
@@ -194,12 +223,26 @@ export async function checkAgent(
 
 // --- the service: checks at start and every 24 hours ------------------------------------------------
 
+// What the cache holds before the first Hermes clean check has ended: not clean, and no reason to show.
+// Fails closed: Setup offers no Hermes update and the page shows nothing yet.
+const NOT_CHECKED_YET = Object.freeze({ clean: false, checkout: null, reasons: Object.freeze([]) });
+
 // check(agentId, { now }) is checkAgent unless a test passes its own.
-export function createUpdateChecks({ check = checkAgent, intervalMs = DAY_MS, now = Date.now } = {}) {
+// cleanCheck() is the Hermes clean check (V2's hermesCleanCheck) -> { clean, checkout, reasons }. The shared
+// service passes it; without one the Hermes answer stays "not clean" and no git is ever run.
+//
+// Two answers can overlap: a periodic check that began before an update ended can finish AFTER the check
+// the update asked for, and its old answer would put "update available" back. So every check takes a number
+// when it starts, and its answer is kept only when no check that started later has already been kept.
+export function createUpdateChecks({ check = checkAgent, cleanCheck = null, intervalMs = DAY_MS, now = Date.now } = {}) {
   const statuses = new Map();
+  const started = new Map(); // agentId -> the number the newest check took
+  const kept = new Map(); // agentId -> the number of the check whose answer is stored
   let timer = null;
 
   async function checkOne(agentId) {
+    const number = (started.get(agentId) ?? 0) + 1;
+    started.set(agentId, number);
     let status;
     try {
       status = await check(agentId, { now });
@@ -207,7 +250,10 @@ export function createUpdateChecks({ check = checkAgent, intervalMs = DAY_MS, no
       // checkAgent never throws; a replacement might. One agent's trouble stays its own.
       status = { agentId, installed: null, latest: null, state: "failed", checkedAt: new Date(now()).toISOString() };
     }
-    statuses.set(agentId, status);
+    if (number > (kept.get(agentId) ?? 0)) {
+      kept.set(agentId, number);
+      statuses.set(agentId, status);
+    }
   }
 
   // The latest status of each agent that has been checked, in the agents' order.
@@ -216,17 +262,55 @@ export function createUpdateChecks({ check = checkAgent, intervalMs = DAY_MS, no
     return UPDATE_AGENT_IDS.filter((id) => statuses.has(id)).map((id) => ({ ...statuses.get(id) }));
   }
 
-  // Checks one agent, or all five at the same time, and answers with the whole list.
-  // An id that is not one of the five checks nothing.
+  // --- Hermes: is its checkout an unchanged official copy? (the answer GET /api/updates and the Setup plan read) ---
+
+  let cleanAnswer = NOT_CHECKED_YET;
+  let cleanStarted = 0;
+  let cleanKept = 0;
+
+  // What a page request reads: no git is run here. { clean, reasons }, copies.
+  function hermesClean() {
+    return { clean: cleanAnswer.clean, reasons: [...cleanAnswer.reasons] };
+  }
+
+  // Runs the clean check now, stores the answer (when no later check has been stored) and resolves this run's
+  // own answer, { clean, checkout, reasons }: POST /api/updates/hermes uses the checkout it names. A check that
+  // throws is "not clean" (fails closed).
+  async function refreshHermesClean() {
+    if (!cleanCheck) return { ...NOT_CHECKED_YET, reasons: [] };
+    const number = (cleanStarted += 1);
+    let answer;
+    try {
+      const result = await cleanCheck();
+      answer = {
+        clean: result?.clean === true,
+        checkout: typeof result?.checkout === "string" ? result.checkout : null,
+        reasons: Array.isArray(result?.reasons) ? [...result.reasons] : []
+      };
+    } catch {
+      answer = { clean: false, checkout: null, reasons: [] };
+    }
+    if (number > cleanKept) {
+      cleanKept = number;
+      cleanAnswer = answer;
+    }
+    return { ...answer, reasons: [...answer.reasons] };
+  }
+
+  // Checks one agent, or all five at the same time, and answers with the whole list. The Hermes clean answer
+  // is computed in the same round when Hermes is among them. An id that is not one of the five checks nothing.
+  // Where the checks are not enabled (updateChecksEnabled) nothing is checked: the list as it is.
   async function refresh(agentId) {
+    if (!updateChecksEnabled()) return list();
     const ids = agentId == null ? UPDATE_AGENT_IDS : UPDATE_AGENT_IDS.filter((id) => id === agentId);
-    await Promise.all(ids.map(checkOne));
+    await Promise.all([...ids.map(checkOne), ...(ids.includes("hermes") ? [refreshHermesClean()] : [])]);
     return list();
   }
 
-  // Checks once at once, then again every intervalMs. Starting twice does nothing.
+  // Checks once at once, then again every intervalMs. Starting twice does nothing, and neither does starting
+  // where the checks are not enabled.
   function start() {
-    if (timer) return;
+    if (timer || !updateChecksEnabled()) return;
     void refresh();
     timer = setInterval(() => void refresh(), intervalMs);
     timer.unref?.(); // the timer alone never keeps the server running
@@ -237,13 +321,39 @@ export function createUpdateChecks({ check = checkAgent, intervalMs = DAY_MS, no
     timer = null;
   }
 
-  return { start, stop, list, refresh };
+  return { start, stop, list, refresh, hermesClean, refreshHermesClean };
+}
+
+// The clean check as the Agents page and the Setup plan use it: hermesCleanCheck, plus the sessions folder
+// policy on the checkout it examined. An update runs in a terminal session whose folder is that checkout
+// (SP3 "Session kinds"), and it must pass the policy, otherwise no Update is offered: a checkout the policy
+// refuses is not clean, with the reason folder_refused after the others. `check` and `checkFolder` are
+// for tests.
+export async function hermesCleanForUpdate({ check = hermesCleanCheck, checkFolder = checkSessionFolder } = {}) {
+  const result = await check();
+  if (typeof result?.checkout !== "string") return result;
+  let allowed = false;
+  try {
+    allowed = (await checkFolder(result.checkout))?.ok === true;
+  } catch {
+    allowed = false; // a folder that can't be judged is not allowed
+  }
+  if (allowed) return result;
+  return { ...result, clean: false, reasons: [...(result.reasons ?? []), "folder_refused"] };
 }
 
 let shared = null;
 
-// The one service for the whole server.
+// The one service for the whole server. Its Hermes clean check is hermesCleanForUpdate, so what the page,
+// the Setup plan and the Update click see already has the folder policy applied.
 export function getUpdateChecks() {
-  shared ??= createUpdateChecks();
+  shared ??= createUpdateChecks({ cleanCheck: () => hermesCleanForUpdate() });
   return shared;
+}
+
+// Test-only: stops the shared service and drops it, so the next getUpdateChecks() builds a new one
+// (in the style of resetSetupJobsForTest in setup/jobs.js).
+export function resetUpdateChecksForTest() {
+  shared?.stop();
+  shared = null;
 }

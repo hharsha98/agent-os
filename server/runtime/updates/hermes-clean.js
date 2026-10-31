@@ -7,9 +7,15 @@
 // off, no optional locks, no network transport, the person's GIT_* variables
 // dropped), so nothing in the checkout is written.
 //
+// Which checkout? The one `hermes update` updates: the install directory the
+// detected Hermes prints in `hermes --version` ("Install directory: ~/.hermes/hermes-agent",
+// "Install method: git"). Not <HERMES_HOME>/hermes-agent, which can be a different
+// copy; HERMES_HOME only names the profile whose `update.installs` is read.
+//
 // Every finding is collected, not only the first, as a reason code (the order
 // below is the order of the sentences a person reads, see the spec):
-//   no_checkout             the folder, or a git project in it, can't be found or read
+//   no_checkout             the install directory can't be found (no "Install directory" line, an
+//                           install method other than git, or a folder that is not a readable git project)
 //   no_official_remote      no remote fetches from the official repository
 //   refs_unreadable         the official remote has no refs on disk (the commit count is skipped)
 //   not_on_release_or_main  HEAD is not on an official release or main
@@ -36,7 +42,7 @@ import { gitTopLevel, runGit } from "../sessions/git.js";
  * @property {HermesReason[]} reasons - one entry per finding, in the order of the sentences
  */
 
-// Hermes keeps its git checkout in this folder of its home.
+// With an explicit `home` (tests), the checkout is this folder of it.
 const CHECKOUT_FOLDER = "hermes-agent";
 // Where Hermes records a non-default update channel (R36).
 const CHANNEL_KEY = "update.installs";
@@ -76,14 +82,43 @@ const textLines = (text) =>
 
 // --- reading the checkout --------------------------------------------------------------------------------
 
-// The checkout is <hermes home>/hermes-agent: the home the caller names, else
-// the one chats and safety reads use (HERMES_HOME from the server's own
-// environment, else the stored connection value), else ~/.hermes. It must hold
-// a `.git` (a folder, or the file of a linked copy). Null when it does not.
-async function findCheckout(home) {
+// What `hermes --version` says about the install, read from the detected Hermes's
+// text (detect.js keeps it in `versionFull` with the home folder folded to "~"):
+// the install directory (a leading "~" is the real home folder again) and the
+// install method. null when the directory line is missing or is not a full path.
+function installOf(detected) {
+  if (!detected?.installed) return null;
+  const text = String(detected.versionFull ?? "");
+  const directory = /^[ \t]*install directory:[ \t]*(.+?)[ \t]*$/im.exec(text)?.[1];
+  const method = /^[ \t]*install method:[ \t]*(.+?)[ \t]*$/im.exec(text)?.[1];
+  if (!directory) return null;
+  const expanded = directory === "~" || directory.startsWith("~/") ? path.join(os.homedir(), directory.slice(1)) : directory;
+  if (!path.isAbsolute(expanded)) return null;
+  return { directory: expanded, method: (method ?? "").toLowerCase() };
+}
+
+// The default way to ask which Hermes is installed (a fresh look, so an update that just ended is seen).
+const detectHermes = () => getAdapter("hermes").detect({ refresh: true });
+
+// The checkout to examine, and the profile home its settings are read with, or null when there is none.
+// An explicit `home` (tests) means <home>/hermes-agent. Otherwise it is the detected Hermes's install
+// directory, and only when Hermes says it is a git install. It must hold a `.git` (a folder, or the file
+// of a linked copy).
+async function findCheckout({ home, detect }) {
   try {
-    const hermesHome = home ? expandHome(home) : await resolveHermesHome();
-    const checkout = path.join(hermesHome || path.join(os.homedir(), ".hermes"), CHECKOUT_FOLDER);
+    let checkout;
+    let hermesHome;
+    if (home) {
+      hermesHome = expandHome(home);
+      checkout = path.join(hermesHome, CHECKOUT_FOLDER);
+    } else {
+      const install = installOf(await detect());
+      if (!install || install.method !== "git") return null;
+      checkout = install.directory;
+      // The profile Hermes chats and the safety reads use: HERMES_HOME from the server's own environment,
+      // else the stored connection value (null: Hermes's own default).
+      hermesHome = await resolveHermesHome();
+    }
     await fs.stat(path.join(checkout, ".git"));
     return { checkout, hermesHome: hermesHome || null };
   } catch {
@@ -193,8 +228,9 @@ async function headIsOnReleaseOrMain(git, mainTips) {
 
 /**
  * Is Hermes's git checkout an unchanged official copy? Read-only.
- *   home       Hermes's home folder (the checkout is <home>/hermes-agent); by default
- *              the one chats use, else ~/.hermes
+ *   home       a Hermes home folder, for tests (the checkout is then <home>/hermes-agent); by
+ *              default the checkout is the detected Hermes's install directory
+ *   detect     () -> the detected Hermes ({ installed, versionFull }); by default a fresh detection
  *   configGet  (key) -> { ok, stdout, stderr }, how a Hermes setting is read; by default
  *              the detected `hermes config get <key>` (tests inject their own)
  *   run, env   runGit and the environment of its git calls (injectable for tests);
@@ -202,9 +238,9 @@ async function headIsOnReleaseOrMain(git, mainTips) {
  * Never throws.
  * @returns {Promise<HermesCleanResult>}
  */
-export async function hermesCleanCheck({ home, configGet, run = runGit, env = process.env } = {}) {
+export async function hermesCleanCheck({ home, detect = detectHermes, configGet, run = runGit, env = process.env } = {}) {
   const noCheckout = { clean: false, checkout: null, reasons: ["no_checkout"] };
-  const found = await findCheckout(home);
+  const found = await findCheckout({ home, detect });
   if (!found) return noCheckout;
   const { checkout, hermesHome } = found;
   const git = (args, okCodes) => run(checkout, args, { env, okCodes, timeoutMs: GIT_LIMIT_MS });

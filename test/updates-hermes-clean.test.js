@@ -114,6 +114,16 @@ function gitTestEnv(home) {
     HOME: home,
     USERPROFILE: home,
     GIT_CONFIG_NOSYSTEM: "1",
+    // The wall against the network. Git in this file may use local folders and file:// only; every other
+    // transport is refused at once. The installs here record the official GitHub URL as their remote (that is
+    // what the check looks at), so a fetch, pull or clone that ran after that would really reach GitHub: slow,
+    // and only as reliable as the network. With the wall it fails the test instead. (Set in the environment, not
+    // in a .gitconfig: one test writes its own ~/.gitconfig, which would take a file-based wall away.)
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "protocol.allow",
+    GIT_CONFIG_VALUE_0: "never",
+    GIT_CONFIG_KEY_1: "protocol.file.allow",
+    GIT_CONFIG_VALUE_1: "always",
     LANG: "C",
     GIT_AUTHOR_NAME: "Agent OS test",
     GIT_AUTHOR_EMAIL: "test@example.invalid",
@@ -691,17 +701,25 @@ async function withEnv(vars, fn) {
   }
 }
 
-// A stand-in `hermes` first on PATH (in a temp folder, so the no-real-agents watcher allows it). `--version` and
-// the other detection questions get a plain answer; `config get <key>` prints the contents of
-// $HERMES_HOME/installs.txt (or the "Config key not set" sentence) and notes the arguments and HERMES_HOME it got.
+// A stand-in `hermes` first on PATH (in a temp folder, so the no-real-agents watcher allows it). `--version`
+// prints the text a test sets with setVersion (default: one line, "Hermes Agent v0.22.5"; the real Hermes also
+// prints "Install directory: ..." and "Install method: git" lines); the other detection questions get a plain
+// answer; `config get <key>` prints the contents of $HERMES_HOME/installs.txt (or the "Config key not set"
+// sentence) and notes the arguments and HERMES_HOME it got. fn receives { setVersion(text) }.
 async function withShimHermes(fn) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-hermes-shim-"));
   try {
     const bin = path.join(dir, "bin");
     await mkdir(bin);
+    const versionFile = path.join(dir, "version.txt");
+    const setVersion = async (text) => {
+      await writeFile(versionFile, `${text}\n`);
+      clearDetectCaches();
+    };
+    await setVersion("Hermes Agent v0.22.5");
     const shim = [
       "#!/bin/sh",
-      'if [ "$1" = "--version" ]; then echo "Hermes Agent v0.22.5"; exit 0; fi',
+      `if [ "$1" = "--version" ]; then cat '${versionFile}'; exit 0; fi`,
       'if [ "$1" = "config" ] && [ "$2" = "get" ]; then',
       '  echo "$* | $HERMES_HOME" >> "$HERMES_HOME/shim-calls.txt"',
       '  if [ -f "$HERMES_HOME/installs.txt" ]; then cat "$HERMES_HOME/installs.txt"; exit 0; fi',
@@ -721,7 +739,7 @@ async function withShimHermes(fn) {
       async () => {
         clearDetectCaches();
         try {
-          return await fn();
+          return await fn({ setVersion });
         } finally {
           clearDetectCaches();
         }
@@ -744,28 +762,141 @@ test("the default configGet runs the detected `hermes config get update.installs
   });
 });
 
-test("the home: an explicit home wins, then HERMES_HOME, then <home folder>/.hermes", GIT_ONLY, async () => {
-  await withShimHermes(async () => {
-    const fromEnv = await world.install({ ref: "v0.2.0" });
-    const explicit = await world.install({ ref: "v0.2.0" });
-    await withEnv({ HERMES_HOME: fromEnv.home }, async () => {
-      // The explicit home wins over HERMES_HOME.
-      assert.deepEqual(await hermesCleanCheck({ home: explicit.home, configGet: channelUnset, env: world.env }), cleanAt(explicit));
-      // With no explicit home, HERMES_HOME (the server's own environment, as resolveHermesHome reads it) is
-      // used, and the default channel read goes to that same home.
-      assert.deepEqual(await hermesCleanCheck({ env: world.env }), cleanAt(fromEnv));
-      assert.match(await readFile(path.join(fromEnv.home, "shim-calls.txt"), "utf8"), /config get update\.installs \| /);
+const NO_CHECKOUT = { clean: false, checkout: null, reasons: ["no_checkout"] };
+const installLines = (directory, method = "git") => `Hermes Agent v0.22.5\nProject: somewhere\nInstall directory: ${directory}\nInstall method: ${method}`;
+
+test("the checkout is the install directory the detected Hermes prints; HERMES_HOME and its hermes-agent folder do not decide it", GIT_ONLY, async () => {
+  await withShimHermes(async ({ setVersion }) => {
+    const install = await world.install({ ref: "v0.2.0" });
+    const otherHome = await world.install({ ref: "v0.2.0" });
+    await otherHome.write("app.py", "changed in the HERMES_HOME copy\n"); // that copy is dirty
+    await setVersion(installLines(install.checkout));
+    await withEnv({ HERMES_HOME: otherHome.home }, async () => {
+      // The install directory is clean, so the answer is clean at that folder, whatever HERMES_HOME's copy is.
+      assert.deepEqual(await hermesCleanCheck({ env: world.env }), cleanAt(install));
+      // HERMES_HOME names only the profile whose channel is read.
+      assert.match(await readFile(path.join(otherHome.home, "shim-calls.txt"), "utf8"), /^config get update\.installs \| /);
     });
-    // With neither, the default is ~/.hermes (here under a temp HOME).
+    // And the other way round: a dirty install directory is not rescued by a clean HERMES_HOME copy.
+    const cleanHome = await world.install({ ref: "v0.2.0" });
+    await install.write("app.py", "changed in the install directory\n");
+    await setVersion(installLines(install.checkout));
+    await withEnv({ HERMES_HOME: cleanHome.home }, async () => {
+      assert.deepEqual(await hermesCleanCheck({ env: world.env }), notCleanAt(install, ["dirty_tree"]));
+    });
+  });
+});
+
+test("the install directory may be written with ~ or as a full path under the home folder, and the labels' letter case and spacing do not matter", GIT_ONLY, async () => {
+  await withShimHermes(async ({ setVersion }) => {
+    const fakeHome = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-install-home-")));
+    try {
+      const checkout = path.join(fakeHome, ".hermes", "hermes-agent");
+      await mkdir(path.dirname(checkout));
+      world.git(world.root, "clone", "-q", world.upstream, checkout);
+      // The release tag comes from the local origin; the official URL is recorded only afterwards, as world.install
+      // does (a fetch after that would go to GitHub).
+      world.git(checkout, "fetch", "-q", "--tags", "origin");
+      world.git(checkout, "config", "remote.origin.url", OFFICIAL);
+      world.git(checkout, "checkout", "-q", "--detach", "v0.2.0");
+      await withEnv({ HOME: fakeHome, USERPROFILE: fakeHome, HERMES_HOME: undefined }, async () => {
+        const expected = { clean: true, checkout, reasons: [] };
+        // as the real Hermes prints it
+        await setVersion(installLines("~/.hermes/hermes-agent"));
+        assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), expected);
+        // as a full path: the detection folds the home folder to ~ in the text it keeps, and it is expanded again
+        await setVersion(installLines(checkout));
+        assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), expected);
+        // letter case, spacing and a different order of the lines
+        await setVersion(`Hermes Agent v0.22.5\n  INSTALL METHOD:   Git  \n\tinstall directory:    ~/.hermes/hermes-agent   `);
+        assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), expected);
+      });
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+});
+
+test("no_checkout: no Install directory line, an install method other than git, no method line, a directory that is not a full path or not a git project, or no Hermes at all", GIT_ONLY, async () => {
+  await withShimHermes(async ({ setVersion }) => {
+    const install = await world.install({ ref: "v0.2.0" });
+    let asked = 0;
+    const configGet = async () => {
+      asked += 1;
+      return CHANNEL_UNSET;
+    };
+    const check = () => hermesCleanCheck({ configGet, env: world.env });
+    const plain = path.join(world.root, "plain-install");
+    await mkdir(path.join(plain, "sub"), { recursive: true });
+
+    const cases = {
+      "no install lines at all": "Hermes Agent v0.22.5",
+      "no Install directory line": "Hermes Agent v0.22.5\nInstall method: git",
+      "Install method: pip": installLines(install.checkout, "pip"),
+      "Install method: pipx": installLines(install.checkout, "pipx"),
+      "no Install method line": `Hermes Agent v0.22.5\nInstall directory: ${install.checkout}`,
+      "an empty Install directory": "Hermes Agent v0.22.5\nInstall directory:\nInstall method: git",
+      "a relative directory": installLines("hermes-agent"),
+      "a directory with no .git": installLines(plain),
+      "a folder that does not exist": installLines(path.join(world.root, "gone"))
+    };
+    for (const [name, text] of Object.entries(cases)) {
+      await setVersion(text);
+      assert.deepEqual(await check(), NO_CHECKOUT, name);
+    }
+    assert.equal(asked, 0, "the channel is not asked once there is no checkout");
+
+    // No Hermes found at all.
+    assert.deepEqual(await hermesCleanCheck({ detect: async () => ({ installed: false }), configGet, env: world.env }), NO_CHECKOUT);
+    assert.deepEqual(await hermesCleanCheck({ detect: async () => null, configGet, env: world.env }), NO_CHECKOUT);
+    // A detection that fails is no checkout either; the check never throws.
+    assert.deepEqual(
+      await hermesCleanCheck({
+        detect: async () => {
+          throw new Error("boom");
+        },
+        configGet,
+        env: world.env
+      }),
+      NO_CHECKOUT
+    );
+    assert.equal(asked, 0);
+    // The same text with the right method is clean again: the failures above were the text, not the folder.
+    await setVersion(installLines(install.checkout));
+    assert.deepEqual(await check(), cleanAt(install));
+  });
+});
+
+test("the detection is asked afresh each time, so a Hermes that moved or was reinstalled is seen at once", GIT_ONLY, async () => {
+  await withShimHermes(async ({ setVersion }) => {
+    const first = await world.install({ ref: "v0.2.0" });
+    const second = await world.install({ ref: "v0.2.0" });
+    await setVersion(installLines(first.checkout));
+    assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), cleanAt(first));
+    // Not through setVersion (which clears the detection memory): the file changes under a cached detection.
+    await writeFile(path.join(path.dirname(process.env.PATH.split(path.delimiter)[0]), "version.txt"), `${installLines(second.checkout)}\n`);
+    assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), cleanAt(second));
+  });
+});
+
+test("an explicit home is a test hook and wins over the detected install directory; with none, ~/.hermes/hermes-agent is no candidate", GIT_ONLY, async () => {
+  await withShimHermes(async ({ setVersion }) => {
+    const detected = await world.install({ ref: "v0.2.0" });
+    const explicit = await world.install({ ref: "v0.2.0" });
+    await setVersion(installLines(detected.checkout));
+    assert.deepEqual(await hermesCleanCheck({ home: explicit.home, configGet: channelUnset, env: world.env }), cleanAt(explicit));
+    assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), cleanAt(detected));
+
+    // A clean ~/.hermes/hermes-agent under the home folder is not looked at when the detected Hermes names no install.
     const fakeHome = await mkdtemp(path.join(os.tmpdir(), "agent-os-home-"));
     try {
       await withEnv({ HOME: fakeHome, USERPROFILE: fakeHome, HERMES_HOME: undefined }, async () => {
-        assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), { clean: false, checkout: null, reasons: ["no_checkout"] });
         const checkout = path.join(fakeHome, ".hermes", "hermes-agent");
         await mkdir(path.dirname(checkout));
         world.git(world.root, "clone", "-q", world.upstream, checkout);
         world.git(checkout, "config", "remote.origin.url", OFFICIAL);
-        assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), { clean: true, checkout, reasons: [] });
+        await setVersion("Hermes Agent v0.22.5");
+        assert.deepEqual(await hermesCleanCheck({ configGet: channelUnset, env: world.env }), NO_CHECKOUT);
       });
     } finally {
       await rm(fakeHome, { recursive: true, force: true });

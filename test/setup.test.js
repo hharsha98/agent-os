@@ -358,22 +358,31 @@ test(
 // =====================================================================
 
 test(
-  "buildSetupPlan(): Hermes already installed -> keep (default) and nothing else: no update step, no install step",
+  "buildSetupPlan(): Hermes already installed -> keep (default); the update step appears only when the checkout is clean, and then runs in a session",
   posixSkip,
   async () => {
     await withTempSetupEnv(async ({ home }) => {
       await installFakeHermesShim(home);
       const check = await systemCheck({ refresh: true });
       assert.equal(check.agents.hermes.detected.installed, true);
-      const plan = buildSetupPlan(check);
-      const hermesSteps = plan.steps.filter((s) => s.agentId === "hermes");
-      assert.deepEqual(
-        hermesSteps.map((s) => s.action),
-        ["keep"],
-        "until SP5's Hermes clean check, Setup offers no Hermes update step"
-      );
-      assert.equal(hermesSteps[0].default, true);
-      assert.ok(!plan.steps.some((s) => s.id === "hermes-update"));
+
+      // No answer from the Hermes clean check (the default), or "not clean": keep only, never an install.
+      for (const options of [undefined, { hermesClean: false }]) {
+        const plan = buildSetupPlan(check, options);
+        const hermesSteps = plan.steps.filter((s) => s.agentId === "hermes");
+        assert.deepEqual(hermesSteps.map((s) => s.action), ["keep"], "Hermes is updated only from an unchanged official copy");
+        assert.equal(hermesSteps[0].default, true);
+        assert.ok(!plan.steps.some((s) => s.id === "hermes-update"));
+      }
+
+      // Clean: the update step is back. It is not a job's step: it runs in a terminal session the person can type into.
+      const clean = buildSetupPlan(check, { hermesClean: true });
+      assert.deepEqual(clean.steps.filter((s) => s.agentId === "hermes").map((s) => s.action), ["keep", "update"]);
+      const update = clean.steps.find((s) => s.id === "hermes-update");
+      assert.equal(update.runsIn, "session");
+      assert.equal(update.default, false);
+      assert.equal(update.commandPreview, `${check.agents.hermes.detected.path} update`);
+      assert.ok(!/--yes/.test(`${update.commandPreview} ${update.changes.join(" ")}`), "no updater question is answered for the person");
     });
   }
 );
@@ -395,12 +404,26 @@ test("buildSetupPlan(): an installed OpenClaw still gets an update step, and its
   const update = plan.steps.find((s) => s.id === "openclaw-update");
   assert.equal(update.default, false);
   assert.equal(update.commandPreview, "/fake/openclaw update --json");
+  assert.equal(update.runsIn, undefined, "only the Hermes update runs in a session; the others are jobs");
   for (const step of plan.steps) {
     assert.ok(!/--yes/.test(`${step.commandPreview} ${step.changes.join(" ")}`), `${step.id} mentions --yes`);
   }
+
+  // A clean Hermes adds its update step (in a session); OpenClaw's step is the same.
+  const withClean = buildSetupPlan(check, { hermesClean: true });
+  assert.deepEqual(withClean.steps.filter((s) => s.agentId === "hermes").map((s) => s.action), ["keep", "update"]);
+  assert.equal(withClean.steps.find((s) => s.id === "hermes-update").runsIn, "session");
+  assert.equal(withClean.steps.find((s) => s.id === "hermes-update").commandPreview, "/fake/hermes update");
+  assert.deepEqual(withClean.steps.find((s) => s.id === "openclaw-update"), update);
+  for (const step of withClean.steps) {
+    assert.ok(!/--yes/.test(`${step.commandPreview} ${step.changes.join(" ")}`), `${step.id} mentions --yes`);
+  }
+  // Only an installed Hermes has an update step, clean or not.
+  const missing = buildSetupPlan({ ...check, agents: { ...check.agents, hermes: { detected: { installed: false } } } }, { hermesClean: true });
+  assert.ok(!missing.steps.some((s) => s.id === "hermes-update"));
 });
 
-test("startSetupJob(): a client cannot start a Hermes update by sending the old step id", posixSkip, async () => {
+test("startSetupJob(): a Hermes update is never a job: the step is refused, alone or among other steps, and nothing runs", posixSkip, async () => {
   await withTempSetupEnv(async ({ home }) => {
     await installFakeHermesShim(home);
     // Without this the test could pass for the wrong reason: if the fake Hermes
@@ -409,8 +432,19 @@ test("startSetupJob(): a client cannot start a Hermes update by sending the old 
     assert.equal(check.agents.hermes.detected.installed, true, "the fake Hermes is detected");
     assert.ok(
       buildSetupPlan(check).steps.some((s) => s.id === "hermes-keep"),
-      "the plan holds a Hermes keep step, so the missing update step is deliberate"
+      "the plan holds a Hermes keep step, so the refused update is deliberate"
     );
+    await assert.rejects(
+      () => startSetupJob({ steps: ["hermes-update"] }),
+      (error) => error.code === "no_valid_steps"
+    );
+    // The whole request is refused, not just the Hermes part: nothing is quietly done instead.
+    await assert.rejects(
+      () => startSetupJob({ steps: ["hermes-keep", "hermes-update"] }),
+      (error) => error.code === "no_valid_steps"
+    );
+    // Even a plan that offers the step (a clean checkout) hands jobs.js no way to run it: a job builds its own plan.
+    assert.ok(buildSetupPlan(check, { hermesClean: true }).steps.some((s) => s.id === "hermes-update"));
     await assert.rejects(
       () => startSetupJob({ steps: ["hermes-update"] }),
       (error) => error.code === "no_valid_steps"
@@ -967,10 +1001,17 @@ test("startSetupJob(): an update that asks a question gets end of input, never a
     const finished = await waitForJob(job.id);
 
     assert.equal(finished.status, "failed", "a question nobody answered fails the update; it is not answered for the person");
-    const args = (await readFile(path.join(home, ".fake-updater-args.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(args, [["update", "--json"]], "the updater was started with no --yes");
+    // The version check Agent OS runs after an update (a dry run, SP5) is not the updater: leave it out.
+    const args = (await readFile(path.join(home, ".fake-updater-args.log"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((line) => !line.includes("--dry-run"));
+    assert.deepEqual(args, [["update", "--json"]], "the updater was started once, with no --yes");
     const answers = (await readFile(path.join(home, ".fake-updater-answer.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(answers, [""], "it saw end of input, not a typed answer");
+    // The updater and the version check Agent OS runs after it (the same fake, asked with --dry-run) each saw
+    // end of input: no run was ever given a typed answer.
+    assert.ok(answers.length >= 1 && answers.every((answer) => answer === ""), `it saw end of input, not a typed answer: ${JSON.stringify(answers)}`);
 
     // The updater's own last words reach the person: in the step's error (what
     // the Install panel shows) and in the step's log (the lines it printed).

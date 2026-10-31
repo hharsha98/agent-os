@@ -52,7 +52,9 @@ async function startPackagedServer(home) {
     AGENT_OS_HOME: path.join(home, ".hermes-agent-os"),
     AGENT_OS_MANAGED_ROOT: path.join(home, ".agent-os"),
     AGENT_OS_TOKEN: TOKEN,
-    HERMES_AGENT_OS_SCHEDULER: "0"
+    HERMES_AGENT_OS_SCHEDULER: "0",
+    // This server's env is built by hand, so it does not inherit the test runner's switch: no version check (SP5) here.
+    AGENT_OS_UPDATE_CHECKS: "0"
   };
   const child = spawn(process.execPath, ["server/index.js"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   const out = { stdout: "", stderr: "" };

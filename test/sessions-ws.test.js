@@ -1449,7 +1449,8 @@ describe("the Vite dev origin on real servers", { skip: SKIP_POSIX }, () => {
   }
 
   test("with AGENT_OS_DEV_ORIGIN=1 the Vite dev page attaches", async () => {
-    await withDevServer({ AGENT_OS_DEV_ORIGIN: "1" }, async (port, id) => {
+    // (Dev and packaged servers check agent versions at start (SP5); this test server must not.)
+    await withDevServer({ AGENT_OS_DEV_ORIGIN: "1", AGENT_OS_UPDATE_CHECKS: "0" }, async (port, id) => {
       for (const origin of ["http://127.0.0.1:5173", "http://localhost:5173", ownOrigin(port)]) {
         const result = await tryUpgrade(port, attachPath(id), { origin, ...authFor(port) });
         assert.equal(result.opened, true, `${origin}: ${result.error}`);
@@ -1459,7 +1460,7 @@ describe("the Vite dev origin on real servers", { skip: SKIP_POSIX }, () => {
   });
 
   test("AGENT_OS_DEV_ORIGIN=1 is ignored in a packaged run", async () => {
-    await withDevServer({ AGENT_OS_DEV_ORIGIN: "1", AGENT_OS_PACKAGED: "1" }, async (port, id) => {
+    await withDevServer({ AGENT_OS_DEV_ORIGIN: "1", AGENT_OS_PACKAGED: "1", AGENT_OS_UPDATE_CHECKS: "0" }, async (port, id) => {
       expectRefused(
         await tryUpgrade(port, attachPath(id), { origin: "http://127.0.0.1:5173", ...authFor(port) }),
         "the Vite dev page in a packaged run"

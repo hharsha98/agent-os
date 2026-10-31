@@ -5,7 +5,7 @@
 // are POSIX shell shims, so the tests that start them skip on Windows.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -17,9 +17,15 @@ import {
   checkAgent,
   createUpdateChecks,
   getUpdateChecks,
-  npmRegistryBase
+  hermesCleanForUpdate,
+  npmRegistryBase,
+  updateChecksEnabled
 } from "../server/runtime/updates/checks.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
+
+// The checks run only where a launcher turns them on (updateChecksEnabled), and `npm test` turns them off. These
+// tests run them, always against fakes and a local registry, so they say so for this whole file.
+process.env.AGENT_OS_UPDATE_CHECKS = "1";
 
 const POSIX_ONLY = {
   skip: process.platform === "win32" ? "the fake agents are #!/bin/sh shims (POSIX-only), like every fake CLI in this suite" : false
@@ -114,6 +120,7 @@ async function withFakes({ routes = { [CLAUDE_TAGS]: tags("2.1.310"), [CODEX_TAG
       HERMES_HOME: undefined,
       HERMES_AGENT_OS_EXECUTABLE_PATHS: undefined,
       AGENT_OS_TEST_NPM_REGISTRY: registry.url,
+      AGENT_OS_UPDATE_CHECKS: "1",
       FAKE_AGENT_LOG: log,
       ...WORLD,
       ...env
@@ -199,10 +206,11 @@ test("openclaw: a dry run with downgradeRisk true counts as no update, even when
   // The same document as the "available" one, but flagged: only the flag can make this "up to date".
   const flagged = JSON.stringify({ currentVersion: "2026.10.4", targetVersion: "2026.10.9", restart: true, downgradeRisk: true });
   await withFakes({ env: { FAKE_OPENCLAW_UPDATE_DRY_RUN: flagged } }, async () => {
+    // No "Latest" is claimed either: the page must never show a Latest that is older than Installed.
     assert.deepEqual(withoutTime(await checkAgent("openclaw")), {
       agentId: "openclaw",
       installed: "2026.10.4",
-      latest: "2026.10.9",
+      latest: null,
       state: "up-to-date",
       restartsGateway: false
     });
@@ -212,6 +220,7 @@ test("openclaw: a dry run with downgradeRisk true counts as no update, even when
   await withFakes({ env: { FAKE_OPENCLAW_UPDATE_DRY_RUN: older } }, async () => {
     const status = await checkAgent("openclaw");
     assert.equal(status.state, "up-to-date");
+    assert.equal(status.latest, null, "an older target is never shown as Latest");
     assert.equal(status.restartsGateway, false);
   });
 });
@@ -547,8 +556,325 @@ test("the default interval is 24 hours", async (t) => {
   checks.stop();
 });
 
+// ---- overlapping checks (SP5 V3, folded in from V1's review) --------------------------------------------
+
+test("overlapping checks of one agent: the one that started last is kept, even when it finishes first", async () => {
+  const releases = [];
+  const checks = createUpdateChecks({
+    check: (id) =>
+      new Promise((resolve) => {
+        const number = releases.length + 1;
+        releases.push(() => resolve({ ...okStatus(id), latest: `answer-${number}` }));
+      })
+  });
+  const slowFirst = checks.refresh("claude"); // starts first, finishes last
+  await settle();
+  const fastSecond = checks.refresh("claude"); // starts second, finishes first
+  await settle();
+  assert.equal(releases.length, 2);
+
+  releases[1]();
+  await fastSecond;
+  assert.equal(checks.list()[0].latest, "answer-2");
+  releases[0]();
+  await slowFirst;
+  assert.equal(checks.list()[0].latest, "answer-2", "the older check's answer arrived late and was dropped");
+
+  // In order, the later check still replaces the earlier one.
+  const again = checks.refresh("claude");
+  await settle();
+  releases[2]();
+  await again;
+  assert.equal(checks.list()[0].latest, "answer-3");
+});
+
+test("the sequence guard is per agent: a late answer for one agent never hides another agent's answer", async () => {
+  const releases = {};
+  const checks = createUpdateChecks({
+    check: (id) => new Promise((resolve) => (releases[id] = () => resolve({ ...okStatus(id), latest: `latest-${id}` })))
+  });
+  const claude = checks.refresh("claude");
+  const codex = checks.refresh("codex");
+  await settle();
+  releases.codex();
+  await codex;
+  releases.claude();
+  await claude;
+  assert.deepEqual(checks.list().map((status) => [status.agentId, status.latest]), [
+    ["claude", "latest-claude"],
+    ["codex", "latest-codex"]
+  ]);
+});
+
+// ---- the Hermes clean answer, cached next to the version checks -----------------------------------------
+
+const CLEAN = { clean: true, checkout: "/home/me/.hermes/hermes-agent", reasons: [] };
+const DIRTY = { clean: false, checkout: "/home/me/.hermes/hermes-agent", reasons: ["dirty_tree", "custom_channel"] };
+
+test("hermesClean(): not clean, with no reasons, until a check has run; with no cleanCheck it stays that way and runs nothing", async () => {
+  const checks = createUpdateChecks({ check: async (id) => okStatus(id) });
+  assert.deepEqual(checks.hermesClean(), { clean: false, reasons: [] });
+  await checks.refresh();
+  await checks.refresh("hermes");
+  assert.deepEqual(checks.hermesClean(), { clean: false, reasons: [] });
+  assert.deepEqual(await checks.refreshHermesClean(), { clean: false, checkout: null, reasons: [] });
+});
+
+test("hermesClean(): refresh() and refresh('hermes') compute it with the version checks; another agent's refresh does not", async () => {
+  const answers = [CLEAN, DIRTY, CLEAN];
+  let calls = 0;
+  const checks = createUpdateChecks({
+    check: async (id) => okStatus(id),
+    cleanCheck: async () => answers[calls++]
+  });
+  await checks.refresh("claude");
+  assert.equal(calls, 0, "claude's refresh leaves the Hermes answer alone");
+  assert.deepEqual(checks.hermesClean(), { clean: false, reasons: [] });
+
+  await checks.refresh();
+  assert.equal(calls, 1);
+  assert.deepEqual(checks.hermesClean(), { clean: true, reasons: [] }, "the cache holds the answer without the checkout path");
+
+  await checks.refresh("hermes");
+  assert.equal(calls, 2);
+  assert.deepEqual(checks.hermesClean(), { clean: false, reasons: ["dirty_tree", "custom_channel"] });
+
+  await checks.refresh("gemini"); // an unknown agent checks nothing
+  assert.equal(calls, 2);
+
+  // The cache hands out copies.
+  checks.hermesClean().reasons.push("x");
+  assert.deepEqual(checks.hermesClean().reasons, ["dirty_tree", "custom_channel"]);
+});
+
+test("refreshHermesClean() answers with the fresh check including the checkout, and stores it", async () => {
+  const checks = createUpdateChecks({ check: async (id) => okStatus(id), cleanCheck: async () => CLEAN });
+  assert.deepEqual(await checks.refreshHermesClean(), CLEAN);
+  assert.deepEqual(checks.hermesClean(), { clean: true, reasons: [] });
+});
+
+test("a clean check that throws is not clean (fails closed), and keeps the others going", async () => {
+  const checks = createUpdateChecks({
+    check: async (id) => okStatus(id),
+    cleanCheck: async () => {
+      throw new Error("boom");
+    }
+  });
+  const statuses = await checks.refresh();
+  assert.equal(statuses.length, 5);
+  assert.deepEqual(checks.hermesClean(), { clean: false, reasons: [] });
+  assert.deepEqual(await checks.refreshHermesClean(), { clean: false, checkout: null, reasons: [] });
+});
+
+test("overlapping clean checks: the one that started last is kept", async () => {
+  const releases = [];
+  const checks = createUpdateChecks({
+    check: async (id) => okStatus(id),
+    cleanCheck: () => new Promise((resolve) => releases.push(resolve))
+  });
+  const first = checks.refreshHermesClean();
+  await settle();
+  const second = checks.refreshHermesClean();
+  await settle();
+  releases[1](CLEAN);
+  await second;
+  releases[0](DIRTY);
+  await first;
+  assert.deepEqual(checks.hermesClean(), { clean: true, reasons: [] }, "the older answer was dropped");
+});
+
+test("start() computes the Hermes clean answer once at once and again every interval", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let calls = 0;
+  const checks = createUpdateChecks({
+    intervalMs: 1000,
+    check: async (id) => okStatus(id),
+    cleanCheck: async () => (++calls === 1 ? DIRTY : CLEAN)
+  });
+  checks.start();
+  await settle();
+  assert.equal(calls, 1);
+  assert.equal(checks.hermesClean().clean, false);
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(calls, 2);
+  assert.equal(checks.hermesClean().clean, true);
+  checks.stop();
+});
+
+// ---- where the checks may run (SP5 V3, fix round 1) -----------------------------------------------------
+
+test("updateChecksEnabled(): AGENT_OS_UPDATE_CHECKS=1 turns the checks on; the desktop app and npm run dev do unless it is 0; nothing else does", () => {
+  const on = [
+    { AGENT_OS_UPDATE_CHECKS: "1" },
+    { AGENT_OS_UPDATE_CHECKS: "1", AGENT_OS_PACKAGED: "0" },
+    { AGENT_OS_PACKAGED: "1" },
+    { AGENT_OS_DEV_ORIGIN: "1" },
+    { AGENT_OS_PACKAGED: "1", AGENT_OS_DEV_ORIGIN: "1" },
+    { AGENT_OS_PACKAGED: "1", AGENT_OS_UPDATE_CHECKS: "yes" }
+  ];
+  const off = [
+    {},
+    { AGENT_OS_UPDATE_CHECKS: "0" },
+    { AGENT_OS_UPDATE_CHECKS: "true" },
+    { AGENT_OS_UPDATE_CHECKS: "yes" },
+    { AGENT_OS_PACKAGED: "0" },
+    { AGENT_OS_PACKAGED: "true" },
+    { AGENT_OS_DEV_ORIGIN: "true" },
+    { AGENT_OS_PACKAGED: "1", AGENT_OS_UPDATE_CHECKS: "0" },
+    { AGENT_OS_DEV_ORIGIN: "1", AGENT_OS_UPDATE_CHECKS: "0" },
+    { NODE_ENV: "development", PATH: "/usr/bin" }
+  ];
+  for (const env of on) assert.equal(updateChecksEnabled(env), true, JSON.stringify(env));
+  for (const env of off) assert.equal(updateChecksEnabled(env), false, JSON.stringify(env));
+});
+
+test("updateChecksEnabled() reads the process environment when it is given none", async () => {
+  await withEnv({ AGENT_OS_UPDATE_CHECKS: undefined, AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, () => {
+    assert.equal(updateChecksEnabled(), false);
+  });
+  await withEnv({ AGENT_OS_UPDATE_CHECKS: undefined, AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: "1" }, () => {
+    assert.equal(updateChecksEnabled(), true);
+  });
+});
+
+test("checks that are not enabled do nothing: no check, no clean check, no timer; the list and the Hermes answer stay as they were", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const calls = [];
+  let cleanCalls = 0;
+  const checks = createUpdateChecks({
+    intervalMs: 1000,
+    check: async (id) => {
+      calls.push(id);
+      return okStatus(id);
+    },
+    cleanCheck: async () => {
+      cleanCalls += 1;
+      return CLEAN;
+    }
+  });
+  // Enabled (this file's setting): the round runs and fills the list.
+  await checks.refresh();
+  const before = checks.list();
+  assert.equal(before.length, 5);
+  assert.equal(cleanCalls, 1);
+  assert.equal(calls.length, 5);
+
+  await withEnv({ AGENT_OS_UPDATE_CHECKS: "0", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, async () => {
+    assert.deepEqual(await checks.refresh(), before, "the list as it was");
+    assert.deepEqual(await checks.refresh("claude"), before);
+    assert.deepEqual(checks.hermesClean(), { clean: true, reasons: [] }, "and so is the Hermes answer");
+    checks.start();
+    t.mock.timers.tick(5000);
+    await settle();
+    assert.equal(calls.length, 5, "no check ran, not at start and not on the interval");
+    assert.equal(cleanCalls, 1);
+  });
+
+  // A server that was not enabled at start keeps no timer: turning it on later starts nothing by itself.
+  const fresh = createUpdateChecks({ intervalMs: 1000, check: async (id) => (calls.push(`fresh-${id}`), okStatus(id)) });
+  await withEnv({ AGENT_OS_UPDATE_CHECKS: undefined, AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, async () => {
+    fresh.start();
+    await settle();
+  });
+  t.mock.timers.tick(5000);
+  await settle();
+  assert.ok(!calls.some((call) => String(call).startsWith("fresh-")), "start() while not enabled set no timer");
+  assert.deepEqual(fresh.list(), []);
+  fresh.stop();
+  checks.stop();
+
+  // Enabled again, the same service works.
+  await checks.refresh("codex");
+  assert.equal(calls.filter((id) => id === "codex").length, 2);
+});
+
+test("a click is not a background check: refreshHermesClean() asks the clean check even where the checks are not enabled", async () => {
+  let cleanCalls = 0;
+  const checks = createUpdateChecks({
+    check: async (id) => okStatus(id),
+    cleanCheck: async () => {
+      cleanCalls += 1;
+      return CLEAN;
+    }
+  });
+  await withEnv({ AGENT_OS_UPDATE_CHECKS: "0", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, async () => {
+    assert.deepEqual(await checks.refreshHermesClean(), CLEAN);
+  });
+  assert.equal(cleanCalls, 1);
+});
+
+// ---- the folder policy on the checkout (SP5 V3, fix round 1) ---------------------------------------------
+
+test("hermesCleanForUpdate(): a clean checkout in an allowed folder stays clean; outside the home folder, inside Agent OS's own folder or the home folder itself it is folder_refused", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-os-offer-folder-"));
+  try {
+    const dir = await realpath(root);
+    const home = path.join(dir, "home");
+    const agentOsHome = path.join(dir, "agent-os-data");
+    const allowed = path.join(home, ".hermes", "hermes-agent");
+    const outside = path.join(dir, "elsewhere", "hermes-agent");
+    const insideAgentOs = path.join(agentOsHome, "inner");
+    for (const folder of [allowed, outside, insideAgentOs]) await mkdir(folder, { recursive: true });
+    await withEnv(
+      {
+        HOME: home,
+        USERPROFILE: home,
+        AGENT_OS_HOME: agentOsHome,
+        AGENT_OS_MANAGED_ROOT: path.join(home, ".agent-os"),
+        HERMES_AGENT_OS_HOME: undefined
+      },
+      async () => {
+        const at = (checkout, extra = {}) => hermesCleanForUpdate({ check: async () => ({ clean: true, checkout, reasons: [], ...extra }) });
+        assert.deepEqual(await at(allowed), { clean: true, checkout: allowed, reasons: [] });
+        for (const refused of [outside, insideAgentOs, home, path.join(dir, "does-not-exist")]) {
+          assert.deepEqual(await at(refused), { clean: false, checkout: refused, reasons: ["folder_refused"] }, refused);
+        }
+        // Another finding stays first; the folder is named after the others.
+        const dirty = await hermesCleanForUpdate({ check: async () => ({ clean: false, checkout: outside, reasons: ["dirty_tree"] }) });
+        assert.deepEqual(dirty, { clean: false, checkout: outside, reasons: ["dirty_tree", "folder_refused"] });
+        // With no checkout there is no folder to judge: the answer is passed on as it is.
+        const none = { clean: false, checkout: null, reasons: ["no_checkout"] };
+        assert.deepEqual(await hermesCleanForUpdate({ check: async () => none }), none);
+        // A policy that can't answer counts as a refusal.
+        const broken = await hermesCleanForUpdate({
+          check: async () => ({ clean: true, checkout: allowed, reasons: [] }),
+          checkFolder: async () => {
+            throw new Error("boom");
+          }
+        });
+        assert.deepEqual(broken, { clean: false, checkout: allowed, reasons: ["folder_refused"] });
+      }
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the shared service applies the folder policy: a clean copy outside the places Agent OS may work is cached as not clean, folder_refused", async () => {
+  // The shared service's clean check is hermesCleanForUpdate wrapped around hermesCleanCheck; here the same
+  // wrapper is given a clean answer for a folder the policy refuses, and read back through a service.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-os-offer-service-")));
+  try {
+    const home = path.join(root, "home");
+    const outside = path.join(root, "elsewhere");
+    await mkdir(home, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await withEnv({ HOME: home, USERPROFILE: home, AGENT_OS_HOME: path.join(root, "data"), AGENT_OS_MANAGED_ROOT: path.join(home, ".agent-os") }, async () => {
+      const checks = createUpdateChecks({
+        check: async (id) => okStatus(id),
+        cleanCheck: () => hermesCleanForUpdate({ check: async () => ({ clean: true, checkout: outside, reasons: [] }) })
+      });
+      await checks.refresh("hermes");
+      assert.deepEqual(checks.hermesClean(), { clean: false, reasons: ["folder_refused"] });
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("getUpdateChecks() is one service for the whole server", () => {
   const first = getUpdateChecks();
   assert.equal(getUpdateChecks(), first);
-  assert.deepEqual(Object.keys(first).sort(), ["list", "refresh", "start", "stop"]);
+  assert.deepEqual(Object.keys(first).sort(), ["hermesClean", "list", "refresh", "refreshHermesClean", "start", "stop"]);
 });

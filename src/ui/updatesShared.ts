@@ -97,6 +97,14 @@ export const GATEWAY_LINE = "Its Gateway restarts.";
 
 export const HERMES_BLOCKED_LINE = "Agent OS updates Hermes only from an unchanged official copy.";
 
+// Setup's plan row for an installed agent the plan holds no update step for (SetupPlanRow). Today only Hermes can be in that
+// state: its step is offered only from an unchanged official copy, which includes every Hermes the server has not checked
+// yet. For Hermes the row says so and points at the Agents page, where the reasons are; every other agent keeps the general
+// sentence. (The Hermes sentence is a new one, ruled by the orchestrator at E1.)
+export const SETUP_NO_UPDATE_LINE = "Agent OS does not update this agent yet. It stays as it is.";
+export const SETUP_HERMES_NO_UPDATE_LINE = `${HERMES_BLOCKED_LINE} See Agents for why.`;
+export const setupNoUpdateLine = (agentId: string) => (agentId === "hermes" ? SETUP_HERMES_NO_UPDATE_LINE : SETUP_NO_UPDATE_LINE);
+
 // "Not clean" with no reason at all is what the server sends before its first check of Hermes's folder has ended, and when
 // that check could not run (checks.js hermesClean). It is not a changed copy, so the page does not draw the reasons and
 // the guide for one: it says the folder has not been checked. (A new sentence, owner review at E1.) Still no Update.

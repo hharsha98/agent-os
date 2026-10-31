@@ -19,6 +19,7 @@ import { getAdapter } from "../agents/index.js";
 import { resolveHermesHome } from "../agents/hermes.js";
 import { runCommand } from "../safety.js";
 import { checkSessionFolder } from "../sessions/folders.js";
+import { isAgentUpdating } from "./activity.js";
 import { hermesCleanCheck } from "./hermes-clean.js";
 import { compareVersions, parseDistTags, parseHermesCheck, parseOpenclawDryRun, versionNumber } from "./versions.js";
 
@@ -230,15 +231,37 @@ const NOT_CHECKED_YET = Object.freeze({ clean: false, checkout: null, reasons: O
 // check(agentId, { now }) is checkAgent unless a test passes its own.
 // cleanCheck() is the Hermes clean check (V2's hermesCleanCheck) -> { clean, checkout, reasons }. The shared
 // service passes it; without one the Hermes answer stays "not clean" and no git is ever run.
+// isUpdating(agentId) says whether that agent's update is running now (the shared service reads the update
+// registry, updates/activity.js); a round that would check such an agent skips it and keeps the row it has.
 //
-// Two answers can overlap: a periodic check that began before an update ended can finish AFTER the check
+// One round per agent at a time (SP5 E1, M2): a refresh of an agent whose round is already running shares that
+// round instead of starting a second, so a periodic round, the page's "Check for updates" and the check after an
+// update never run the same agent's CLI (or Hermes's nine git calls) side by side.
+//
+// The one exception is the check an update (or an install) asks for when it has ended: refresh(agentId, { afterChange:
+// true }) always starts a new round, even beside a running one and even while the agent is still counted as updating
+// (a failed update step is still "running" in the job list when this is asked for). A round that began before the
+// change may hold the old version, and the answer it gives must not be the one that is kept.
+//
+// Two answers can overlap that way: a periodic check that began before an update ended can finish AFTER the check
 // the update asked for, and its old answer would put "update available" back. So every check takes a number
 // when it starts, and its answer is kept only when no check that started later has already been kept.
-export function createUpdateChecks({ check = checkAgent, cleanCheck = null, intervalMs = DAY_MS, now = Date.now } = {}) {
+//
+// stop() (the server is shutting down) ends the timer and from then on no round starts at all, until start() is
+// called again: a check must not begin while the agents' own processes are being stopped.
+export function createUpdateChecks({
+  check = checkAgent,
+  cleanCheck = null,
+  isUpdating = () => false,
+  intervalMs = DAY_MS,
+  now = Date.now
+} = {}) {
   const statuses = new Map();
   const started = new Map(); // agentId -> the number the newest check took
   const kept = new Map(); // agentId -> the number of the check whose answer is stored
+  const rounds = new Map(); // agentId -> the round (its check, and for Hermes its clean check) that is running now
   let timer = null;
+  let stopped = false;
 
   async function checkOne(agentId) {
     const number = (started.get(agentId) ?? 0) + 1;
@@ -297,13 +320,39 @@ export function createUpdateChecks({ check = checkAgent, cleanCheck = null, inte
     return { ...answer, reasons: [...answer.reasons] };
   }
 
+  // An isUpdating that fails says nothing is updating: a check is never held back by its own helper.
+  function updating(agentId) {
+    try {
+      return isUpdating(agentId) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // One agent's round: its version check and, for Hermes, the clean check next to it. `fresh` starts a new round even
+  // when one is running (see above); otherwise the running one is shared.
+  function round(agentId, { fresh }) {
+    const running = rounds.get(agentId);
+    if (running && !fresh) return running;
+    const mine = Promise.all([checkOne(agentId), ...(agentId === "hermes" ? [refreshHermesClean()] : [])])
+      .then(() => undefined)
+      .finally(() => {
+        if (rounds.get(agentId) === mine) rounds.delete(agentId);
+      });
+    rounds.set(agentId, mine);
+    return mine;
+  }
+
   // Checks one agent, or all five at the same time, and answers with the whole list. The Hermes clean answer
   // is computed in the same round when Hermes is among them. An id that is not one of the five checks nothing.
-  // Where the checks are not enabled (updateChecksEnabled) nothing is checked: the list as it is.
-  async function refresh(agentId) {
-    if (!updateChecksEnabled()) return list();
-    const ids = agentId == null ? UPDATE_AGENT_IDS : UPDATE_AGENT_IDS.filter((id) => id === agentId);
-    await Promise.all([...ids.map(checkOne), ...(ids.includes("hermes") ? [refreshHermesClean()] : [])]);
+  // Nothing is checked, and the list is as it is, where the checks are not enabled (updateChecksEnabled) and after
+  // stop(); an agent whose update is running is left out and keeps its saved row (unless afterChange, above).
+  async function refresh(agentId, { afterChange = false } = {}) {
+    if (stopped || !updateChecksEnabled()) return list();
+    const ids = (agentId == null ? UPDATE_AGENT_IDS : UPDATE_AGENT_IDS.filter((id) => id === agentId)).filter(
+      (id) => afterChange || !updating(id)
+    );
+    await Promise.all(ids.map((id) => round(id, { fresh: afterChange })));
     return list();
   }
 
@@ -311,17 +360,24 @@ export function createUpdateChecks({ check = checkAgent, cleanCheck = null, inte
   // where the checks are not enabled.
   function start() {
     if (timer || !updateChecksEnabled()) return;
+    stopped = false;
     void refresh();
     timer = setInterval(() => void refresh(), intervalMs);
     timer.unref?.(); // the timer alone never keeps the server running
   }
 
   function stop() {
+    stopped = true;
     if (timer) clearInterval(timer);
     timer = null;
   }
 
-  return { start, stop, list, refresh, hermesClean, refreshHermesClean };
+  // True from stop() until start(): the update service's session poll asks it, so a server that is quitting starts nothing.
+  function isStopped() {
+    return stopped;
+  }
+
+  return { start, stop, isStopped, list, refresh, hermesClean, refreshHermesClean };
 }
 
 // The clean check as the Agents page and the Setup plan use it: hermesCleanCheck, plus the sessions folder
@@ -347,7 +403,7 @@ let shared = null;
 // The one service for the whole server. Its Hermes clean check is hermesCleanForUpdate, so what the page,
 // the Setup plan and the Update click see already has the folder policy applied.
 export function getUpdateChecks() {
-  shared ??= createUpdateChecks({ cleanCheck: () => hermesCleanForUpdate() });
+  shared ??= createUpdateChecks({ cleanCheck: () => hermesCleanForUpdate(), isUpdating: isAgentUpdating });
   return shared;
 }
 

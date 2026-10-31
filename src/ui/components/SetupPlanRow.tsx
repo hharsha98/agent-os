@@ -1,14 +1,15 @@
 // One agent's row on the Plan step. Everything on it comes off the plan the
 // server computed (GET /api/setup/plan): what is installed, what an install or an
 // update would do, the licence and the source links. Nothing is invented here, so
-// an installed agent with no update step (Hermes today, Task B1) simply cannot be
-// updated, and the row says so.
+// an installed agent with no update step (Hermes unless its folder is an unchanged
+// official copy, SP5) simply cannot be updated, and the row says so.
 import type { ReactNode } from "react";
 import { ExternalLink, Lock } from "lucide-react";
 import OpenAddress from "./OpenAddress";
 import SetupSegmented from "./SetupSegmented";
 import SetupStatus from "./SetupStatus";
 import { formatMinutes, formatSize, totalsOf, type PlanSelection } from "../setupGroupShared";
+import { setupNoUpdateLine } from "../updatesShared";
 import type { SetupPlanStep } from "../../setupApi";
 
 export interface OpenClawConsent {
@@ -104,7 +105,7 @@ export default function SetupPlanRow({
       what = (
         <span className="os-setup-lock">
           <Lock size={15} aria-hidden="true" />
-          Agent OS does not update this agent yet. It stays as it is.
+          {setupNoUpdateLine(keepStep.agentId)}
         </span>
       );
     } else if (chosen === "update") {

@@ -39,6 +39,7 @@ import { killProcessTree } from "../process-tree.js";
 import { getServerPort } from "../server-info.js";
 import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
+import { isAgentUpdating, updateRunningError } from "../updates/activity.js";
 import {
   CHANGES_POLL_MS,
   CHANGES_REFRESH_DEBOUNCE_MS,
@@ -522,7 +523,10 @@ export function createSessionManager({
   changesPollMs = CHANGES_POLL_MS,
   loginEnv = defaultLoginEnv,
   // The least time between two "files changed" markers of one session (tests shorten it).
-  changesMarkerGapMs = FILES_MARKER_GAP_MS
+  changesMarkerGapMs = FILES_MARKER_GAP_MS,
+  // SP5 (E1, M1): is this agent's update running? (a Setup job or an update being started; updates/activity.js). Restart
+  // session is refused while it is. An update session of this manager is also found in `live`, whatever this says.
+  isUpdateRunning = isAgentUpdating
 } = {}) {
   // id -> state, while the session's process runs. Disk is the truth for
   // every ended session.
@@ -1879,11 +1883,19 @@ export function createSessionManager({
   // `liveOnly` lists only the sessions running now, straight from memory: no ended session's meta.json is
   // read and no agent is detected, for Resume or for Restart, and `restart` is null. It is the list
   // the hold to stop all uses, which must not wait on a slow agent CLI or a big sessions folder.
+  // A session in the middle of a restart is listed too, as "starting", even in the moment when its old process has
+  // ended and the new one has not started: the hold's Stop must reach it, and that Stop cancels the restart.
   async function list({ includeUpdate = false, liveOnly = false } = {}) {
     if (liveOnly) {
       const running = [...live.values()].filter((state) => state.status !== "exited").map(viewOfState);
       const wantedNow = running.filter((view) => includeUpdate || view.kind === "agent").sort(byCreated);
-      return summaries(running, wantedNow, { liveOnly: true });
+      const listed = await summaries(running, wantedNow, { liveOnly: true });
+      const shown = new Set(listed.map((summary) => summary.id));
+      for (const [id, entry] of restarting) {
+        if (shown.has(id) || entry.summary?.kind !== "agent") continue;
+        listed.push({ ...entry.summary, status: "starting", restart: null });
+      }
+      return listed;
     }
     const views = await collectViews();
     const wanted = views.filter((view) => includeUpdate || view.kind === "agent").sort(byCreated);
@@ -2133,7 +2145,10 @@ export function createSessionManager({
   // POST /api/sessions/:id/resume never passes one.
   // `refreshDetect` is Restart session's (no route passes it): the agent is asked again, so agentVersion records what
   // it is now.
-  async function resume(id, { brainOverride = null, refreshDetect = false } = {}) {
+  // `restartTicket` is Restart session's too: the `restarting` entry of this restart. A Stop, Hold to stop all or quit can land
+  // while the resume asks for the version and builds the profile (the old process has ended, so nothing is left for it to
+  // stop); it sets `cancelled`, and the resume then starts nothing and answers the ended session.
+  async function resume(id, { brainOverride = null, refreshDetect = false, restartTicket = null } = {}) {
     assertSessionId(id);
     assertNotClosing();
     // A session another request is resuming or dismissing right now is not
@@ -2186,12 +2201,15 @@ export function createSessionManager({
         const at = iso(now());
         const folderPath = where.folder ?? profile.cwd;
         const shown = profile.folderShown ?? where.shown;
+        const branch = shown ? await readGitBranch(folderPath) : null;
+        // The last look before the process starts (everything above can take a while): a Stop of this restart came in meanwhile.
+        if (restartTicket?.cancelled) return await get(id);
         const state = newState(dir, {
           ...meta,
           folder: folderPath,
           folderName: typeof meta.copyOf === "string" && meta.copyOf ? path.basename(meta.copyOf) : path.basename(folderPath),
           folderShown: shown,
-          branch: shown ? await readGitBranch(folderPath) : null,
+          branch,
           status: "starting",
           startedAt: at,
           endedAt: null,
@@ -2224,6 +2242,15 @@ export function createSessionManager({
     }
   }
 
+  // Is an update of this agent running? An update session lives in this manager; a Setup job or an update that is being
+  // started is what `isUpdateRunning` knows.
+  function updateRunningFor(agentId) {
+    for (const state of live.values()) {
+      if (state.meta.kind === "update" && state.meta.agentId === agentId && state.status !== "exited") return true;
+    }
+    return isUpdateRunning(agentId) === true;
+  }
+
   // Restart session (spec SP5 "Updates and open sessions", R40): the person's click, after the page's confirm, stops a
   // running agent session with the Stop sequence and resumes it, so the same tab and conversation go on in the same
   // folder on the agent's own resume (and so on the version the agent has now). It types nothing: the Stop sequence
@@ -2243,8 +2270,12 @@ export function createSessionManager({
     restarting.set(id, mine);
     try {
       const before = await get(id);
+      // Kept for the live-only list: between this restart's stop and the new process the session is not in `live`.
+      mine.summary = before;
       if (before.kind !== "agent") throw sessionError(400, "not_restartable", NOT_RESTARTABLE_MESSAGE);
       if (before.status === "exited") throw sessionError(409, "session_ended", RESTART_ENDED_MESSAGE);
+      // The agent is being updated: its own updater is changing the files this restart would start from. Asked before anything stops.
+      if (updateRunningFor(before.agentId)) throw updateRunningError(before.agentId);
       if (!before.restart?.available) {
         throw sessionError(409, "resume_unavailable", before.restart?.reason || "This session can't be resumed.");
       }
@@ -2264,7 +2295,7 @@ export function createSessionManager({
       try {
         // The kill did not take within Stop's wait: resuming now would run a second process beside the first.
         if (isRunning(id)) throw sessionError(409, "session_live", RESTART_NOT_STOPPED_MESSAGE);
-        return await resume(id, { refreshDetect: true });
+        return await resume(id, { refreshDetect: true, restartTicket: mine });
       } catch (error) {
         // The session is stopped now (or ends a moment later) and was not resumed: the sentence stays with it, so the
         // person still reads why when this request's answer is gone.
@@ -2959,6 +2990,9 @@ export function createSessionManager({
   // says "exited" early: the state in memory keeps the real status, so list(),
   // resume() and dismiss() still treat the session as running until it ends.
   async function shutdownAll({ reason = "quit" } = {}) {
+    // A restart in progress may be past its own stop (the old process has ended, so the list below does not hold it) and still
+    // be about to start a new one: it is cancelled here, so nothing comes back after an emergency stop that reported success.
+    for (const ticket of restarting.values()) ticket.cancelled = true;
     // Only a quit closes the manager for good; a stop of everything leaves new sessions allowed.
     if (reason !== "stop") closing = true;
     const endedBy = reason === "stop" ? "stop" : "quit";

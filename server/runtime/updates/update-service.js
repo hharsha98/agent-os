@@ -19,6 +19,7 @@ import { clearDetectCaches } from "../agents/detect.js";
 import { sessionError } from "../sessions/errors.js";
 import { SESSION_AGENT_LABEL } from "../sessions/profiles.js";
 import { agentsUpdatingInJobs, startSetupJob } from "../setup/jobs.js";
+import { registerUpdateActivity, updateRunningError } from "./activity.js";
 import { UPDATE_AGENT_IDS, getUpdateChecks } from "./checks.js";
 
 // The agents whose update runs as a session instead of a job.
@@ -30,9 +31,8 @@ export const HERMES_NOT_CLEAN_MESSAGE = "Hermes's folder changed since the last 
 
 const labelOf = (agentId) => SESSION_AGENT_LABEL[agentId] ?? agentId;
 
-function updateRunning(agentId) {
-  return sessionError(409, "update_running", `${labelOf(agentId)} is already updating.`);
-}
+// (The sentence is activity.js's: Restart session refuses with the very same words.)
+const updateRunning = updateRunningError;
 
 // Throws 404 unless this is one of the five agents.
 export function assertUpdateAgent(agentId) {
@@ -61,6 +61,10 @@ export function updateAgentsOf(stepIds) {
 // update step of a job that is running) or the live `update` session is what
 // says "updating", and it clears itself when the job or the session ends.
 const starting = new Set();
+// The agents whose update session is being watched (Hermes): added when the session starts, removed once it has ended or the
+// checks were stopped. With `starting` this is what activity.js answers for this module (isAgentUpdating).
+const watchedSessions = new Set();
+registerUpdateActivity((agentId) => starting.has(agentId) || watchedSessions.has(agentId));
 
 // Claims the update of these agents: throws 409 update_running when one of
 // them is being started, is in a running job, or (Hermes) has a live update
@@ -107,20 +111,31 @@ export async function withUpdateGuard(agentIds, { manager }, start) {
 // --- after an update ---------------------------------------------------------------------------------------
 
 // Forget what was detected, check the agent again (for Hermes this also asks
-// the clean check again). Never throws.
+// the clean check again). Asked as the update's own check (afterChange): it starts
+// afresh even beside a check that began before the update ended. Does nothing once
+// the checks were stopped (the server is quitting). Never throws.
 async function afterUpdate(agentId, checks) {
   try {
+    if (checks.isStopped?.()) return;
     clearDetectCaches();
-    await checks.refresh(agentId);
+    await checks.refresh(agentId, { afterChange: true });
   } catch {
     // a check that cannot run leaves the page as it was
   }
 }
 
 // The manager tells nobody when an update session ends, so look at it now and
-// then, until it has. The timer never keeps the server running.
+// then, until it has. The timer never keeps the server running. When the checks
+// were stopped (the server is quitting) the poll ends at its next look and checks
+// nothing.
 function watchUpdateSession(manager, sessionId, { agentId, checks, pollMs }) {
+  watchedSessions.add(agentId);
   const timer = setInterval(() => {
+    if (checks.isStopped?.()) {
+      clearInterval(timer);
+      watchedSessions.delete(agentId);
+      return;
+    }
     let live = true;
     try {
       live = manager.isLive(sessionId);
@@ -129,6 +144,7 @@ function watchUpdateSession(manager, sessionId, { agentId, checks, pollMs }) {
     }
     if (live) return;
     clearInterval(timer);
+    watchedSessions.delete(agentId);
     void afterUpdate(agentId, checks);
   }, pollMs);
   timer.unref?.();

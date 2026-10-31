@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
+import { getAdapter } from "../server/runtime/agents/index.js";
 import { configureConnection } from "../server/runtime/connections.js";
 import {
   UPDATE_AGENT_IDS,
@@ -329,8 +330,20 @@ test("a registry that is unreachable, answers something else, or never answers m
 
 test("a CLI that hangs makes that agent failed after the limit, and the others are not held up", POSIX_ONLY, async () => {
   await withFakes({ env: { FAKE_HERMES_UPDATE_CHECK: "slow", FAKE_OPENCLAW_UPDATE_DRY_RUN: "slow" } }, async () => {
+    // SP5 E1 (L14): this used to give all five agents the same 3 s and run the real detection of each inside it, so a loaded
+    // machine that took 3 s to start a fake CLI turned "available" into "failed" by chance. Now only the two agents that are
+    // MEANT to fail get the short limit (they are "failed" whether the limit ends the wait or their detection is slow), and
+    // the three that must answer get a generous one. Their detection also takes longer than the short limit here, on purpose:
+    // that is the loaded machine, and they must still be answered.
+    const HANGING = new Set(["hermes", "openclaw"]);
+    const slowDetect = async (id) => {
+      if (!HANGING.has(id)) await new Promise((resolve) => setTimeout(resolve, 1500));
+      return getAdapter(id).detect({ refresh: true });
+    };
     const started = Date.now();
-    const statuses = await Promise.all(UPDATE_AGENT_IDS.map((id) => checkAgent(id, { limitMs: 3000 })));
+    const statuses = await Promise.all(
+      UPDATE_AGENT_IDS.map((id) => checkAgent(id, { limitMs: HANGING.has(id) ? 1000 : 20000, detect: slowDetect }))
+    );
     const byId = Object.fromEntries(statuses.map((status) => [status.agentId, status]));
     assert.equal(byId.hermes.state, "failed");
     assert.equal(byId.openclaw.state, "failed");
@@ -569,7 +582,9 @@ test("overlapping checks of one agent: the one that started last is kept, even w
   });
   const slowFirst = checks.refresh("claude"); // starts first, finishes last
   await settle();
-  const fastSecond = checks.refresh("claude"); // starts second, finishes first
+  // A plain refresh would share the first (SP5 E1, M2); the check an update asked for after it ended starts a new one
+  // beside it, because the first began before the update ended and may hold the old version.
+  const fastSecond = checks.refresh("claude", { afterChange: true }); // starts second, finishes first
   await settle();
   assert.equal(releases.length, 2);
 
@@ -604,6 +619,183 @@ test("the sequence guard is per agent: a late answer for one agent never hides a
     ["claude", "latest-claude"],
     ["codex", "latest-codex"]
   ]);
+});
+
+// ---- one check per agent at a time (SP5 E1, M2) ----------------------------------------------------------
+
+test("two refreshes of one agent while its check runs share that one check: it runs once, and a later refresh starts a new one", async () => {
+  const calls = [];
+  const releases = {};
+  const checks = createUpdateChecks({
+    check: (id) => {
+      calls.push(id);
+      const number = calls.length;
+      return new Promise((resolve) => (releases[id] = () => resolve({ ...okStatus(id), latest: `answer-${number}` })));
+    }
+  });
+  const first = checks.refresh("claude");
+  await settle();
+  const second = checks.refresh("claude");
+  const everyone = checks.refresh(); // claude is already being checked: the other four start, claude is shared
+  await settle();
+  assert.equal(calls.filter((id) => id === "claude").length, 1, "claude was checked once");
+  assert.equal(calls.length, 5, "and each of the other four was started once");
+
+  for (const id of UPDATE_AGENT_IDS) releases[id]();
+  const answers = await Promise.all([first, second, everyone]);
+  assert.ok(answers.every((list) => list.some((status) => status.agentId === "claude")), "each caller got an answer for claude");
+  assert.equal(checks.list().find((status) => status.agentId === "claude").latest, "answer-1", "the one check's answer is the one kept");
+
+  // Once it has ended nothing is shared any more: the next refresh checks again.
+  const later = checks.refresh("claude");
+  await settle();
+  assert.equal(calls.filter((id) => id === "claude").length, 2);
+  releases.claude();
+  await later;
+});
+
+test("Hermes: overlapping refreshes share the clean check too, and a click's refreshHermesClean() still asks afresh", async () => {
+  const cleanReleases = [];
+  const checks = createUpdateChecks({
+    check: async (id) => okStatus(id),
+    cleanCheck: () => new Promise((resolve) => cleanReleases.push(() => resolve(CLEAN)))
+  });
+  const first = checks.refresh("hermes");
+  await settle();
+  const second = checks.refresh();
+  await settle();
+  assert.equal(cleanReleases.length, 1, "one clean check for the two rounds");
+  const click = checks.refreshHermesClean(); // a person's Update click wants its own answer
+  await settle();
+  assert.equal(cleanReleases.length, 2, "the click is not shared with a background round");
+  for (const release of cleanReleases) release();
+  await Promise.all([first, second, click]);
+  assert.deepEqual(checks.hermesClean(), { clean: true, reasons: [] });
+});
+
+test("while an agent's update runs its check is skipped and its saved row is kept; the others are still checked, and it is checked again once the update ends", async () => {
+  const updating = new Set();
+  const calls = [];
+  let cleanCalls = 0;
+  const checks = createUpdateChecks({
+    check: async (id) => {
+      calls.push(id);
+      return { ...okStatus(id), latest: `answer-${calls.length}` };
+    },
+    cleanCheck: async () => {
+      cleanCalls += 1;
+      return CLEAN;
+    },
+    isUpdating: (id) => updating.has(id)
+  });
+  await checks.refresh();
+  const row = (id) => checks.list().find((status) => status.agentId === id);
+  const claudeBefore = row("claude");
+  const hermesBefore = row("hermes");
+  assert.equal(cleanCalls, 1);
+
+  calls.length = 0;
+  updating.add("claude");
+  updating.add("hermes");
+  const answer = await checks.refresh();
+  assert.deepEqual([...calls].sort(), ["codex", "cursor", "openclaw"], "the agents being updated are not checked");
+  assert.equal(cleanCalls, 1, "and neither is Hermes's folder while Hermes updates");
+  assert.deepEqual(answer.find((status) => status.agentId === "claude"), claudeBefore, "the cached row is kept");
+  assert.deepEqual(row("hermes"), hermesBefore);
+
+  calls.length = 0;
+  await checks.refresh("claude");
+  await checks.refresh("hermes");
+  assert.deepEqual(calls, [], "asking for the agent by name does not check it either");
+
+  updating.clear();
+  await checks.refresh("claude");
+  assert.deepEqual(calls, ["claude"], "the update ended: the next round checks it");
+});
+
+test("the check an update asks for after it ended runs even while the agent still counts as updating and even beside an older check", async () => {
+  // A failed update step is still "running" in the job list when its after-update check is asked for, and a periodic check that
+  // began before the update may still be waiting for its answer: neither may hold the check back.
+  let updating = false;
+  const releases = [];
+  const checks = createUpdateChecks({
+    check: (id) =>
+      new Promise((resolve) => {
+        const number = releases.length + 1;
+        releases.push(() => resolve({ ...okStatus(id), latest: `answer-${number}` }));
+      }),
+    isUpdating: () => updating
+  });
+  const periodic = checks.refresh("claude"); // began before the update
+  await settle();
+  updating = true;
+  const afterUpdate = checks.refresh("claude", { afterChange: true });
+  await settle();
+  assert.equal(releases.length, 2, "a second check started although the first is still running and the agent is counted as updating");
+  releases[1]();
+  await afterUpdate;
+  releases[0]();
+  await periodic;
+  assert.equal(checks.list()[0].latest, "answer-2", "the answer asked for after the update is the one kept");
+
+  // A plain refresh is skipped meanwhile.
+  await checks.refresh("claude");
+  assert.equal(releases.length, 2);
+});
+
+test("an isUpdating that fails counts as not updating: the check still runs", async () => {
+  const calls = [];
+  const checks = createUpdateChecks({
+    check: async (id) => (calls.push(id), okStatus(id)),
+    isUpdating: () => {
+      throw new Error("boom");
+    }
+  });
+  await checks.refresh("codex");
+  assert.deepEqual(calls, ["codex"]);
+});
+
+// ---- no check during shutdown (SP5 E1, L35) ---------------------------------------------------------------
+
+test("after stop() no check starts: refresh(), the refresh an update asks for and the timer do nothing; start() works again", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const calls = [];
+  let cleanCalls = 0;
+  const checks = createUpdateChecks({
+    intervalMs: 1000,
+    check: async (id) => {
+      calls.push(id);
+      return okStatus(id);
+    },
+    cleanCheck: async () => {
+      cleanCalls += 1;
+      return CLEAN;
+    }
+  });
+  assert.equal(checks.isStopped(), false);
+  checks.start();
+  await settle();
+  assert.equal(calls.length, 5);
+  const before = checks.list();
+
+  checks.stop();
+  assert.equal(checks.isStopped(), true);
+  assert.deepEqual(await checks.refresh(), before, "the list as it was");
+  assert.deepEqual(await checks.refresh("claude"), before);
+  assert.deepEqual(await checks.refresh("hermes", { afterChange: true }), before, "also the check an update asks for");
+  t.mock.timers.tick(5000);
+  await settle();
+  assert.equal(calls.length, 5, "nothing was checked after stop()");
+  assert.equal(cleanCalls, 1);
+
+  // A person's click on Update is not a background check and still asks its own question (the server is not quitting for it).
+  assert.deepEqual(await checks.refreshHermesClean(), CLEAN);
+
+  checks.start();
+  await settle();
+  assert.equal(checks.isStopped(), false, "starting again lifts it");
+  assert.equal(calls.length, 10);
+  checks.stop();
 });
 
 // ---- the Hermes clean answer, cached next to the version checks -----------------------------------------
@@ -781,12 +973,14 @@ test("checks that are not enabled do nothing: no check, no clean check, no timer
   await settle();
   assert.ok(!calls.some((call) => String(call).startsWith("fresh-")), "start() while not enabled set no timer");
   assert.deepEqual(fresh.list(), []);
-  fresh.stop();
-  checks.stop();
 
   // Enabled again, the same service works.
   await checks.refresh("codex");
   assert.equal(calls.filter((id) => id === "codex").length, 2);
+
+  // (Stopped last: since SP5 E1 a stopped service starts no check at all.)
+  fresh.stop();
+  checks.stop();
 });
 
 test("a click is not a background check: refreshHermesClean() asks the clean check even where the checks are not enabled", async () => {
@@ -876,5 +1070,5 @@ test("the shared service applies the folder policy: a clean copy outside the pla
 test("getUpdateChecks() is one service for the whole server", () => {
   const first = getUpdateChecks();
   assert.equal(getUpdateChecks(), first);
-  assert.deepEqual(Object.keys(first).sort(), ["hermesClean", "list", "refresh", "refreshHermesClean", "start", "stop"]);
+  assert.deepEqual(Object.keys(first).sort(), ["hermesClean", "isStopped", "list", "refresh", "refreshHermesClean", "start", "stop"]);
 });

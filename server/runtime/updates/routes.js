@@ -6,7 +6,8 @@
 //
 //   GET  /api/updates          { agents: AgentUpdateStatus[], hermes: { clean, reasons } }, read from
 //                              what the checks last found; no check, no git, no CLI runs for a page request
-//   POST /api/updates/refresh  checks all five agents (and Hermes's folder) again, then the same answer
+//   POST /api/updates/refresh  checks all five agents (and Hermes's folder) again, then the same answer; an agent whose
+//                              update is running keeps its saved row, and one whose check is running shares that check
 //   POST /api/updates/:agentId { confirm: true } starts that agent's update:
 //                              { kind: "job", jobId } or { kind: "session", sessionId }
 import express from "express";

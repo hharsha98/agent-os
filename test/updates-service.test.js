@@ -23,6 +23,7 @@ import { resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env
 import { getSetupJob, resetSetupJobsForTest } from "../server/runtime/setup/jobs.js";
 import { createSetupRouter } from "../server/runtime/setup/routes.js";
 import { clearSystemCheckCache } from "../server/runtime/setup/system-check.js";
+import { isAgentUpdating } from "../server/runtime/updates/activity.js";
 import { createUpdateChecks, getUpdateChecks, hermesCleanForUpdate, resetUpdateChecksForTest } from "../server/runtime/updates/checks.js";
 import { createUpdatesRouter } from "../server/runtime/updates/routes.js";
 import { startAgentUpdate, updateAgentsOf, withUpdateGuard } from "../server/runtime/updates/update-service.js";
@@ -639,6 +640,95 @@ test("Hermes: a second update is refused with update_running while the session l
   });
 });
 
+// ---- who is updating right now, and the checks around an update (SP5 E1: M1, M2, L35) ---------------------------------
+
+test("isAgentUpdating(): true for an agent from the click on its update until it ends (a job or Hermes's session), and for no other agent", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    assert.equal(isAgentUpdating("claude"), false);
+    assert.equal(isAgentUpdating("hermes"), false);
+
+    await w.hold("claude");
+    const job = await startAgentUpdate("claude", { manager });
+    assert.equal(isAgentUpdating("claude"), true, "the job's update step is pending or running");
+    assert.equal(isAgentUpdating("codex"), false);
+    assert.equal(isAgentUpdating("hermes"), false);
+    await w.release("claude");
+    await waitForJob(job.jobId);
+    assert.equal(isAgentUpdating("claude"), false, "and not any more once the job has ended");
+
+    const { checks } = hermesChecks(w, cleanAnswer);
+    const started = await startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 });
+    assert.equal(isAgentUpdating("hermes"), true, "the update session is live");
+    assert.equal(isAgentUpdating("claude"), false);
+    const window = await openWindow(manager, started.sessionId);
+    await waitFor(() => window.screen().includes("Update now?"));
+    window.type("n\r");
+    await waitFor(() => !manager.isLive(started.sessionId));
+    await waitFor(() => !isAgentUpdating("hermes"));
+  });
+});
+
+test("a round of the server's checks leaves out the agent whose update is running, keeps its row, and checks it again once the update has ended", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const checks = getUpdateChecks();
+    await checks.refresh();
+    const claudeBefore = statusOf(checks, "claude");
+    const codexBefore = statusOf(checks, "codex");
+
+    await w.hold("claude");
+    await w.install("claude");
+    const started = await startAgentUpdate("claude", { manager: w.manager() });
+    await waitFor(async () => (await w.calls()).includes("claude update"));
+    await new Promise((resolve) => setTimeout(resolve, 5)); // a later clock reading than the rows above
+    await checks.refresh();
+    assert.deepEqual(statusOf(checks, "claude"), claudeBefore, "the saved row is kept while its update runs");
+    assert.ok(statusOf(checks, "codex").checkedAt > codexBefore.checkedAt, "the other agents are checked as usual");
+
+    await w.release("claude");
+    assert.equal((await waitForJob(started.jobId)).status, "succeeded");
+    assert.deepEqual(pick(statusOf(checks, "claude")), { installed: "2.2.0", latest: "2.2.0", state: "up-to-date" }, "the update's own check was not skipped");
+  });
+});
+
+test("the check after a Hermes update session is the update's own (afterChange), and it is not asked once the checks have been stopped", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    const refreshes = [];
+    let stopped = false;
+    // Records every refresh whatever it was told: only the update service's own rules can keep it from asking.
+    const checks = {
+      isStopped: () => stopped,
+      refreshHermesClean: async () => cleanAnswer(w),
+      refresh: async (...args) => {
+        refreshes.push(args);
+        return [];
+      }
+    };
+    const end = async (sessionId) => {
+      const window = await openWindow(manager, sessionId);
+      await waitFor(() => window.screen().includes("Update now?"));
+      window.type("n\r");
+      await waitFor(() => !manager.isLive(sessionId));
+    };
+
+    // Not stopped: the agent is checked again, as a check an update asked for.
+    const first = await startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 });
+    await end(first.sessionId);
+    await waitFor(() => refreshes.length === 1);
+    assert.deepEqual(refreshes, [["hermes", { afterChange: true }]]);
+    await waitFor(() => !isAgentUpdating("hermes"));
+
+    // Stopped (the server is quitting) while the session still runs: when it ends nothing is checked, and the poll gives up.
+    const second = await startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 });
+    stopped = true;
+    await end(second.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 300)); // many polls
+    assert.equal(refreshes.length, 1, "no check after the checks were stopped");
+    assert.equal(isAgentUpdating("hermes"), false, "and the update is not counted as running for ever");
+  });
+});
+
 test("withUpdateGuard(): the claim is released when the start works, throws or ends; a second claim in the meantime is refused", async () => {
   const manager = { list: async () => [] };
   let inside = null;
@@ -1031,7 +1121,11 @@ test("wiring: /api/updates is mounted behind requireLocalMode next to the sessio
   const checksSource = await readFile(path.join(root, "server", "runtime", "updates", "checks.js"), "utf8");
   assert.match(checksSource, /export function updateChecksEnabled\(/);
   assert.match(checksSource, /function start\(\) \{\s*if \(timer \|\| !updateChecksEnabled\(\)\) return;/, "start() asks");
-  assert.match(checksSource, /async function refresh\(agentId\) \{\s*if \(!updateChecksEnabled\(\)\) return list\(\);/, "and so does every refresh");
+  assert.match(
+    checksSource,
+    /async function refresh\(agentId, \{ afterChange = false \} = \{\}\) \{\s*if \(stopped \|\| !updateChecksEnabled\(\)\) return list\(\);/,
+    "and so does every refresh (and a stopped service checks nothing)"
+  );
 
   // The two launchers that turn the checks on.
   assert.match(await readFile(path.join(root, "scripts", "dev-server.mjs"), "utf8"), /process\.env\.AGENT_OS_DEV_ORIGIN = "1"/, "npm run dev");

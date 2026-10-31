@@ -13,7 +13,8 @@
 //                                         person can answer a question Hermes asks
 // The job's console has no Cancel (the Setup page's has): stopping an agent's own updater half way is not guaranteed to
 // leave it as it was (an npm global update, or OpenClaw, which restarts its Gateway). Retry stays.
-// When the update ends the saved answer is read again and the page asks for the installed version again. A running update
+// When the update ends the saved answer is read again (the server checks the agent itself; the page starts no check of its
+// own) and the page asks for the installed version again. A running update
 // is found again after picking another agent and coming back, a reload, another tab or another device: a job by the id
 // kept in sessionStorage (updatesApi.ts), Hermes's session by asking the server for its live `update` session, so a
 // question Hermes asks always has its terminal to be answered in. That ask is also made after a 409 update_running.
@@ -22,7 +23,9 @@
 // An update never stops an open session, so a session of this agent that runs on another version than the installed one gets a
 // banner here (RestartBanner): "Restart session to use v<installed>", where <installed> is the version detected now (the Installed
 // line's own; the saved check is up to a day old and only the fallback). Its button asks first (AgentConfirmModal), then the server
-// stops the session and resumes it in the same tab (restartSession). Both versions are compared by their first dotted number, and
+// stops the session and resumes it in the same tab (restartSession); the confirm carries Resume's fallback warning for an agent
+// that resumes "the most recent conversation in this folder", and the button is off while this agent's update runs (the server
+// refuses a restart then too). Both versions are compared by their first dotted number, and
 // a session whose version is not known gets no banner. A restart that did not work keeps its sentence: inside the banner while
 // the session still runs, on its own once the session has ended (the Sessions page shows the same sentence on the ended session).
 //
@@ -39,7 +42,7 @@ import { findLiveUpdateSession, recallUpdateRun, rememberUpdateRun, startUpdate 
 import type { UpdateRun } from "../../updatesApi";
 import { AGENT_LABEL, friendlyError } from "../agentsShared";
 import { openSessions, withTimeout } from "../homeShared";
-import { sessionTitle } from "../sessionsShared";
+import { resumeConfirmCopy, sessionTitle } from "../sessionsShared";
 import {
   AFTER_SESSION_MS,
   CURSOR_UNKNOWN_LINE,
@@ -340,8 +343,10 @@ export default function AgentUpdatePanel({
     setRun((current) => (current ? { ...current, ended: true } : current));
     function refresh() {
       if (!alive.current) return;
-      if (afterSession) void latest.current.updates.recheck().catch(() => undefined);
-      else latest.current.updates.reload();
+      // The server checks the agent again by itself when an update ends (a job's last step, or the session poll), so this
+      // only reads what it found (GET /api/updates). A check of our own (POST /api/updates/refresh) would run the agent's CLI
+      // beside the server's.
+      latest.current.updates.reload();
       latest.current.onChanged();
     }
     if (afterSession) afterTimer.current = setTimeout(refresh, AFTER_SESSION_MS);
@@ -441,6 +446,10 @@ export default function AgentUpdatePanel({
   const running = Boolean(run && !run.ended);
   const checkable = Boolean(status) && status?.state !== "not-installed";
   const oldVersion = installedNumber ?? "";
+  // Restart session uses Resume's rules (spec, Resume per agent), so its confirm carries Resume's own warning for an agent that
+  // can only resume "the most recent conversation in this folder" (Codex, Hermes, Cursor without a chat id): the sentence
+  // comes from Resume's confirm (resumeConfirmCopy), and is null for an agent that resumes by id.
+  const restartWarning = restartAsk ? resumeConfirmCopy(restartAsk.session).warning : null;
 
   return (
     // `rootRef` is where the keys go when a restart took their button away: a group named by the Version heading (AgentBay's
@@ -526,7 +535,7 @@ export default function AgentUpdatePanel({
               session={session}
               newVersion={installedNumber ?? ""}
               failure={restartFailures[session.id] ?? ""}
-              busy={restartBusy}
+              busy={restartBusy || running}
               onRestart={() => askRestart(session)}
             />
           ))}
@@ -597,6 +606,7 @@ export default function AgentUpdatePanel({
           }}
         >
           <p>{restartDialogBody(restartAsk.newVersion)}</p>
+          {restartWarning ? <Banner tone="warn">{restartWarning}</Banner> : null}
         </AgentConfirmModal>
       ) : null}
     </div>

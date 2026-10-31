@@ -240,6 +240,12 @@ function fakeWorld(over = {}) {
     detectCalls: 0,
     // The options each detect call got (a restart asks with { refresh: true }).
     detectOptions: [],
+    // A promise the fresh detection of a restart (detect with { refresh: true }) waits for, so a test can act while the
+    // restart's stop is over and its new process is not started yet; `refreshAsked` counts those fresh detections.
+    refreshGate: null,
+    refreshAsked: 0,
+    // The agents whose update runs now, as the update service would say (the manager's isUpdateRunning).
+    updating: new Set(),
     // true: detection answers from a memory (the 30 s one of agents/detect.js) unless asked to refresh.
     staleDetect: false,
     detectMemory: new Map(),
@@ -283,9 +289,14 @@ function fakeWorld(over = {}) {
     isExecutionAllowed: async () => world.gate,
     checkFolder: fakeCheckFolder,
     ptyCheck: async () => (world.ptyOk ? { ok: true, reason: null } : { ok: false, reason: "no terminal module" }),
+    isUpdateRunning: (agentId) => world.updating.has(agentId),
     detect: async (agentId, options) => {
       world.detectCalls += 1;
       world.detectOptions.push(options ?? null);
+      if (options?.refresh) {
+        world.refreshAsked += 1;
+        if (world.refreshGate) await world.refreshGate;
+      }
       const answer = () => {
         if (!world.installed.has(agentId)) return { installed: false, path: "" };
         const version = world.versions[agentId];
@@ -723,6 +734,136 @@ test("Restart clicked while a Stop is already running is refused as busy, and th
     world.softGate = null;
     const restarted = await world.manager.restart(made.id);
     assert.equal(restarted.status, "starting");
+  });
+});
+
+// ---- a restart is not offered while that agent's update runs (SP5 E1, M1) ---------------------------------------
+
+test("restart is refused with update_running while that agent's update runs, before anything stops; other agents are not in its way, and it works again once the update ends", async () => {
+  await withSessionEnv(async ({ project, other }) => {
+    const world = fakeWorld();
+    const claude = await world.manager.create({ agentId: "claude", folder: project });
+    const codex = await world.manager.create({ agentId: "codex", folder: other });
+    world.updating.add("claude");
+
+    await assert.rejects(
+      world.manager.restart(claude.id),
+      (error) => error.status === 409 && error.code === "update_running" && error.message === "Claude Code is already updating."
+    );
+    assert.deepEqual(world.events, [], "nothing was stopped");
+    assert.equal(world.ptys.length, 2, "and nothing started");
+    assert.notEqual((await world.manager.get(claude.id)).status, "exited", "the session is still live");
+    assert.equal(world.refreshAsked, 0, "the agent was not even asked for its version");
+
+    // Another agent's session is not in its way.
+    const restartedCodex = await world.manager.restart(codex.id);
+    assert.equal(restartedCodex.status, "starting");
+
+    world.updating.clear();
+    assert.equal((await world.manager.restart(claude.id)).status, "starting", "the update ended: the restart works");
+  });
+});
+
+test("restart is refused while an update SESSION of that agent is live in this manager (Hermes), whatever the update service says", async () => {
+  await withSessionEnv(async ({ project, other }) => {
+    const world = fakeWorld();
+    const made = await world.manager.create({ agentId: "hermes", folder: project });
+    const update = await world.manager.createUpdateSession({ agentId: "hermes", folder: other });
+    await assert.rejects(
+      world.manager.restart(made.id),
+      (error) => error.status === 409 && error.code === "update_running" && error.message === "Hermes is already updating."
+    );
+    assert.deepEqual(world.events, []);
+    assert.notEqual((await world.manager.get(made.id)).status, "exited");
+
+    // The update session ends: the restart is allowed.
+    world.ptys[1].exit(0);
+    await ended(world, update.id);
+    assert.equal((await world.manager.restart(made.id)).status, "starting");
+  });
+});
+
+// ---- a Stop after the restart's stop and before its new process starts (SP5 E1, L44) -------------------------------
+
+test("a Stop that lands while the restart's fresh version check runs wins: no new process starts, and the restart answers the ended session", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const made = await world.manager.create({ agentId: "claude", folder: project });
+    const held = gate();
+    world.refreshGate = held.promise;
+
+    const restarting = world.manager.restart(made.id);
+    await waitFor(() => world.refreshAsked > 0); // the old process is stopped; the resume waits on the version check
+    assert.equal((await world.manager.get(made.id)).status, "exited");
+    // The session is being changed right now, so this Stop may be answered "busy"; either way it counts and cancels the restart.
+    const stopAnswer = await world.manager.stop(made.id).then(
+      (summary) => summary,
+      (error) => error
+    );
+    assert.ok(stopAnswer.status === "exited" || stopAnswer.code === "session_busy", `Stop answered ${stopAnswer.code ?? stopAnswer.status}`);
+    held.open();
+    const answer = await restarting;
+
+    assert.equal(answer.status, "exited", "the restart answers the ended session");
+    assert.equal(answer.id, made.id);
+    assert.equal(world.ptys.length, 1, "no new process: the agent did not come back after the Stop");
+    assert.equal((await world.manager.get(made.id)).status, "exited");
+    assert.deepEqual(world.events, ["soft", "kill"], "one Stop sequence, the restart's own");
+    // Nothing is left half done: the session can be resumed by the person and the next restart works.
+    assert.equal((await world.manager.resume(made.id)).status, "starting");
+  });
+});
+
+for (const reason of ["stop", "quit"]) {
+  test(`Hold to stop all (${reason}) that lands while the restart's fresh version check runs wins as well: no new process starts`, async () => {
+    await withSessionEnv(async ({ project }) => {
+      const world = fakeWorld();
+      const made = await world.manager.create({ agentId: "claude", folder: project });
+      const held = gate();
+      world.refreshGate = held.promise;
+
+      const restarting = world.manager.restart(made.id);
+      await waitFor(() => world.refreshAsked > 0);
+      // The old process has ended, so the stop-all list does not hold this session: it must still stop the restart.
+      const result = await world.manager.shutdownAll({ reason });
+      assert.deepEqual(result, { stopped: 0 });
+      held.open();
+      const answer = await restarting;
+
+      assert.equal(answer.status, "exited");
+      assert.equal(world.ptys.length, 1, "no new process after an emergency stop that reported success");
+      assert.equal((await world.manager.get(made.id)).status, "exited");
+    });
+  });
+}
+
+// Hold to stop all runs in the browser: it reads the live-only list and stops each session that isn't "exited". In
+// the moment between a restart's stop and the new process, the old process has ended, so the session must still be
+// in that list (as "starting"), or the hold never reaches it and the agent comes back after it reported success.
+test("the live-only list still shows a session in the middle of a restart, so Hold to stop all's Stop reaches it and nothing comes back", async () => {
+  await withSessionEnv(async ({ project }) => {
+    const world = fakeWorld();
+    const made = await world.manager.create({ agentId: "claude", folder: project });
+    const held = gate();
+    world.refreshGate = held.promise;
+
+    const restarting = world.manager.restart(made.id);
+    await waitFor(() => world.refreshAsked > 0); // the old process is stopped; the resume waits on the version check
+    const listed = (await world.manager.list({ liveOnly: true })).filter((session) => session.id === made.id);
+    assert.equal(listed.length, 1, "the restarting session is in the list the hold reads");
+    assert.notEqual(listed[0].status, "exited", "and it is not shown as ended, so the hold stops it");
+    // What the hold does with it: one Stop, which may be answered "busy" while the session changes.
+    await world.manager.stop(made.id).catch(() => {});
+    held.open();
+    const answer = await restarting;
+
+    assert.equal(answer.status, "exited");
+    assert.equal(world.ptys.length, 1, "no new process after the hold");
+    assert.deepEqual(
+      (await world.manager.list({ liveOnly: true })).filter((session) => session.id === made.id),
+      [],
+      "once the restart is over, an ended session is no longer listed"
+    );
   });
 });
 

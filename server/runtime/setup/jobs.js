@@ -69,6 +69,7 @@ import {
 import { readChatgptAuth, readChatgptReadiness, readOpenclawModelsConfig, resolvePlanModel } from "./openclaw-plans.js";
 import { takeKey } from "./openrouter-oauth.js";
 import { signInStatus } from "./signin.js";
+import { registerUpdateActivity } from "../updates/activity.js";
 import { getUpdateChecks } from "../updates/checks.js";
 
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
@@ -474,15 +475,19 @@ function updaterEnv(agentId, agentPath) {
 }
 
 // After an update step has ended, whatever way it ended (it may have installed
-// the new version and still failed): forget what was detected before, and check
-// the agent again so the Agents page shows the version that is installed now.
+// the new version and still failed), and after an install step that succeeded:
+// forget what was detected before, and check the agent again so the Agents page
+// shows the version that is installed now (a newly installed agent gets its row at
+// once, not at the next 24 h round).
+// Asked as the change's own check (afterChange): it starts afresh even beside a check that began before the change, and
+// even though a failed update step still counts as running in the job list at this moment.
 // Awaited, so a job that has ended has its agent already checked. Never throws.
 // (Where the version checks are not enabled -- updateChecksEnabled in updates/checks.js -- refresh()
 // asks nothing and runs nothing, so only the detection memory is cleared.)
-async function afterUpdateStep(agentId) {
+async function afterChangeStep(agentId) {
   try {
     clearDetectCaches();
-    await getUpdateChecks().refresh(agentId);
+    await getUpdateChecks().refresh(agentId, { afterChange: true });
   } catch {
     // a check that cannot run leaves the page as it was; it never fails the job
   }
@@ -493,7 +498,9 @@ async function runStep(job, step, check) {
     await executeStep(job, step, check);
   } finally {
     // (A stored Hermes update step is refused before it runs anything, so there is nothing to check afterwards.)
-    if (step.action === "update" && step.agentId !== "hermes") await afterUpdateStep(step.agentId);
+    if (step.action === "update" && step.agentId !== "hermes") await afterChangeStep(step.agentId);
+    // An install step that did not succeed installed nothing worth showing (and its status is set to "failed" by the caller).
+    else if (step.action === "install" && step.status === "succeeded") await afterChangeStep(step.agentId);
   }
 }
 
@@ -509,6 +516,7 @@ export function agentsUpdatingInJobs() {
   }
   return agents;
 }
+registerUpdateActivity((agentId) => agentsUpdatingInJobs().has(agentId));
 
 async function executeStep(job, step, check) {
   step.status = "running";
@@ -577,7 +585,7 @@ async function executeStep(job, step, check) {
     // before that can still hold the step, and Retry resumes the stored steps.
     // Refuse it before anything is detected or started, so the updater never runs.
     if (step.agentId === "hermes") {
-      throw jobError("install_failed", "Agent OS no longer updates Hermes from Setup, so this step was not run. Nothing was changed.");
+      throw jobError("install_failed", "Agent OS updates Hermes in a terminal, not in a Setup job, so this step was not run. Nothing was changed.");
     }
     const detected = await adapter.detect({ refresh: true });
     if (!detected.installed) {

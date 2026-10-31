@@ -32,6 +32,7 @@ import {
   startSetupJob
 } from "../server/runtime/setup/jobs.js";
 import { readReceipt } from "../server/runtime/setup/receipt.js";
+import { getUpdateChecks, resetUpdateChecksForTest } from "../server/runtime/updates/checks.js";
 import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
@@ -492,7 +493,7 @@ test("retrySetupJob(): a stored job with a Hermes update step is refused and nev
     assert.ok(retried, "the stored job was found");
     const finished = await waitForJob(jobId);
 
-    const message = "Agent OS no longer updates Hermes from Setup, so this step was not run. Nothing was changed.";
+    const message = "Agent OS updates Hermes in a terminal, not in a Setup job, so this step was not run. Nothing was changed.";
     assert.equal(finished.status, "failed");
     assert.equal(finished.steps[0].status, "failed");
     assert.equal(finished.steps[0].error, message);
@@ -616,6 +617,48 @@ test(
     });
   }
 );
+
+// A newly installed agent is checked at once (SP5 E1, M3): without it the Agents page has no Version row for it until the next
+// 24 h round, as if the install had not worked. Update steps already did this; install steps do too, when they succeeded.
+test("startSetupJob(): after an install step succeeded the agent is checked at once and has a version row; with the checks off it is not", posixSkip, async () => {
+  await withTempSetupEnv(async () => {
+    const install = async () => {
+      resetSetupJobsForTest();
+      clearSystemCheckCache();
+      clearDetectCaches();
+      const plan = buildSetupPlan(await systemCheck({ refresh: true }));
+      assert.ok(plan.steps.some((s) => s.id === "hermes-install"), "the plan offers the install");
+      const finished = await waitForJob((await startSetupJob({ steps: ["hermes-install"] })).id);
+      assert.equal(finished.status, "succeeded");
+      return finished;
+    };
+
+    // The checks are off where no launcher asked for them (a test's server never checks): installing leaves the list empty.
+    await withEnv({ AGENT_OS_UPDATE_CHECKS: "0", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, async () => {
+      resetUpdateChecksForTest();
+      await install();
+      assert.deepEqual(getUpdateChecks().list(), [], "no check ran: the checks are not enabled here");
+    });
+
+    // Enabled (against a dead loopback registry, so nothing leaves this computer): the installed agent has its row.
+    await rm(path.join(os.homedir(), ".local"), { recursive: true, force: true });
+    await withEnv(
+      { AGENT_OS_UPDATE_CHECKS: "1", AGENT_OS_TEST_NPM_REGISTRY: "http://127.0.0.1:9", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined },
+      async () => {
+        resetUpdateChecksForTest();
+        try {
+          assert.deepEqual(getUpdateChecks().list(), [], "nothing is known before the install");
+          await install();
+          const rows = getUpdateChecks().list();
+          assert.deepEqual(rows.map((row) => row.agentId), ["hermes"], "exactly the agent that was installed has a row");
+          assert.notEqual(rows[0].state, "not-installed", "and the check saw it installed");
+        } finally {
+          resetUpdateChecksForTest();
+        }
+      }
+    );
+  });
+});
 
 // =====================================================================
 // 6. Checksum mismatch

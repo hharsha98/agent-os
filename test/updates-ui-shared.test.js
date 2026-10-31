@@ -397,3 +397,40 @@ test("Restart session: the panel wires banners to the open sessions of its agent
   // The block the keys fall back to has a name.
   assert.match(panel, /role="group"[^>]*aria-labelledby="os-agent-version-title"|aria-labelledby="os-agent-version-title"[^>]*role="group"/);
 });
+
+// ---- SP5 E1: the fix wave ------------------------------------------------------------------------------------------
+
+test("E1 I2: Setup's plan row for an installed Hermes that has no update step says why in the owner's new sentence; every other agent's row keeps its sentence", () => {
+  assert.equal(shared.setupNoUpdateLine("hermes"), "Agent OS updates Hermes only from an unchanged official copy. See Agents for why.");
+  assert.ok(shared.setupNoUpdateLine("hermes").startsWith(shared.HERMES_BLOCKED_LINE), "it is the Agents page's own sentence, plus where to read the reasons");
+  for (const agentId of ["claude", "codex", "cursor", "openclaw", "other"]) {
+    assert.equal(shared.setupNoUpdateLine(agentId), "Agent OS does not update this agent yet. It stays as it is.", agentId);
+  }
+  const row = source("ui/components/SetupPlanRow.tsx");
+  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId\)/, "the row asks by the agent it shows");
+  assert.doesNotMatch(row.replace(/\/\/.*$/gm, ""), /does not update this agent yet/, "and holds no copy of the sentence");
+});
+
+test("E1 I1: the Restart confirm shows the fallback-resume warning from Resume's own function, and the panel holds no copy of it", () => {
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /resumeConfirmCopy\(restartAsk\.session\)\.warning/, "Resume's confirm words are the source");
+  assert.match(panel, /<Banner tone="warn">\{restartWarning\}<\/Banner>/, "drawn as a warning, the way Resume's confirm draws it");
+  assert.doesNotMatch(panel, /most recent/, "no second copy of the sentence");
+  // The function gives the sentence for a fallback session and nothing for the others (what the confirm relies on).
+  const sessions = source("ui/sessionsShared.ts");
+  assert.match(sessions, /warning: resume\.fallback\s*\?\s*`This resumes the most recent \$\{s\.agentLabel\} conversation in this folder, which may be one you started outside Agent OS\.`/);
+});
+
+test("E1 M1: the restart banner's button is off while this agent's update runs", () => {
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /busy=\{restartBusy \|\| running\}/, "the banner is busy while the update's console is running");
+  assert.ok(panel.indexOf("const running = ") < panel.indexOf("busy={restartBusy || running}"), "running is this agent's update that has not ended");
+});
+
+test("E1 M2: when an update ends the page reads the saved answer (GET /api/updates); it does not start a second check beside the server's own", () => {
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.equal(panel.split("recheck(").length - 1, 1, "recheck() (POST /api/updates/refresh) is left to the Check for updates button only");
+  assert.match(panel, /async function checkAgain\(\) \{[^}]*updates\.recheck\(\)/, "and that is where it is");
+  assert.doesNotMatch(panel, /afterSession\) void latest\.current\.updates\.recheck/, "the end of a Hermes session no longer rechecks");
+  assert.match(panel, /latest\.current\.updates\.reload\(\);\s*latest\.current\.onChanged\(\);/, "both kinds of update end with a read of the saved answer");
+});

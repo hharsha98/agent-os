@@ -190,7 +190,9 @@ export const ALWAYS_ON: Array<{ title: string; detail: string; who: string }> = 
     title: "Updater questions are never answered for you",
     // Setup starts an updater with no input and no yes flag (server/runtime/setup/recipes.js,
     // jobs.js). What an updater then does with no answer is its own; only the part Agent OS
-    // controls is promised. Hermes has no update step in Setup at all (plan.js NO_UPDATE_STEP).
+    // controls is promised. Hermes is not in this row (see `who`): its update is never a Setup job,
+    // it runs in a terminal session the person types into, and only from an unchanged official
+    // copy (SP5, server/runtime/updates/update-service.js).
     detail:
       "Setup runs an agent's own updater with no yes flag and no typed answers, so a question it asks gets no answer from Agent OS. If an update fails, Setup shows the updater's own message.",
     who: "OpenClaw and the coding agents"

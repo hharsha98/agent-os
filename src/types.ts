@@ -2792,6 +2792,13 @@ export interface SessionSummary {
   // `model` is the launch profile's model (an OpenRouter or Local brain's, a chosen Cursor model), when there is one.
   brain: { kind: "plan" | "openrouter" | "local"; label: string; model?: string } | null;
   resume: { available: boolean; reason: string | null; fallback: boolean };
+  // SP5 (R40): the agent version this run started on (the first line of the agent's `--version`), or null when none was
+  // read or the session was saved before SP5. The restart banner compares it with the installed version.
+  agentVersion?: string | null;
+  // SP5 (R40): for a live `agent` session, whether Restart session could bring it back (stop, then resume), worked out by
+  // the resume rule as if the session had ended; `reason` says why not. null for every other kind or status, and always
+  // in the live-only list (GET /api/sessions?live=1), which does not work it out.
+  restart?: { available: boolean; reason: string | null } | null;
   // true when Claude Code's resume found no saved conversation (nothing was ever sent in the session, or Claude
   // deleted an old transcript itself): there is nothing to resume. A server that doesn't send it means false.
   nothingToResume: boolean;

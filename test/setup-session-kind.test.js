@@ -93,7 +93,9 @@ const SUMMARY_KEYS = [
   "endedBy",
   "dismissed",
   "brain",
+  "agentVersion",
   "resume",
+  "restart",
   "nothingToResume",
   "alerts",
   "alert",
@@ -639,7 +641,7 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
       world.gate = false; // Look only: a sign-in is a Setup step, not agent work (spec §1, Limits)
       const summary = await world.manager.createSetupSession({ action: OPENCLAW_SIGNIN_ACTION, detected: DETECTED });
       assert.match(summary.id, UUID);
-      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 30 keys as every session, and no new one");
+      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 32 keys as every session, and no new one");
       assert.deepEqual(
         { ...summary, id: "-", stateSince: "-", startedAt: "-" },
         {
@@ -660,7 +662,9 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
           endedBy: null,
           dismissed: false,
           brain: null,
+          agentVersion: null,
           resume: { available: false, reason: null, fallback: false },
+          restart: null,
           nothingToResume: false,
           alerts: "basic",
           alert: null,

@@ -69,7 +69,9 @@ const SUMMARY_KEYS = [
   "endedBy",
   "dismissed",
   "brain",
+  "agentVersion",
   "resume",
+  "restart",
   "nothingToResume",
   "alerts",
   "alert",
@@ -1748,10 +1750,11 @@ test("list({ liveOnly }): only the sessions that are running, from memory: no en
     }
     assert.deepEqual(detected, [], "no agent CLI was asked anything: a slow one cannot delay the emergency stop's list");
 
-    // The ordinary list still reads the ended sessions and detects their agents for Resume.
+    // The ordinary list still reads the ended sessions and detects their agents for Resume, and (SP5) the live agent
+    // session's agent too, for Restart.
     const everything = await world.manager.list({ includeUpdate: true });
     assert.equal(everything.length, 4);
-    assert.deepEqual([...detected].sort(), ["codex", "cursor"]);
+    assert.deepEqual([...detected].sort(), ["claude", "codex", "cursor"]);
 
     // A session that has ended while its process is still being cleared away is not running either.
     world.ptys[0].exit(0);

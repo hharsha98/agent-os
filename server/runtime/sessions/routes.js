@@ -330,6 +330,15 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     })
   );
 
+  // Restart session (SP5, R40): stop, then resume, with no keys. Only the person's click on the page's confirm sends
+  // it. Same guards as Stop: the router is mounted local-mode only, and router.param checks the id.
+  router.post(
+    "/:id/restart",
+    handle(async (req, res) => {
+      res.json(await manager.restart(req.params.id));
+    })
+  );
+
   router.post(
     "/:id/dismiss",
     handle(async (req, res) => {

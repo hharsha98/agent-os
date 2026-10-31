@@ -166,6 +166,12 @@ const NO_WORKTREE_MESSAGE = "This session doesn't use a separate copy.";
 const COPY_LIVE_MESSAGE = "That session is still running. Stop it first, then remove its separate copy.";
 const COPY_IN_USE_MESSAGE = "Another session is still running in this separate copy. Stop it first, then remove the copy.";
 const COPY_REMOVED_MESSAGE = "Its separate copy was removed, so this conversation can't be resumed.";
+// Restart session (SP5, R40). Every one is a new sentence for the owner's review at E1 (R28). The page shows a
+// session's own `restart.reason` (the resume rule's sentence) beside its button, so these are the refusals that come
+// back only when a click arrives late or the stop did not take.
+const NOT_RESTARTABLE_MESSAGE = "Only an agent session can be restarted.";
+const RESTART_ENDED_MESSAGE = "That session has already ended. Resume it instead.";
+const RESTART_NOT_STOPPED_MESSAGE = "Agent OS could not stop this session, so it was not restarted. Try again.";
 // A Claude Code session in which nothing was ever sent saves no conversation (and
 // Claude deletes old transcripts itself): `claude --resume <uuid>` then prints "No conversation found with session ID: <uuid>"
 // and exits 1 at once. Without this, the tab would offer Resume again, forever
@@ -222,6 +228,19 @@ function unknownSession() {
 
 function assertSessionId(id) {
   if (!isSessionId(id)) throw unknownSession();
+}
+
+// The words the page would show for a failed request: a sessionError's own message (the route answers it as it is). Anything
+// else is an internal error the route answers with a fixed sentence and logs, so nothing is kept for it (as keep-going.js).
+function sessionSentence(error) {
+  return Number.isInteger(error?.status) && typeof error?.code === "string" && typeof error?.message === "string" ? error.message : null;
+}
+
+// The version a run starts on (SP5, R40): what the adapter's detect() read, i.e. the first line of `--version`. null
+// when detection read none, so no restart banner is ever built on a guess.
+function versionOf(detected) {
+  const version = typeof detected?.version === "string" ? detected.version.trim() : "";
+  return version || null;
 }
 
 // The first name for each signal number (SIGABRT before SIGIOT).
@@ -425,9 +444,12 @@ function safeSend(attachment, frame) {
   }
 }
 
-function defaultDetect(agentId) {
+// `refresh: true` asks the agent again instead of using the 30 s memory (a restart records the version the agent has
+// right now, even when an outside updater changed it a few seconds ago).
+function defaultDetect(agentId, { refresh = false } = {}) {
   const adapter = getAdapter(agentId);
-  return adapter ? adapter.detect() : Promise.resolve({ installed: false, path: "" });
+  if (!adapter) return Promise.resolve({ installed: false, path: "" });
+  return refresh ? adapter.detect({ refresh: true }) : adapter.detect();
 }
 
 // `override` is the brain keep going asks for (ruling R26: only
@@ -515,6 +537,11 @@ export function createSessionManager({
   // ids being resumed or dismissed right now, so two requests never race: a
   // second request for one of them is answered "session_busy".
   const busy = new Set();
+  // id -> { cancelled }, for the sessions being restarted right now (stop, then resume), so a second click is answered
+  // "session_busy" at once. `cancelled` is set by any Stop of that session that is not the restart's own (the person's
+  // Stop, Hold to stop all, a quit): the restart then resumes nothing. The session is not in `busy` itself: its Stop
+  // must run first, and Stop and Resume check `busy` on their own.
+  const restarting = new Map();
   // Set when a quit begins (shutdownAll): from then on nothing new starts, so a
   // session cannot appear after the stop list was taken.
   let closing = false;
@@ -862,6 +889,10 @@ export function createSessionManager({
     if (state.meta.kind !== "agent" || !input || typeof input !== "object") return false;
     const marker = makeMarker({ ...input, at: input.at ?? iso(now()) });
     if (!marker) return false;
+    // SP5 (R40): the conversation has had a prompt, so Claude Code saved something to resume. A flag of its own, not a
+    // look at the markers: those keep only the newest few and Delete recording empties them. A relink (/clear) does not
+    // reset it: Agent OS follows a new conversation only once its transcript exists, i.e. once it has a message in it.
+    if (marker.type === "prompt") state.meta.prompted = true;
     const kept = Array.isArray(state.meta.markers) ? state.meta.markers : [];
     state.meta.markers = [...kept, marker].slice(-MARKERS_MAX);
     await persist(state);
@@ -1678,6 +1709,9 @@ export function createSessionManager({
         activity: state.activity,
         trustNeeded: state.trustNeeded,
         hooksOff: state.hooksOff,
+        // SP5 (R40): true when Claude's hooks are wired for this run (a hook address was given and the person's
+        // settings keep nothing out). Only a yes/no: the token itself never leaves the state.
+        hooksOn: Boolean(state.hookToken) && !state.hooksOff?.alerts,
         meter: state.meter,
         handoff: handoffOf(state),
         keepGoingFailure: keepGoingFailures.get(state.meta.id) ?? null
@@ -1753,7 +1787,31 @@ export function createSessionManager({
     return { available: true, reason: null, fallback };
   }
 
-  async function toSummary(view, views, installed) {
+  // Restart session (SP5, R40): could this running session be stopped and then resumed? The same rules as Resume,
+  // worked out as if it had already ended. null for every other kind and for a session that has ended (its
+  // summary.resume answers that one).
+  function restartOf(view, views, installed) {
+    if (view.kind !== "agent" || view.status === "exited") return null;
+    // As if ended: it then counts as one of the ended sessions of its folder (Hermes, Codex and Cursor resume by
+    // folder), and never as a live one standing in its own way.
+    const asEnded = { ...view, status: "exited" };
+    const { available, reason } = resumeOf(
+      asEnded,
+      views.map((other) => (other.id === view.id ? asEnded : other)),
+      installed
+    );
+    if (!available) return { available, reason };
+    // A fresh Claude Code session: nothing was ever sent in this first run, so Claude saved no conversation and a resume
+    // would fail at once ("nothing to resume"). That can be known only when the hooks are on for this run, which show every
+    // prompt (a prompt sets meta.prompted); with the hooks off it can't be told, so it stays available.
+    const firstRun = (Number(view.resumes) || 0) === 0;
+    if (view.agentId === "claude" && firstRun && view.prompted !== true && view.memory?.hooksOn === true) {
+      return { available: false, reason: NOTHING_TO_RESUME_MESSAGE };
+    }
+    return { available, reason };
+  }
+
+  async function toSummary(view, views, installed, { withRestart = true } = {}) {
     const extras = memoryFields(view);
     return {
       id: view.id,
@@ -1773,7 +1831,10 @@ export function createSessionManager({
       endedBy: view.endedBy ?? null,
       dismissed: view.dismissed === true,
       brain: view.brain ?? null,
+      // The agent version this run started on (R40); null for a session saved before SP5.
+      agentVersion: versionOf({ version: view.agentVersion }),
       resume: resumeOf(view, views, installed),
+      restart: withRestart ? restartOf(view, views, installed) : null,
       nothingToResume: view.nothingToResume === true,
       alerts: extras.alerts,
       alert: extras.alert,
@@ -1793,13 +1854,18 @@ export function createSessionManager({
     };
   }
 
-  async function summaries(views, wanted) {
-    const endedAgents = new Set(
-      wanted.filter((view) => view.kind === "agent" && view.status === "exited").map((view) => view.agentId)
+  // `liveOnly` (the live-only list) asks no agent anything and leaves `restart` null: `views` holds only the running
+  // sessions there, so the folder rule could not be worked out, and nothing in that list needs it.
+  async function summaries(views, wanted, { liveOnly = false } = {}) {
+    // Ended sessions need the answer for Resume; live agent sessions for Restart (worked out as if they had ended).
+    const detectFor = new Set(
+      wanted
+        .filter((view) => view.kind === "agent" && (view.status === "exited" || !liveOnly))
+        .map((view) => view.agentId)
     );
     const installed = new Map();
     await Promise.all(
-      [...endedAgents].map(async (agentId) => {
+      [...detectFor].map(async (agentId) => {
         try {
           installed.set(agentId, (await detect(agentId))?.installed !== false);
         } catch {
@@ -1807,17 +1873,17 @@ export function createSessionManager({
         }
       })
     );
-    return Promise.all(wanted.map((view) => toSummary(view, views, installed)));
+    return Promise.all(wanted.map((view) => toSummary(view, views, installed, { withRestart: !liveOnly })));
   }
 
   // `liveOnly` lists only the sessions running now, straight from memory: no ended session's meta.json is
-  // read and no agent is detected for Resume (summaries() detects only for ended sessions). It is the list
+  // read and no agent is detected, for Resume or for Restart, and `restart` is null. It is the list
   // the hold to stop all uses, which must not wait on a slow agent CLI or a big sessions folder.
   async function list({ includeUpdate = false, liveOnly = false } = {}) {
     if (liveOnly) {
       const running = [...live.values()].filter((state) => state.status !== "exited").map(viewOfState);
       const wantedNow = running.filter((view) => includeUpdate || view.kind === "agent").sort(byCreated);
-      return summaries(running, wantedNow);
+      return summaries(running, wantedNow, { liveOnly: true });
     }
     const views = await collectViews();
     const wanted = views.filter((view) => includeUpdate || view.kind === "agent").sort(byCreated);
@@ -1919,6 +1985,8 @@ export function createSessionManager({
         endedBy: null,
         dismissed: false,
         brain: kind === "agent" ? brainSummary(agentId, brain) : null,
+        // SP5 (R40): the agent version this run starts on. A Resume writes the version it starts on instead.
+        agentVersion: versionOf(detected),
         nothingToResume: false,
         agentSessionId: profile.agentSessionId ?? null,
         resumeMode: kind === "agent" ? profile.resumeMode ?? null : null,
@@ -2063,7 +2131,9 @@ export function createSessionManager({
   // `brainOverride` (ruling R26) is keep going's OpenRouter brain for a held
   // Claude Code session: the same id, tab and conversation on another brain.
   // POST /api/sessions/:id/resume never passes one.
-  async function resume(id, { brainOverride = null } = {}) {
+  // `refreshDetect` is Restart session's (no route passes it): the agent is asked again, so agentVersion records what
+  // it is now.
+  async function resume(id, { brainOverride = null, refreshDetect = false } = {}) {
     assertSessionId(id);
     assertNotClosing();
     // A session another request is resuming or dismissing right now is not
@@ -2094,7 +2164,7 @@ export function createSessionManager({
           throw sessionError(409, "not_resumable", summary.resume.reason || "This session can't be resumed.");
         }
         const where = await resolveFolder(meta.agentId, "agent", meta.folder);
-        const detected = await detect(meta.agentId);
+        const detected = await (refreshDetect ? detect(meta.agentId, { refresh: true }) : detect(meta.agentId));
         const brain = await resolveBrain(meta.agentId, brainOverride);
         const settings = await readSettings();
         const dir = sessionDir(id);
@@ -2130,6 +2200,8 @@ export function createSessionManager({
           endedBy: null,
           dismissed: false,
           brain: brainSummary(meta.agentId, brain),
+          // The version this run starts on (R40), which may be newer than the one the session first started on.
+          agentVersion: versionOf(detected),
           // A new run starts clean; this one sets it again only if it too finds nothing saved.
           nothingToResume: false,
           agentSessionId: profile.agentSessionId ?? meta.agentSessionId ?? null,
@@ -2149,6 +2221,58 @@ export function createSessionManager({
       }
     } finally {
       busy.delete(id);
+    }
+  }
+
+  // Restart session (spec SP5 "Updates and open sessions", R40): the person's click, after the page's confirm, stops a
+  // running agent session with the Stop sequence and resumes it, so the same tab and conversation go on in the same
+  // folder on the agent's own resume (and so on the version the agent has now). It types nothing: the Stop sequence
+  // never writes into the terminal, and Resume starts a new process. An update never calls it; only
+  // POST /api/sessions/:id/restart does.
+  // Everything Resume refuses on that can be asked early is asked BEFORE the stop (as Keep going does), so a refusal
+  // never leaves the person's conversation stopped: the resume rule's answer (summary.restart), Look only, a copy being
+  // removed, the terminal module, the folder and the saved brain. What can still fail after the stop (a start that
+  // fails, a folder taken by another start) leaves its sentence on the ended session, as Keep going's does.
+  // A Stop of this session that is not the restart's own (the person's, Hold to stop all, a quit) always wins: the
+  // restart then resumes nothing, and a Restart clicked while such a Stop is already running is refused as "busy".
+  async function restart(id) {
+    assertSessionId(id);
+    assertNotClosing();
+    if (restarting.has(id) || live.get(id)?.stopping) throw sessionError(409, "session_busy", BUSY_MESSAGE);
+    const mine = { cancelled: false };
+    restarting.set(id, mine);
+    try {
+      const before = await get(id);
+      if (before.kind !== "agent") throw sessionError(400, "not_restartable", NOT_RESTARTABLE_MESSAGE);
+      if (before.status === "exited") throw sessionError(409, "session_ended", RESTART_ENDED_MESSAGE);
+      if (!before.restart?.available) {
+        throw sessionError(409, "resume_unavailable", before.restart?.reason || "This session can't be resumed.");
+      }
+      if (!(await isExecutionAllowed())) throw sessionError(409, "execution_gate_off", LOOK_ONLY_MESSAGE);
+      await assertCopyNotRemoving(before.folder);
+      await requirePty();
+      await resolveFolder(before.agentId, "agent", before.folder);
+      await resolveBrain(before.agentId, null);
+      // A Stop came in while those were asked: it wins, and nothing is resumed.
+      if (mine.cancelled) {
+        await live.get(id)?.stopping;
+        return await get(id);
+      }
+      setKeepGoingFailure(id, null);
+      await stopSession(id, { by: "stop", ownedByRestart: true });
+      if (mine.cancelled) return await get(id);
+      try {
+        // The kill did not take within Stop's wait: resuming now would run a second process beside the first.
+        if (isRunning(id)) throw sessionError(409, "session_live", RESTART_NOT_STOPPED_MESSAGE);
+        return await resume(id, { refreshDetect: true });
+      } catch (error) {
+        // The session is stopped now (or ends a moment later) and was not resumed: the sentence stays with it, so the
+        // person still reads why when this request's answer is gone.
+        setKeepGoingFailure(id, sessionSentence(error));
+        throw error;
+      }
+    } finally {
+      restarting.delete(id);
     }
   }
 
@@ -2794,8 +2918,19 @@ export function createSessionManager({
   // the sequence again, so a kill that did not take can be tried once more.
   // Answers the session's summary plus `note` (the honest OpenClaw sentence,
   // or null).
-  async function stop(id, { by = "stop" } = {}) {
+  function stop(id, { by = "stop" } = {}) {
+    return stopSession(id, { by, ownedByRestart: false });
+  }
+
+  // `ownedByRestart` is restart()'s own stop (nothing else passes it). Any other Stop of a session that is being
+  // restarted cancels that restart first, even when it only joins the Stop already running, so the agent never comes
+  // back after a Stop (or Hold to stop all) that reported success.
+  async function stopSession(id, { by, ownedByRestart }) {
     assertSessionId(id);
+    if (!ownedByRestart) {
+      const restartOfThis = restarting.get(id);
+      if (restartOfThis) restartOfThis.cancelled = true;
+    }
     const state = live.get(id);
     // An ended session that is being resumed or dismissed right now (the busy
     // set) is about to change: it answers "busy" instead of an ended summary
@@ -2980,6 +3115,7 @@ export function createSessionManager({
     resize,
     ack,
     resume,
+    restart,
     dismiss,
     deleteRecording,
     stop,

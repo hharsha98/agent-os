@@ -316,3 +316,84 @@ test("wiring: the Version block holds the panel (keyed by agent); the dot is off
   assert.equal(panel.split("findLiveUpdateSession(").length - 1, 2, "once on mount, once after update_running");
   assert.match(panel, /error\.message === "update_running"/);
 });
+
+// ---- SP5 Task U2: Restart session banners ------------------------------------------------------------------------
+
+test("Restart session: the banner, its confirm and the unavailable sentence are the reviewed words", () => {
+  assert.equal(shared.restartTitle("2.1.310"), "Restart session to use v2.1.310");
+  assert.equal(shared.RESTART_LABEL, "Restart session");
+  assert.equal(shared.RESTART_NOT_NOW, "Not now");
+  assert.equal(shared.restartDialogTitle("Claude Code", "my-app"), "Restart Claude Code in my-app?");
+  // A session whose folder is not shown (OpenClaw picks its own) has no place to name: "Restart {agent}?" and nothing else.
+  assert.equal(shared.restartDialogTitle("OpenClaw", null), "Restart OpenClaw?");
+  assert.equal(shared.restartDialogTitle("OpenClaw", ""), "Restart OpenClaw?");
+  assert.equal(shared.restartDialogBody("2.1.310"), "The session closes and starts again on v2.1.310.");
+  assert.equal(
+    shared.restartUnavailableLine("Another session in this folder is running."),
+    "This session can't be resumed, so restarting would lose it. Another session in this folder is running."
+  );
+  // No resume reason to add: the first sentence stands alone, with no trailing space.
+  assert.equal(shared.restartUnavailableLine(null), "This session can't be resumed, so restarting would lose it.");
+  assert.equal(shared.restartUnavailableLine(""), "This session can't be resumed, so restarting would lose it.");
+});
+
+test("Restart session: a session needs a banner only when both versions can be read and they differ (the first dotted number)", () => {
+  const session = (id, agentVersion) => ({ id, agentVersion });
+  const ids = (sessions, installed) => shared.sessionsToRestart(sessions, installed).map((s) => s.id);
+
+  assert.deepEqual(ids([session("old", "2.1.308"), session("same", "2.1.309")], "2.1.309"), ["old"]);
+  // The agent's own line is compared by its number, the way the installed line is: words around it do not count.
+  assert.deepEqual(ids([session("a", "2.1.309 (Claude Code)"), session("b", "Hermes Agent v0.22.4")], "2.1.309"), ["b"], "a number against a number");
+  assert.deepEqual(ids([session("c", "Hermes Agent v0.22.5")], "0.22.5"), [], "the same number in other words");
+  assert.deepEqual(ids([session("n", "2.1.309 (Claude Code)")], "claude 2.1.309"), [], "and the installed side may carry words too");
+  // Newer counts as different too: a session can be on a version the saved check has not seen yet.
+  assert.deepEqual(ids([session("newer", "2.1.311")], "2.1.310"), ["newer"]);
+  // Anything unreadable on either side: no banner, never a guess.
+  assert.deepEqual(ids([session("null", null), session("undef", undefined), session("words", "preview build"), session("empty", "")], "2.1.309"), []);
+  for (const installed of [null, undefined, "", "unknown"]) assert.deepEqual(ids([session("x", "2.1.308")], installed), [], `installed ${JSON.stringify(installed)}`);
+  assert.deepEqual(ids([], "2.1.309"), []);
+});
+
+test("Restart session: the installed version is the freshly detected one; the saved check's only when that cannot be read", () => {
+  // The Version block's Installed line is the detection. The saved check can be a day old: an auto-updater, brew or npm
+  // changes the version outside Agent OS, and a banner built on the old number would be false.
+  assert.equal(shared.installedVersionNumber("claude 2.1.309", "2.1.200"), "2.1.309", "detected wins over the row");
+  assert.equal(shared.installedVersionNumber("2.1.309 (Claude Code)", null), "2.1.309", "and stands without a row");
+  assert.equal(shared.installedVersionNumber("no version printed", "2.1.200"), "2.1.200", "unreadable: the row");
+  assert.equal(shared.installedVersionNumber("", "2.1.200"), "2.1.200");
+  assert.equal(shared.installedVersionNumber(null, "2.1.200"), "2.1.200");
+  assert.equal(shared.installedVersionNumber(undefined, undefined), null);
+  assert.equal(shared.installedVersionNumber("none", "none"), null);
+});
+
+test("Restart session: the panel wires banners to the open sessions of its agent, one confirm, one restart request", () => {
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /sessionsToRestart\(openHere, /, "banners come from this agent's open sessions");
+  // One installed number for the banner, its confirm and the Update dialog's open-sessions line, detection first.
+  assert.match(panel, /installedVersionNumber\(installedVersion, status\?\.installed\)/, "the detected version first, the row second");
+  assert.match(panel, /const oldVersion = installedNumber \?\? ""/, "the Update dialog says the same number as the banner");
+  assert.doesNotMatch(panel, /status\?\.installed \|\| versionNumber/, "the old row-first order is gone");
+  // The place in the confirm's title: none when the folder is not shown.
+  assert.match(panel, /session\.folderShown === false/, "a hidden folder is not named");
+  assert.doesNotMatch(panel, /panelFolder/, "and the field label 'Set by OpenClaw' is never taken for a place");
+  assert.equal(panel.split("restartSession(").length - 1, 1, "restartSession is called once, inside the confirm");
+  assert.ok(panel.indexOf("restartSession(") > panel.indexOf("async function restart"), "inside restart()");
+  assert.match(panel, /cancelLabel=\{RESTART_NOT_NOW\}/, "the dialog's closing button reads Not now");
+  assert.match(panel, /confirmLabel=\{RESTART_LABEL\}/);
+  // The request posts no keys: the API wrapper sends the restart route and nothing else.
+  const api = source("sessionsApi.ts");
+  assert.match(api, /export function restartSession\(sessionId: string\)[^}]*sessionPath\(sessionId, "\/restart"\), postJson\(\)/, "POST /api/sessions/:id/restart with an empty body");
+  // The button is drawn only when the server said the session can be resumed (restart.available === true); the unavailable
+  // sentence only when it said it cannot. A missing or null `restart` (an older server, a live-only list) draws neither.
+  const banner = source("ui/components/RestartBanner.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(banner, /restartUnavailableLine\(/);
+  assert.match(banner, /const canRestart = session\.restart\?\.available === true;/);
+  assert.match(banner, /const cannotRestart = session\.restart\?\.available === false;/);
+  assert.match(banner, /canRestart \? \(/, "a button only when it can");
+  assert.match(banner, /cannotRestart \? <p>/, "the unavailable sentence only when it cannot");
+  // Several banners can stand together: the button's name carries its session's own line.
+  assert.match(banner, /aria-labelledby=\{`\$\{buttonId\} \$\{lineId\}`\}/);
+  assert.match(panel, /<RestartBanner/);
+  // The block the keys fall back to has a name.
+  assert.match(panel, /role="group"[^>]*aria-labelledby="os-agent-version-title"|aria-labelledby="os-agent-version-title"[^>]*role="group"/);
+});

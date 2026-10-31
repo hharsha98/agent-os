@@ -11,9 +11,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { ArrowRight, PackageCheck, RefreshCw, X } from "lucide-react";
-import { listAgents } from "../api";
+import { ApiError, listAgents } from "../api";
 import { navigateTo, queryParam } from "../nav";
 import type { AgentSummary } from "../types";
+import AgentUpdateTerminal from "../ui/components/AgentUpdateTerminal";
 import Banner from "../ui/components/Banner";
 import EmptyState from "../ui/components/EmptyState";
 import PageHeader from "../ui/components/PageHeader";
@@ -45,7 +46,11 @@ import {
   retrySetupJob,
   startInstallJob
 } from "../setupApi";
+import { friendlyError as updateError } from "../ui/agentsShared";
 import { BRAIN_AGENT_LABEL } from "../ui/brainShared";
+import { findLiveUpdateSession, startUpdate } from "../updatesApi";
+import { AFTER_SESSION_MS, HERMES_UPDATE_HEADING } from "../ui/updatesShared";
+import { useUpdates } from "../ui/useUpdates";
 import {
   AGENT_NAMES,
   ALL_AGENT_IDS,
@@ -66,6 +71,7 @@ import {
   railStep,
   readProblem,
   reaskNote,
+  splitRunSteps,
   totalsOf,
   withAskedUpdate,
   type GroupId,
@@ -273,6 +279,15 @@ export default function SetupPage() {
   // Asking about an earlier install got no answer: it is not known whether one is running.
   const [jobUnknown, setJobUnknown] = useState(false);
 
+  // Hermes's update (SP5) runs in a terminal session, never in a job: Hermes may ask a question, and the person answers it in
+  // the terminal. `hermesRun` is that session on the Install step. `fresh` is true right after the person confirmed (the
+  // terminal then takes the keys); `ended` once the session finished (its terminal stays on screen, to read how it went).
+  const [hermesRun, setHermesRun] = useState<{ sessionId: string; fresh: boolean; ended: boolean } | null>(null);
+  // Why the session did not start, when the job did start (when nothing else started, the confirm shows the reason).
+  const [hermesError, setHermesError] = useState("");
+  const hermesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const updates = useUpdates();
+
   // What the AI brain panel is doing (it runs its own configure job and
   // result screen); used for the rail and for the footer's buttons.
   const [brainStatus, setBrainStatus] = useState<BrainPanelStatus>("idle");
@@ -287,6 +302,7 @@ export default function SetupPage() {
     alive.current = true;
     return () => {
       alive.current = false;
+      if (hermesTimer.current) clearTimeout(hermesTimer.current);
     };
   }, []);
 
@@ -327,6 +343,20 @@ export default function SetupPage() {
       }
     }
     return null;
+  }
+
+  // A Hermes update session that is still live on the server (the person left Setup, or reloaded, while Hermes updated): its
+  // terminal comes back, because a question Hermes asks always needs one to be answered in. A server that can't say counts as
+  // "none". True when a live one was found.
+  async function restoreHermesUpdate(): Promise<boolean> {
+    try {
+      const sessionId = await findLiveUpdateSession("hermes");
+      if (!sessionId || !alive.current) return false;
+      setHermesRun((current) => (current && !current.ended ? current : { sessionId, fresh: false, ended: false }));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // The address names an agent (?agent=openclaw, from the Agents page's "Update in Setup"): on the Plan step its row
@@ -409,7 +439,10 @@ export default function SetupPage() {
         else if (needsAction) auto = STEP.plan;
         else auto = brainReady(checkRes, brainRes.value) ? STEP.ready : STEP.brain;
       }
-      const restored = await restoreJobs();
+      // A job found on the server wins; failing that, a Hermes update that is still running takes the person to its terminal.
+      const restoredJob = await restoreJobs();
+      const hermesLive = await restoreHermesUpdate();
+      const restored = restoredJob ?? (hermesLive ? STEP.install : null);
       if (!alive.current) return;
       const landing = landingStep({ asked, restored, moved: movedRef.current, auto });
       if (landing !== null) {
@@ -498,6 +531,15 @@ export default function SetupPage() {
     titleRef.current?.focus();
   }, [stepIndex]);
 
+  // Hermes's finished terminal stays while it can be read (right after it ended, on the Install step) and goes when the person
+  // leaves that step, so a later view of Install does not show an old update under its heading. One that still runs stays: the
+  // person comes back to it. A reason it did not start is old news once they leave.
+  useEffect(() => {
+    if (stepIndex === STEP.install) return;
+    setHermesError("");
+    setHermesRun((current) => (current && current.ended ? null : current));
+  }, [stepIndex]);
+
   // The Ready step's count is only true while Ready is on screen.
   useEffect(() => {
     if (stepIndex !== STEP.ready) setReadyProblems(null);
@@ -535,7 +577,7 @@ export default function SetupPage() {
   // Back skips the same steps Continue skips: Install only if a job exists, AI brain only
   // if Hermes or OpenClaw is installed, Sign in only if a coding agent is.
   function appliesTo(index: number) {
-    if (index === STEP.install) return Boolean(installJob);
+    if (index === STEP.install) return Boolean(installJob || hermesRun);
     if (index === STEP.brain) return groupInstalled(OPERATOR_IDS);
     if (index === STEP.signin) return groupInstalled(CODING_IDS);
     return true;
@@ -611,25 +653,98 @@ export default function SetupPage() {
   const needsConsent = needsOpenClawConsent(operatorWorkSteps);
   const operatorsBlocked = needsConsent && !openClawRiskAccepted;
 
+  // Starts Hermes's update session (the update service, POST /api/updates/hermes) and puts its terminal on the Install step.
+  // Resolves with the sentence for why it did not start, or "" when it did.
+  async function startHermesUpdate(): Promise<string> {
+    try {
+      const started = await startUpdate("hermes");
+      // The server answers a session for Hermes, never a job; anything else is an answer this page can't use.
+      if (started.kind !== "session") return updateError(new Error("Agent OS gave an answer that could not be read."));
+      if (alive.current) setHermesRun({ sessionId: started.id, fresh: true, ended: false });
+      return "";
+    } catch (error) {
+      if (error instanceof ApiError) {
+        // 409 update_running: the update is live already (another window started it, or this page before it lost the answer).
+        // Show its terminal instead of only saying so.
+        if (error.message === "update_running") {
+          const sessionId = await findLiveUpdateSession("hermes").catch(() => null);
+          if (sessionId) {
+            if (alive.current) setHermesRun((current) => (current && !current.ended ? current : { sessionId, fresh: true, ended: false }));
+            return "";
+          }
+        }
+        // What the server decided may differ from what the plan showed (Hermes's folder changed since the last check): read it again.
+        if (error.message === "hermes_not_clean") void refreshServerState(true);
+      }
+      return updateError(error);
+    }
+  }
+
+  // The update session ended, however it ended. The server checks Hermes again once it has (it looks at the session once a
+  // second), so the page waits a little longer than that, then reads the computer, the plan and the saved update answer again.
+  function onHermesEnded() {
+    setHermesRun((current) => (current ? { ...current, ended: true } : current));
+    if (hermesTimer.current) clearTimeout(hermesTimer.current);
+    hermesTimer.current = setTimeout(() => {
+      if (!alive.current) return;
+      void refreshServerState(true);
+      updates.reload();
+    }, AFTER_SESSION_MS);
+  }
+
   async function confirmInstall() {
     if (!confirmGroup) return;
     setInstallBusy(true);
     setInstallConfirmError("");
+    setHermesError("");
+    setHermesRun((current) => (current && current.ended ? null : current));
+    // The job the page shows now, to be replaced by a new one, or (Hermes only) cleared once Hermes's update has started.
+    const earlierJob = installJob;
+    // Hermes's update leaves the job's steps (the server refuses a job that names it) and runs in its terminal instead. The job
+    // goes first: if it cannot start, nothing has started and the confirm says why. Hermes follows at once, and the two run
+    // side by side on the Install step, the job's log above Hermes's terminal. With only Hermes (and steps that are kept) there
+    // is no job.
+    const { jobSteps, sessionSteps, jobWanted } = splitRunSteps(selectedSteps(idsOf(confirmGroup)));
+    let jobStarted = false;
     try {
-      const job = await withTimeout(
-        startInstallJob({
-          steps: selectedSteps(idsOf(confirmGroup)).map((s) => s.id),
-          acceptOpenClawRisk: confirmGroup === "operators" && needsConsent && openClawRiskAccepted
-        }),
-        ACTION_TIMEOUT_MS
-      );
-      // The server has started the job whether or not this page is still on screen, so its id is
-      // always remembered (a sessionStorage write, nothing to unmount). Only the screen updates wait.
-      rememberJobId("install", job.id);
+      if (jobWanted) {
+        const job = await withTimeout(
+          startInstallJob({
+            steps: jobSteps.map((s) => s.id),
+            acceptOpenClawRisk: confirmGroup === "operators" && needsConsent && openClawRiskAccepted
+          }),
+          ACTION_TIMEOUT_MS
+        );
+        // The server has started the job whether or not this page is still on screen, so its id is
+        // always remembered (a sessionStorage write, nothing to unmount). Only the screen updates wait.
+        rememberJobId("install", job.id);
+        jobStarted = true;
+        if (alive.current) {
+          setInstallJob(job);
+          setPollFailed(false);
+          setJobUnknown(false);
+        }
+      }
+      if (sessionSteps.length) {
+        const problem = await startHermesUpdate();
+        if (problem && !jobStarted) {
+          // Nothing started: the confirm stays open, with the reason next to its button.
+          if (alive.current) setInstallConfirmError(problem);
+          return;
+        }
+        // The job did start: the reason is told on the Install step, beside the job it did not hold up.
+        if (problem && alive.current) setHermesError(problem);
+        // Hermes only: every confirm replaced the job before, and a finished earlier one (a failed install, say) must not keep
+        // Continue off beside Hermes's terminal. One that still runs stays, with its log: it keeps Continue off until it ends.
+        if (!problem && !jobStarted && earlierJob && earlierJob.status !== "running") {
+          rememberJobId("install", null);
+          if (alive.current) {
+            setInstallJob(null);
+            setPollFailed(false);
+          }
+        }
+      }
       if (!alive.current) return;
-      setInstallJob(job);
-      setPollFailed(false);
-      setJobUnknown(false);
       setConfirmGroup(null);
       goToStep(STEP.install);
     } catch (error) {
@@ -945,17 +1060,44 @@ export default function SetupPage() {
     </>
   );
 
-  const installNote = !installJob
-    ? jobUnknown
-      ? "It is not known whether anything is running."
-      : "Nothing is running."
-    : installJob.status === "running"
-      ? "Continue unlocks when the install finishes."
-      : installJob.status === "succeeded"
-        ? "Install finished."
-        : installJob.status === "failed"
-          ? "A step failed. Retry it above, or go back to the plan."
-          : "Setup was cancelled. Retry it above, or go back to the plan.";
+  // Hermes's update runs in a terminal, not in the job: while it runs, Continue waits for it too, and the footer says what it
+  // already says while a job runs. Nothing is invented for it. A job that failed or was cancelled is told first, though: it
+  // needs the person's attention whether or not Hermes is still running.
+  const hermesRunning = Boolean(hermesRun && !hermesRun.ended);
+  const installNote =
+    installJob?.status === "failed"
+      ? "A step failed. Retry it above, or go back to the plan."
+      : installJob?.status === "cancelled"
+        ? "Setup was cancelled. Retry it above, or go back to the plan."
+        : hermesRunning
+          ? "Continue unlocks when the install finishes."
+          : !installJob
+            ? jobUnknown
+              ? "It is not known whether anything is running."
+              : "Nothing is running."
+            : installJob.status === "running"
+              ? "Continue unlocks when the install finishes."
+              : "Install finished.";
+  // Hermes's update on the Install step: its heading and terminal (the same words and terminal as the Agents page), or why it
+  // did not start. The heading is an h3 under the step's h2.
+  const hermesPart =
+    hermesRun || hermesError ? (
+      <div className="os-agent-update__session">
+        {hermesRun ? (
+          <>
+            <h3 className="os-agent-update__run-title">{HERMES_UPDATE_HEADING}</h3>
+            <AgentUpdateTerminal
+              key={hermesRun.sessionId}
+              sessionId={hermesRun.sessionId}
+              label={HERMES_UPDATE_HEADING}
+              autoFocus={hermesRun.fresh}
+              onEnded={onHermesEnded}
+            />
+          </>
+        ) : null}
+        {hermesError ? <Banner tone="danger">{hermesError}</Banner> : null}
+      </div>
+    ) : null;
   const installStep = installJob ? (
     <>
       <div className="os-setup-panel__content">
@@ -972,13 +1114,14 @@ export default function SetupPage() {
           onRetry={onRetryInstall}
           busy={installBusy}
         />
+        {hermesPart}
       </div>
       <SetupFooter onBack={() => goToStep(previousStep(STEP.install))} backDisabled={installJob.status === "running"} note={installNote}>
         <button
           type="button"
           className="os-btn os-btn--primary"
           onClick={() => goToStep(afterInstall())}
-          disabled={installJob.status !== "succeeded"}
+          disabled={installJob.status !== "succeeded" || hermesRunning}
         >
           Continue
           <ArrowRight size={16} aria-hidden="true" />
@@ -999,7 +1142,7 @@ export default function SetupPage() {
               </button>
             }
           />
-        ) : (
+        ) : hermesPart ? null : (
           <EmptyState
             icon={PackageCheck}
             title="Nothing to install"
@@ -1011,9 +1154,10 @@ export default function SetupPage() {
             }
           />
         )}
+        {hermesPart}
       </div>
       <SetupFooter onBack={() => goToStep(previousStep(STEP.install))} note={installNote}>
-        <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(afterInstall())}>
+        <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(afterInstall())} disabled={hermesRunning}>
           Continue
           <ArrowRight size={16} aria-hidden="true" />
         </button>

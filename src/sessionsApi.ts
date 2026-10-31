@@ -81,7 +81,9 @@ export const SESSION_LIMITS_MS = {
   // session going is a Stop (15 s) and a Resume (30 s); a hand-over may start a session (30 s, like create).
   keepGoingInfo: 15000,
   keepGoing: 45000,
-  handOver: 30000
+  handOver: 30000,
+  // Restart session (SP5): a Stop (15 s) and a Resume (30 s), like Keep going's, and the resume asks the agent for its version again.
+  restart: 50000
 } as const;
 
 const TIMEOUT_WORDS = "Agent OS did not answer in time.";
@@ -118,6 +120,14 @@ export function stopSession(sessionId: string): Promise<StopSessionResult> {
 
 export function resumeSession(sessionId: string): Promise<SessionSummary> {
   return withTimeout(request<SessionSummary>(sessionPath(sessionId, "/resume"), postJson()), SESSION_LIMITS_MS.resume);
+}
+
+// Restart session (SP5): the server stops a running agent session with its Stop sequence and resumes it, so the same tab
+// and conversation go on in the same folder, on the agent's version as it is now. It types nothing. Only the Restart
+// session banner's confirm (AgentUpdatePanel) calls it. A refusal comes back as the server's own sentence (sessionProblem);
+// a failure after the stop leaves the session ended, with the sentence in its keepGoingFailure.
+export function restartSession(sessionId: string): Promise<SessionSummary> {
+  return withTimeout(request<SessionSummary>(sessionPath(sessionId, "/restart"), postJson()), SESSION_LIMITS_MS.restart);
 }
 
 export function dismissSession(sessionId: string): Promise<SessionSummary> {

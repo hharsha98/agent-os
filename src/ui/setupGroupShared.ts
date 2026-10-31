@@ -180,6 +180,24 @@ export function groupAction(group: GroupId, work: SetupPlanStep[]): string | und
   return `Update ${names.join(" + ")}`;
 }
 
+// Hermes's update (SP5) is the one plan step that does not run in a job: the plan marks it `runsIn: "session"`, the page
+// starts it as a terminal session (the update service), because Hermes may ask a question, and the server refuses a job
+// that names it.
+export function runsInSession(step: Pick<SetupPlanStep, "runsIn">): boolean {
+  return step.runsIn === "session";
+}
+
+// What a group's choices become: the steps for the job, the steps that run in a terminal session, and whether to start a
+// job at all. A job is started when nothing is picked for a session (the group's button already means there is work, so
+// this is exactly as before), or when the other steps hold real work. Hermes updated with OpenClaw kept leaves only a keep
+// step, and a job for that would do nothing.
+export function splitRunSteps(steps: SetupPlanStep[]): { jobSteps: SetupPlanStep[]; sessionSteps: SetupPlanStep[]; jobWanted: boolean } {
+  const sessionSteps = steps.filter(runsInSession);
+  const jobSteps = steps.filter((s) => !runsInSession(s));
+  const jobWanted = sessionSteps.length === 0 || jobSteps.some((s) => s.action === "install" || s.action === "update" || s.action === "prereq-node");
+  return { jobSteps, sessionSteps, jobWanted };
+}
+
 // OpenClaw's consent box is only drawn when OpenClaw would really be installed, so
 // the need for it comes from the steps that would run, not from the row's choice:
 // when its installer site is unreachable the plan has no OpenClaw steps, no box is

@@ -137,6 +137,46 @@ export const HERMES_GUIDE_STEPS: ReadonlyArray<{ text: string; command: string }
 
 export const HERMES_UPDATE_HEADING = "Hermes update. Type into it if Hermes asks you something.";
 
+// After a Hermes update session ends, the server forgets what it detected and checks Hermes again (it looks at the session
+// once a second). A page waits a little longer than that before it asks, so it does not get the old answer. The Agents page
+// and Setup both do.
+export const AFTER_SESSION_MS = 2500;
+
+// ---- Restart session ---------------------------------------------------------------------------------------------
+
+// An update never stops an open session: it keeps running on the version it started on. The Version block says so with a
+// banner per session, and Restart session (stop, then resume, in the same tab) is the person's own click after a confirm.
+// A session needs the banner when its run's version and the installed one can both be read and differ. They are compared
+// by their first dotted number, the same reading as `versionNumber` above, so "2.1.309 (Claude Code)" and "2.1.309" are the
+// same version. Anything unreadable on either side gives no banner: it is never built on a guess. Pass this agent's open
+// sessions; `installed` is the installed version (a number, or the agent's whole line).
+export function sessionsToRestart<S extends { agentVersion?: string | null }>(sessions: readonly S[], installed: string | null | undefined): S[] {
+  const now = versionNumber(installed);
+  if (!now) return [];
+  return sessions.filter((session) => {
+    const then = versionNumber(session.agentVersion);
+    return then !== null && then !== now;
+  });
+}
+
+// The installed version's number for the restart banner, its confirm and the Update dialog's open-sessions line: the freshly
+// detected one (the Installed line's own), and the saved check's only when that cannot be read. The saved check runs every 24
+// hours, so it goes stale when the agent's own auto-updater, brew or npm changes the version outside Agent OS, and a banner
+// built on it would say "use v<old>" for a session that started after the change.
+export function installedVersionNumber(detected: string | null | undefined, saved: string | null | undefined): string | null {
+  return versionNumber(detected) ?? versionNumber(saved);
+}
+
+export const restartTitle = (newVersion: string) => `Restart session to use v${newVersion}`;
+export const RESTART_LABEL = "Restart session";
+export const RESTART_NOT_NOW = "Not now";
+// A session whose folder is not shown (OpenClaw picks its own) has no place to name: "Restart {agent}?" (a new sentence).
+export const restartDialogTitle = (agent: string, folder: string | null) => (folder ? `Restart ${agent} in ${folder}?` : `Restart ${agent}?`);
+export const restartDialogBody = (newVersion: string) => `The session closes and starts again on v${newVersion}.`;
+// The resume rule's own sentence (the session's `restart.reason`) follows the first one, when there is one.
+export const restartUnavailableLine = (reason: string | null | undefined) =>
+  `This session can't be resumed, so restarting would lose it.${reason ? ` ${reason}` : ""}`;
+
 // ---- the sidebar's dot ------------------------------------------------------------------------------------------
 
 export const UPDATE_DOT_TIP = "An agent has an update";

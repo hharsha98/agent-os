@@ -163,6 +163,9 @@ export interface SetupPlanStep {
   summary?: string | null;
   // On a "keep" step: the version that is already there.
   installedVersion?: string;
+  // "session" on Hermes's update (SP5) only: it does not run in a job. Hermes may ask a question, so it runs in a terminal
+  // session started through POST /api/updates/hermes, and the server refuses a job that names it.
+  runsIn?: "session";
 }
 
 export interface SetupPlan {

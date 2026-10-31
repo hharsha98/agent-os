@@ -121,6 +121,13 @@
 .os-agent-update__dialog { display: flex; flex-direction: column; gap: var(--os-sp-2); }
 .os-agent-update__dialog p { margin: 0; }
 .os-agent-update__sessions { margin: 0; padding-left: var(--os-sp-5); }
+/* Restart session (RestartBanner): one banner per open session still on an older version, and the sentence of a restart that
+   stopped a session it could not resume. The button wraps under the words in a narrow block (as the session limit banner's). */
+.os-agent-update__restarts { display: flex; flex-direction: column; gap: var(--os-sp-2); min-width: 0; }
+.os-agent-update__restarts .os-banner { flex-wrap: wrap; }
+.os-agent-update__restarts .os-banner__text { flex: 1 1 calc(var(--os-sp-10) * 3); }
+.os-agent-update__restarts .os-banner__body p { margin: 0; }
+.os-agent-update__restarts .os-banner__body p + p { margin-top: var(--os-sp-1); }
 @media (prefers-reduced-motion: reduce) {
   .os-agent-update__term { transition: none; }
 }

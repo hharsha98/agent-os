@@ -19,19 +19,29 @@
 // question Hermes asks always has its terminal to be answered in. That ask is also made after a 409 update_running.
 // After a click the keys go to the new console (the job's log, or Hermes's terminal), not to the page behind it.
 //
+// An update never stops an open session, so a session of this agent that runs on another version than the installed one gets a
+// banner here (RestartBanner): "Restart session to use v<installed>", where <installed> is the version detected now (the Installed
+// line's own; the saved check is up to a day old and only the fallback). Its button asks first (AgentConfirmModal), then the server
+// stops the session and resumes it in the same tab (restartSession). Both versions are compared by their first dotted number, and
+// a session whose version is not known gets no banner. A restart that did not work keeps its sentence: inside the banner while
+// the session still runs, on its own once the session has ended (the Sessions page shows the same sentence on the ended session).
+//
 // Hermes is updated only from an unchanged official copy: when it is not, there is no Update button, and the reasons and
 // the four steps for a changed copy take its place. Before the server has checked Hermes's folder there is no Update
 // either, and the page says so instead of drawing a changed copy.
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api";
+import { restartSession, sessionProblem } from "../../sessionsApi";
 import { getSetupJob, retrySetupJob } from "../../setupApi";
 import type { SetupJob } from "../../setupApi";
+import type { SessionSummary } from "../../types";
 import { findLiveUpdateSession, recallUpdateRun, rememberUpdateRun, startUpdate } from "../../updatesApi";
 import type { UpdateRun } from "../../updatesApi";
 import { AGENT_LABEL, friendlyError } from "../agentsShared";
 import { openSessions, withTimeout } from "../homeShared";
 import { sessionTitle } from "../sessionsShared";
 import {
+  AFTER_SESSION_MS,
   CURSOR_UNKNOWN_LINE,
   GATEWAY_LINE,
   HERMES_BLOCKED_LINE,
@@ -39,25 +49,32 @@ import {
   HERMES_GUIDE_TITLE,
   HERMES_UNCHECKED_LINE,
   HERMES_UPDATE_HEADING,
+  RESTART_LABEL,
+  RESTART_NOT_NOW,
   checkFoundAnswer,
   dryRunLine,
   hermesBlocked,
   hermesReasonLines,
   hermesUnchecked,
+  installedVersionNumber,
   isCursorUnknown,
   offersUpdate,
   openSessionsLine,
+  restartDialogBody,
+  restartDialogTitle,
+  sessionsToRestart,
   statusOf,
   stateWord,
   updateCommand,
-  updateTitle,
-  versionNumber
+  updateTitle
 } from "../updatesShared";
 import { useSessionsList } from "../useSessionsList";
 import { useUpdates } from "../useUpdates";
 import AgentConfirmModal from "./AgentConfirmModal";
 import AgentUpdateTerminal from "./AgentUpdateTerminal";
+import Banner from "./Banner";
 import { TimeAgo } from "./RelativeTime";
+import RestartBanner from "./RestartBanner";
 import SetupInstallPanel from "./SetupInstallPanel";
 import StatusWord from "./StatusWord";
 import { useInterval } from "./useInterval";
@@ -66,9 +83,9 @@ import { useInterval } from "./useInterval";
 const JOB_POLL_MS = 1500;
 const JOB_READ_LIMIT_MS = 10000;
 const JOB_ACTION_LIMIT_MS = 20000;
-// After a Hermes update session ends, the server forgets what it detected and checks Hermes again (it looks at the session
-// once a second). The page waits a little longer than that before it asks, so it does not get the old answer.
-const AFTER_SESSION_MS = 2500;
+// How long after a restart the keys are looked after (see restartEndedAt): the sessions list is read again at once, and
+// answers well inside this.
+const RESTART_FOCUS_MS = 4000;
 
 // An update job's console: the Setup job read until it ends, drawn the way Setup draws it, but without Setup's Cancel
 // (no onCancel is passed, so none is drawn). Retry is the job's own. `autoFocus`: right after the person pressed Update, the
@@ -207,6 +224,15 @@ export default function AgentUpdatePanel({
   const name = AGENT_LABEL[agentId] ?? label;
   const status = statusOf(updates.data, agentId);
   const hermes = updates.data?.hermes;
+  // This agent's open sessions, from the shared sessions list (an update session is not one of them).
+  const knownSessions = sessionsList.source.state === "ok" ? sessionsList.source.data.sessions : [];
+  const openHere = openSessions(knownSessions).filter((session) => session.agentId === agentId);
+  // The version a restart would start them on, and the one the Update dialog says they keep running: the one detected now (the
+  // Installed line's own), and only when that cannot be read the saved check's (it is up to a day old). null when neither can be
+  // read, and then no session gets a banner.
+  const installedNumber = installedVersionNumber(installedVersion, status?.installed);
+  const behind = installedNumber ? sessionsToRestart(openHere, installedNumber) : [];
+  const behindKey = behind.map((session) => session.id).join(",");
   const [confirming, setConfirming] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
@@ -214,6 +240,15 @@ export default function AgentUpdatePanel({
   // The update this panel shows: `fresh` is true right after the person pressed Update (the terminal then takes the keys),
   // `ended` once it finished (its console stays, so the result can be read).
   const [run, setRun] = useState<{ run: UpdateRun; fresh: boolean; ended: boolean } | null>(null);
+  // Restart session: the confirm that is open (the session, and the version it would start again on), whether its request
+  // runs, and the sentence of each restart that did not work, by session id.
+  const [restartAsk, setRestartAsk] = useState<{ session: SessionSummary; newVersion: string } | null>(null);
+  const [restartBusy, setRestartBusy] = useState(false);
+  const [restartFailures, setRestartFailures] = useState<Record<string, string>>({});
+  const rootRef = useRef<HTMLDivElement>(null);
+  // When the last restart ended (ms): the button that was pressed can be gone a moment later (the banner left, or became the
+  // ended session's sentence), and the keys then go to this block, not to the page behind it.
+  const restartEndedAt = useRef(0);
   const alive = useRef(true);
   const afterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once an update started from the dialog: closing the dialog then does not give the keys back to the Update button
@@ -235,6 +270,30 @@ export default function AgentUpdatePanel({
   useEffect(() => {
     latest.current.updates.reload();
   }, []);
+
+  // A restart's sentence belongs to a session that still has its banner (running, on an older version) or that has ended. Once
+  // the session runs on the installed version again, was dismissed, or is gone from the list, the sentence is old news and goes.
+  // A stale list proves nothing, so this waits for a good one.
+  useEffect(() => {
+    if (sessionsList.source.state !== "ok" || sessionsList.source.stale) return;
+    const listed = sessionsList.source.data.sessions;
+    const behindIds = behindKey.split(",");
+    setRestartFailures((current) => {
+      const ids = Object.keys(current);
+      const kept = ids.filter((id) => {
+        const session = listed.find((candidate) => candidate.id === id);
+        return Boolean(session) && !session?.dismissed && (session?.status === "exited" || behindIds.includes(id));
+      });
+      return kept.length === ids.length ? current : Object.fromEntries(kept.map((id) => [id, current[id]]));
+    });
+  }, [sessionsList.source, behindKey]);
+
+  // Just after a restart, if the keys fell to the page (the button that was pressed is gone), they go to this block.
+  useEffect(() => {
+    if (restartAsk || Date.now() - restartEndedAt.current > RESTART_FOCUS_MS) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) rootRef.current?.focus({ preventScroll: true });
+  }, [restartAsk, behindKey, restartFailures]);
 
   // Coming back to an agent whose update is running (another agent picked and this one again, a reload, another tab or
   // another device): show its console again.
@@ -332,8 +391,47 @@ export default function AgentUpdatePanel({
     }
   }
 
-  // Nothing to say: no row yet, or an agent the checks found not installed (and no update running).
-  if (!run && (!status || status.state === "not-installed")) return null;
+  // A banner's button: the confirm opens for that session.
+  function askRestart(session: SessionSummary) {
+    if (installedNumber) setRestartAsk({ session, newVersion: installedNumber });
+  }
+
+  // The confirm's button: the server stops the session and resumes it. Either way the sessions list is read again at once: the
+  // banner goes (the session runs on the installed version now), or the session ended and its sentence stays. This session's old
+  // sentence goes before the new answer.
+  async function restart() {
+    if (!restartAsk || restartBusy) return;
+    const id = restartAsk.session.id;
+    setRestartBusy(true);
+    setRestartFailures((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    try {
+      await restartSession(id);
+    } catch (error) {
+      if (alive.current) setRestartFailures((current) => ({ ...current, [id]: sessionProblem(error) }));
+    } finally {
+      sessionsList.refresh();
+      restartEndedAt.current = Date.now();
+      if (alive.current) {
+        setRestartBusy(false);
+        setRestartAsk(null);
+      }
+    }
+  }
+
+  // A restart that stopped the session and could not resume it leaves it ended: its sentence stays here, on its own, since the
+  // banner (and its button) is only for a session that runs.
+  const endedFailures = Object.entries(restartFailures).flatMap(([id, text]) => {
+    const session = knownSessions.find((candidate) => candidate.id === id);
+    return session && session.status === "exited" && !session.dismissed ? [{ session, text }] : [];
+  });
+
+  // Nothing to say: no row yet, or an agent the checks found not installed (and no update running, no session to restart, no
+  // restart's confirm open: it goes on while the session it is about is stopped and resumed, whatever the list shows meanwhile).
+  if (!run && (!status || status.state === "not-installed") && !behind.length && !endedFailures.length && !restartAsk) return null;
 
   const word = stateWord(agentId, status);
   const found = checkFoundAnswer(status);
@@ -342,13 +440,12 @@ export default function AgentUpdatePanel({
   const reasonLines = hermesReasonLines(hermes?.reasons);
   const running = Boolean(run && !run.ended);
   const checkable = Boolean(status) && status?.state !== "not-installed";
-  // The dialog's open sessions: this agent's, from the shared sessions list (an update session is not one of them).
-  const knownSessions = sessionsList.source.state === "ok" ? sessionsList.source.data.sessions : [];
-  const openHere = openSessions(knownSessions).filter((session) => session.agentId === agentId);
-  const oldVersion = status?.installed || versionNumber(installedVersion) || "";
+  const oldVersion = installedNumber ?? "";
 
   return (
-    <div className="os-agent-update">
+    // `rootRef` is where the keys go when a restart took their button away: a group named by the Version heading (AgentBay's
+    // section title), so a screen reader says where it is.
+    <div className="os-agent-update" ref={rootRef} tabIndex={-1} role="group" aria-labelledby="os-agent-version-title">
       {found && status?.latest ? (
         <p className="os-agent-version__line">
           Latest <span className="os-agent-version__num os-mono">{status.latest}</span>
@@ -421,6 +518,26 @@ export default function AgentUpdatePanel({
         </p>
       ) : null}
 
+      {behind.length || endedFailures.length ? (
+        <div className="os-agent-update__restarts">
+          {behind.map((session) => (
+            <RestartBanner
+              key={session.id}
+              session={session}
+              newVersion={installedNumber ?? ""}
+              failure={restartFailures[session.id] ?? ""}
+              busy={restartBusy}
+              onRestart={() => askRestart(session)}
+            />
+          ))}
+          {endedFailures.map(({ session, text }) => (
+            <Banner key={session.id} tone="danger" title={sessionTitle(session)}>
+              {text}
+            </Banner>
+          ))}
+        </div>
+      ) : null}
+
       {run?.run.kind === "job" ? (
         <UpdateJobConsole key={run.run.id} jobId={run.run.id} agentId={agentId} label={name} autoFocus={run.fresh} onSettled={() => finish(false)} />
       ) : run?.run.kind === "session" ? (
@@ -465,6 +582,21 @@ export default function AgentUpdatePanel({
               </p>
             ) : null}
           </div>
+        </AgentConfirmModal>
+      ) : null}
+
+      {restartAsk ? (
+        <AgentConfirmModal
+          title={restartDialogTitle(name, restartAsk.session.folderShown === false ? null : restartAsk.session.folderName || null)}
+          confirmLabel={RESTART_LABEL}
+          cancelLabel={RESTART_NOT_NOW}
+          busy={restartBusy}
+          onConfirm={() => void restart()}
+          onClose={() => {
+            if (!restartBusy) setRestartAsk(null);
+          }}
+        >
+          <p>{restartDialogBody(restartAsk.newVersion)}</p>
         </AgentConfirmModal>
       ) : null}
     </div>

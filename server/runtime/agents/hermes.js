@@ -19,6 +19,7 @@ import {
 
 const DOCTOR_TIMEOUT_MS = 30 * 1000;
 const APPROVALS_TIMEOUT_MS = 10 * 1000;
+const SAFETY_ACTION_TIMEOUT_MS = 15 * 1000;
 const GATEWAY_STATUS_TIMEOUT_MS = 10 * 1000;
 const GATEWAY_ACTION_TIMEOUT_MS = 30 * 1000;
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -94,14 +95,79 @@ async function configStatus(detected) {
   };
 }
 
+// The one reviewer rule Agent OS writes into Hermes's `approvals.smart_policy`
+// (a text of operator rules that Hermes adds to its smart-mode reviewer's
+// instructions; ESCALATE means "ask the human"). It has no colon on purpose:
+// it is passed to `hermes config set` as one plain argument and compared back
+// against what `hermes config get` prints, so nothing in it can be read as
+// YAML. Agent OS writes it only on the person's click, and never over a rule
+// the person wrote themselves.
+export const HERMES_DELETE_RULE =
+  "Always ESCALATE any command that deletes or overwrites files, folders or data, such as rm, rmdir, unlink, find -delete, git clean, git reset --hard, and dropping, truncating or deleting databases or tables.";
+
+const ASK_RISKY_CHOICE = {
+  id: "ask-risky",
+  label: "Ask only for risky commands",
+  description:
+    "Sets approvals.mode to smart, Hermes's own reviewer mode: it lets routine commands run and asks you about risky ones. Agent OS also adds one rule to its reviewer: always ask before deleting."
+};
+
+const ASK_BEFORE_DELETE_CHOICE = {
+  id: "ask-before-delete",
+  label: "Always ask before deleting",
+  description: "Adds one rule to Hermes's reviewer: always ask before a command deletes files, folders or databases."
+};
+
 async function safetyStatus(detected) {
   if (!detected?.installed) {
     return { permissive: false, summary: "Hermes is not installed.", actions: [] };
   }
-  // Never reads ~/.hermes/.env or auth.json: this only asks the CLI for one
-  // non-secret config value.
-  const result = await runCommand(detected.path, ["config", "get", "approvals.mode"], APPROVALS_TIMEOUT_MS);
-  return approvalsSafety(result);
+  // Never reads ~/.hermes/.env or auth.json: this only asks the CLI for two
+  // non-secret config values, both at once. Both go to the same Hermes profile
+  // the writes and chat runs use (HERMES_HOME from the server's own environment,
+  // else the stored connection value), so what is read is what a click changes.
+  const home = await resolveHermesHome();
+  const readOptions = { env: home ? { ...process.env, HERMES_HOME: home } : process.env };
+  const [result, policyResult] = await Promise.all([
+    runCommand(detected.path, ["config", "get", "approvals.mode"], APPROVALS_TIMEOUT_MS, readOptions),
+    runCommand(detected.path, ["config", "get", "approvals.smart_policy"], APPROVALS_TIMEOUT_MS, readOptions)
+  ]);
+  // `choices` are optional switches (never a finding, so `permissive` stays as
+  // approvalsSafety gives it); `notes` are calm facts shown with an info mark.
+  const status = { ...approvalsSafety(result), choices: [], notes: [] };
+  // Off (on any line) and a setting that could not be read keep approvalsSafety's
+  // answer as it is, and so does any mode word other than manual and smart.
+  if (status.permissive || status.known === false) return status;
+  const mode = approvalsLines(result.stdout).pop();
+  if (mode !== "manual" && mode !== "smart") return status;
+
+  status.notes.push('Hermes asks in its own terminal. Agent OS marks the session "May need you" when it does.');
+  // The policy counts as read only when the read succeeded and printed at most one
+  // non-empty line: none is an empty policy, one is the value. Anything else (a
+  // failed or timed-out read, or two or more lines: a notice, or a policy written
+  // over several lines) is "unknown" (null). Then nothing is offered, because
+  // writing the rule could replace a rule of the person's own that was never seen,
+  // and a notice must never make Agent OS say the person has rules of their own.
+  const policyLines = policyResult.ok ? approvalsLines(policyResult.stdout) : [];
+  const policy = policyResult.ok && policyLines.length <= 1 ? (policyLines[0] ?? "") : null;
+  const hasRule = policy === HERMES_DELETE_RULE.toLowerCase();
+  const isEmpty = policy === "";
+  if (mode === "manual") {
+    status.summary = "Hermes asks you about every command its checks flag (approvals.mode = manual).";
+    if (isEmpty || hasRule) status.choices.push(ASK_RISKY_CHOICE);
+  } else if (hasRule) {
+    status.summary =
+      "Hermes runs routine commands on its own and asks only for risky ones, always before deleting (approvals.mode = smart).";
+  } else if (policy === null || isEmpty) {
+    status.summary =
+      "Hermes runs routine commands on its own; its reviewer decides which risky ones to ask about (approvals.mode = smart).";
+    if (isEmpty) status.choices.push(ASK_BEFORE_DELETE_CHOICE);
+  } else {
+    // The person's own rules: Agent OS never overwrites them.
+    status.summary =
+      "Hermes runs routine commands on its own; its reviewer also follows your own rules (approvals.mode = smart).";
+  }
+  return status;
 }
 
 // The spellings of "approvals off" that Hermes can print for approvals.mode: a
@@ -330,8 +396,51 @@ function parseLine(line, _stream, ctx = {}) {
   }
 }
 
-function safetyAction() {
-  return null; // Hermes has no configurable safety action yet.
+// One `hermes config set <key> <value>` run. Argv only, never a shell, so the
+// rule text needs no quoting. Hermes reloads config.yaml by itself (it keys its
+// cache on the file's modified time), so none of these restarts anything. A
+// started run gets only a short list of environment variables, so the profile
+// (HERMES_HOME) is passed on explicitly, exactly as a chat run does, and kept out
+// of the command preview.
+function configSetPlan(detected, home, title, key, value) {
+  return {
+    agentId: "hermes",
+    kind: "service",
+    title,
+    command: detected.path,
+    args: ["config", "set", key, value],
+    cwd: os.tmpdir(),
+    env: home ? { HERMES_HOME: home } : {},
+    redact: [home].filter(Boolean),
+    timeoutMs: SAFETY_ACTION_TIMEOUT_MS,
+    restartsGateway: false
+  };
+}
+
+// Builds the plan for an id from safetyStatus()'s `choices` (async: it looks up
+// the Hermes profile, the same one safetyStatus() read).
+//   ask-before-delete: writes the delete rule.
+//   ask-risky: writes the rule first, then (as `then`, started only if that
+//   succeeded) switches approvals.mode to smart, so Hermes is never in smart
+//   mode without the rule.
+async function safetyAction(actionId, detected) {
+  if (actionId !== "ask-before-delete" && actionId !== "ask-risky") return null;
+  const home = await resolveHermesHome();
+  const writeRule = configSetPlan(
+    detected,
+    home,
+    "Hermes config set approvals.smart_policy",
+    "approvals.smart_policy",
+    HERMES_DELETE_RULE
+  );
+  if (actionId === "ask-before-delete") return writeRule;
+  return {
+    ...writeRule,
+    then: {
+      ...configSetPlan(detected, home, "Hermes config set approvals.mode smart", "approvals.mode", "smart"),
+      note: "Switching Hermes to smart mode…"
+    }
+  };
 }
 
 export default {

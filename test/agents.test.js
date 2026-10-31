@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { containsBlockedFlag } from "../server/runtime/agent-flags.js";
 import { ADAPTERS } from "../server/runtime/agents/index.js";
 import {
+  HERMES_DELETE_RULE,
   approvalsSafety,
   featuresFromHelp,
   hermesApprovalsAreOff,
@@ -22,6 +23,7 @@ import {
 } from "../server/runtime/agents/hermes.js";
 import { eventsFromDocument, gatewayFeaturesFromHelp } from "../server/runtime/agents/openclaw.js";
 import { clearDetectCaches, resolveBinary } from "../server/runtime/agents/detect.js";
+import { configureConnection } from "../server/runtime/connections.js";
 import { createRunManager } from "../server/runtime/runs/run-manager.js";
 import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
@@ -48,6 +50,19 @@ const args = process.argv.slice(2);
 
 function print(text) {
   process.stdout.write(\`\${text}\\n\`);
+}
+
+function recordArgv() {
+  if (process.env.FAKE_HERMES_RECORD_ARGV) {
+    appendFileSync(process.env.FAKE_HERMES_RECORD_ARGV, \`\${JSON.stringify(args)}\\n\`);
+  }
+}
+
+// Which Hermes profile (HERMES_HOME) a \`config get\` was asked in, one JSON line per read.
+function recordHome() {
+  if (process.env.FAKE_HERMES_RECORD_HOME) {
+    appendFileSync(process.env.FAKE_HERMES_RECORD_HOME, \`\${JSON.stringify({ key: args[2], home: process.env.HERMES_HOME ?? null })}\\n\`);
+  }
 }
 
 if (args.includes("--version")) {
@@ -87,12 +102,30 @@ if (args[0] === "doctor") {
 }
 
 if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.mode") {
+  recordHome();
   if (process.env.FAKE_HERMES_APPROVALS_FAIL === "1") {
     process.stderr.write("config store is locked\\n");
     process.exit(1);
   }
   if (process.env.FAKE_HERMES_APPROVALS_EMPTY === "1") process.exit(0);
   print(process.env.FAKE_HERMES_APPROVALS || "on");
+  process.exit(0);
+}
+
+if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.smart_policy") {
+  recordHome();
+  if (process.env.FAKE_HERMES_SMART_POLICY_FAIL === "1") {
+    process.stderr.write("config store is locked\\n");
+    process.exit(1);
+  }
+  // The real CLI prints an empty line when the policy is empty.
+  print(process.env.FAKE_HERMES_SMART_POLICY ?? "");
+  process.exit(0);
+}
+
+if (args[0] === "config" && args[1] === "set" && (args[2] === "approvals.smart_policy" || args[2] === "approvals.mode")) {
+  recordArgv();
+  print(\`set \${args[2]}\`);
   process.exit(0);
 }
 
@@ -1068,7 +1101,14 @@ test(
   }
 );
 
-test(
+// hermes.safetyStatus() and hermes.safetyAction() look up the Hermes profile (HERMES_HOME) in Agent OS's own
+// connection store, so a test that calls them gets a temp Agent OS home (never the developer's real one) and no
+// HERMES_HOME of its own, unless it sets one.
+function testWithHermesHome(name, options, fn) {
+  return test(name, options, () => withTempHome(() => withEnv({ HERMES_HOME: undefined }, fn)));
+}
+
+testWithHermesHome(
   "hermes.safetyStatus(): approvals.mode=off is permissive (YOLO mode)",
   { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
   async () => {
@@ -1084,19 +1124,209 @@ test(
   }
 );
 
-test(
+testWithHermesHome(
+  "hermes.safetyStatus(): manual and smart say what they do and offer one choice only when it cannot replace the person's own rules (R34)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.22.5", features: {} };
+    const clean = {
+      FAKE_HERMES_APPROVALS: undefined,
+      FAKE_HERMES_APPROVALS_FAIL: undefined,
+      FAKE_HERMES_APPROVALS_EMPTY: undefined,
+      FAKE_HERMES_SMART_POLICY: undefined,
+      FAKE_HERMES_SMART_POLICY_FAIL: undefined
+    };
+    const MINE = "Never touch the production folder.";
+    const NOTE = 'Hermes asks in its own terminal. Agent OS marks the session "May need you" when it does.';
+    const ASK_RISKY = {
+      id: "ask-risky",
+      label: "Ask only for risky commands",
+      description:
+        "Sets approvals.mode to smart, Hermes's own reviewer mode: it lets routine commands run and asks you about risky ones. Agent OS also adds one rule to its reviewer: always ask before deleting."
+    };
+    const ASK_BEFORE_DELETE = {
+      id: "ask-before-delete",
+      label: "Always ask before deleting",
+      description: "Adds one rule to Hermes's reviewer: always ask before a command deletes files, folders or databases."
+    };
+    const MANUAL = "Hermes asks you about every command its checks flag (approvals.mode = manual).";
+    const SMART_EMPTY =
+      "Hermes runs routine commands on its own; its reviewer decides which risky ones to ask about (approvals.mode = smart).";
+    const SMART_RULE =
+      "Hermes runs routine commands on its own and asks only for risky ones, always before deleting (approvals.mode = smart).";
+    const SMART_MINE =
+      "Hermes runs routine commands on its own; its reviewer also follows your own rules (approvals.mode = smart).";
+
+    // The rule is the spec's sentence, word for word, and has no colon (so nothing in it can be read as YAML).
+    assert.equal(
+      HERMES_DELETE_RULE,
+      "Always ESCALATE any command that deletes or overwrites files, folders or data, such as rm, rmdir, unlink, find -delete, git clean, git reset --hard, and dropping, truncating or deleting databases or tables."
+    );
+    assert.equal(HERMES_DELETE_RULE.includes(":"), false);
+
+    const cases = [
+      // [name, env, summary, choices, notes, permissive, known]
+      ["off", { FAKE_HERMES_APPROVALS: "off" }, "Hermes approvals are off (YOLO mode).", [], [], true, true],
+      ["manual, empty policy", { FAKE_HERMES_APPROVALS: "manual" }, MANUAL, [ASK_RISKY], [NOTE], false, true],
+      ["manual, the rule", { FAKE_HERMES_APPROVALS: "manual", FAKE_HERMES_SMART_POLICY: HERMES_DELETE_RULE }, MANUAL, [ASK_RISKY], [NOTE], false, true],
+      ["manual, another policy", { FAKE_HERMES_APPROVALS: "manual", FAKE_HERMES_SMART_POLICY: MINE }, MANUAL, [], [NOTE], false, true],
+      ["manual, policy unreadable", { FAKE_HERMES_APPROVALS: "manual", FAKE_HERMES_SMART_POLICY_FAIL: "1" }, MANUAL, [], [NOTE], false, true],
+      ["smart, empty policy", { FAKE_HERMES_APPROVALS: "smart" }, SMART_EMPTY, [ASK_BEFORE_DELETE], [NOTE], false, true],
+      ["smart, the rule", { FAKE_HERMES_APPROVALS: "smart", FAKE_HERMES_SMART_POLICY: HERMES_DELETE_RULE }, SMART_RULE, [], [NOTE], false, true],
+      // Quotes around the value and capital letters do not matter (the CLI may print either).
+      ["smart, the rule in quotes and capitals", { FAKE_HERMES_APPROVALS: "SMART", FAKE_HERMES_SMART_POLICY: `"${HERMES_DELETE_RULE.toUpperCase()}"` }, SMART_RULE, [], [NOTE], false, true],
+      ["smart, another policy", { FAKE_HERMES_APPROVALS: "smart", FAKE_HERMES_SMART_POLICY: MINE }, SMART_MINE, [], [NOTE], false, true],
+      ["smart, policy unreadable", { FAKE_HERMES_APPROVALS: "smart", FAKE_HERMES_SMART_POLICY_FAIL: "1" }, SMART_EMPTY, [], [NOTE], false, true],
+      // Two or more non-empty lines count as unknown, never as the person's own rules: a notice line must not make
+      // Agent OS say they have rules of their own, and a policy written over several lines is never overwritten.
+      // Nothing is offered either way, even when the last line equals the rule.
+      ["smart, a notice line before the value", { FAKE_HERMES_APPROVALS: "smart", FAKE_HERMES_SMART_POLICY: `A new Hermes version is available\n${MINE}` }, SMART_EMPTY, [], [NOTE], false, true],
+      ["smart, a notice line, a blank line, then the value", { FAKE_HERMES_APPROVALS: "smart", FAKE_HERMES_SMART_POLICY: `A new Hermes version is available\n\n${MINE}` }, SMART_EMPTY, [], [NOTE], false, true],
+      ["manual, a two-line policy whose last line is the rule", { FAKE_HERMES_APPROVALS: "manual", FAKE_HERMES_SMART_POLICY: `${MINE}\n${HERMES_DELETE_RULE}` }, MANUAL, [], [NOTE], false, true],
+      ["smart, a two-line policy whose last line is the rule", { FAKE_HERMES_APPROVALS: "smart", FAKE_HERMES_SMART_POLICY: `${MINE}\n${HERMES_DELETE_RULE}` }, SMART_EMPTY, [], [NOTE], false, true],
+      ["an unknown mode word", { FAKE_HERMES_APPROVALS: "paranoid" }, "Hermes approvals are on.", [], [], false, true]
+    ];
+    for (const [name, env, summary, choices, notes, permissive, known] of cases) {
+      await withEnv({ ...clean, ...env }, async () => {
+        const status = await hermes.safetyStatus(detected);
+        assert.equal(status.summary, summary, name);
+        assert.deepEqual(status.choices, choices, name);
+        assert.deepEqual(status.notes, notes, name);
+        assert.deepEqual(status.actions, [], name);
+        assert.equal(status.permissive, permissive, name);
+        assert.equal(status.known, known, name);
+      });
+    }
+    // A mode that could not be read keeps its old answer (known: false) and offers nothing.
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS_FAIL: "1", FAKE_HERMES_SMART_POLICY: "" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.equal(status.summary, "Agent OS could not read Hermes's approvals setting.");
+      assert.deepEqual(status.choices, []);
+      assert.deepEqual(status.notes, []);
+    });
+  }
+);
+
+testWithHermesHome(
+  "hermes.safetyAction(): ask-before-delete writes the rule; ask-risky writes the rule first, then switches to smart; nothing restarts",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.22.5", features: {} };
+    const rule = await hermes.safetyAction("ask-before-delete", detected);
+    assert.equal(rule.agentId, "hermes");
+    assert.equal(rule.kind, "service");
+    assert.equal(rule.title, "Hermes config set approvals.smart_policy");
+    assert.equal(rule.command, hermesShim);
+    assert.deepEqual(rule.args, ["config", "set", "approvals.smart_policy", HERMES_DELETE_RULE]);
+    assert.equal(rule.restartsGateway, false);
+    assert.equal(rule.then, undefined, "the rule alone has no second step");
+
+    const both = await hermes.safetyAction("ask-risky", detected);
+    assert.equal(both.title, "Hermes config set approvals.smart_policy");
+    assert.deepEqual(both.args, ["config", "set", "approvals.smart_policy", HERMES_DELETE_RULE], "the rule is written first");
+    assert.equal(both.restartsGateway, false);
+    assert.equal(both.then.agentId, "hermes");
+    assert.equal(both.then.kind, "service");
+    assert.equal(both.then.title, "Hermes config set approvals.mode smart");
+    assert.equal(both.then.command, hermesShim);
+    assert.deepEqual(both.then.args, ["config", "set", "approvals.mode", "smart"]);
+    assert.equal(both.then.note, "Switching Hermes to smart mode…");
+    assert.equal(both.then.restartsGateway, false);
+
+    assert.equal(await hermes.safetyAction("nope", detected), null);
+  }
+);
+
+testWithHermesHome(
+  "hermes.safetyStatus(): both reads go to the Hermes profile Agent OS is set up with (HERMES_HOME from the environment, else the stored one)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.22.5", features: {} };
+    await withTempDir("agents-reads-", async (dir) => {
+      const record = path.join(dir, "reads.jsonl");
+      const profileOfEachRead = async () => {
+        await rm(record, { force: true });
+        await withEnv({ FAKE_HERMES_RECORD_HOME: record, FAKE_HERMES_APPROVALS: "smart", FAKE_HERMES_SMART_POLICY: "" }, () =>
+          hermes.safetyStatus(detected)
+        );
+        const reads = (await readFile(record, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+        return reads.sort((a, b) => a.key.localeCompare(b.key));
+      };
+      // Nothing set up: the CLI is not told any profile (it uses its own default).
+      assert.deepEqual(await profileOfEachRead(), [
+        { key: "approvals.mode", home: null },
+        { key: "approvals.smart_policy", home: null }
+      ]);
+      // The server's own environment wins.
+      await withEnv({ HERMES_HOME: "/custom/hermes-home" }, async () => {
+        assert.deepEqual(await profileOfEachRead(), [
+          { key: "approvals.mode", home: "/custom/hermes-home" },
+          { key: "approvals.smart_policy", home: "/custom/hermes-home" }
+        ]);
+      });
+      // Only the stored connection value: the server's environment has none, so the reads must be told it.
+      await configureConnection("hermes", { HERMES_HOME: "/stored/hermes-home" });
+      assert.equal(process.env.HERMES_HOME, undefined);
+      assert.deepEqual(await profileOfEachRead(), [
+        { key: "approvals.mode", home: "/stored/hermes-home" },
+        { key: "approvals.smart_policy", home: "/stored/hermes-home" }
+      ]);
+    });
+  }
+);
+
+testWithHermesHome(
+  "hermes.safetyAction(): both plans carry the same Hermes profile as the reads, in env and in redact; without one they carry none",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.22.5", features: {} };
+    // Every run these two choices can start: the rule alone, the rule of ask-risky, and its mode switch.
+    const runsOf = async () => {
+      const ruleOnly = await hermes.safetyAction("ask-before-delete", detected);
+      const both = await hermes.safetyAction("ask-risky", detected);
+      return [ruleOnly, both, both.then];
+    };
+    // Nothing set up: no HERMES_HOME in env, nothing to redact.
+    for (const plan of await runsOf()) {
+      assert.deepEqual(plan.env, {});
+      assert.deepEqual(plan.redact, []);
+    }
+    // The server's own environment.
+    await withEnv({ HERMES_HOME: "/custom/hermes-home" }, async () => {
+      for (const plan of await runsOf()) {
+        assert.deepEqual(plan.env, { HERMES_HOME: "/custom/hermes-home" });
+        assert.deepEqual(plan.redact, ["/custom/hermes-home"]);
+      }
+    });
+    // Only the stored connection value.
+    await configureConnection("hermes", { HERMES_HOME: "/stored/hermes-home" });
+    for (const plan of await runsOf()) {
+      assert.deepEqual(plan.env, { HERMES_HOME: "/stored/hermes-home" });
+      assert.deepEqual(plan.redact, ["/stored/hermes-home"]);
+    }
+  }
+);
+
+testWithHermesHome(
   "hermes.safetyStatus(): a setting it could not read is known: false, never 'approvals are on' (fake CLI)",
   { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
   async () => {
     const detected = { installed: true, path: hermesShim, version: "0.20.6", features: {} };
     const clean = { FAKE_HERMES_APPROVALS: undefined, FAKE_HERMES_APPROVALS_FAIL: undefined, FAKE_HERMES_APPROVALS_EMPTY: undefined };
     // Read fine: "manual" (a real mode) is on, and the answer is known (true, or the field absent).
+    // (R34 gave manual its own sentence; "Hermes approvals are on." is now only for other mode words.)
     await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "manual" }, async () => {
       const status = await hermes.safetyStatus(detected);
       assert.equal(status.permissive, false);
       assert.notEqual(status.known, false);
-      assert.match(status.summary, /approvals are on/);
+      assert.match(status.summary, /^Hermes asks you about every command/);
       assert.deepEqual(status.actions, []);
+    });
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "on" }, async () => {
+      const status = await hermes.safetyStatus(detected);
+      assert.equal(status.known, true);
+      assert.match(status.summary, /approvals are on/);
     });
     // "off" stays off, and is a known answer.
     await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "off" }, async () => {

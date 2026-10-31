@@ -1,8 +1,9 @@
 // The hangar's Safety panel: the adapter's one-line safety finding plus a
 // "Fix" button per available safety action (e.g. OpenClaw's exec-ask,
 // no-browser-cookies); optional choices (e.g. OpenClaw's exec-auto) get a
-// "Turn on" button instead. A fix's response may carry a gateway-restart
-// follow-up run, which gets its own mini-console right after the first one.
+// "Turn on" button instead. A response may carry a follow-up run (a gateway
+// restart, or the second step of a choice), which gets its own mini-console
+// right after the first one, under the line the server sent with it.
 import { useState } from "react";
 import { Info } from "lucide-react";
 import { postAgentSafetyAction } from "../../api";
@@ -34,6 +35,8 @@ export default function AgentSafetyPanel({
   const [error, setError] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
   const [followUpId, setFollowUpId] = useState<string | null>(null);
+  // The line shown above the follow-up's console (it goes away with the follow-up).
+  const [followUpNote, setFollowUpNote] = useState<string | null>(null);
 
   if (!safety) {
     return (
@@ -58,7 +61,10 @@ export default function AgentSafetyPanel({
     try {
       const result = await postAgentSafetyAction(agentId, action.id);
       setRunId(result.run.id);
-      if (result.followUp) setFollowUpId(result.followUp.id);
+      if (result.followUp) {
+        setFollowUpId(result.followUp.id);
+        setFollowUpNote(result.followUpNote ?? null);
+      }
       setConfirming(null);
     } catch (caught) {
       setError(friendlyError(caught));
@@ -148,7 +154,8 @@ export default function AgentSafetyPanel({
       ) : null}
       {followUpId ? (
         <>
-          <p className="os-agent-safety__restart-note">Restarting the gateway so this takes effect…</p>
+          {/* An older server sends no note; the only follow-up it ever started was the gateway restart. */}
+          <p className="os-agent-safety__restart-note">{followUpNote || "Restarting the gateway so this takes effect…"}</p>
           <div className="os-service__mini">
             <RunConsole
               runId={followUpId}
@@ -156,6 +163,7 @@ export default function AgentSafetyPanel({
               onEnded={() => {
                 setRunId(null);
                 setFollowUpId(null);
+                setFollowUpNote(null);
                 onFixed();
               }}
             />

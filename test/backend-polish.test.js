@@ -4,7 +4,7 @@
 // test/agents.test.js / test/coding-agents.test.js.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -406,7 +406,27 @@ if (args[0] === "agent" && args[1] === "exec" && args.includes("--help")) {
   process.exit(0);
 }
 
+// The safety route only runs a change its panel offers right now (R34), so it reads these two settings first.
+// The test writes the exec mode into a file between requests (the server is a separate process).
+if (args[0] === "config" && args[1] === "get" && args[2] === "tools.exec.mode") {
+  const { readFileSync } = await import("node:fs");
+  let mode = "full";
+  try {
+    mode = readFileSync(PATHS.execModeFile, "utf8").trim() || "full";
+  } catch {}
+  print(mode);
+  process.exit(0);
+}
+
+if (args[0] === "config" && args[1] === "get" && args[2] === "browser.allowSystemProfileImport") {
+  // The real CLI prints a sentence, not a value, when a path is unset.
+  print("Config path is valid but unset: browser.allowSystemProfileImport.");
+  process.exit(0);
+}
+
 if (args[0] === "config" && args[1] === "set") {
+  const { appendFileSync } = await import("node:fs");
+  appendFileSync(PATHS.record, \`\${JSON.stringify(args)}\\n\`);
   print(\`set \${args[2]}=\${args[3]}\`);
   process.exit(0);
 }
@@ -430,6 +450,60 @@ print(\`fake-openclaw: unknown command \${JSON.stringify(args)}\`);
 process.exit(1);
 `;
 
+// A fake Hermes for the safety route. Its settings come from a JSON file the test rewrites between requests:
+// { mode, policy, failPolicySet }. Every `config set` is recorded, one JSON array of argv per line.
+const FAKE_HERMES_SOURCE = `
+const args = process.argv.slice(2);
+
+function print(text) {
+  process.stdout.write(\`\${text}\\n\`);
+}
+
+async function state() {
+  const { readFileSync } = await import("node:fs");
+  try {
+    return JSON.parse(readFileSync(PATHS.state, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+if (args.includes("--version")) {
+  print("hermes 0.22.5");
+  process.exit(0);
+}
+
+if (args[0] === "chat" && args.includes("--help")) {
+  print(["Usage: hermes chat [options]", "  --query-file PATH", "  --oneshot", "  -Q, --quiet", "  --in DIR"].join("\\n"));
+  process.exit(0);
+}
+
+if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.mode") {
+  print((await state()).mode ?? "manual");
+  process.exit(0);
+}
+
+if (args[0] === "config" && args[1] === "get" && args[2] === "approvals.smart_policy") {
+  print((await state()).policy ?? "");
+  process.exit(0);
+}
+
+if (args[0] === "config" && args[1] === "set") {
+  const { appendFileSync } = await import("node:fs");
+  // The profile (HERMES_HOME) the write ran in is recorded too: a started run is given it only by its plan.
+  appendFileSync(PATHS.record, \`\${JSON.stringify({ args, home: process.env.HERMES_HOME ?? null })}\\n\`);
+  if (args[2] === "approvals.smart_policy" && (await state()).failPolicySet === true) {
+    process.stderr.write("could not write config.yaml\\n");
+    process.exit(1);
+  }
+  print(\`set \${args[2]}\`);
+  process.exit(0);
+}
+
+print(\`fake-hermes: unknown command \${JSON.stringify(args)}\`);
+process.exit(1);
+`;
+
 const FAKE_OSASCRIPT_SOURCE = `
 const args = process.argv.slice(2);
 function print(text) {
@@ -445,6 +519,29 @@ process.exit(1);
 let httpSourceDir = null;
 let httpShimDir = null;
 let gatewayStateFile = null;
+// Files the fake CLIs share with the test (a started run gets only a short list of environment variables, so the
+// fakes cannot be told these paths through the environment: each fake's source starts with them instead).
+let openclawModeFile = null;
+let openclawRecordFile = null;
+let hermesStateFile = null;
+let hermesRecordFile = null;
+
+// Every `config set` a fake CLI recorded so far, as argv arrays (none when nothing was recorded).
+async function recordedSets(file) {
+  const text = await readFile(file, "utf8").catch(() => "");
+  return text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
+// A started run is not awaited by the safety route when it is a follow-up: wait until it has ended.
+async function waitForRunEnd(base, runId, headers) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const run = await (await fetch(`${base}/api/runs/${runId}`, { headers })).json();
+    if (run.status !== "queued" && run.status !== "running") return run;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`run ${runId} did not end`);
+}
 
 before(async () => {
   if (isWindows) return;
@@ -452,14 +549,29 @@ before(async () => {
   httpShimDir = await mkdtemp(path.join(os.tmpdir(), "agent-os-backend-polish-http-bin-"));
   gatewayStateFile = path.join(httpSourceDir, "gateway-state.json");
   await writeFile(gatewayStateFile, JSON.stringify({ running: false }));
+  openclawModeFile = path.join(httpSourceDir, "openclaw-exec-mode.txt");
+  openclawRecordFile = path.join(httpSourceDir, "openclaw-record.jsonl");
+  hermesStateFile = path.join(httpSourceDir, "hermes-state.json");
+  hermesRecordFile = path.join(httpSourceDir, "hermes-record.jsonl");
 
   const openclawSource = path.join(httpSourceDir, "fake-openclaw.mjs");
+  const hermesSource = path.join(httpSourceDir, "fake-hermes.mjs");
   const osascriptSource = path.join(httpSourceDir, "fake-osascript.mjs");
-  await writeFile(openclawSource, FAKE_OPENCLAW_SOURCE);
+  await writeFile(
+    openclawSource,
+    `const PATHS = ${JSON.stringify({ execModeFile: openclawModeFile, record: openclawRecordFile })};\n${FAKE_OPENCLAW_SOURCE}`
+  );
+  await writeFile(
+    hermesSource,
+    `const PATHS = ${JSON.stringify({ state: hermesStateFile, record: hermesRecordFile })};\n${FAKE_HERMES_SOURCE}`
+  );
   await writeFile(osascriptSource, FAKE_OSASCRIPT_SOURCE);
 
   const openclawShim = path.join(httpShimDir, "openclaw");
+  const hermesShim = path.join(httpShimDir, "hermes");
   const osascriptShim = path.join(httpShimDir, "osascript");
+  await writeFile(hermesShim, `#!/bin/sh\nexec "${process.execPath}" "${hermesSource}" "$@"\n`);
+  await chmod(hermesShim, 0o755);
   await writeFile(openclawShim, `#!/bin/sh\nexec "${process.execPath}" "${openclawSource}" "$@"\n`);
   await chmod(openclawShim, 0o755);
   await writeFile(osascriptShim, `#!/bin/sh\nexec "${process.execPath}" "${osascriptSource}" "$@"\n`);
@@ -556,7 +668,10 @@ test(
     const homeDir = await mkdtemp(path.join(os.tmpdir(), "agent-os-backend-polish-route-"));
     const port = await freePort();
     const base = `http://127.0.0.1:${port}`;
-    const child = spawnServer(baseEnv(homeDir, port));
+    // The server is set up with a Hermes profile (a folder that does not exist, inside this test's own temp home), so
+    // the Hermes safety writes below must run in it.
+    const hermesProfile = path.join(homeDir, "hermes-profile");
+    const child = spawnServer({ ...baseEnv(homeDir, port), HERMES_HOME: hermesProfile });
     const logs = collectLogs(child);
     const authed = { "x-agent-os-token": TOKEN };
     const authedJson = { "Content-Type": "application/json", "x-agent-os-token": TOKEN };
@@ -628,6 +743,10 @@ test(
       const contextBody = await contextLevel2.json();
       assert.equal(contextBody.frontApp, "FakeApp");
 
+      // A fix or choice runs only while the agent's panel offers it (R34), so the fake's mode has to match:
+      // "full" offers exec-ask, "ask" offers exec-auto.
+      await writeFile(openclawModeFile, "full");
+
       // Safety action with restartsGateway:false (exec-ask) never restarts.
       const execAskRes = await fetch(`${base}/api/agents/openclaw/safety/exec-ask`, {
         method: "POST",
@@ -639,7 +758,10 @@ test(
       assert.equal(execAskBody.run.status, "succeeded");
       assert.equal(execAskBody.followUp, null);
 
+      assert.equal(execAskBody.followUpNote, null);
+
       // exec-auto is the same setting (tools.exec.mode), so it never restarts the gateway either.
+      await writeFile(openclawModeFile, "ask");
       const execAutoRes = await fetch(`${base}/api/agents/openclaw/safety/exec-auto`, {
         method: "POST",
         headers: authedJson,
@@ -650,6 +772,81 @@ test(
       assert.equal(execAutoBody.run.status, "succeeded");
       assert.match(execAutoBody.run.commandPreview, /config set tools\.exec\.mode auto/);
       assert.equal(execAutoBody.followUp, null);
+      assert.equal(execAutoBody.followUpNote, null);
+
+      // A stricter setting must not be moved to a looser one: with the mode "deny" the panel offers neither
+      // exec-ask nor exec-auto, so the route answers 409 and runs nothing (the fake records no `config set`).
+      await writeFile(openclawModeFile, "deny");
+      const setsBeforeDeny = (await recordedSets(openclawRecordFile)).length;
+      for (const id of ["exec-auto", "exec-ask", "not-a-real-action"]) {
+        const deniedRes = await fetch(`${base}/api/agents/openclaw/safety/${id}`, {
+          method: "POST",
+          headers: authedJson,
+          body: JSON.stringify({ confirm: true })
+        });
+        assert.equal(deniedRes.status, 409, id);
+        assert.deepEqual(await deniedRes.json(), { ok: false, error: "This change isn't offered right now. Refresh the page." }, id);
+      }
+      assert.equal((await recordedSets(openclawRecordFile)).length, setsBeforeDeny, "a refused change ran nothing");
+      await writeFile(openclawModeFile, "full");
+
+      // Hermes (R34): from manual with no rule, "ask-risky" writes the rule first, then starts the mode switch as the
+      // follow-up, with the note the panel shows above that second console. approvals.mode is set only after the rule.
+      const hermesPost = (id) =>
+        fetch(`${base}/api/agents/hermes/safety/${id}`, {
+          method: "POST",
+          headers: authedJson,
+          body: JSON.stringify({ confirm: true })
+        });
+      await writeFile(hermesStateFile, JSON.stringify({ mode: "manual", policy: "" }));
+      const askRiskyRes = await hermesPost("ask-risky");
+      assert.equal(askRiskyRes.status, 200);
+      const askRiskyBody = await askRiskyRes.json();
+      assert.equal(askRiskyBody.run.status, "succeeded");
+      assert.match(askRiskyBody.run.commandPreview, /config set approvals\.smart_policy "Always ESCALATE any command/);
+      assert.ok(askRiskyBody.followUp, "expected the mode switch as the follow-up run");
+      assert.match(askRiskyBody.followUp.commandPreview, /config set approvals\.mode smart$/);
+      assert.equal(askRiskyBody.followUpNote, "Switching Hermes to smart mode…");
+      assert.equal((await waitForRunEnd(base, askRiskyBody.followUp.id, authed)).status, "succeeded");
+      const hermesSets = await recordedSets(hermesRecordFile);
+      assert.deepEqual(
+        hermesSets.map(({ args }) => args.slice(0, 3)),
+        [["config", "set", "approvals.smart_policy"], ["config", "set", "approvals.mode"]],
+        "the rule first, then the mode"
+      );
+      // Both writes ran in the Hermes profile the server is set up with (a started run is given it only by its plan).
+      assert.deepEqual(hermesSets.map(({ home }) => home), [hermesProfile, hermesProfile]);
+
+      // From smart with no rule, "ask-before-delete" writes the rule alone: no follow-up, no note.
+      await writeFile(hermesStateFile, JSON.stringify({ mode: "smart", policy: "" }));
+      const setsBeforeDelete = (await recordedSets(hermesRecordFile)).length;
+      const askDeleteRes = await hermesPost("ask-before-delete");
+      assert.equal(askDeleteRes.status, 200);
+      const askDeleteBody = await askDeleteRes.json();
+      assert.equal(askDeleteBody.run.status, "succeeded");
+      assert.equal(askDeleteBody.followUp, null);
+      assert.equal(askDeleteBody.followUpNote, null);
+      assert.equal((await recordedSets(hermesRecordFile)).length, setsBeforeDelete + 1);
+
+      // If the rule cannot be written, the mode is not switched: no follow-up run starts.
+      await writeFile(hermesStateFile, JSON.stringify({ mode: "manual", policy: "", failPolicySet: true }));
+      const setsBeforeFail = (await recordedSets(hermesRecordFile)).length;
+      const failedRes = await hermesPost("ask-risky");
+      assert.equal(failedRes.status, 200);
+      const failedBody = await failedRes.json();
+      assert.equal(failedBody.run.status, "failed");
+      assert.equal(failedBody.followUp, null);
+      assert.equal(failedBody.followUpNote, null);
+      assert.equal((await recordedSets(hermesRecordFile)).length, setsBeforeFail + 1, "only the rule was tried");
+
+      // The person's own rules are never overwritten: with one in place neither id is offered, so nothing runs.
+      await writeFile(hermesStateFile, JSON.stringify({ mode: "smart", policy: "Never touch the production folder." }));
+      const setsBeforeOwn = (await recordedSets(hermesRecordFile)).length;
+      for (const id of ["ask-before-delete", "ask-risky"]) {
+        const ownRes = await hermesPost(id);
+        assert.equal(ownRes.status, 409, id);
+      }
+      assert.equal((await recordedSets(hermesRecordFile)).length, setsBeforeOwn, "the person's own rules stayed untouched");
 
       // Safety action with restartsGateway:true (no-browser-cookies) does not
       // restart when the fake gateway reports it isn't running.
@@ -663,6 +860,7 @@ test(
       const noRestartBody = await noRestartRes.json();
       assert.equal(noRestartBody.run.status, "succeeded");
       assert.equal(noRestartBody.followUp, null);
+      assert.equal(noRestartBody.followUpNote, null);
 
       // ...but does restart when the fake gateway reports it is running.
       await writeFile(gatewayStateFile, JSON.stringify({ running: true }));
@@ -676,6 +874,7 @@ test(
       assert.equal(restartBody.run.status, "succeeded");
       assert.ok(restartBody.followUp, "expected a follow-up restart run when the gateway is running");
       assert.match(restartBody.followUp.commandPreview, /gateway restart/);
+      assert.equal(restartBody.followUpNote, "Restarting the gateway so this takes effect…");
 
       // Restart is now allowed as a plain service action too (start/stop/restart).
       const serviceRestartRes = await fetch(`${base}/api/agents/openclaw/service/restart`, {

@@ -2366,10 +2366,13 @@ export interface AgentRunPreview {
 }
 
 // POST /api/agents/:id/safety/:actionId's response: the config-set run, plus
-// a best-effort gateway-restart run when the setting needed one to apply.
+// a best-effort follow-up run: a gateway restart when the setting needed one to
+// apply, or the second step of a two-step choice (Hermes's rule, then its mode).
 export interface AgentSafetyActionResult {
   run: RunMeta;
   followUp: RunMeta | null;
+  // The line shown above the follow-up's console; null without a follow-up. Absent from older servers.
+  followUpNote?: string | null;
 }
 
 export interface AgentSummary {

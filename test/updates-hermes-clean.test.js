@@ -50,7 +50,7 @@ test("isOfficialHermesUrl: https, scp-style and ssh:// forms, any letter case, o
 test("isOfficialHermesUrl: credentials in the URL are dropped before the comparison", () => {
   assert.equal(isOfficialHermesUrl("https://user:tok@github.com/NousResearch/hermes-agent.git"), true);
   assert.equal(isOfficialHermesUrl("https://tok@github.com/NousResearch/hermes-agent"), true);
-  assert.equal(isOfficialHermesUrl("https://x-access-token:ghp_abc123@github.com/nousresearch/hermes-agent/"), true);
+  assert.equal(isOfficialHermesUrl("https://x-access-token:not-a-real-token@github.com/nousresearch/hermes-agent/"), true);
 });
 
 test("isOfficialHermesUrl: the user part of the URL can't end the host early (#, ? and \\ before an @github.com)", () => {

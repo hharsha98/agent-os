@@ -66,6 +66,8 @@ import {
   formatSize,
   gotNoAnswer,
   groupAction,
+  hermesPlanOutcome,
+  hermesSavedAnswer,
   landingStep,
   mergeSelections,
   needsOpenClawConsent,
@@ -288,14 +290,23 @@ export default function SetupPage() {
   const [hermesError, setHermesError] = useState("");
   const hermesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const updates = useUpdates();
-  // Setup follows the saved Hermes row (release batch, item 1). The row's state as the page holds it now (kept in a ref too,
-  // because loadAll runs from an effect that only ever sees the first render), and the state it held when the last plan read
-  // started (undefined until the first one). A saved row that moved since then means the plan on screen may still offer an
-  // update that the row no longer calls for (Hermes's own check ends after the page's one read of the plan).
-  const hermesRowState = updates.data?.agents.find((row) => row.agentId === "hermes")?.state ?? null;
-  const hermesRowRef = useRef(hermesRowState);
-  hermesRowRef.current = hermesRowState;
+  // Setup follows the saved Hermes answer (release batch, item 1). `hermesSaved` says what the page holds of it now: null until the
+  // page has read the saved answer at all (not the same as "the server has no row for Hermes yet", which is "none|..."), otherwise the
+  // row's state and the clean answer together, so a change of either one alone counts. It is kept in a ref too, because loadAll runs
+  // from an effect that only ever sees the first render. `planReadHermes` is what the page held when the last plan read started
+  // (undefined until the first one). A saved answer that moved since then means the plan on screen may still offer an update that the
+  // answer no longer calls for (Hermes's own check ends after the page's one read of the plan, and R49's retry can change it later).
+  const savedHermes = hermesSavedAnswer(updates.data);
+  const hermesSaved = savedHermes?.key ?? null;
+  const hermesSavedRef = useRef(hermesSaved);
+  hermesSavedRef.current = hermesSaved;
   const planReadHermes = useRef<string | null | undefined>(undefined);
+  // Plan reads are numbered and only the newest answer goes on screen, as with the brain reads: refreshServerState's plan waits for the
+  // slow brain read (up to a minute on a Mac with OpenClaw) and must not land over a newer plan that was read meanwhile.
+  const planReadSeq = useRef(0);
+  const shownPlanSeq = useRef(0);
+  // The saved answer for which the page last asked whether the Hermes session that it thinks is live really is (once per move).
+  const endedAskedFor = useRef<string | null>(null);
 
   // What the AI brain panel is doing (it runs its own configure job and
   // result screen); used for the rail and for the footer's buttons.
@@ -392,7 +403,7 @@ export default function SetupPage() {
     // The plan, the brain options and the agents list are read together but judged apart:
     // one that fails must not hide the others. Each answer goes on screen when it arrives, so the
     // brain read (a real OpenClaw takes about a minute, up to its limit) does not hold the plan back.
-    planReadHermes.current = hermesRowRef.current;
+    const planSeq = beginPlanRead();
     const planRead = settled(withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS));
     const brainSeq = ++brainReadSeq.current;
     const brainShown = settled(withTimeout(getBrainOptions(refresh), BRAIN_READ_LIMIT_MS)).then((brainRes) => {
@@ -414,10 +425,9 @@ export default function SetupPage() {
     const planRes = await planRead;
     if (!alive.current) return;
     if (planRes.status === "fulfilled") {
-      setPlan(planRes.value);
-      setPlanError("");
-      setSelections((prev) => mergeSelections(prev, planRes.value));
-    } else {
+      applyPlan(planSeq, planRes.value);
+    } else if (planSeq > shownPlanSeq.current) {
+      // (A newer read's answer is already on screen: this older read's failure is not news.)
       setPlanError(readProblem(planRes.reason, "the setup plan"));
     }
 
@@ -470,7 +480,7 @@ export default function SetupPage() {
   // re-read gets no answer the old data stays, with a note saying so.
   async function refreshServerState(includePlan: boolean) {
     const brainSeq = ++brainReadSeq.current;
-    if (includePlan) planReadHermes.current = hermesRowRef.current;
+    const planSeq = includePlan ? beginPlanRead() : 0;
     try {
       const [checkRes, brainRes, planRes] = await Promise.all([
         withTimeout(getSetupCheck(true), CHECK_TIMEOUT_MS),
@@ -486,57 +496,95 @@ export default function SetupPage() {
         setBrain(brainRes);
         setBrainError("");
       }
-      if (planRes) {
-        setPlan(planRes);
-        setPlanError("");
-        // The plan changed under the choices (an agent was just installed or updated). Keep what the person chose
-        // meanwhile while the new plan still offers it; a choice the job just carried out falls back to its default.
-        setSelections((prev) => mergeSelections(prev, planRes));
-      }
+      // The plan changed under the choices (an agent was just installed or updated). applyPlan keeps what the person chose
+      // meanwhile while the new plan still offers it; a choice the job just carried out falls back to its default.
+      if (planRes) applyPlan(planSeq, planRes);
       setStale(false);
     } catch {
       if (alive.current) setStale(true);
     }
   }
 
-  // Reads only the plan, for when the saved Hermes row moved after the page last read it (release batch, item 1). The server builds
-  // the plan from its cached answers (no check, no git), so this is cheap. The row the page held is recorded when the read starts:
-  // the same row then asks for nothing more, so this cannot loop. The person's choices change only as mergeSelections already
-  // changes them (a choice the new plan no longer offers falls back to its default). A read that fails leaves the plan on screen,
-  // shows nothing new, and lets the next change of the row ask again.
+  // Every plan read takes a number and records the saved answer the page held when it started. Only the newest read's answer goes on
+  // screen (applyPlan), and the record is what the effect below compares the saved answer with, so a re-read cannot loop.
+  function beginPlanRead(): number {
+    planReadHermes.current = hermesSavedRef.current;
+    return ++planReadSeq.current;
+  }
+
+  // Puts a plan read's answer on screen unless a newer read's answer already is: an older read that comes back late is dropped
+  // silently. The person's choices change only as mergeSelections already changes them (a choice the new plan no longer offers
+  // falls back to its default).
+  function applyPlan(seq: number, planRes: SetupPlan): boolean {
+    if (seq <= shownPlanSeq.current) return false;
+    shownPlanSeq.current = seq;
+    setPlan(planRes);
+    setPlanError("");
+    setSelections((prev) => mergeSelections(prev, planRes));
+    return true;
+  }
+
+  // Reads only the plan, for when the saved Hermes answer moved after the page last read it (release batch, item 1). The version
+  // answers behind the plan are the saved ones, and the route runs no version check and no git of its own; it does call
+  // systemCheck({}), whose cache lasts 60 s, so a re-read can run a detection of the computer. A read that fails leaves the plan on
+  // screen and shows nothing new; the record goes back (unless a newer read has started), so the next change asks again.
   async function rereadPlan() {
     const before = planReadHermes.current;
-    planReadHermes.current = hermesRowRef.current;
+    const seq = beginPlanRead();
     try {
       const planRes = await withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS);
       if (!alive.current) return;
-      setPlan(planRes);
-      setPlanError("");
-      setSelections((prev) => mergeSelections(prev, planRes));
+      applyPlan(seq, planRes);
     } catch {
-      if (alive.current) planReadHermes.current = before;
+      if (alive.current && seq === planReadSeq.current) planReadHermes.current = before;
     }
   }
 
-  // The saved Hermes row moved since the last plan read, and nothing is running: read the plan again. Only on the Plan step (a
+  // The session the page thinks is live (`hermesRun`) is ended by the terminal on the Install step, and only that terminal says so.
+  // When the saved answer moves while the person is elsewhere, ask the server: no live session means the run is over, and the
+  // re-read below may go ahead. A live session changes nothing; a server that cannot say leaves the run as it is (never ended on a
+  // guess, so a session that really runs is never read around).
+  async function settleHermesRun() {
+    let live: string | null;
+    try {
+      live = await findLiveUpdateSession("hermes");
+    } catch {
+      return;
+    }
+    if (!alive.current || live) return;
+    setHermesRun((current) => (current && !current.ended ? { ...current, ended: true } : current));
+  }
+
+  // The saved Hermes answer moved since the last plan read, and nothing is running: read the plan again. Only on the Plan step (a
   // person who comes back to it finds it read again, because the step is a dependency), and never while a job or a Hermes
-  // session runs (the plan under a running update is the job's business, and its own end re-reads it). A row the page did not
-  // know when it read the plan (null: the page's first read of the saved answer comes after the plan's) is not a change: the
-  // server built that plan from its own saved row, so the first state the page learns becomes the one to compare with.
+  // session runs (the plan under a running update is the job's business, and its own end re-reads it). A plan read made before the
+  // page had the saved answer has no record to compare with: the first answer is a change only when the PLAN disagrees with it
+  // (hermesPlanOutcome says what the plan was built on, as far as Hermes goes); a matching one just becomes the record. A
+  // disagreeing one reads the plan again, which is cheap and cannot loop, because the record is set when that read starts.
   const jobRunning = installJob?.status === "running";
   const hermesWorking = Boolean(hermesRun && !hermesRun.ended);
   useEffect(() => {
     const before = planReadHermes.current;
-    if (before === undefined) return;
+    if (before === undefined || hermesSaved === null) return;
     if (before === null) {
-      if (hermesRowState !== null) planReadHermes.current = hermesRowState;
+      if (!plan) return;
+      if (hermesPlanOutcome(plan) === savedHermes?.outcome) {
+        planReadHermes.current = hermesSaved;
+        return;
+      }
+    } else if (before === hermesSaved) return;
+    // Moved while the session is thought live and the terminal that would say it ended is not on screen: ask once per move.
+    if (hermesWorking && stepIndex !== STEP.install) {
+      if (endedAskedFor.current !== hermesSaved) {
+        endedAskedFor.current = hermesSaved;
+        void settleHermesRun();
+      }
       return;
     }
     if (stepIndex !== STEP.plan || jobRunning || hermesWorking) return;
-    if (hermesRowState === null || hermesRowState === before) return;
     void rereadPlan();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hermesRowState, stepIndex, jobRunning, hermesWorking]);
+  }, [hermesSaved, plan, stepIndex, jobRunning, hermesWorking]);
 
   useEffect(() => {
     planRef.current = plan;
@@ -886,16 +934,19 @@ export default function SetupPage() {
   // One re-read at a time: the Retry buttons and Check again all come through here. Check again alone also asks for a fresh check of
   // the agents' versions (release batch, item 3), because the plan reads the saved answer and a stale "Hermes is up to date." could
   // otherwise stand for up to 24 hours with no way past it on this page. useUpdates' recheck has no Hermes-only form, so it checks
-  // all five. It is not waited for (the button is about the table) and a check that fails changes nothing and shows nothing; when the
-  // saved row moves, the plan is read again on the Plan step. Never on page load: only on this click.
+  // all five. It starts once the page's own re-read has answered, is not waited for (the button is about the table), and a check that
+  // fails changes nothing and shows nothing; when the saved answer moves, the plan is read again on the Plan step. Never on page load:
+  // only on this click.
   async function onRecheck(askUpdates = false) {
     if (rechecking) return;
     setRechecking(true);
     try {
-      if (askUpdates) void updates.recheck().catch(() => undefined);
       await loadAll(true);
     } finally {
       if (alive.current) setRechecking(false);
+      // Only after the page's own re-read has answered (however it went), and only if the page is still here: the agents' versions
+      // are asked once, not twice at the same moment (release batch review, 6).
+      if (askUpdates && alive.current) void updates.recheck().catch(() => undefined);
     }
   }
 
@@ -932,6 +983,12 @@ export default function SetupPage() {
   // After a refused start the plan is read again and may have lost the step the dialog was opened for (a Hermes update the row
   // now calls up to date): the dialog then has no work, says so, and has no button that would start a job of kept agents.
   const confirmHasWork = confirmGroup ? workIn(confirmGroup).length > 0 : false;
+  // When the group runs out of work while the dialog is open and no sentence is showing (the person opened "Update Hermes Agent?",
+  // and the saved answer moved before they pressed it), there is nothing to explain: the dialog closes. With a refusal's sentence it
+  // stays, as "Nothing to run" with that sentence. (Not while its own start is still running.)
+  useEffect(() => {
+    if (confirmGroup && !confirmHasWork && !installConfirmError && !installBusy) setConfirmGroup(null);
+  }, [confirmGroup, confirmHasWork, installConfirmError, installBusy]);
 
   const operatorsLabel = groupAction("operators", operatorWorkSteps);
   const codingLabel = groupAction("coding", codingWorkSteps);

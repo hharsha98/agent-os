@@ -190,7 +190,8 @@ export function createSetupRouter({ sessionManager = null, updateChecks = null }
       const check = await systemCheck({});
       // Hermes's update step appears only when its checkout is an unchanged official copy, and not when its saved row
       // says it is up to date (R48: nothing to update, and on a release channel `hermes update` could move it back). Both
-      // answers are the cached ones from the version checks: no git call and no CLI runs inside a page request. A failed
+      // answers are the saved ones from the version checks: this request runs no version check and no git of its own. It does
+      // call systemCheck({}) above, whose cache lasts 60 s, so a request can still run a detection of the computer. A failed
       // row, an available row or no row at all is "not up to date": a check that failed blocks nothing.
       const hermesRow = checks().list().find((row) => row.agentId === "hermes");
       res.json(

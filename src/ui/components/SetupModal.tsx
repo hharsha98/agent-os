@@ -38,7 +38,17 @@ export default function SetupModal({
   error?: string;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const previouslyFocused = useRef<Element | null>(null);
+
+  // When the confirm button goes (nothing left to confirm) the person who pressed it by keyboard has focus on a button that no longer
+  // exists, and it falls to the page behind the dialog. If it is outside the dialog then, Cancel takes it. Every other dialog keeps its
+  // confirm button, so nothing here runs for them.
+  const hadConfirm = useRef(showConfirm);
+  useEffect(() => {
+    if (hadConfirm.current && !showConfirm && !dialogRef.current?.contains(document.activeElement)) cancelRef.current?.focus();
+    hadConfirm.current = showConfirm;
+  }, [showConfirm]);
 
   useEffect(() => {
     previouslyFocused.current = document.activeElement;
@@ -89,7 +99,7 @@ export default function SetupModal({
           </p>
         ) : null}
         <div className="os-setup-modal__actions">
-          <button type="button" className="os-btn os-btn--ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="os-btn os-btn--ghost" ref={cancelRef} onClick={onClose} disabled={busy}>
             {cancelLabel}
           </button>
           {showConfirm ? (

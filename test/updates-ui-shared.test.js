@@ -534,28 +534,128 @@ test("release batch 2: a Setup confirm with no work left says 'Nothing to run', 
   assert.match(modal, /\{showConfirm \? \(\s*<button[^>]*onClick=\{onConfirm\}/, "only the confirm button is left out; Cancel and the error stay");
 });
 
-test("release batch 1 and 3: Setup follows the saved Hermes row on the Plan step, and 'Check again' asks for a fresh check", () => {
+// The body of one function of the page (comments already stripped): from its header to the first closing brace at its own indent.
+const bodyOf = (page, header) => new RegExp(`${header}[\\s\\S]*?\\n  \\}\\n`).exec(page)?.[0] ?? "";
+
+test("release batch 1: what a plan offers for Hermes, what the saved answer implies, and the key that tells moves apart", () => {
+  const plan = (...steps) => ({ steps });
+  const hermes = (action, extra = {}) => ({ agentId: "hermes", action, ...extra });
+  assert.equal(groupShared.hermesPlanOutcome(null), null, "no plan on screen yet");
+  assert.equal(groupShared.hermesPlanOutcome(plan(hermes("keep"), hermes("update"))), "update");
+  assert.equal(groupShared.hermesPlanOutcome(plan(hermes("keep", { noUpdate: "up-to-date" }))), "up-to-date");
+  assert.equal(groupShared.hermesPlanOutcome(plan(hermes("keep"))), "locked");
+  assert.equal(groupShared.hermesPlanOutcome(plan(hermes("install"))), "absent");
+  assert.equal(groupShared.hermesPlanOutcome(plan({ agentId: "claude", action: "keep" })), "absent");
+
+  // The saved answer as the page reads it (GET /api/updates): { agents: rows, hermes: { clean, reasons } }.
+  const saved = (state, clean) => ({ agents: state === undefined ? [] : [{ agentId: "claude", state: "up-to-date" }, { agentId: "hermes", state }], hermes: { clean, reasons: [] } });
+  assert.equal(groupShared.hermesSavedAnswer(null), null, "the page has not read the saved answer yet");
+  assert.equal(groupShared.hermesSavedAnswer(undefined), null);
+  // The same rules the server's plan uses (setup/plan.js and its /plan route): clean and not up to date offers the update.
+  const table = [
+    [undefined, false, "none|not-clean", "locked"], // the server has no row yet
+    [undefined, true, "none|clean", "update"],
+    ["available", true, "available|clean", "update"],
+    ["failed", true, "failed|clean", "update"],
+    ["up-to-date", true, "up-to-date|clean", "up-to-date"],
+    ["up-to-date", false, "up-to-date|not-clean", "locked"],
+    ["available", false, "available|not-clean", "locked"],
+    ["not-installed", true, "not-installed|clean", "absent"]
+  ];
+  for (const [state, clean, key, outcome] of table) {
+    assert.deepEqual(groupShared.hermesSavedAnswer(saved(state, clean)), { key, outcome }, `${state} ${clean}`);
+  }
+  // "No answer read yet" (null) and "the server has no row yet" ("none|...") are different things, and a change of the clean answer
+  // alone is a different key (R49: the retry after a cold no_checkout).
+  const keys = [null, ...table.map(([, , key]) => key)];
+  assert.equal(new Set(keys).size, keys.length, "every state the page can be in has its own key");
+  assert.notEqual(groupShared.hermesSavedAnswer(saved("available", true)).key, groupShared.hermesSavedAnswer(saved("available", false)).key);
+});
+
+test("release batch 1 and 3: Setup follows the saved Hermes answer on the Plan step, and 'Check again' asks for a fresh check", () => {
   const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
-  // 1. A change of the saved row since the last plan read, on the Plan step, with nothing running, re-reads the plan only.
-  assert.match(page, /const hermesRowState = updates\.data\?\.agents\.find\(\(row\) => row\.agentId === "hermes"\)\?\.state \?\? null;/);
+  // 1. A change of the saved answer (the row's state and the clean answer together) since the last plan read, on the Plan step,
+  //    with nothing running, re-reads the plan only.
+  assert.match(page, /const savedHermes = hermesSavedAnswer\(updates\.data\);\s*const hermesSaved = savedHermes\?\.key \?\? null;/);
   assert.match(page, /if \(stepIndex !== STEP\.plan \|\| jobRunning \|\| hermesWorking\) return;/, "only on the Plan step, and never while a job or a Hermes session runs");
-  assert.match(page, /if \(hermesRowState === null \|\| hermesRowState === before\) return;/, "only when the row differs from the one at the last plan read");
-  // A plan read made before the page knew the row has no baseline: the first state the page learns becomes it (and is no change).
-  assert.match(page, /if \(before === null\) \{\s*if \(hermesRowState !== null\) planReadHermes\.current = hermesRowState;\s*return;\s*\}/, "the first known row is the baseline, not a change");
-  assert.match(page, /void rereadPlan\(\);/);
-  const reread = /async function rereadPlan\(\) \{[\s\S]*?\n  \}\n/.exec(page)?.[0] ?? "";
-  assert.match(reread, /planReadHermes\.current = hermesRowRef\.current;/, "the row the page held is recorded when a read starts, so it cannot loop");
-  assert.match(reread, /setSelections\(\(prev\) => mergeSelections\(prev, planRes\)\);/, "the person's choices change only as mergeSelections already does");
-  assert.doesNotMatch(reread, /getSetupCheck|getBrainOptions|setPlanError\((?!"")/, "a plan read only: no check, no brain read, and a failed one shows nothing new");
-  // Every plan read records the row it started with.
-  assert.equal(
-    page.split("planReadHermes.current = ").length - 1,
-    5,
-    "loadAll, refreshServerState, rereadPlan, the restore after a failed re-read, and the first known row becoming the baseline"
+  assert.match(page, /\} else if \(before === hermesSaved\) return;/, "only when the saved answer differs from the one at the last plan read");
+  assert.match(page, /if \(before === undefined \|\| hermesSaved === null\) return;/, "no plan read yet, or no saved answer read yet: nothing to compare");
+  // A plan read made before the page had the saved answer has no record to compare with. The first answer the page reads is judged by
+  // what the PLAN says it was built on (hermesPlanOutcome): it matches what the answer implies, so it is no change and no re-read.
+  assert.match(
+    page,
+    /if \(before === null\) \{\s*if \(!plan\) return;\s*if \(hermesPlanOutcome\(plan\) === savedHermes\?\.outcome\) \{\s*planReadHermes\.current = hermesSaved;\s*return;\s*\}\s*\}/,
+    "the first answer is a change only when the plan disagrees with it"
   );
-  // 3. Check again asks for a fresh check of Hermes through useUpdates (the whole list: it has no Hermes-only form), on that click only.
+  assert.match(page, /void rereadPlan\(\);/);
+  const reread = bodyOf(page, "async function rereadPlan\\(\\) \\{");
+  assert.match(reread, /const seq = beginPlanRead\(\);/, "the answer the page held is recorded when a read starts, so it cannot loop");
+  assert.match(reread, /applyPlan\(seq, planRes\);/);
+  assert.match(reread, /seq === planReadSeq\.current\) planReadHermes\.current = before;/, "a failed read puts the record back, unless a newer read has started");
+  assert.doesNotMatch(reread, /getSetupCheck|getBrainOptions|setPlanError\(/, "a plan read only: no check, no brain read, and a failed one shows nothing new");
+  // The person's choices change only as mergeSelections already changes them, and only the newest read's answer goes on screen.
+  const apply = bodyOf(page, "function applyPlan\\(seq: number, planRes: SetupPlan\\): boolean \\{");
+  assert.match(apply, /if \(seq <= shownPlanSeq\.current\) return false;/, "an older read's answer is dropped silently");
+  assert.match(apply, /setSelections\(\(prev\) => mergeSelections\(prev, planRes\)\);/);
+  assert.match(bodyOf(page, "function beginPlanRead\\(\\): number \\{"), /planReadHermes\.current = hermesSavedRef\.current;\s*return \+\+planReadSeq\.current;/);
+  // Every plan read (loadAll, refreshServerState, rereadPlan) takes a number first and goes on screen through applyPlan. This pairs
+  // the calls instead of counting assignments: a fourth plan read added later has to follow the same two steps.
+  const reads = page.split('getSetupPlan("all")').length - 1;
+  assert.equal(reads, 3, "the three plan reads");
+  assert.equal(page.split("beginPlanRead()").length - 1, reads + 1, "each takes its number from beginPlanRead() (plus the helper's own header)");
+  assert.equal(page.split("applyPlan(").length - 1, reads + 1, "each applies its answer with applyPlan( (plus the helper's own header)");
+  for (const name of ["async function loadAll\\(refresh = false\\) \\{", "async function refreshServerState\\(includePlan: boolean\\) \\{", "async function rereadPlan\\(\\) \\{"]) {
+    const body = bodyOf(page, name);
+    assert.match(body, /beginPlanRead\(\)/, `${name} numbers its read`);
+    assert.match(body, /applyPlan\(/, `${name} applies through the newest-wins check`);
+    assert.doesNotMatch(body, /setPlan\(/, `${name} never sets the plan directly`);
+  }
+  // 3. Check again asks for a fresh check of Hermes through useUpdates (the whole list: it has no Hermes-only form), on that click only,
+  //    after the page's own re-read has answered (however it went), only while the page is still there, and without waiting for it.
   assert.match(page, /async function onRecheck\(askUpdates = false\)/);
-  assert.match(page, /if \(askUpdates\) void updates\.recheck\(\)\.catch\(\(\) => undefined\);/, "a failed check changes nothing and shows nothing");
+  assert.match(
+    page,
+    /await loadAll\(true\);\s*\} finally \{\s*if \(alive\.current\) setRechecking\(false\);\s*if \(askUpdates && alive\.current\) void updates\.recheck\(\)\.catch\(\(\) => undefined\);/,
+    "the version check starts when the page's own read has answered, and a failed one changes nothing and shows nothing"
+  );
   assert.match(page, /onClick=\{\(\) => void onRecheck\(true\)\}\s*disabled=\{rechecking \|\| \(!check && !checkError\)\}/, "the Check again button asks");
   assert.equal(page.split("updates.recheck(").length - 1, 1, "and nothing else (no page load, no Retry button) runs a check");
+});
+
+test("release batch review round: a session that ended while the person is on Plan, a dialog that runs out of work, and the dialog's focus", () => {
+  const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
+  // 2. The saved answer moves while the Hermes session is thought live and the page is not on Install (the terminal that would say it
+  //    ended is not on screen): ask the server once per move; no live session means the run has ended, and the re-read can go ahead.
+  assert.match(
+    page,
+    /if \(hermesWorking && stepIndex !== STEP\.install\) \{\s*if \(endedAskedFor\.current !== hermesSaved\) \{\s*endedAskedFor\.current = hermesSaved;\s*void settleHermesRun\(\);\s*\}\s*return;\s*\}/,
+    "one ask per move, and nothing else happens while the session may still run"
+  );
+  const settle = bodyOf(page, "async function settleHermesRun\\(\\) \\{");
+  assert.match(settle, /await findLiveUpdateSession\("hermes"\)/);
+  assert.match(settle, /\} catch \{\s*return;\s*\}/, "a server that cannot say leaves the run as it is (never ended on a guess)");
+  assert.match(settle, /if \(!alive\.current \|\| live\) return;/, "a live session changes nothing");
+  assert.match(settle, /setHermesRun\(\(current\) => \(current && !current\.ended \? \{ \.\.\.current, ended: true \} : current\)\);/);
+  // 4. The dialog's group has no work left and no sentence is showing: it closes. With a sentence (a refusal) it stays.
+  assert.match(
+    page,
+    /useEffect\(\(\) => \{\s*if \(confirmGroup && !confirmHasWork && !installConfirmError && !installBusy\) setConfirmGroup\(null\);\s*\}, \[confirmGroup, confirmHasWork, installConfirmError, installBusy\]\);/
+  );
+  // 5. SetupModal: when the confirm button goes and focus has fallen outside the dialog, Cancel takes it; no other dialog changes.
+  const modal = source("ui/components/SetupModal.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(modal, /const hadConfirm = useRef\(showConfirm\);/);
+  assert.match(modal, /if \(hadConfirm\.current && !showConfirm && !dialogRef\.current\?\.contains\(document\.activeElement\)\) cancelRef\.current\?\.focus\(\);\s*hadConfirm\.current = showConfirm;/);
+  assert.match(modal, /<button type="button" className="os-btn os-btn--ghost" ref=\{cancelRef\}/, "the Cancel button can be focused");
+  // 7. The comment above rereadPlan and the one in the /plan route no longer say a plan read runs no check: systemCheck's own 60 s
+  //    cache means a read can run a detection of the computer.
+  const rawPage = source("pages/SetupPage.tsx");
+  const comment = /\/\/ Reads only the plan[\s\S]*?async function rereadPlan/.exec(rawPage)?.[0] ?? "";
+  assert.match(comment, /systemCheck\(\{\}\)/);
+  assert.match(comment, /60 s/);
+  assert.doesNotMatch(comment, /no check, no git/);
+  const routes = readFileSync(new URL("../server/runtime/setup/routes.js", import.meta.url), "utf8");
+  const routeComment = /Hermes's update step appears only when[\s\S]*?const hermesRow/.exec(routes)?.[0] ?? "";
+  assert.match(routeComment, /systemCheck\(\{\}\)/);
+  assert.match(routeComment, /60 s/);
+  assert.doesNotMatch(routeComment, /no git call and no CLI runs inside a page request/);
 });

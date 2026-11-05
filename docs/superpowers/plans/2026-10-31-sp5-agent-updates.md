@@ -88,6 +88,8 @@ The Update confirm dialog:
 - OpenClaw only: "Dry run: {current} → {target}." and "Its Gateway restarts, and the update can take several minutes." (R50)
 - Setup's OpenClaw row with Update chosen, which has no dry-run answer: "Open sessions may stop working until you restart them. The update can take several minutes." (R50)
 - Buttons: "Cancel", "Update"
+- Setup's confirm when a refused start leaves nothing to run: title "Nothing to run", with the refusal's sentence and only its Cancel button. (R53)
+- Setup's Cancel confirm while an update step runs, after its own sentence: "An update is running. Stopping it now can leave that agent half-updated." (R54)
 
 Hermes:
 - Clean and up to date, on Setup's row and in the 409 `hermes_up_to_date`: "Hermes is up to date." (R48)

@@ -418,7 +418,7 @@ test("E1 I2: Setup's plan row for an installed Hermes that has no update step sa
     assert.equal(shared.setupNoUpdateLine(agentId), "Agent OS does not update this agent yet. It stays as it is.", agentId);
   }
   const row = source("ui/components/SetupPlanRow.tsx");
-  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId\)/, "the row asks by the agent it shows");
+  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId, keepStep\.noUpdate\)/, "the row asks by the agent it shows (and the plan's mark)");
   assert.doesNotMatch(row.replace(/\/\/.*$/gm, ""), /does not update this agent yet/, "and holds no copy of the sentence");
 });
 
@@ -444,4 +444,51 @@ test("E1 M2: when an update ends the page reads the saved answer (GET /api/updat
   assert.match(panel, /async function checkAgain\(\) \{[^}]*updates\.recheck\(\)/, "and that is where it is");
   assert.doesNotMatch(panel, /afterSession\) void latest\.current\.updates\.recheck/, "the end of a Hermes session no longer rechecks");
   assert.match(panel, /latest\.current\.updates\.reload\(\);\s*latest\.current\.onChanged\(\);/, "both kinds of update end with a read of the saved answer");
+});
+
+// ---- SP5 E2 round 1 ------------------------------------------------------------------------------------------------
+
+test("E2 R48 on Setup: a Hermes row whose keep step is marked noUpdate up-to-date says 'Hermes is up to date.' (no lock), not the changed-copy sentence", () => {
+  assert.equal(shared.SETUP_HERMES_UP_TO_DATE_LINE, "Hermes is up to date.");
+  assert.equal(shared.setupNoUpdateLine("hermes", "up-to-date"), "Hermes is up to date.");
+  // No mark (or any other value): the sentences are as they were, so a changed copy is never called up to date.
+  for (const noUpdate of [undefined, null, "", "other"]) {
+    assert.equal(shared.setupNoUpdateLine("hermes", noUpdate), "Agent OS updates Hermes only from an unchanged official copy. See Agents for why.");
+  }
+  // Only Hermes's keep step carries the mark; if another agent's ever did, its row would not say "Hermes".
+  assert.equal(shared.setupNoUpdateLine("claude", "up-to-date"), "Agent OS does not update this agent yet. It stays as it is.");
+
+  const row = source("ui/components/SetupPlanRow.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId, keepStep\.noUpdate\)/, "the row passes the plan's mark");
+  assert.doesNotMatch(row, /Hermes is up to date/, "and holds no copy of the sentence");
+  // A lock beside "Hermes is up to date." would read as "blocked": it is drawn for every other no-update row only.
+  assert.match(row, /keepStep\.noUpdate === "up-to-date" \? null : <Lock /);
+  const api = source("setupApi.ts");
+  assert.match(api, /noUpdate\?: "up-to-date"/, "the plan step type has the mark");
+});
+
+test("E2 R50 on Setup: OpenClaw's row carries the open-sessions warning and the minutes when Update is chosen, and says nothing about its Gateway", () => {
+  assert.equal(shared.SETUP_OPENCLAW_MINUTES_LINE, "The update can take several minutes.");
+  assert.equal(
+    `${shared.openSessionsLine("openclaw")} ${shared.SETUP_OPENCLAW_MINUTES_LINE}`,
+    "Open sessions may stop working until you restart them. The update can take several minutes."
+  );
+  const row = source("ui/components/SetupPlanRow.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(row, /openSessionsLine\("openclaw"\)/, "the first sentence is the Update dialog's own");
+  assert.match(row, /SETUP_OPENCLAW_MINUTES_LINE/);
+  assert.match(row, /chosen === "update"[\s\S]*keepStep\.agentId === "openclaw"/, "only when Update is chosen, and only for OpenClaw");
+  // Setup has no dry-run answer, so it cannot say whether the Gateway restarts.
+  assert.doesNotMatch(row, /Gateway/);
+  assert.doesNotMatch(row, /GATEWAY_LINE/);
+});
+
+test("E2 R48: a refused Hermes update (409 hermes_up_to_date) shows the server's own sentence on the Agents page and on Setup, and Setup reads its plan again", async () => {
+  const agents = await import("../src/ui/agentsShared.ts");
+  const refusal = new ApiError("hermes_up_to_date", "Hermes is up to date.", 409);
+  assert.equal(agents.friendlyError(refusal), "Hermes is up to date.", "the Agents page's dialog and Setup's error both use friendlyError");
+  const setup = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(setup, /error\.message === "hermes_not_clean" \|\| error\.message === "hermes_up_to_date"\) void refreshServerState\(true\)/);
+  assert.match(setup, /return updateError\(error\)/, "and the sentence is what it returns");
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /setStartError\(friendlyError\(error\)\);\s*updates\.reload\(\);/, "the Agents page shows it in the dialog and reads the saved answer again");
 });

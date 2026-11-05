@@ -28,6 +28,7 @@ const SESSION_UPDATE_AGENTS = Object.freeze(["hermes"]);
 const SESSION_POLL_MS = 1000;
 
 export const HERMES_NOT_CLEAN_MESSAGE = "Hermes's folder changed since the last check, so Agent OS didn't update it.";
+export const HERMES_UP_TO_DATE_MESSAGE = "Hermes is up to date.";
 
 const labelOf = (agentId) => SESSION_AGENT_LABEL[agentId] ?? agentId;
 
@@ -166,7 +167,21 @@ async function startJobUpdate(agentId) {
   }
 }
 
+// Hermes's saved version row, or undefined (none yet, or a replacement checks object that has no list()).
+function savedHermesRow(checks) {
+  try {
+    return checks.list?.().find((row) => row.agentId === "hermes");
+  } catch {
+    return undefined;
+  }
+}
+
 async function startHermesUpdate(manager, { checks, pollMs }) {
+  // R48: a Hermes that is up to date is not updated. It would do nothing, or on a release channel move back to an older
+  // release. The page does not offer it (the Agents page needs "available", Setup leaves the step out), so this is for a stale
+  // page. Only the saved row can say so: a failed row, an available row or none at all lets the click go on, as before. It is
+  // asked before the clean check, so a refused click runs no git and starts no terminal.
+  if (savedHermesRow(checks)?.state === "up-to-date") throw sessionError(409, "hermes_up_to_date", HERMES_UP_TO_DATE_MESSAGE);
   // The click's own check is the one that counts: what the page last showed may be a day old.
   const fresh = await checks.refreshHermesClean();
   if (!fresh.clean || !fresh.checkout) throw sessionError(409, "hermes_not_clean", HERMES_NOT_CLEAN_MESSAGE);
@@ -186,7 +201,8 @@ async function startHermesUpdate(manager, { checks, pollMs }) {
  * Starts the update of one agent.
  * @returns {Promise<{ kind: "job", jobId: string } | { kind: "session", sessionId: string }>}
  * Throws a sessionError: 404 unknown_agent; 409 update_running (this agent is already updating),
- * hermes_not_clean, agent_not_installed, job_already_running (Setup runs one job at a time).
+ * hermes_not_clean, hermes_up_to_date (Hermes's saved row says up to date), agent_not_installed,
+ * job_already_running (Setup runs one job at a time).
  *   manager        the session manager (Hermes updates run as one of its sessions)
  *   checks         the version checks (default: the server's own); the Hermes clean answer is asked of it
  *   sessionPollMs  how often a running update session is looked at (tests shorten it)

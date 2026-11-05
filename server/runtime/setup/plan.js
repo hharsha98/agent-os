@@ -90,7 +90,11 @@ function installerCommandPreview(recipe) {
 }
 
 // hermesClean: the cached answer of the Hermes clean check. Unknown or false (the default) offers no Hermes update.
-export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean = false } = {}) {
+// hermesUpToDate: the saved Hermes version row says "up-to-date" (default false). Then there is nothing to update (R48: Hermes
+// would do nothing, or on a release channel move back), so the Hermes update step is left out as well. When that is the only
+// reason (the copy is clean), the keep step is marked noUpdate: "up-to-date", so the page can say so instead of calling a clean
+// copy "changed". A failed row, an available row and no row at all pass false: a check that failed blocks nothing.
+export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean = false, hermesUpToDate = false } = {}) {
   const steps = [];
   const warnings = [];
   const manualSteps = [];
@@ -130,9 +134,10 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean
         sourceUrl: recipe.sourceUrl,
         commandPreview: null,
         ...stepMeta(recipe),
-        installedVersion: detected.version || ""
+        installedVersion: detected.version || "",
+        ...(agentId === "hermes" && hermesClean === true && hermesUpToDate === true ? { noUpdate: "up-to-date" } : {})
       });
-      if (agentId === "hermes" && hermesClean !== true) continue;
+      if (agentId === "hermes" && (hermesClean !== true || hermesUpToDate === true)) continue;
       steps.push({
         id: `${agentId}-update`,
         agentId,

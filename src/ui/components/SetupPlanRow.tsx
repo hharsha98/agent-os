@@ -2,14 +2,15 @@
 // server computed (GET /api/setup/plan): what is installed, what an install or an
 // update would do, the licence and the source links. Nothing is invented here, so
 // an installed agent with no update step (Hermes unless its folder is an unchanged
-// official copy, SP5) simply cannot be updated, and the row says so.
+// official copy that is not already up to date, SP5) simply cannot be updated, and the
+// row says so.
 import type { ReactNode } from "react";
 import { ExternalLink, Lock } from "lucide-react";
 import OpenAddress from "./OpenAddress";
 import SetupSegmented from "./SetupSegmented";
 import SetupStatus from "./SetupStatus";
 import { formatMinutes, formatSize, totalsOf, type PlanSelection } from "../setupGroupShared";
-import { setupNoUpdateLine } from "../updatesShared";
+import { SETUP_OPENCLAW_MINUTES_LINE, openSessionsLine, setupNoUpdateLine } from "../updatesShared";
 import type { SetupPlanStep } from "../../setupApi";
 
 export interface OpenClawConsent {
@@ -102,14 +103,26 @@ export default function SetupPlanRow({
     );
     sub = <span className="os-mono">{keepStep.installedVersion || "—"}</span>;
     if (!updateStep) {
+      // "Hermes is up to date." is not a block, so a lock beside it would mislead; every other no-update row keeps its lock.
       what = (
         <span className="os-setup-lock">
-          <Lock size={15} aria-hidden="true" />
-          {setupNoUpdateLine(keepStep.agentId)}
+          {keepStep.noUpdate === "up-to-date" ? null : <Lock size={15} aria-hidden="true" />}
+          {setupNoUpdateLine(keepStep.agentId, keepStep.noUpdate)}
         </span>
       );
     } else if (chosen === "update") {
-      what = `Runs ${label}'s own updater. It replaces the agent's program files. Your settings stay.`;
+      // OpenClaw's old session stays alive but cannot work until restarted, and its update takes minutes (R50): the same warning
+      // as the Update dialog's. Setup has no dry-run answer, so it makes no claim about the Gateway.
+      what = (
+        <>
+          {`Runs ${label}'s own updater. It replaces the agent's program files. Your settings stay.`}
+          {keepStep.agentId === "openclaw" ? (
+            <span className="os-setup-needs">
+              {openSessionsLine("openclaw")} {SETUP_OPENCLAW_MINUTES_LINE}
+            </span>
+          ) : null}
+        </>
+      );
     } else {
       what = "Stays as it is.";
     }

@@ -673,8 +673,9 @@ export default function SetupPage() {
             return "";
           }
         }
-        // What the server decided may differ from what the plan showed (Hermes's folder changed since the last check): read it again.
-        if (error.message === "hermes_not_clean") void refreshServerState(true);
+        // What the server decided may differ from what the plan showed (Hermes's folder changed since the last check, or its
+        // row now says it is up to date): read it again. The refusal's own sentence is what the page shows.
+        if (error.message === "hermes_not_clean" || error.message === "hermes_up_to_date") void refreshServerState(true);
       }
       return updateError(error);
     }

@@ -101,6 +101,9 @@ export const openSessionsLine = (agentId: string) =>
 export const dryRunLine = (current: string, target: string) => `Dry run: ${current} → ${target}.`;
 // OpenClaw's own update ran 6 m 50 s on the owner's Mac, with the Gateway down for about 2 of them.
 export const GATEWAY_LINE = "Its Gateway restarts, and the update can take several minutes.";
+// Setup's OpenClaw row when Update is chosen carries the same warning (R50: it happens the same way from Setup):
+// `openSessionsLine("openclaw")`, then this. Setup has no dry-run answer, so it says nothing about the Gateway.
+export const SETUP_OPENCLAW_MINUTES_LINE = "The update can take several minutes.";
 
 // ---- Hermes: not an unchanged official copy ----------------------------------------------------------------------
 
@@ -112,7 +115,12 @@ export const HERMES_BLOCKED_LINE = "Agent OS updates Hermes only from an unchang
 // sentence. (The Hermes sentence is a new one, ruled by the orchestrator at E1.)
 export const SETUP_NO_UPDATE_LINE = "Agent OS does not update this agent yet. It stays as it is.";
 export const SETUP_HERMES_NO_UPDATE_LINE = `${HERMES_BLOCKED_LINE} See Agents for why.`;
-export const setupNoUpdateLine = (agentId: string) => (agentId === "hermes" ? SETUP_HERMES_NO_UPDATE_LINE : SETUP_NO_UPDATE_LINE);
+// A clean Hermes whose saved row says it is up to date has no update step either (R48: it would do nothing, or on a release
+// channel move back). The plan marks its keep step `noUpdate: "up-to-date"`, and the row then says that, because the "unchanged
+// official copy" sentence would be false for a clean copy. It is also the server's refusal sentence (hermes_up_to_date).
+export const SETUP_HERMES_UP_TO_DATE_LINE = "Hermes is up to date.";
+export const setupNoUpdateLine = (agentId: string, noUpdate?: string | null) =>
+  agentId === "hermes" ? (noUpdate === "up-to-date" ? SETUP_HERMES_UP_TO_DATE_LINE : SETUP_HERMES_NO_UPDATE_LINE) : SETUP_NO_UPDATE_LINE;
 
 // "Not clean" with no reason at all is what the server sends before its first check of Hermes's folder has ended, and when
 // that check could not run (checks.js hermesClean). It is not a changed copy, so the page does not draw the reasons and

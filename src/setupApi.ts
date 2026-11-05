@@ -166,6 +166,8 @@ export interface SetupPlanStep {
   // "session" on Hermes's update (SP5) only: it does not run in a job. Hermes may ask a question, so it runs in a terminal
   // session started through POST /api/updates/hermes, and the server refuses a job that names it.
   runsIn?: "session";
+  // On Hermes's keep step when it has no update step only because its row says it is up to date (R48), not because its copy changed.
+  noUpdate?: "up-to-date";
 }
 
 export interface SetupPlan {

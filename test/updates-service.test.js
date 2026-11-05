@@ -27,7 +27,7 @@ import { clearSystemCheckCache } from "../server/runtime/setup/system-check.js";
 import { isAgentUpdating } from "../server/runtime/updates/activity.js";
 import { createUpdateChecks, getUpdateChecks, hermesCleanForUpdate, resetUpdateChecksForTest } from "../server/runtime/updates/checks.js";
 import { createUpdatesRouter } from "../server/runtime/updates/routes.js";
-import { startAgentUpdate, updateAgentsOf, withUpdateGuard } from "../server/runtime/updates/update-service.js";
+import { HERMES_UP_TO_DATE_MESSAGE, startAgentUpdate, updateAgentsOf, withUpdateGuard } from "../server/runtime/updates/update-service.js";
 import { FAKE_AGENT_SCRIPT, FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
 import { setFakeKnob } from "./helpers/fake-knobs.js";
 import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
@@ -329,13 +329,15 @@ async function openWindow(manager, id) {
   };
 }
 
-// The checks a Hermes test hands the service: statuses that never change, and a clean answer it controls.
-function hermesChecks(w, answer, counts = { checks: [], clean: 0 }) {
-  const state = { answer };
+// The checks a Hermes test hands the service: statuses that never change, and a clean answer it controls. Hermes's own row
+// is "available" unless a test says otherwise (`state.hermesRow`): a Hermes that is up to date is refused an update (R48),
+// and these tests are about updating it.
+function hermesChecks(w, answer, counts = { checks: [], clean: 0 }, hermesRow = "available") {
+  const state = { answer, hermesRow };
   const checks = createUpdateChecks({
     check: async (id) => {
       counts.checks.push(id);
-      return { agentId: id, installed: "1.0.0", latest: "1.0.0", state: "up-to-date", checkedAt: "2026-10-31T00:00:00.000Z" };
+      return { agentId: id, installed: "1.0.0", latest: "1.0.0", state: id === "hermes" ? state.hermesRow : "up-to-date", checkedAt: "2026-10-31T00:00:00.000Z" };
     },
     cleanCheck: async () => {
       counts.clean += 1;
@@ -595,6 +597,93 @@ test("Hermes, not clean: 409 hermes_not_clean, no session; the clean answer is c
   });
 });
 
+// ---- Hermes that is up to date is not updated (SP5 E2 round 1, R48 on Setup and on a stale page) ----------------------
+
+test("Hermes, up to date: 409 hermes_up_to_date with its sentence, before the clean check and before any terminal", POSIX_ONLY, async () => {
+  assert.equal(HERMES_UP_TO_DATE_MESSAGE, "Hermes is up to date.");
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    const { checks, counts } = hermesChecks(w, cleanAnswer, undefined, "up-to-date");
+    await checks.refresh("hermes");
+    assert.equal(checks.list().find((row) => row.agentId === "hermes").state, "up-to-date");
+    assert.equal(counts.clean, 1, "the round's own clean check");
+
+    const refused = (error) => error.status === 409 && error.code === "hermes_up_to_date" && error.message === "Hermes is up to date.";
+    await assert.rejects(startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 }), refused);
+    assert.equal(counts.clean, 1, "the row is looked at first: the clean check did not run for this click");
+    assert.equal(w.spawned.length, 0, "no terminal was started");
+    assert.deepEqual(await manager.list({ includeUpdate: true }), [], "and no session");
+    // The refusal let go of the update guard: the same answer again, not update_running.
+    await assert.rejects(startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 }), refused);
+    assert.equal(w.spawned.length, 0);
+  });
+});
+
+test("Hermes: an available row, a failed row and no row at all still start the update session", POSIX_ONLY, async () => {
+  for (const row of ["available", "failed", null]) {
+    await withWorld({}, async (w) => {
+      const manager = w.manager();
+      const { checks, counts } = hermesChecks(w, cleanAnswer, undefined, row ?? "available");
+      if (row !== null) await checks.refresh("hermes"); // no row: Agent OS has not checked Hermes yet
+      assert.equal(checks.list().find((item) => item.agentId === "hermes")?.state, row ?? undefined);
+      const before = counts.clean;
+      const started = await startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 });
+      assert.equal(started.kind, "session", `row ${row}`);
+      assert.equal(counts.clean, before + 1, "the click's own clean check ran");
+      assert.equal(w.spawned.length, 1);
+      assert.deepEqual(w.spawned[0].options.args, ["update"]);
+      // Answer the question so the session ends and the test leaves nothing running.
+      const window = await openWindow(manager, started.sessionId);
+      await waitFor(() => window.screen().includes("Update now?"));
+      window.type("n\r");
+      await waitFor(() => !manager.isLive(started.sessionId));
+    });
+  }
+});
+
+test("Hermes: a service handed checks without list() still starts (a replacement checks object need not have one)", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    const bare = { refreshHermesClean: async () => ({ clean: false, checkout: null, reasons: [] }), isStopped: () => false };
+    await assert.rejects(
+      startAgentUpdate("hermes", { manager, checks: bare }),
+      (error) => error.code === "hermes_not_clean",
+      "it got as far as the clean check: nothing threw for the missing list()"
+    );
+    assert.equal(w.spawned.length, 0);
+  });
+});
+
+test("POST /api/updates/hermes with an up-to-date row answers 409 hermes_up_to_date and the sentence; no terminal starts", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    const { checks } = hermesChecks(w, cleanAnswer, undefined, "up-to-date");
+    await checks.refresh("hermes");
+    await withUpdatesApp({ manager, checks }, async ({ call }) => {
+      const refused = await call("POST", "/api/updates/hermes", { confirm: true });
+      assert.deepEqual(refused, { status: 409, body: { error: "hermes_up_to_date", message: "Hermes is up to date." } });
+      assert.equal(w.spawned.length, 0);
+    });
+  });
+});
+
+test("Hermes: an update session that finished leaves the row up to date, and the next click is refused", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    const { checks, state } = hermesChecks(w, cleanAnswer);
+    const started = await startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 });
+    // The update works: Hermes is checked again afterwards and now reads up to date.
+    state.hermesRow = "up-to-date";
+    const window = await openWindow(manager, started.sessionId);
+    await waitFor(() => window.screen().includes("Update now?"));
+    window.type("y\r");
+    await waitFor(() => !manager.isLive(started.sessionId));
+    await waitFor(() => checks.list().find((row) => row.agentId === "hermes")?.state === "up-to-date");
+    await assert.rejects(startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 }), (error) => error.code === "hermes_up_to_date");
+    assert.equal(w.spawned.length, 1, "one session only");
+  });
+});
+
 test("Hermes: a second update is refused with update_running while the session lives, also when two start together; ended, it can start again", POSIX_ONLY, async () => {
   await withWorld({}, async (w) => {
     const manager = w.manager();
@@ -829,7 +918,8 @@ test("a clean copy outside the places Agent OS may work is not offered: folder_r
     await mkdir(outside, { recursive: true });
     let checkout = outside;
     const checks = createUpdateChecks({
-      check: async (id) => ({ agentId: id, installed: "1.0.0", latest: "1.0.0", state: "up-to-date", checkedAt: "2026-10-31T00:00:00.000Z" }),
+      // Hermes has an update, so it is the folder policy that decides here (a Hermes row that is up to date is refused: R48).
+      check: async (id) => ({ agentId: id, installed: "1.0.0", latest: "1.0.0", state: id === "hermes" ? "available" : "up-to-date", checkedAt: "2026-10-31T00:00:00.000Z" }),
       cleanCheck: () => hermesCleanForUpdate({ check: async () => ({ clean: true, checkout, reasons: [] }) })
     });
     const manager = w.manager();
@@ -863,7 +953,8 @@ test("the update session runs in the install directory the detected Hermes print
     await withEnv({ HERMES_HOME: profile }, async () => {
       clearDetectCaches();
       const checks = createUpdateChecks({
-        check: async (id) => ({ agentId: id, installed: "1.0.0", latest: "1.0.0", state: "up-to-date", checkedAt: "2026-10-31T00:00:00.000Z" }),
+        // Hermes has an update (a Hermes row that is up to date is refused: R48), so the click goes on to the real clean check.
+        check: async (id) => ({ agentId: id, installed: "1.0.0", latest: "1.0.0", state: id === "hermes" ? "available" : "up-to-date", checkedAt: "2026-10-31T00:00:00.000Z" }),
         cleanCheck: () => hermesCleanForUpdate()
       });
       const manager = w.manager();
@@ -907,6 +998,8 @@ test("the server's own service (getUpdateChecks) applies the folder policy: the 
         await setFakeKnob(w.home, "FAKE_HERMES_VERSION", `Hermes Agent v0.22.5\nInstall directory: ${directory}\nInstall method: git`);
         clearDetectCaches();
       };
+      // Hermes has an update (its own check says so), so it is the folder policy that decides here, not "up to date" (R48).
+      await setFakeKnob(w.home, "FAKE_HERMES_UPDATE_CHECK", "⚕ Update available: 3 commits behind origin/main.");
 
       // Outside the places Agent OS may work: not offered, with the reason, through the real wiring.
       await printInstall(outside);
@@ -1096,6 +1189,49 @@ test("GET /api/setup/plan offers the Hermes update only from the cached clean an
       const refused = await call("POST", "/api/setup/jobs", { confirm: true, steps: ["hermes-update"] });
       assert.deepEqual(refused, { status: 400, body: { error: "no_valid_steps" } });
       assert.equal(counts.clean, 2, "starting jobs does not run it either");
+    });
+  });
+});
+
+test("GET /api/setup/plan leaves out the Hermes update when the saved Hermes row says up to date (R48), from the cache and with a mark; any other row keeps it", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const { checks, counts, state } = hermesChecks(w, cleanAnswer);
+    await withUpdatesApp({ manager: w.manager(), checks, setup: true }, async ({ call }) => {
+      const hermesSteps = async () => (await call("GET", "/api/setup/plan")).body.steps.filter((step) => step.agentId === "hermes");
+      const actions = async () => (await hermesSteps()).map((step) => step.action);
+
+      // No row at all (Hermes not checked yet) with a clean answer from the page's own click: the step stays, as before.
+      await checks.refreshHermesClean();
+      assert.equal(checks.list().length, 0);
+      assert.deepEqual(await actions(), ["keep", "update"], "no row: a check that has not answered blocks nothing");
+
+      // An available row and a failed row keep the step.
+      for (const row of ["available", "failed"]) {
+        state.hermesRow = row;
+        await checks.refresh("hermes");
+        assert.deepEqual(await actions(), ["keep", "update"], `a ${row} row`);
+        assert.equal((await hermesSteps())[0].noUpdate, undefined);
+      }
+
+      // Up to date: no update step, and the keep step says why (so the page does not call a clean copy "changed").
+      state.hermesRow = "up-to-date";
+      await checks.refresh("hermes");
+      assert.deepEqual(await actions(), ["keep"]);
+      assert.equal((await hermesSteps())[0].noUpdate, "up-to-date");
+
+      // Not clean and up to date: no step, no mark (the changed copy is the reason, and the Agents page lists it).
+      state.answer = () => ({ clean: false, checkout: w.checkout, reasons: ["dirty_tree"] });
+      await checks.refresh("hermes");
+      assert.deepEqual(await actions(), ["keep"]);
+      assert.equal("noUpdate" in (await hermesSteps())[0], false);
+
+      // Reading the plan ran no check of any kind: the request reads the cached list.
+      const checksBefore = counts.checks.length;
+      const cleanBefore = counts.clean;
+      await call("GET", "/api/setup/plan");
+      await call("GET", "/api/setup/plan?group=all");
+      assert.equal(counts.checks.length, checksBefore);
+      assert.equal(counts.clean, cleanBefore);
     });
   });
 });

@@ -424,6 +424,45 @@ test("buildSetupPlan(): an installed OpenClaw still gets an update step, and its
   assert.ok(!missing.steps.some((s) => s.id === "hermes-update"));
 });
 
+test("buildSetupPlan(): a clean Hermes whose row says up to date has no update step and the keep step says why; every other case is unchanged (R48 on Setup)", () => {
+  const check = {
+    os: "linux",
+    arch: "x64",
+    tools: { node: { nodeOkForOpenClaw: true }, git: { found: true }, brew: { found: true } },
+    agents: {
+      hermes: { detected: { installed: true, version: "0.22.7", path: "/fake/hermes" } },
+      openclaw: { detected: { installed: true, version: "9.9.9", path: "/fake/openclaw" } }
+    },
+    network: []
+  };
+  const hermes = (options) => buildSetupPlan(check, options).steps.filter((s) => s.agentId === "hermes");
+
+  // Clean and up to date: Hermes would do nothing, or move back, so no step; the keep step carries the reason.
+  const upToDate = hermes({ hermesClean: true, hermesUpToDate: true });
+  assert.deepEqual(upToDate.map((s) => s.action), ["keep"]);
+  assert.equal(upToDate[0].noUpdate, "up-to-date");
+
+  // Clean and not up to date (the server passes false for an available row, a failed one and no row): the step stays.
+  for (const options of [{ hermesClean: true }, { hermesClean: true, hermesUpToDate: false }]) {
+    const steps = hermes(options);
+    assert.deepEqual(steps.map((s) => s.action), ["keep", "update"], JSON.stringify(options));
+    assert.equal("noUpdate" in steps[0], false, "no mark when the step is there");
+    assert.equal(steps[1].runsIn, "session");
+  }
+
+  // Not clean: no step, and no mark either, because the reason is the changed copy (the Agents page has the reasons), not "up to date".
+  for (const options of [{ hermesClean: false, hermesUpToDate: true }, { hermesUpToDate: true }, { hermesClean: false }, undefined]) {
+    const steps = hermes(options);
+    assert.deepEqual(steps.map((s) => s.action), ["keep"], JSON.stringify(options));
+    assert.equal("noUpdate" in steps[0], false, `no mark: ${JSON.stringify(options)}`);
+  }
+
+  // Only the Hermes step is affected; OpenClaw keeps its update step.
+  const withOpenclaw = buildSetupPlan(check, { hermesClean: true, hermesUpToDate: true });
+  assert.deepEqual(withOpenclaw.steps.filter((s) => s.agentId === "openclaw").map((s) => s.action), ["keep", "update"]);
+  assert.equal("noUpdate" in withOpenclaw.steps.find((s) => s.id === "openclaw-keep"), false);
+});
+
 test("startSetupJob(): a Hermes update is never a job: the step is refused, alone or among other steps, and nothing runs", posixSkip, async () => {
   await withTempSetupEnv(async ({ home }) => {
     await installFakeHermesShim(home);

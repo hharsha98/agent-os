@@ -21,17 +21,17 @@
 // A first answer can be wrong just because five CLIs started at once on a cold machine (live check, 2026-11-05: a
 // working Hermes read as "failed" and "no_checkout", and that would have stood for 24 hours). So a round that start()
 // or the 24-hour timer began asks once more, retryMs (60 s) after it ended, the agents whose row is "failed" and
-// Hermes when its folder check said no_checkout (R49). See createUpdateChecks.
+// Hermes when its folder check was not clean, for any reason (a cold start can also read as custom_channel) (R49).
+// See createUpdateChecks.
 //
 // The Hermes clean check (hermes-clean.js, about nine git calls) is cached next to
 // these checks and computed in the same rounds, so a page request reads the
 // answer and never runs git. Only a person's click on Update asks it afresh.
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getAdapter } from "../agents/index.js";
 import { resolveHermesHome } from "../agents/hermes.js";
 import { runCommand } from "../safety.js";
-import { claudeConfigDir } from "../sessions/claude-session.js";
+import { claudeConfigDir, readRegularText } from "../sessions/claude-session.js";
 import { checkSessionFolder } from "../sessions/folders.js";
 import { isAgentUpdating } from "./activity.js";
 import { hermesCleanCheck } from "./hermes-clean.js";
@@ -130,10 +130,12 @@ function defaultDetect(agentId) {
 }
 
 // The text of the person's Claude settings.json: in CLAUDE_CONFIG_DIR when it is an absolute path, else in .claude under
-// the home folder (claudeConfigDir, the same rule Claude's sessions use). It rejects when there is no such file or it
-// cannot be read; the lookup counts that as no file. Only channelFromSettings ever sees the text (R47).
-function defaultReadClaudeSettings() {
-  return fs.readFile(path.join(claudeConfigDir({ env: process.env }), "settings.json"), "utf8");
+// the home folder (claudeConfigDir, the same rule Claude's sessions use). It is read with the safe reader the sessions use
+// for the same file (readRegularText: a plain file of at most 1 MB, opened without waiting), so a pipe or a huge file left
+// there cannot stall the server. Anything it refuses (missing, unreadable, a pipe, a folder, too big) comes back as "", which
+// is no file: the lookup then reads the latest tag. Only channelFromSettings ever sees the text (R47).
+async function defaultReadClaudeSettings() {
+  return (await readRegularText(path.join(claudeConfigDir({ env: process.env }), "settings.json"))) ?? "";
 }
 
 // runCommand reports a timeout or an abort as ok: false with code 0, so a failed
@@ -192,6 +194,10 @@ function npmLookup(packageName, { followsChannel = false } = {}) {
     const url = `${npmRegistryBase()}/-/package/${packageName}/dist-tags`;
     const latest = parseDistTags(await fetchText(url, { signal }), tag);
     if (!latest) throw new Error(`The registry's answer holds no ${tag} version.`);
+    // Installed newer than the tag (a beta, or a person who moved from latest to stable) is up to date, and the tag is not a
+    // "Latest" to show: the page never prints a Latest that is older than Installed (R37), as the Hermes and OpenClaw lookups
+    // do. Equal keeps its Latest; a version that cannot be compared stays "unknown" with the tag's number.
+    if (compareVersions(installed, latest) === 1) return { latest: null, state: "up-to-date" };
     return { latest, state: stateFor(installed, latest) };
   };
 }
@@ -312,9 +318,10 @@ const NOT_CHECKED_YET = Object.freeze({ clean: false, checkout: null, reasons: O
 // when it starts, and its answer is kept only when no check that started later has already been kept.
 //
 // One more try (R49): when a round that start() or the 24-hour timer began has ended, the agents whose row is "failed",
-// and Hermes when its clean check said no_checkout (its row is not "not-installed"), are asked again once, retryMs
-// later (a single unref'd timer). Five CLIs starting at once on a cold machine can time out or read nothing although
-// they are fine, and that answer would otherwise stand for 24 hours. A retry schedules no further retry, and neither
+// and Hermes when a clean check was given and its stored answer is not clean, whatever the reason (its row is not
+// "not-installed"), are asked again once, retryMs later (a single unref'd timer). Five CLIs starting at once on a cold
+// machine can time out or read nothing although they are fine, and that answer would otherwise stand for 24 hours.
+// A retry schedules no further retry, and neither
 // does a person's "Check for updates" or the check after an update: they call refresh() directly. The retry is an
 // ordinary refresh(agentId), so an agent that is updating by then is skipped, as in any round.
 //
@@ -429,14 +436,16 @@ export function createUpdateChecks({
     return list();
   }
 
-  // The agents a finished round should ask again (R49): every row that failed, and Hermes when its clean check could not
-  // find the checkout (that answer is the cold-start one, and it is cached as well) unless Hermes is not installed.
+  // The agents a finished round should ask again (R49): every row that failed, and Hermes when a clean check exists and its
+  // stored answer is not clean (unless Hermes is not installed). Any not-clean answer, whatever its reasons: on a cold start
+  // a `hermes config get` cut by its limit reads as custom_channel and slow git calls read as other reasons, and a wrong
+  // reason would stand for 24 hours. A copy that really is not clean costs one extra read-only check after a round.
   function agentsToAskAgain() {
     const ids = list()
       .filter((row) => row.state === "failed")
       .map((row) => row.agentId);
     const hermes = statuses.get("hermes");
-    if (hermes && hermes.state !== "not-installed" && cleanAnswer.reasons.includes("no_checkout") && !ids.includes("hermes")) {
+    if (cleanCheck && hermes && hermes.state !== "not-installed" && !cleanAnswer.clean && !ids.includes("hermes")) {
       ids.push("hermes");
     }
     return ids;

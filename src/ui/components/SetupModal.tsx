@@ -14,6 +14,7 @@ export default function SetupModal({
   onConfirm,
   onClose,
   confirmDisabled = false,
+  showConfirm = true,
   cancelLabel = "Cancel",
   confirmTone = "primary",
   busy = false,
@@ -25,6 +26,9 @@ export default function SetupModal({
   onConfirm: () => void;
   onClose: () => void;
   confirmDisabled?: boolean;
+  // False when there is nothing to confirm (a plan that lost its work while the dialog was open): the dialog keeps its
+  // text, error and Cancel, and has no confirm button. Every other dialog leaves it on.
+  showConfirm?: boolean;
   // "Keep going" / "Cancel setup" style pairs read better than two Cancels.
   cancelLabel?: string;
   confirmTone?: "primary" | "danger";
@@ -88,9 +92,11 @@ export default function SetupModal({
           <button type="button" className="os-btn os-btn--ghost" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </button>
-          <button type="button" className={`os-btn os-btn--${confirmTone}`} onClick={onConfirm} disabled={confirmDisabled || busy}>
-            {busy ? "Working…" : confirmLabel}
-          </button>
+          {showConfirm ? (
+            <button type="button" className={`os-btn os-btn--${confirmTone}`} onClick={onConfirm} disabled={confirmDisabled || busy}>
+              {busy ? "Working…" : confirmLabel}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

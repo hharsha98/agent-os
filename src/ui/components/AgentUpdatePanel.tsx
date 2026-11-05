@@ -514,7 +514,8 @@ export default function AgentUpdatePanel({
             </button>
           ) : null}
           {checkable ? (
-            <button type="button" className="os-btn os-btn--secondary" disabled={updates.checking} onClick={() => void checkAgain()}>
+            // The server skips the check of an agent while its update runs, so a click would do nothing: off while this panel's update runs.
+            <button type="button" className="os-btn os-btn--secondary" disabled={updates.checking || running} onClick={() => void checkAgain()}>
               Check for updates
             </button>
           ) : null}

@@ -81,6 +81,7 @@ import {
   HELD_CHECK_MS,
   MARKERS_MAX,
   SIGNAL_SOURCES,
+  TERMINAL_ESCAPES,
   TURN_DONE_BACKSTOP_MS,
   activityAfter,
   cleanAlertText,
@@ -186,10 +187,6 @@ const NO_CONVERSATION_WATCH_CHARS = 16384;
 // Also true when Claude itself deleted an old transcript (its cleanupPeriodDays).
 const NOTHING_TO_RESUME_MESSAGE =
   "Claude Code has nothing saved for this conversation, so there is nothing to resume. Start a new session in this folder.";
-// Colour codes, cursor moves and window-title strings, which can sit between
-// the words of a line the agent prints: CSI, OSC (ended by BEL or ESC \),
-// charset picks and the two-byte escapes.
-const TERMINAL_ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-~]|\x1b[@-Z\\-_=>]/g;
 // A setup session never records (plan-brains spec §1, Safety 5). This stands in
 // for its recorder, so the output, resize and exit paths need no special case
 // and nothing is ever written to disk for it.

@@ -101,6 +101,11 @@ export const openSessionsLine = (agentId: string) =>
 export const dryRunLine = (current: string, target: string) => `Dry run: ${current} → ${target}.`;
 // OpenClaw's own update ran 6 m 50 s on the owner's Mac, with the Gateway down for about 2 of them.
 export const GATEWAY_LINE = "Its Gateway restarts, and the update can take several minutes.";
+// Setup's "Cancel setup?" confirm, when the step that runs now is an update (release batch, item 7): stopping an agent's own
+// updater half way can leave that agent half-updated. Installs and everything else keep the confirm as it was.
+export const CANCEL_UPDATE_LINE = "An update is running. Stopping it now can leave that agent half-updated.";
+export const cancelUpdateLine = (runningStep: { action?: string | null } | null | undefined): string =>
+  runningStep?.action === "update" ? CANCEL_UPDATE_LINE : "";
 // Setup's OpenClaw row when Update is chosen carries the same warning (R50: it happens the same way from Setup):
 // `openSessionsLine("openclaw")`, then this. Setup has no dry-run answer, so it says nothing about the Gateway.
 export const SETUP_OPENCLAW_MINUTES_LINE = "The update can take several minutes.";

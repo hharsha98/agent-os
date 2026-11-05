@@ -1,6 +1,7 @@
 // Pure helpers for the version checks (SP5, spec "Version check service", R37):
 // compare two version texts and read what an agent's own check printed. Nothing
 // here starts a process or touches the network, so they are all easy to test.
+import { stripTerminalEscapes } from "../sessions/signals.js";
 
 // The first run of numbers joined by dots: "2.1.309" in "2.1.309 (Claude Code)",
 // "0.154.0" in "codex-cli 0.154.0", "0.22.5" in "v0.22.5". A lone integer, or a
@@ -49,11 +50,12 @@ export function parseDistTags(text, tag = "latest") {
 // Which npm dist-tag Claude Code's own `claude update` follows (R47): "stable" when the person's Claude settings.json
 // has autoUpdatesChannel exactly "stable", otherwise "latest". Unreadable JSON, a text that is not an object, a missing
 // key or any other value all read as "latest". Only that one key is looked at: the rest of the file (it can hold a
-// person's own settings) is not read into anything, returned or kept.
+// person's own settings) is not read into anything, returned or kept. One leading byte-order mark (some Windows editors
+// write one in front of the JSON) is dropped first, or the stable setting of such a file would read as "latest".
 export function channelFromSettings(text) {
   let data;
   try {
-    data = JSON.parse(String(text ?? ""));
+    data = JSON.parse(String(text ?? "").replace(/^\uFEFF/, ""));
   } catch {
     return "latest";
   }
@@ -148,10 +150,11 @@ const HERMES_VERDICTS = [
 // What `hermes update --check` printed, as { state: "available" | "up-to-date", latest } (latest is the version number
 // of the selected release, or null when the line gives none), or null when it could not be read. A verdict counts only
 // on an exit code of 0 (1 and 2 mean the check itself failed, e.g. its git fetch), and only at the start of a line,
-// past any symbol, so a notice around it cannot be mistaken for the answer.
+// past any symbol, so a notice around it cannot be mistaken for the answer. Terminal colour codes are taken out first
+// (the repo's own pattern, sessions/signals.js), so a coloured line still reads; only the matching sees the stripped text.
 export function parseHermesCheck({ code, stdout } = {}) {
   if (code !== 0) return null;
-  const lines = String(stdout ?? "")
+  const lines = stripTerminalEscapes(stdout)
     .split(/\r?\n/)
     .map((line) => line.trim());
   for (const verdict of HERMES_VERDICTS) {

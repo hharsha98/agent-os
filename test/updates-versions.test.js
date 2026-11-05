@@ -253,3 +253,51 @@ test("channelFromSettings: 'stable' only when autoUpdatesChannel is exactly \"st
   assert.equal(channelFromSettings(undefined), "latest", "no file");
   assert.equal(channelFromSettings(null), "latest");
 });
+
+// ---- SP5 release batch, item 6: a byte-order mark and colour codes ---------------------------------------------
+
+test("channelFromSettings: one leading byte-order mark (some Windows editors write one) is stripped, so the stable setting still counts", () => {
+  const BOM = "\uFEFF";
+  assert.equal(channelFromSettings(`${BOM}{"autoUpdatesChannel":"stable"}`), "stable");
+  assert.equal(channelFromSettings(`${BOM}{"theme":"dark","autoUpdatesChannel":"stable"}\n`), "stable");
+  assert.equal(channelFromSettings(`${BOM}{"autoUpdatesChannel":"latest"}`), "latest");
+  assert.equal(channelFromSettings(`${BOM}{ not json`), "latest", "a mark does not make bad JSON readable");
+  assert.equal(channelFromSettings(BOM), "latest", "a mark alone is no file");
+  // Only ONE leading mark: a second one, or one anywhere else, is still not JSON.
+  assert.equal(channelFromSettings(`${BOM}${BOM}{"autoUpdatesChannel":"stable"}`), "latest");
+  assert.equal(channelFromSettings(` ${BOM}{"autoUpdatesChannel":"stable"}`), "latest", "not at the start");
+});
+
+test("parseHermesCheck: terminal colour codes are ignored when matching, so a coloured answer still reads (and nothing raw is kept)", () => {
+  const read = (...lines) => parseHermesCheck({ code: 0, stdout: lines.join("\n") });
+  const GREEN = "\x1b[32m";
+  const BOLD = "\x1b[1m";
+  const RESET = "\x1b[0m";
+  // A whole verdict line in colour, with its number.
+  assert.deepEqual(read(`${GREEN}→ Selected release available: stable v0.22.7 (b200f5bc60e3)${RESET}`), { state: "available", latest: "0.22.7" });
+  // The symbol coloured on its own, a bold word in the middle, a number coloured on its own.
+  assert.deepEqual(read(`${GREEN}→${RESET} ${BOLD}Selected release${RESET} available: stable ${BOLD}v0.22.7${RESET} (b200f5bc60e3)`), {
+    state: "available",
+    latest: "0.22.7"
+  });
+  // The full three-line output with codes on every line.
+  assert.deepEqual(
+    read(`${BOLD}→ Update channel: stable${RESET}`, `${GREEN}→ Selected release available: stable v0.22.7 (b200f5bc60e3)${RESET}`, `  Run \`hermes update\` to install it.`),
+    { state: "available", latest: "0.22.7" }
+  );
+  // "This checkout is newer" in colour still beats a plain "available" line (a step back must never be offered).
+  assert.deepEqual(read(`${GREEN}→ This checkout is newer than the selected release: v0.22.9${RESET}`, "→ Selected release available: stable v0.22.7"), {
+    state: "up-to-date",
+    latest: null
+  });
+  assert.deepEqual(read(`${BOLD}→ Holding at this build: pinned${RESET}`), { state: "up-to-date", latest: null });
+  // Older wording, coloured; and 256-colour and bright codes; and an OSC title sequence ended by BEL.
+  assert.deepEqual(read(`\x1b[33m⚕\x1b[0m Update available: 3 commits behind origin/main.`), { state: "available", latest: null });
+  assert.deepEqual(read(`\x1b[38;5;82m✓ Already up to date.\x1b[0m`), { state: "up-to-date", latest: null });
+  assert.deepEqual(read(`\x1b]0;hermes\x07✓ No newer release: stable v0.22.7.`), { state: "up-to-date", latest: null });
+  // Codes do not make a mid-line notice count: the verdict must still start the line.
+  assert.equal(read(`note: ${GREEN}Selected release available: stable v9.9.9${RESET}`), null);
+  assert.equal(read(`${GREEN}warning${RESET} - This checkout is newer than the selected release`), null);
+  // A failed exit is still never an answer, coloured or not.
+  assert.equal(parseHermesCheck({ code: 1, stdout: `${GREEN}→ Selected release available: stable v0.22.7${RESET}` }), null);
+});

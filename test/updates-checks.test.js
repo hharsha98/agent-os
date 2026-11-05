@@ -261,6 +261,54 @@ test("openclaw: a dry run with downgradeRisk true counts as no update, even when
   });
 });
 
+test("openclaw: a dry-run target older than Installed (downgradeRisk false) is up to date with no Latest; equal keeps its Latest; downgradeRisk true is as before (SP5 release batch, item 4)", POSIX_ONLY, async () => {
+  const dryRun = (over) => JSON.stringify({ currentVersion: "2026.10.4", targetVersion: "2026.10.4", restart: true, downgradeRisk: false, ...over });
+  // Older target, no flag: the page must never print a Latest older than Installed (R37), and there is no update to warn about.
+  await withFakes({ env: { FAKE_OPENCLAW_UPDATE_DRY_RUN: dryRun({ targetVersion: "2026.10.1" }) } }, async () => {
+    assert.deepEqual(withoutTime(await checkAgent("openclaw")), {
+      agentId: "openclaw",
+      installed: "2026.10.4",
+      latest: null,
+      state: "up-to-date",
+      restartsGateway: false
+    });
+  });
+  // Equal: nothing is newer, and the number says so.
+  await withFakes({ env: { FAKE_OPENCLAW_UPDATE_DRY_RUN: dryRun({ restart: false }) } }, async () => {
+    assert.deepEqual(withoutTime(await checkAgent("openclaw")), {
+      agentId: "openclaw",
+      installed: "2026.10.4",
+      latest: "2026.10.4",
+      state: "up-to-date",
+      restartsGateway: false
+    });
+  });
+  // Newer target: an update, with its Gateway warning, as always.
+  await withFakes({ env: { FAKE_OPENCLAW_UPDATE_DRY_RUN: dryRun({ targetVersion: "2026.10.9" }) } }, async () => {
+    const status = await checkAgent("openclaw");
+    assert.equal(status.state, "available");
+    assert.equal(status.latest, "2026.10.9");
+    assert.equal(status.restartsGateway, true);
+  });
+  // downgradeRisk true: unchanged, with an older and with a newer-looking target.
+  for (const targetVersion of ["2026.10.1", "2026.10.9"]) {
+    await withFakes({ env: { FAKE_OPENCLAW_UPDATE_DRY_RUN: dryRun({ targetVersion, downgradeRisk: true }) } }, async () => {
+      const status = await checkAgent("openclaw");
+      assert.equal(status.state, "up-to-date", targetVersion);
+      assert.equal(status.latest, null, targetVersion);
+      assert.equal(status.restartsGateway, false, targetVersion);
+    });
+  }
+  // A dry run that names only a target still compares against what is installed (read from the agent).
+  const unnamed = await checkAgent("openclaw", {
+    readClaudeSettings: async () => "",
+    detect: async () => ({ installed: true, path: "/fake/openclaw", version: "OpenClaw 2026.10.4 (abcdef0)" }),
+    runCli: async () => ({ ok: true, code: 0, stdout: JSON.stringify({ targetVersion: "2026.9.30", restart: true, downgradeRisk: false }), stderr: "" })
+  });
+  assert.equal(unnamed.state, "up-to-date");
+  assert.equal(unnamed.latest, null);
+});
+
 test("openclaw: the same version as its target is up to date; a failing or unreadable dry run is failed", POSIX_ONLY, async () => {
   const same = JSON.stringify({ currentVersion: "2026.10.4", targetVersion: "2026.10.4", restart: false, downgradeRisk: false });
   await withFakes({ env: { FAKE_OPENCLAW_UPDATE_DRY_RUN: same } }, async () => {
@@ -1176,6 +1224,41 @@ test("stop() before the retry timer fires means no retry; start() works again af
   checks.stop();
 });
 
+// The two tests above cannot tell whether stop() cleared the retry timer: refresh() refuses to run after stop() anyway, so a
+// timer left behind does nothing. These start the service again at once, so a leftover timer would find a running service.
+test("stop() clears a scheduled retry: after stop() and an immediate start(), the old retry never fires (SP5 release batch, item 8)", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ codex: ["failed", "up-to-date"] });
+  checks.start();
+  await settle();
+  assert.equal(calls.length, 5);
+  assert.equal(checks.list().find((row) => row.agentId === "codex").state, "failed", "a retry is now scheduled for codex");
+  checks.stop();
+  checks.start(); // a new round at once; codex answers well this time, so this round schedules no retry of its own
+  await settle();
+  assert.equal(calls.length, 10);
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(calls.length, 10, "nothing ran after stop(): the first round's retry was cleared");
+  checks.stop();
+});
+
+test("a second scheduled round replaces the earlier retry timer instead of adding one (SP5 release batch, item 8)", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  // The interval (60 ms) comes round before the first retry (100 ms) is due, and codex fails in both rounds.
+  const { checks, calls } = scriptedChecks({ codex: ["failed"] }, { intervalMs: 60, retryMs: 100 });
+  checks.start();
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 1);
+  t.mock.timers.tick(60); // the second round; its retry replaces the first (due at 100) with one due at 160
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 2);
+  t.mock.timers.tick(40); // t = 100: the replaced timer would have fired here
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 2, "the first timer was replaced, not left running beside the second");
+  checks.stop();
+});
+
 test("a Hermes whose folder check said no_checkout is asked again, and only Hermes", async (t) => {
   t.mock.timers.enable(MOCK_CLOCK);
   const answers = [NO_CHECKOUT, CLEAN];
@@ -1378,9 +1461,11 @@ test("a round that ends after the checks were switched off schedules no retry", 
   await withEnv({ AGENT_OS_UPDATE_CHECKS: "0", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, async () => {
     for (const release of releases) release();
     await settle();
-    t.mock.timers.tick(10_000);
-    await settle();
   });
+  // The checks are enabled again: a retry that had been scheduled while they were off would run now (while off, refresh()
+  // would have refused it and hidden the difference).
+  t.mock.timers.tick(10_000);
+  await settle();
   assert.equal(calls.length, 5, "all five failed, and none was asked again");
   checks.stop();
 });

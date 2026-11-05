@@ -82,6 +82,16 @@ function isBasicAlert({ source, text } = {}) {
   return (source === "bel" || source === "osc") && text === BASIC_ALERT_TEXT;
 }
 
+// Colour codes, cursor moves and window-title strings, which can sit between the words of a line a program prints: CSI,
+// OSC (ended by BEL or ESC \), charset picks and the two-byte escapes. The session manager looks for a watched line past
+// them, and the version checks read an agent's own answer past them (updates/versions.js). Matching only: callers keep
+// no raw output.
+export const TERMINAL_ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-~]|\x1b[@-Z\\-_=>]/g;
+
+export function stripTerminalEscapes(value) {
+  return String(value ?? "").replace(TERMINAL_ESCAPES, "");
+}
+
 // Short, plain, one-line text: tabs and newlines become spaces, every other
 // control character goes, so do the invisible reordering characters
 // (BIDI_FORMAT_CHARACTERS), runs of spaces collapse, and the text is cut to

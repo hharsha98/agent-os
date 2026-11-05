@@ -11,6 +11,7 @@ import RelativeTime from "./RelativeTime";
 import SetupCommand from "./SetupCommand";
 import SetupModal from "./SetupModal";
 import SetupStatus, { type SetupTone } from "./SetupStatus";
+import { cancelUpdateLine } from "../updatesShared";
 import type { SetupJob, SetupJobStep } from "../../setupApi";
 
 // Job log lines look like "2026-10-01T08:43:51.764Z message". Pull the time
@@ -82,6 +83,8 @@ export default function SetupInstallPanel({
 
   const runningIndex = job.steps.findIndex((s) => stepStatus(s) === "running");
   const runningStep = runningIndex >= 0 ? job.steps[runningIndex] : undefined;
+  // Stopping an agent's own updater half way can leave it half-updated: the Cancel confirm says so when this step is an update.
+  const cancelWarning = cancelUpdateLine(runningStep);
   if (runningStep && !firstSeenRunning.current[runningStep.id]) {
     firstSeenRunning.current[runningStep.id] = Date.now();
   }
@@ -256,6 +259,7 @@ export default function SetupInstallPanel({
           onClose={() => setConfirmingCancel(false)}
         >
           <p>This stops the current step. Anything already installed stays installed.</p>
+          {cancelWarning ? <p>{cancelWarning}</p> : null}
         </SetupModal>
       ) : null}
     </div>

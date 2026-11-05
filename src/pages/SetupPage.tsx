@@ -61,6 +61,7 @@ import {
   brainFooterNote,
   canLandYet,
   checkFooterNote,
+  confirmTitle,
   formatMinutes,
   formatSize,
   gotNoAnswer,
@@ -287,6 +288,14 @@ export default function SetupPage() {
   const [hermesError, setHermesError] = useState("");
   const hermesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const updates = useUpdates();
+  // Setup follows the saved Hermes row (release batch, item 1). The row's state as the page holds it now (kept in a ref too,
+  // because loadAll runs from an effect that only ever sees the first render), and the state it held when the last plan read
+  // started (undefined until the first one). A saved row that moved since then means the plan on screen may still offer an
+  // update that the row no longer calls for (Hermes's own check ends after the page's one read of the plan).
+  const hermesRowState = updates.data?.agents.find((row) => row.agentId === "hermes")?.state ?? null;
+  const hermesRowRef = useRef(hermesRowState);
+  hermesRowRef.current = hermesRowState;
+  const planReadHermes = useRef<string | null | undefined>(undefined);
 
   // What the AI brain panel is doing (it runs its own configure job and
   // result screen); used for the rail and for the footer's buttons.
@@ -383,6 +392,7 @@ export default function SetupPage() {
     // The plan, the brain options and the agents list are read together but judged apart:
     // one that fails must not hide the others. Each answer goes on screen when it arrives, so the
     // brain read (a real OpenClaw takes about a minute, up to its limit) does not hold the plan back.
+    planReadHermes.current = hermesRowRef.current;
     const planRead = settled(withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS));
     const brainSeq = ++brainReadSeq.current;
     const brainShown = settled(withTimeout(getBrainOptions(refresh), BRAIN_READ_LIMIT_MS)).then((brainRes) => {
@@ -460,6 +470,7 @@ export default function SetupPage() {
   // re-read gets no answer the old data stays, with a note saying so.
   async function refreshServerState(includePlan: boolean) {
     const brainSeq = ++brainReadSeq.current;
+    if (includePlan) planReadHermes.current = hermesRowRef.current;
     try {
       const [checkRes, brainRes, planRes] = await Promise.all([
         withTimeout(getSetupCheck(true), CHECK_TIMEOUT_MS),
@@ -487,6 +498,45 @@ export default function SetupPage() {
       if (alive.current) setStale(true);
     }
   }
+
+  // Reads only the plan, for when the saved Hermes row moved after the page last read it (release batch, item 1). The server builds
+  // the plan from its cached answers (no check, no git), so this is cheap. The row the page held is recorded when the read starts:
+  // the same row then asks for nothing more, so this cannot loop. The person's choices change only as mergeSelections already
+  // changes them (a choice the new plan no longer offers falls back to its default). A read that fails leaves the plan on screen,
+  // shows nothing new, and lets the next change of the row ask again.
+  async function rereadPlan() {
+    const before = planReadHermes.current;
+    planReadHermes.current = hermesRowRef.current;
+    try {
+      const planRes = await withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS);
+      if (!alive.current) return;
+      setPlan(planRes);
+      setPlanError("");
+      setSelections((prev) => mergeSelections(prev, planRes));
+    } catch {
+      if (alive.current) planReadHermes.current = before;
+    }
+  }
+
+  // The saved Hermes row moved since the last plan read, and nothing is running: read the plan again. Only on the Plan step (a
+  // person who comes back to it finds it read again, because the step is a dependency), and never while a job or a Hermes
+  // session runs (the plan under a running update is the job's business, and its own end re-reads it). A row the page did not
+  // know when it read the plan (null: the page's first read of the saved answer comes after the plan's) is not a change: the
+  // server built that plan from its own saved row, so the first state the page learns becomes the one to compare with.
+  const jobRunning = installJob?.status === "running";
+  const hermesWorking = Boolean(hermesRun && !hermesRun.ended);
+  useEffect(() => {
+    const before = planReadHermes.current;
+    if (before === undefined) return;
+    if (before === null) {
+      if (hermesRowState !== null) planReadHermes.current = hermesRowState;
+      return;
+    }
+    if (stepIndex !== STEP.plan || jobRunning || hermesWorking) return;
+    if (hermesRowState === null || hermesRowState === before) return;
+    void rereadPlan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hermesRowState, stepIndex, jobRunning, hermesWorking]);
 
   useEffect(() => {
     planRef.current = plan;
@@ -694,7 +744,7 @@ export default function SetupPage() {
   }
 
   async function confirmInstall() {
-    if (!confirmGroup) return;
+    if (!confirmGroup || !workIn(confirmGroup).length) return;
     setInstallBusy(true);
     setInstallConfirmError("");
     setHermesError("");
@@ -833,11 +883,16 @@ export default function SetupPage() {
     (plan?.steps || []).map((s) => [s.id, s.commandPreview])
   );
 
-  // One re-read at a time: the Retry buttons and Check again all come through here.
-  async function onRecheck() {
+  // One re-read at a time: the Retry buttons and Check again all come through here. Check again alone also asks for a fresh check of
+  // the agents' versions (release batch, item 3), because the plan reads the saved answer and a stale "Hermes is up to date." could
+  // otherwise stand for up to 24 hours with no way past it on this page. useUpdates' recheck has no Hermes-only form, so it checks
+  // all five. It is not waited for (the button is about the table) and a check that fails changes nothing and shows nothing; when the
+  // saved row moves, the plan is read again on the Plan step. Never on page load: only on this click.
+  async function onRecheck(askUpdates = false) {
     if (rechecking) return;
     setRechecking(true);
     try {
+      if (askUpdates) void updates.recheck().catch(() => undefined);
       await loadAll(true);
     } finally {
       if (alive.current) setRechecking(false);
@@ -874,6 +929,9 @@ export default function SetupPage() {
   const confirmSteps = confirmGroup ? selectedSteps(idsOf(confirmGroup)) : [];
   const confirmTotals = totalsOf(confirmSteps.filter((s) => s.action === "install" || s.action === "prereq-node"));
   const confirmAction = confirmGroup ? groupAction(confirmGroup, workIn(confirmGroup)) || "" : "";
+  // After a refused start the plan is read again and may have lost the step the dialog was opened for (a Hermes update the row
+  // now calls up to date): the dialog then has no work, says so, and has no button that would start a job of kept agents.
+  const confirmHasWork = confirmGroup ? workIn(confirmGroup).length > 0 : false;
 
   const operatorsLabel = groupAction("operators", operatorWorkSteps);
   const codingLabel = groupAction("coding", codingWorkSteps);
@@ -914,7 +972,7 @@ export default function SetupPage() {
         <button
           type="button"
           className="os-btn os-btn--secondary"
-          onClick={() => void onRecheck()}
+          onClick={() => void onRecheck(true)}
           disabled={rechecking || (!check && !checkError)}
         >
           <RefreshCw size={16} aria-hidden="true" />
@@ -1297,24 +1355,29 @@ export default function SetupPage() {
 
       {confirmGroup ? (
         <SetupModal
-          title={`${confirmAction}?`}
+          title={confirmTitle(confirmAction)}
           confirmLabel={confirmAction}
+          showConfirm={confirmHasWork}
           onConfirm={confirmInstall}
           onClose={() => setConfirmGroup(null)}
           busy={installBusy}
           error={installConfirmError}
         >
-          <p>This will run:</p>
-          <ul>
-            {confirmSteps.map((s) => (
-              <li key={s.id}>{planStepLabels[s.id] || s.id}</li>
-            ))}
-          </ul>
-          {confirmGroup === "coding" && confirmTotals.complete ? (
-            <p>
-              About {formatSize(confirmTotals.mb)} to download and store, roughly {formatMinutes(confirmTotals.minutes)}. Anything
-              already installed is kept as it is.
-            </p>
+          {confirmHasWork ? (
+            <>
+              <p>This will run:</p>
+              <ul>
+                {confirmSteps.map((s) => (
+                  <li key={s.id}>{planStepLabels[s.id] || s.id}</li>
+                ))}
+              </ul>
+              {confirmGroup === "coding" && confirmTotals.complete ? (
+                <p>
+                  About {formatSize(confirmTotals.mb)} to download and store, roughly {formatMinutes(confirmTotals.minutes)}. Anything
+                  already installed is kept as it is.
+                </p>
+              ) : null}
+            </>
           ) : null}
         </SetupModal>
       ) : null}

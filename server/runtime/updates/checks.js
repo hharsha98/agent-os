@@ -208,8 +208,14 @@ async function openclawLookup({ detected, installed, runCli, signal, limitMs }) 
   const dryRun = parseOpenclawDryRun(result.stdout);
   if (!dryRun) throw new Error("The OpenClaw dry run printed no readable answer.");
   // A target that would go to an OLDER version is not an update (R37), and it is not a "Latest" to show
-  // either: the page must never print a Latest that is older than what is installed.
-  const state = dryRun.downgradeRisk ? "up-to-date" : stateFor(installed || dryRun.current, dryRun.target);
+  // either: the page must never print a Latest that is older than what is installed. OpenClaw says so itself with
+  // downgradeRisk; when it does not, but its target is still older than what is installed, the same comparison npmLookup
+  // makes gives the same answer. Equal keeps its Latest.
+  const compared = installed || dryRun.current;
+  if (!dryRun.downgradeRisk && compareVersions(compared, dryRun.target) === 1) {
+    return { latest: null, state: "up-to-date", restartsGateway: false };
+  }
+  const state = dryRun.downgradeRisk ? "up-to-date" : stateFor(compared, dryRun.target);
   // The Gateway warning belongs to an update the person can actually take.
   return {
     latest: dryRun.downgradeRisk ? null : dryRun.target,

@@ -492,3 +492,70 @@ test("E2 R48: a refused Hermes update (409 hermes_up_to_date) shows the server's
   const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
   assert.match(panel, /setStartError\(friendlyError\(error\)\);\s*updates\.reload\(\);/, "the Agents page shows it in the dialog and reads the saved answer again");
 });
+
+// ---- SP5 release batch ---------------------------------------------------------------------------------------------
+
+const groupShared = await import("../src/ui/setupGroupShared.ts");
+
+test("release batch 7: Setup's 'Cancel setup?' confirm warns when the running step is an update, and only then", () => {
+  assert.equal(shared.CANCEL_UPDATE_LINE, "An update is running. Stopping it now can leave that agent half-updated.");
+  assert.equal(shared.cancelUpdateLine({ action: "update" }), shared.CANCEL_UPDATE_LINE);
+  // An install, Node, a kept agent, no running step at all: the confirm is as it was.
+  for (const step of [undefined, null, { action: "install" }, { action: "prereq-node" }, { action: "keep" }, {}]) {
+    assert.equal(shared.cancelUpdateLine(step), "", JSON.stringify(step));
+  }
+  const panel = source("ui/components/SetupInstallPanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /const cancelWarning = cancelUpdateLine\(runningStep\);/, "from the step that runs now");
+  assert.match(
+    panel,
+    /Anything already installed stays installed\.<\/p>\s*\{cancelWarning \? <p>\{cancelWarning\}<\/p> : null\}/,
+    "added to the confirm after its own sentence; the buttons are untouched"
+  );
+  assert.match(panel, /title="Cancel setup\?"[\s\S]*confirmLabel="Cancel setup"[\s\S]*cancelLabel="Keep going"/, "Cancel itself still works as before");
+});
+
+test("release batch 5: 'Check for updates' is off while this panel's own update runs, and only then", () => {
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /disabled=\{updates\.checking \|\| running\}[^>]*onClick=\{\(\) => void checkAgain\(\)\}/, "off while a check or this agent's update runs");
+  assert.match(panel, /const running = Boolean\(run && !run\.ended\);/, "running is this panel's update that has not ended (each agent has its own panel)");
+});
+
+test("release batch 2: a Setup confirm with no work left says 'Nothing to run', has no confirm button, and starts nothing", () => {
+  assert.equal(groupShared.NOTHING_TO_RUN_TITLE, "Nothing to run");
+  assert.equal(groupShared.confirmTitle("Update Hermes"), "Update Hermes?");
+  assert.equal(groupShared.confirmTitle("Set up Hermes + OpenClaw"), "Set up Hermes + OpenClaw?");
+  for (const none of ["", undefined, null]) assert.equal(groupShared.confirmTitle(none), "Nothing to run", String(none));
+  const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(page, /title=\{confirmTitle\(confirmAction\)\}/, "the title never builds '?' from an empty action");
+  assert.match(page, /showConfirm=\{confirmHasWork\}/, "no confirm button without work");
+  assert.match(page, /async function confirmInstall\(\) \{\s*if \(!confirmGroup \|\| !workIn\(confirmGroup\)\.length\) return;/, "and a press that gets through starts nothing");
+  const modal = source("ui/components/SetupModal.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(modal, /showConfirm = true/, "every other dialog keeps its confirm button");
+  assert.match(modal, /\{showConfirm \? \(\s*<button[^>]*onClick=\{onConfirm\}/, "only the confirm button is left out; Cancel and the error stay");
+});
+
+test("release batch 1 and 3: Setup follows the saved Hermes row on the Plan step, and 'Check again' asks for a fresh check", () => {
+  const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
+  // 1. A change of the saved row since the last plan read, on the Plan step, with nothing running, re-reads the plan only.
+  assert.match(page, /const hermesRowState = updates\.data\?\.agents\.find\(\(row\) => row\.agentId === "hermes"\)\?\.state \?\? null;/);
+  assert.match(page, /if \(stepIndex !== STEP\.plan \|\| jobRunning \|\| hermesWorking\) return;/, "only on the Plan step, and never while a job or a Hermes session runs");
+  assert.match(page, /if \(hermesRowState === null \|\| hermesRowState === before\) return;/, "only when the row differs from the one at the last plan read");
+  // A plan read made before the page knew the row has no baseline: the first state the page learns becomes it (and is no change).
+  assert.match(page, /if \(before === null\) \{\s*if \(hermesRowState !== null\) planReadHermes\.current = hermesRowState;\s*return;\s*\}/, "the first known row is the baseline, not a change");
+  assert.match(page, /void rereadPlan\(\);/);
+  const reread = /async function rereadPlan\(\) \{[\s\S]*?\n  \}\n/.exec(page)?.[0] ?? "";
+  assert.match(reread, /planReadHermes\.current = hermesRowRef\.current;/, "the row the page held is recorded when a read starts, so it cannot loop");
+  assert.match(reread, /setSelections\(\(prev\) => mergeSelections\(prev, planRes\)\);/, "the person's choices change only as mergeSelections already does");
+  assert.doesNotMatch(reread, /getSetupCheck|getBrainOptions|setPlanError\((?!"")/, "a plan read only: no check, no brain read, and a failed one shows nothing new");
+  // Every plan read records the row it started with.
+  assert.equal(
+    page.split("planReadHermes.current = ").length - 1,
+    5,
+    "loadAll, refreshServerState, rereadPlan, the restore after a failed re-read, and the first known row becoming the baseline"
+  );
+  // 3. Check again asks for a fresh check of Hermes through useUpdates (the whole list: it has no Hermes-only form), on that click only.
+  assert.match(page, /async function onRecheck\(askUpdates = false\)/);
+  assert.match(page, /if \(askUpdates\) void updates\.recheck\(\)\.catch\(\(\) => undefined\);/, "a failed check changes nothing and shows nothing");
+  assert.match(page, /onClick=\{\(\) => void onRecheck\(true\)\}\s*disabled=\{rechecking \|\| \(!check && !checkError\)\}/, "the Check again button asks");
+  assert.equal(page.split("updates.recheck(").length - 1, 1, "and nothing else (no page load, no Retry button) runs a check");
+});

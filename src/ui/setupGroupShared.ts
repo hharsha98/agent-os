@@ -180,6 +180,13 @@ export function groupAction(group: GroupId, work: SetupPlanStep[]): string | und
   return `Update ${names.join(" + ")}`;
 }
 
+// The confirm dialog's title: the group's button words with a "?", or, when the choices leave no work (a refused Hermes update
+// took its step out of the re-read plan while the dialog was open), "Nothing to run". Never "?" alone or "undefined?".
+export const NOTHING_TO_RUN_TITLE = "Nothing to run";
+export function confirmTitle(action: string | null | undefined): string {
+  return action ? `${action}?` : NOTHING_TO_RUN_TITLE;
+}
+
 // Hermes's update (SP5) is the one plan step that does not run in a job: the plan marks it `runsIn: "session"`, the page
 // starts it as a terminal session (the update service), because Hermes may ask a question, and the server refuses a job
 // that names it.

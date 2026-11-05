@@ -4,8 +4,9 @@
 // agents, so no real network and no real agent is ever touched. The fake CLIs
 // are POSIX shell shims, so the tests that start them skip on Windows.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -37,7 +38,8 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 const CLAUDE_TAGS = "/-/package/@anthropic-ai/claude-code/dist-tags";
 const CODEX_TAGS = "/-/package/@openai/codex/dist-tags";
-const tags = (latest) => ({ json: { latest, next: `${latest}-next` } });
+// The registry's dist-tags for one package; `stable` adds the tag Claude Code's stable channel follows (R47).
+const tags = (latest, stable) => ({ json: { latest, next: `${latest}-next`, ...(stable ? { stable } : {}) } });
 
 const DRY_RUN_AVAILABLE = JSON.stringify({ currentVersion: "2026.10.4", targetVersion: "2026.10.9", restart: true, downgradeRisk: false });
 const HERMES_BEHIND = "⚕ Update available: 3 commits behind origin/main.\nRun 'hermes update' to install.";
@@ -120,6 +122,10 @@ async function withFakes({ routes = { [CLAUDE_TAGS]: tags("2.1.310"), [CODEX_TAG
       SHELL: FAKE_LOGIN_SHELL,
       HERMES_HOME: undefined,
       HERMES_AGENT_OS_EXECUTABLE_PATHS: undefined,
+      // Claude Code's update channel is read from settings.json in this folder, else in .claude under HOME (R47). A
+      // developer's own CLAUDE_CONFIG_DIR must never send a test to their real settings, so it is cleared: the temp
+      // HOME above is the only place a test's settings can be.
+      CLAUDE_CONFIG_DIR: undefined,
       AGENT_OS_TEST_NPM_REGISTRY: registry.url,
       AGENT_OS_UPDATE_CHECKS: "1",
       FAKE_AGENT_LOG: log,
@@ -249,7 +255,7 @@ test("openclaw: the same version as its target is up to date; a failing or unrea
   });
 });
 
-test("hermes: up to date and behind, read from `hermes update --check`; no version number is claimed", POSIX_ONLY, async () => {
+test("hermes: up to date and behind, read from `hermes update --check`; the older wording gives no version number, so none is claimed", POSIX_ONLY, async () => {
   await withFakes({ env: { FAKE_HERMES_UPDATE_CHECK: undefined } }, async ({ readLog }) => {
     assert.deepEqual(withoutTime(await checkAgent("hermes")), {
       agentId: "hermes",
@@ -291,6 +297,243 @@ test("hermes: the check runs with the HERMES_HOME that Agent OS is set up with (
     const checks = (await readLog()).filter((entry) => entry.event === "update-check");
     assert.equal(checks.at(-1).env.HERMES_HOME, profile, "the same profile that chat runs and safety reads use");
   });
+});
+
+// ---- Hermes on a release channel (SP5 E2, R48) -----------------------------------------------------------
+
+// What the real `hermes update --check` printed on the owner's Mac (exit 0), found by the live check.
+const HERMES_RELEASE_AVAILABLE = [
+  "→ Update channel: stable",
+  "→ Selected release available: stable v0.22.7 (b200f5bc60e3)",
+  "  Run `hermes update` to install it."
+].join("\n");
+
+test("hermes on a release channel: the selected release is Latest, and the row is an update", POSIX_ONLY, async () => {
+  await withFakes({ env: { FAKE_HERMES_UPDATE_CHECK: HERMES_RELEASE_AVAILABLE } }, async () => {
+    // Installed 0.22.5 (the WORLD's Hermes), selected release 0.22.7.
+    assert.deepEqual(withoutTime(await checkAgent("hermes")), {
+      agentId: "hermes",
+      installed: "0.22.5",
+      latest: "0.22.7",
+      state: "available"
+    });
+  });
+});
+
+test("hermes: 'This checkout is newer', 'Holding at this build' and the up-to-date wordings are up to date, with no Latest and nothing to offer", POSIX_ONLY, async () => {
+  // The first would move the copy BACK to the release; the second stays where it is. Neither may become an Update.
+  const wordings = [
+    "→ Update channel: stable\n→ This checkout is newer than the selected release: v0.22.5 is ahead of stable v0.22.4",
+    "→ Update channel: stable\n→ Holding at this build: it was put here on purpose",
+    "→ Update channel: stable\n✓ Up to date with the latest release (stable v0.22.5).",
+    "→ Update channel: stable\n✓ No newer release: stable v0.22.5."
+  ];
+  for (const wording of wordings) {
+    await withFakes({ env: { FAKE_HERMES_UPDATE_CHECK: wording } }, async () => {
+      assert.deepEqual(
+        withoutTime(await checkAgent("hermes")),
+        { agentId: "hermes", installed: "0.22.5", latest: null, state: "up-to-date" },
+        wording
+      );
+    });
+  }
+});
+
+test("hermes: a selected release that is the installed version, or older, is up to date with no Latest (the page never offers a step back)", POSIX_ONLY, async () => {
+  for (const selected of ["stable v0.22.5 (b200f5bc60e3)", "stable v0.22.3 (aaaaaaaaaaaa)", "stable v0.9.0"]) {
+    await withFakes({ env: { FAKE_HERMES_UPDATE_CHECK: `→ Update channel: stable\n→ Selected release available: ${selected}` } }, async () => {
+      assert.deepEqual(
+        withoutTime(await checkAgent("hermes")),
+        { agentId: "hermes", installed: "0.22.5", latest: null, state: "up-to-date" },
+        selected
+      );
+    });
+  }
+});
+
+test("hermes: when the installed version has no number it cannot be compared, so the selected release stays an update", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-os-updates-home-"));
+  try {
+    await withEnv({ HERMES_HOME: undefined, AGENT_OS_HOME: home }, async () => {
+      const status = await checkAgent("hermes", {
+        readClaudeSettings: async () => "",
+        detect: async () => ({ installed: true, path: "/fake/hermes", version: "Hermes Agent (development build)" }),
+        runCli: async () => ({ ok: true, code: 0, stdout: "→ Selected release available: stable v0.22.7", stderr: "" })
+      });
+      assert.equal(status.state, "available");
+      assert.equal(status.latest, "0.22.7");
+    });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// ---- Claude Code follows its own update channel (SP5 E2, R47) -------------------------------------------------
+
+const SETTINGS_STABLE = JSON.stringify({ autoUpdatesChannel: "stable" });
+// On the owner's Mac on 2026-11-05: stable 2.1.311, latest 2.1.318.
+const CLAUDE_BOTH_TAGS = { [CLAUDE_TAGS]: tags("2.1.318", "2.1.311"), [CODEX_TAGS]: tags("0.154.0") };
+
+async function writeClaudeSettings(folder, text) {
+  await mkdir(folder, { recursive: true });
+  await writeFile(path.join(folder, "settings.json"), text);
+}
+
+test("claude on the stable channel: Latest is the stable tag, so a Claude Code that is on stable is up to date", POSIX_ONLY, async () => {
+  // Installed 2.1.311 (stable), latest 2.1.318: `claude update` says it is up to date, and so does the row.
+  await withFakes({ routes: CLAUDE_BOTH_TAGS, env: { FAKE_CLAUDE_VERSION: "2.1.311 (Claude Code)" } }, async ({ home, registry }) => {
+    await writeClaudeSettings(path.join(home, ".claude"), SETTINGS_STABLE);
+    assert.deepEqual(withoutTime(await checkAgent("claude")), {
+      agentId: "claude",
+      installed: "2.1.311",
+      latest: "2.1.311",
+      state: "up-to-date"
+    });
+    assert.deepEqual(registry.requests, [CLAUDE_TAGS], "the same dist-tags answer; only the tag read from it differs");
+  });
+  // Behind the stable tag: an update to the stable number, not to latest.
+  await withFakes({ routes: CLAUDE_BOTH_TAGS }, async ({ home }) => {
+    await writeClaudeSettings(path.join(home, ".claude"), SETTINGS_STABLE);
+    const status = await checkAgent("claude");
+    assert.equal(status.installed, "2.1.309");
+    assert.equal(status.latest, "2.1.311");
+    assert.equal(status.state, "available");
+  });
+});
+
+test("claude: no settings file, an unreadable one, or any channel but stable reads the latest tag", POSIX_ONLY, async () => {
+  await withFakes({ routes: CLAUDE_BOTH_TAGS }, async ({ home }) => {
+    const folder = path.join(home, ".claude");
+    const expectLatest = async (why) => {
+      const status = await checkAgent("claude");
+      assert.equal(status.latest, "2.1.318", why);
+      assert.equal(status.state, "available", why);
+    };
+    await expectLatest("no file at all (the folder does not even exist)");
+    await writeClaudeSettings(folder, "{ this is not json");
+    await expectLatest("unreadable JSON");
+    await writeClaudeSettings(folder, JSON.stringify({ autoUpdatesChannel: "latest" }));
+    await expectLatest('autoUpdatesChannel "latest"');
+    await writeClaudeSettings(folder, JSON.stringify({ autoUpdatesChannel: "beta" }));
+    await expectLatest("another channel name");
+    await writeClaudeSettings(folder, JSON.stringify({ theme: "dark" }));
+    await expectLatest("no autoUpdatesChannel key");
+    await writeClaudeSettings(folder, "[]");
+    await expectLatest("JSON that is not an object");
+    await rm(path.join(folder, "settings.json"));
+    await mkdir(path.join(folder, "settings.json"));
+    await expectLatest("settings.json that cannot be read as a file");
+  });
+});
+
+test("claude: CLAUDE_CONFIG_DIR is the folder that is read (an absolute one), else .claude under the home folder", POSIX_ONLY, async () => {
+  await withFakes({ routes: CLAUDE_BOTH_TAGS }, async ({ dir, home }) => {
+    const custom = path.join(dir, "custom-claude");
+    const empty = path.join(dir, "empty-claude");
+    await writeClaudeSettings(custom, SETTINGS_STABLE);
+    await mkdir(empty);
+    await withEnv({ CLAUDE_CONFIG_DIR: custom }, async () => {
+      assert.equal((await checkAgent("claude")).latest, "2.1.311", "the stable setting in the variable's folder is read");
+    });
+
+    // The home folder says stable too, but the variable points at a folder with no file: it does not fall back to ~/.claude.
+    await writeClaudeSettings(path.join(home, ".claude"), SETTINGS_STABLE);
+    await withEnv({ CLAUDE_CONFIG_DIR: empty }, async () => {
+      assert.equal((await checkAgent("claude")).latest, "2.1.318");
+    });
+    // Without the variable, and with one that is not an absolute path (which Claude's session code ignores too), ~/.claude is read.
+    assert.equal((await checkAgent("claude")).latest, "2.1.311");
+    await withEnv({ CLAUDE_CONFIG_DIR: "relative-claude" }, async () => {
+      assert.equal((await checkAgent("claude")).latest, "2.1.311");
+    });
+  });
+});
+
+test("codex always reads the latest tag, whatever Claude's settings say", POSIX_ONLY, async () => {
+  const routes = { [CLAUDE_TAGS]: tags("2.1.318", "2.1.311"), [CODEX_TAGS]: tags("0.155.0", "0.150.0") };
+  await withFakes({ routes }, async ({ home, registry }) => {
+    await writeClaudeSettings(path.join(home, ".claude"), SETTINGS_STABLE);
+    const status = await checkAgent("codex");
+    assert.equal(status.latest, "0.155.0");
+    assert.equal(status.state, "available");
+    assert.deepEqual(registry.requests, [CODEX_TAGS]);
+  });
+  // Nor does anything but Claude Code read the settings at all.
+  let reads = 0;
+  const deps = {
+    readClaudeSettings: async () => (reads += 1, SETTINGS_STABLE),
+    detect: async (id) => ({ installed: true, path: `/fake/${id}`, version: "1.0.0" }),
+    fetchText: async () => '{"latest":"1.0.1","stable":"1.0.0"}',
+    runCli: async () => ({ ok: true, code: 0, stdout: "✓ Already up to date.", stderr: "" })
+  };
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-os-updates-home-"));
+  try {
+    await withEnv({ HERMES_HOME: undefined, AGENT_OS_HOME: home }, async () => {
+      for (const id of ["codex", "cursor", "openclaw", "hermes"]) await checkAgent(id, deps);
+    });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+  assert.equal(reads, 0, "only Claude Code's lookup asks for the settings");
+  assert.equal((await checkAgent("claude", deps)).latest, "1.0.0");
+  assert.equal(reads, 1);
+});
+
+test("claude: a registry answer without the stable tag is failed ('Couldn't check') on the stable channel, like a missing latest", POSIX_ONLY, async () => {
+  await withFakes({ routes: { [CLAUDE_TAGS]: tags("2.1.318") } }, async ({ home }) => {
+    const folder = path.join(home, ".claude");
+    await writeClaudeSettings(folder, SETTINGS_STABLE);
+    const status = await checkAgent("claude");
+    assert.equal(status.state, "failed");
+    assert.equal(status.latest, null);
+    assert.equal(status.installed, "2.1.309", "what is installed is still known");
+    // The same answer is fine for someone on the latest channel.
+    await writeClaudeSettings(folder, JSON.stringify({ autoUpdatesChannel: "latest" }));
+    assert.equal((await checkAgent("claude")).latest, "2.1.318");
+  });
+  // And a registry that has only a stable tag is enough for someone on stable, and no use to someone on latest.
+  await withFakes({ routes: { [CLAUDE_TAGS]: { json: { stable: "2.1.311" } } } }, async ({ home }) => {
+    await writeClaudeSettings(path.join(home, ".claude"), SETTINGS_STABLE);
+    assert.equal((await checkAgent("claude")).latest, "2.1.311");
+    await writeClaudeSettings(path.join(home, ".claude"), "{}");
+    assert.equal((await checkAgent("claude")).state, "failed");
+  });
+});
+
+test("claude: the settings text goes only to the channel reader: it is not returned or printed, and a reader that fails counts as no file", async () => {
+  const secret = "SECRET-MARKER-DO-NOT-KEEP";
+  const text = JSON.stringify({ autoUpdatesChannel: "stable", apiKeyHelper: secret, env: { SOME_TOKEN: secret } });
+  const deps = {
+    detect: async () => ({ installed: true, path: "/fake/claude", version: "2.1.309 (Claude Code)" }),
+    fetchText: async () => '{"latest":"2.1.318","stable":"2.1.311"}',
+    runCli: async () => {
+      throw new Error("Claude's lookup runs no program");
+    }
+  };
+  const printed = [];
+  const originals = {};
+  for (const method of ["log", "info", "warn", "error", "debug"]) {
+    originals[method] = console[method];
+    console[method] = (...parts) => printed.push(parts.join(" "));
+  }
+  let status;
+  try {
+    status = await checkAgent("claude", { ...deps, readClaudeSettings: async () => text });
+  } finally {
+    Object.assign(console, originals);
+  }
+  assert.equal(status.latest, "2.1.311", "the stable setting was used");
+  assert.ok(!JSON.stringify(status).includes(secret), "nothing from the file is in the answer");
+  assert.deepEqual(printed, [], "and nothing was printed");
+
+  const broken = await checkAgent("claude", {
+    ...deps,
+    readClaudeSettings: async () => {
+      throw new Error("EACCES");
+    }
+  });
+  assert.equal(broken.state, "available", "a reader that throws is not a failed check");
+  assert.equal(broken.latest, "2.1.318", "no file: the latest tag");
 });
 
 // ---- failures stay apart ----------------------------------------------------------------------------
@@ -380,6 +623,8 @@ test("checkAgent asks the registry for the right dist-tags and the agent for the
   const urls = [];
   const runs = [];
   const base = {
+    // Nothing here may read the developer's real Claude settings (R47): no file, so the "latest" tag.
+    readClaudeSettings: async () => "",
     detect: async (id) => ({ installed: true, path: `/fake/${id}`, version: id === "claude" ? "2.1.309 (Claude Code)" : "codex-cli 0.154.0" }),
     fetchText: async (url) => {
       urls.push(url);
@@ -753,6 +998,275 @@ test("an isUpdating that fails counts as not updating: the check still runs", as
   });
   await checks.refresh("codex");
   assert.deepEqual(calls, ["codex"]);
+});
+
+// ---- one more try after a failed first answer (SP5 E2, R49) -------------------------------------------------
+
+// The retry timer is a setTimeout and the 24-hour round a setInterval; both are mocked so a test ticks the clock instead of waiting.
+const MOCK_CLOCK = { apis: ["setInterval", "setTimeout"] };
+const NO_CHECKOUT = { clean: false, checkout: null, reasons: ["no_checkout"] };
+
+// A service whose check answers from `script`: { agentId: [state, state, ...] }, one state per time that agent is asked, the last
+// one repeating (an agent with no entry is always up to date). `calls` lists every agent asked, in order.
+function scriptedChecks(script = {}, options = {}) {
+  const calls = [];
+  const checks = createUpdateChecks({
+    intervalMs: 1_000_000,
+    retryMs: 100,
+    check: async (id) => {
+      calls.push(id);
+      const states = script[id] ?? ["up-to-date"];
+      const asked = calls.filter((call) => call === id).length;
+      return { ...okStatus(id), state: states[Math.min(asked - 1, states.length - 1)] };
+    },
+    ...options
+  });
+  return { checks, calls };
+}
+const askedOf = (calls, id) => calls.filter((call) => call === id).length;
+
+test("a failed first answer is asked again once, retryMs later, and the better answer replaces it", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ hermes: ["failed", "up-to-date"] });
+  checks.start();
+  await settle();
+  assert.equal(calls.length, 5);
+  assert.equal(checks.list().find((row) => row.agentId === "hermes").state, "failed", "the first answer stands for now");
+
+  t.mock.timers.tick(99);
+  await settle();
+  assert.equal(calls.length, 5, "not before retryMs");
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(calls.length, 6);
+  assert.equal(calls[5], "hermes");
+  assert.equal(checks.list().find((row) => row.agentId === "hermes").state, "up-to-date", "corrected");
+  checks.stop();
+});
+
+test("only the agents whose rows failed are asked again", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ claude: ["failed", "up-to-date"], openclaw: ["failed", "up-to-date"], codex: ["unknown"] });
+  checks.start();
+  await settle();
+  assert.equal(calls.length, 5);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.deepEqual(calls.slice(5).sort(), ["claude", "openclaw"], "not the ones that answered, 'unknown' included");
+  assert.equal(checks.list().filter((row) => row.state === "failed").length, 0);
+  checks.stop();
+});
+
+test("when nothing failed there is no retry at all (unknown and not-installed rows are answers, not failures)", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ cursor: ["unknown"], codex: ["not-installed"], claude: ["available"] });
+  checks.start();
+  await settle();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(calls.length, 5);
+  checks.stop();
+});
+
+test("an agent that fails twice is asked exactly twice until the next interval; the retry schedules no retry of its own", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ codex: ["failed"] });
+  checks.start();
+  await settle();
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 2, "the first answer and the one retry");
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 2, "no third try");
+
+  // The next 24-hour round (here 1,000,000 ms) is a round like the first: it asks, and a failure then has its own retry.
+  t.mock.timers.tick(1_000_000 - 100 - 10_000);
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 3);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 4);
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 4);
+  checks.stop();
+});
+
+test("stop() before the retry timer fires means no retry; start() works again afterwards", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ codex: ["failed"] });
+  checks.start();
+  await settle();
+  checks.stop();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(calls.length, 5, "the retry timer was cleared");
+
+  checks.start();
+  await settle();
+  assert.equal(calls.length, 10, "a new start is a new round");
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 3, "and has its own retry");
+  checks.stop();
+});
+
+test("a Hermes whose folder check said no_checkout is asked again, and only Hermes", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const answers = [NO_CHECKOUT, CLEAN];
+  let cleanCalls = 0;
+  const { checks, calls } = scriptedChecks({}, { cleanCheck: async () => answers[Math.min(cleanCalls++, answers.length - 1)] });
+  checks.start();
+  await settle();
+  assert.equal(calls.length, 5);
+  assert.deepEqual(checks.hermesClean(), { clean: false, reasons: ["no_checkout"] });
+  assert.equal(checks.list().find((row) => row.agentId === "hermes").state, "up-to-date", "its row is no failure; the folder check is what is wrong");
+
+  t.mock.timers.tick(100);
+  await settle();
+  assert.deepEqual(calls.slice(5), ["hermes"]);
+  assert.equal(cleanCalls, 2);
+  assert.deepEqual(checks.hermesClean(), { clean: true, reasons: [] }, "the second answer replaced the first");
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(cleanCalls, 2, "and a good answer is the end of it");
+  checks.stop();
+});
+
+test("no_checkout on a Hermes that is not installed is no reason to ask again; other reasons are not either", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  let cleanCalls = 0;
+  const notInstalled = scriptedChecks({ hermes: ["not-installed"] }, { cleanCheck: async () => (cleanCalls++, NO_CHECKOUT) });
+  notInstalled.checks.start();
+  await settle();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(notInstalled.calls.length, 5);
+  assert.equal(cleanCalls, 1);
+  notInstalled.checks.stop();
+
+  // A changed copy is an answer, not a mistake: the retry is for "could not find it", nothing else.
+  let dirtyCalls = 0;
+  const dirty = scriptedChecks({}, { cleanCheck: async () => (dirtyCalls++, DIRTY) });
+  dirty.checks.start();
+  await settle();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(dirty.calls.length, 5);
+  assert.equal(dirtyCalls, 1);
+  dirty.checks.stop();
+});
+
+test("an agent that is updating when the retry fires is skipped, and keeps its saved row", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const updating = new Set();
+  const { checks, calls } = scriptedChecks({ codex: ["failed", "up-to-date"], claude: ["failed", "up-to-date"] }, { isUpdating: (id) => updating.has(id) });
+  checks.start();
+  await settle();
+  updating.add("codex"); // its update began after the first answer
+  t.mock.timers.tick(100);
+  await settle();
+  assert.deepEqual(calls.slice(5), ["claude"], "codex is skipped, claude is asked");
+  const rows = Object.fromEntries(checks.list().map((row) => [row.agentId, row.state]));
+  assert.equal(rows.codex, "failed", "the saved row is kept");
+  assert.equal(rows.claude, "up-to-date");
+  checks.stop();
+});
+
+test("a person's check and the check after an update schedule no retry", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ codex: ["failed"] }, { cleanCheck: async () => NO_CHECKOUT });
+  await checks.refresh();
+  await checks.refresh("codex");
+  await checks.refresh("codex", { afterChange: true });
+  await checks.refresh("hermes");
+  const before = calls.length;
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(calls.length, before, "nothing was asked again by itself");
+  checks.stop();
+});
+
+test("the default wait before the retry is 60 seconds", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ codex: ["failed", "up-to-date"] }, { retryMs: undefined });
+  checks.start();
+  await settle();
+  t.mock.timers.tick(59_999);
+  await settle();
+  assert.equal(calls.length, 5);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(askedOf(calls, "codex"), 2);
+  checks.stop();
+});
+
+test("the 24-hour timer's round retries its failures too", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const { checks, calls } = scriptedChecks({ claude: ["up-to-date", "failed", "up-to-date"] }, { intervalMs: 5000 });
+  checks.start();
+  await settle();
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(calls.length, 5, "round one went well: nothing to retry");
+  t.mock.timers.tick(4900);
+  await settle();
+  assert.equal(askedOf(calls, "claude"), 2, "the interval's round");
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(askedOf(calls, "claude"), 3, "and its retry");
+  assert.equal(checks.list().find((row) => row.agentId === "claude").state, "up-to-date");
+  checks.stop();
+});
+
+test("a round that ends after the checks were switched off schedules no retry", async (t) => {
+  t.mock.timers.enable(MOCK_CLOCK);
+  const calls = [];
+  const releases = [];
+  const checks = createUpdateChecks({
+    intervalMs: 1_000_000,
+    retryMs: 100,
+    check: (id) =>
+      new Promise((resolve) => {
+        calls.push(id);
+        releases.push(() => resolve({ ...okStatus(id), state: "failed" }));
+      })
+  });
+  checks.start();
+  await settle();
+  assert.equal(calls.length, 5);
+  await withEnv({ AGENT_OS_UPDATE_CHECKS: "0", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, async () => {
+    for (const release of releases) release();
+    await settle();
+    t.mock.timers.tick(10_000);
+    await settle();
+  });
+  assert.equal(calls.length, 5, "all five failed, and none was asked again");
+  checks.stop();
+});
+
+test("the retry timer never keeps the server running: a process with a failed check and a 30-second retry ends at once", POSIX_ONLY, async () => {
+  const source = `
+    process.env.AGENT_OS_UPDATE_CHECKS = "1";
+    const { createUpdateChecks } = await import(${JSON.stringify(new URL("../server/runtime/updates/checks.js", import.meta.url).href)});
+    const failed = (agentId) => ({ agentId, installed: null, latest: null, state: "failed", checkedAt: new Date().toISOString() });
+    const checks = createUpdateChecks({ retryMs: 30000, check: async (id) => failed(id) });
+    checks.start();
+    await checks.refresh();
+    console.log("round-ended");
+  `;
+  const started = Date.now();
+  const output = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "pipe", "inherit"] });
+    let out = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.on("error", reject);
+    child.on("exit", () => resolve(out));
+    setTimeout(() => child.kill("SIGKILL"), 15_000).unref();
+  });
+  assert.match(output, /round-ended/);
+  assert.ok(Date.now() - started < 15_000, "the process left long before the 30 s retry");
 });
 
 // ---- no check during shutdown (SP5 E1, L35) ---------------------------------------------------------------

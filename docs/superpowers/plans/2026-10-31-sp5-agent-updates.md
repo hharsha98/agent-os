@@ -84,8 +84,8 @@ Agents page, Version block:
 The Update confirm dialog:
 - Title: "Update {agent}?"
 - Body: "Runs {agent}'s own updater: {command}."
-- Open sessions: "Open sessions keep running on v{old} until you restart them."
-- OpenClaw only: "Dry run: {current} → {target}." and "Its Gateway restarts."
+- Open sessions: "Open sessions keep running on the version they started with until you restart them." For OpenClaw: "Open sessions may stop working until you restart them." (R50)
+- OpenClaw only: "Dry run: {current} → {target}." and "Its Gateway restarts, and the update can take several minutes." (R50)
 - Buttons: "Cancel", "Update"
 
 Hermes:

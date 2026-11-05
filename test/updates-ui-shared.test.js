@@ -111,9 +111,16 @@ test("the state words: Up to date, Update available, Couldn't check; Cursor's un
 
 test("the Update dialog's words", () => {
   assert.equal(shared.updateTitle("Claude Code"), "Update Claude Code?");
-  assert.equal(shared.openSessionsLine("2.1.309"), "Open sessions keep running on v2.1.309 until you restart them.");
+  // R50: the line names no version (a listed session may be on an older one than the install), and OpenClaw's says the truth
+  // about its old session: it stays alive but its old build refuses the upgraded database until restarted.
+  for (const agentId of ["claude", "codex", "cursor", "hermes"]) {
+    assert.equal(shared.openSessionsLine(agentId), "Open sessions keep running on the version they started with until you restart them.", agentId);
+  }
+  assert.equal(shared.openSessionsLine("openclaw"), "Open sessions may stop working until you restart them.");
+  assert.doesNotMatch(shared.openSessionsLine("openclaw"), /keep running/);
+  assert.doesNotMatch(shared.openSessionsLine("claude"), /\d/, "no number in it");
   assert.equal(shared.dryRunLine("2026.9.7", "2026.10.1"), "Dry run: 2026.9.7 → 2026.10.1.");
-  assert.equal(shared.GATEWAY_LINE, "Its Gateway restarts.");
+  assert.equal(shared.GATEWAY_LINE, "Its Gateway restarts, and the update can take several minutes.");
 });
 
 test("Hermes: one reason line per finding, in the order of the reviewed sentences; a code it does not know is left out", () => {
@@ -369,9 +376,13 @@ test("Restart session: the installed version is the freshly detected one; the sa
 test("Restart session: the panel wires banners to the open sessions of its agent, one confirm, one restart request", () => {
   const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
   assert.match(panel, /sessionsToRestart\(openHere, /, "banners come from this agent's open sessions");
-  // One installed number for the banner, its confirm and the Update dialog's open-sessions line, detection first.
+  // One installed number for the banners, detection first. The Update dialog no longer names a version (R50: a listed session
+  // can be on an older one than the install), so there is no second number to keep in step with the banner: it says the
+  // open-sessions line for this agent whenever it lists a session.
   assert.match(panel, /installedVersionNumber\(installedVersion, status\?\.installed\)/, "the detected version first, the row second");
-  assert.match(panel, /const oldVersion = installedNumber \?\? ""/, "the Update dialog says the same number as the banner");
+  assert.doesNotMatch(panel, /oldVersion/, "the dialog names no version number");
+  assert.match(panel, /\{openHere\.length \? \(/, "the line shows whenever a session is listed");
+  assert.match(panel, /openSessionsLine\(agentId\)/, "and is the agent's own");
   assert.doesNotMatch(panel, /status\?\.installed \|\| versionNumber/, "the old row-first order is gone");
   // The place in the confirm's title: none when the folder is not shown.
   assert.match(panel, /session\.folderShown === false/, "a hidden folder is not named");

@@ -31,10 +31,10 @@ export function compareVersions(a, b) {
   return 0;
 }
 
-// The npm registry's dist-tags answer, e.g. {"latest":"2.1.310","next":"2.2.0-beta.1"}.
-// Returns the "latest" tag, or null when the answer is not JSON, has no latest tag,
-// or the tag holds no version number.
-export function parseDistTags(text) {
+// The npm registry's dist-tags answer, e.g. {"latest":"2.1.310","stable":"2.1.300","next":"2.2.0-beta.1"}.
+// Returns the version the asked-for tag holds ("latest" unless told otherwise), or null when the answer is not
+// JSON, has no such tag, or the tag holds no version number.
+export function parseDistTags(text, tag = "latest") {
   let data;
   try {
     data = JSON.parse(String(text ?? ""));
@@ -42,8 +42,23 @@ export function parseDistTags(text) {
     return null;
   }
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  const latest = typeof data.latest === "string" ? data.latest.trim() : "";
-  return versionNumber(latest) ? latest : null;
+  const version = typeof data[tag] === "string" ? data[tag].trim() : "";
+  return versionNumber(version) ? version : null;
+}
+
+// Which npm dist-tag Claude Code's own `claude update` follows (R47): "stable" when the person's Claude settings.json
+// has autoUpdatesChannel exactly "stable", otherwise "latest". Unreadable JSON, a text that is not an object, a missing
+// key or any other value all read as "latest". Only that one key is looked at: the rest of the file (it can hold a
+// person's own settings) is not read into anything, returned or kept.
+export function channelFromSettings(text) {
+  let data;
+  try {
+    data = JSON.parse(String(text ?? ""));
+  } catch {
+    return "latest";
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return "latest";
+  return data.autoUpdatesChannel === "stable" ? "stable" : "latest";
 }
 
 // Where the object that starts at source[open] (a "{") ends: the index of its
@@ -114,17 +129,36 @@ export function parseOpenclawDryRun(stdout) {
   return { current, target, restartsGateway: data.restart === true, downgradeRisk: data.downgradeRisk === true };
 }
 
-// What `hermes update --check` printed: "✓ Already up to date." or
-// "⚕ Update available: 3 commits behind origin/main." (it gives no version
-// number). A verdict counts only on an exit code of 0 (1 and 2 mean the check
-// itself failed, e.g. its git fetch), and only at the start of a line, past any
-// symbol, so a notice around it cannot be mistaken for the answer.
+// The lines `hermes update --check` can print, in the order they are tried (the first row that matches any line of the
+// output wins). R48: on a release channel Hermes says "→ Selected release available: stable v0.22.7 (b200f5bc60e3)", and
+// the older wording ("Update available: 3 commits behind", "Already up to date.") still reads. Two rows come first on
+// purpose: both mean "leave it alone", and the first is the one that matters, because `hermes update` on a checkout that
+// is NEWER than the selected release would move it back, so it must never be offered. A row with `latest` reads a version
+// number from what follows the colon; the others give none.
+const HERMES_VERDICTS = [
+  { line: /^\W*this checkout is newer than the selected release\b/i, state: "up-to-date" },
+  { line: /^\W*holding at this build\b/i, state: "up-to-date" },
+  { line: /^\W*selected release available:(.*)$/i, state: "available", latest: true },
+  { line: /^\W*update available\b/i, state: "available" },
+  { line: /^\W*up to date with the latest release\b/i, state: "up-to-date" },
+  { line: /^\W*no newer release\b/i, state: "up-to-date" },
+  { line: /^\W*already up to date\b/i, state: "up-to-date" }
+];
+
+// What `hermes update --check` printed, as { state: "available" | "up-to-date", latest } (latest is the version number
+// of the selected release, or null when the line gives none), or null when it could not be read. A verdict counts only
+// on an exit code of 0 (1 and 2 mean the check itself failed, e.g. its git fetch), and only at the start of a line,
+// past any symbol, so a notice around it cannot be mistaken for the answer.
 export function parseHermesCheck({ code, stdout } = {}) {
   if (code !== 0) return null;
   const lines = String(stdout ?? "")
     .split(/\r?\n/)
     .map((line) => line.trim());
-  if (lines.some((line) => /^\W*update available\b/i.test(line))) return "available";
-  if (lines.some((line) => /^\W*already up to date\b/i.test(line))) return "up-to-date";
+  for (const verdict of HERMES_VERDICTS) {
+    for (const line of lines) {
+      const match = verdict.line.exec(line);
+      if (match) return { state: verdict.state, latest: verdict.latest ? versionNumber(match[1]) : null };
+    }
+  }
   return null;
 }

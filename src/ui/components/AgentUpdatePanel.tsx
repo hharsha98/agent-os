@@ -215,7 +215,7 @@ export default function AgentUpdatePanel({
 }: {
   agentId: string;
   label: string;
-  // The installed version the page detected (the Installed line), for the dialog when the checks have none.
+  // The installed version the page detected (the Installed line), for the restart banners when the checks have none.
   installedVersion: string | null;
   // An update ended: the page asks for the installed version again.
   onChanged: () => void;
@@ -230,9 +230,9 @@ export default function AgentUpdatePanel({
   // This agent's open sessions, from the shared sessions list (an update session is not one of them).
   const knownSessions = sessionsList.source.state === "ok" ? sessionsList.source.data.sessions : [];
   const openHere = openSessions(knownSessions).filter((session) => session.agentId === agentId);
-  // The version a restart would start them on, and the one the Update dialog says they keep running: the one detected now (the
-  // Installed line's own), and only when that cannot be read the saved check's (it is up to a day old). null when neither can be
-  // read, and then no session gets a banner.
+  // The version a restart would start them on (the banners and the restart confirm): the one detected now (the Installed
+  // line's own), and only when that cannot be read the saved check's (it is up to a day old). null when neither can be read,
+  // and then no session gets a banner. (The Update dialog names no version, R50.)
   const installedNumber = installedVersionNumber(installedVersion, status?.installed);
   const behind = installedNumber ? sessionsToRestart(openHere, installedNumber) : [];
   const behindKey = behind.map((session) => session.id).join(",");
@@ -445,7 +445,6 @@ export default function AgentUpdatePanel({
   const reasonLines = hermesReasonLines(hermes?.reasons);
   const running = Boolean(run && !run.ended);
   const checkable = Boolean(status) && status?.state !== "not-installed";
-  const oldVersion = installedNumber ?? "";
   // Restart session uses Resume's rules (spec, Resume per agent), so its confirm carries Resume's own warning for an agent that
   // can only resume "the most recent conversation in this folder" (Codex, Hermes, Cursor without a chat id): the sentence
   // comes from Resume's confirm (resumeConfirmCopy), and is null for an agent that resumes by id.
@@ -573,9 +572,9 @@ export default function AgentUpdatePanel({
             <p>
               Runs {name}&apos;s own updater: <code className="os-mono">{updateCommand(agentId)}</code>.
             </p>
-            {openHere.length && oldVersion ? (
+            {openHere.length ? (
               <>
-                <p>{openSessionsLine(oldVersion)}</p>
+                <p>{openSessionsLine(agentId)}</p>
                 <ul className="os-agent-update__sessions">
                   {openHere.map((session) => (
                     <li key={session.id}>{sessionTitle(session, { branch: false })}</li>

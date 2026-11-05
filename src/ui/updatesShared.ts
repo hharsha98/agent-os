@@ -82,16 +82,25 @@ export function checkFoundAnswer(status: AgentUpdateStatus | undefined): boolean
 // ---- the Update dialog ------------------------------------------------------------------------------------------
 
 // The first run of numbers joined by dots: "2.1.309" in "2.1.309 (Claude Code)", "0.22.5" in "Hermes Agent v0.22.5". The same
-// reading the server makes of an agent's version (updates/versions.js), for an agent whose check gives no number of its own
-// (Hermes). null when there is none.
+// reading the server makes of an agent's version (updates/versions.js), for the installed line and a session's version, which
+// are whole lines of text from the agent (the checks' own Installed and Latest are already numbers, Hermes's too since R48).
+// null when there is none.
 export function versionNumber(text: string | null | undefined): string | null {
   return /\d+(?:\.\d+)+/.exec(String(text ?? ""))?.[0] ?? null;
 }
 
 export const updateTitle = (label: string) => `Update ${label}?`;
-export const openSessionsLine = (oldVersion: string) => `Open sessions keep running on v${oldVersion} until you restart them.`;
+// What an update does to the sessions that are open (R50). The line names no version: a listed session can be on an older one
+// than the install (an agent's own auto-updater moved it first), and the banner under the Version block names the exact
+// version for each. OpenClaw's old session stays alive but cannot work: its old build refuses the database the update
+// upgraded, until the session is restarted. So for OpenClaw "keep running" would over-promise.
+export const openSessionsLine = (agentId: string) =>
+  agentId === "openclaw"
+    ? "Open sessions may stop working until you restart them."
+    : "Open sessions keep running on the version they started with until you restart them.";
 export const dryRunLine = (current: string, target: string) => `Dry run: ${current} → ${target}.`;
-export const GATEWAY_LINE = "Its Gateway restarts.";
+// OpenClaw's own update ran 6 m 50 s on the owner's Mac, with the Gateway down for about 2 of them.
+export const GATEWAY_LINE = "Its Gateway restarts, and the update can take several minutes.";
 
 // ---- Hermes: not an unchanged official copy ----------------------------------------------------------------------
 
@@ -167,8 +176,8 @@ export function sessionsToRestart<S extends { agentVersion?: string | null }>(se
   });
 }
 
-// The installed version's number for the restart banner, its confirm and the Update dialog's open-sessions line: the freshly
-// detected one (the Installed line's own), and the saved check's only when that cannot be read. The saved check runs every 24
+// The installed version's number for the restart banner and its confirm: the freshly detected one (the Installed line's own),
+// and the saved check's only when that cannot be read. The saved check runs every 24
 // hours, so it goes stale when the agent's own auto-updater, brew or npm changes the version outside Agent OS, and a banner
 // built on it would say "use v<old>" for a session that started after the change.
 export function installedVersionNumber(detected: string | null | undefined, saved: string | null | undefined): string | null {

@@ -13,6 +13,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { getAdapter } from "../server/runtime/agents/index.js";
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
@@ -299,6 +300,9 @@ async function withWorld({ codexAt = "path", checks = true } = {}, fn) {
             // already gone
           }
         }
+        // The end of a Hermes update is noticed by a poll, and its answer is shared across this file: the next test
+        // must not start while this one's update still counts as running.
+        await waitFor(() => !isAgentUpdating("hermes"));
         resetSetupJobsForTest();
         resetLoginShellEnvForTests();
         clearDetectCaches();
@@ -1099,7 +1103,7 @@ test("GET /api/setup/plan offers the Hermes update only from the cached clean an
 // ---- Wiring ------------------------------------------------------------------------------------------
 
 test("wiring: /api/updates is mounted behind requireLocalMode next to the sessions; the checks start after listen and stop on shutdown; the test runner switches them off", async () => {
-  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const source = await readFile(path.join(root, "server", "index.js"), "utf8");
   const at = (needle) => {
     const index = source.indexOf(needle);

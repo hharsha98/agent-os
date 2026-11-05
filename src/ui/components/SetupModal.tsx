@@ -2,7 +2,7 @@
 // confirmation moments (install, apply brain config). Escape closes it, Tab
 // stays trapped inside, and focus returns to whatever opened it.
 import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { CircleAlert } from "lucide-react";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
@@ -15,6 +15,7 @@ export default function SetupModal({
   onClose,
   confirmDisabled = false,
   showConfirm = true,
+  focusWhenOpenerGone,
   cancelLabel = "Cancel",
   confirmTone = "primary",
   busy = false,
@@ -29,6 +30,8 @@ export default function SetupModal({
   // False when there is nothing to confirm (a plan that lost its work while the dialog was open): the dialog keeps its
   // text, error and Cancel, and has no confirm button. Every other dialog leaves it on.
   showConfirm?: boolean;
+  // Where focus goes when the dialog closes and the element that opened it is no longer in the document. Unset: nothing changes.
+  focusWhenOpenerGone?: RefObject<HTMLElement | null>;
   // "Keep going" / "Cancel setup" style pairs read better than two Cancels.
   cancelLabel?: string;
   confirmTone?: "primary" | "danger";
@@ -55,8 +58,14 @@ export default function SetupModal({
     const first = dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE);
     first?.focus();
     return () => {
-      (previouslyFocused.current as HTMLElement | null)?.focus?.();
+      // Focus goes back to what opened the dialog. When that is no longer in the document (its button went with the work the
+      // dialog was about) and the caller named a place, focus goes there instead of falling to the page body. With no such prop, or
+      // with the opener still there, nothing differs from before.
+      const opener = previouslyFocused.current as HTMLElement | null;
+      if (focusWhenOpenerGone && !opener?.isConnected) focusWhenOpenerGone.current?.focus();
+      else opener?.focus?.();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

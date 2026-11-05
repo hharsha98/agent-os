@@ -571,6 +571,29 @@ test("Hermes, clean: an update session runs `hermes update` in the checkout, acc
   });
 });
 
+// What Setup can show of a Hermes update that ended while the person was on another step (release batch, final round): its summary says
+// "exited", but the server keeps no screen for it, so a terminal that is shown again for it has nothing to attach to and nothing to replay.
+test("an exited Hermes update session: its summary says so, and a new window cannot attach to it (session_ended), so its output is not shown again", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    const { checks } = hermesChecks(w, cleanAnswer);
+    const started = await startAgentUpdate("hermes", { manager, checks, sessionPollMs: 20 });
+    const window = await openWindow(manager, started.sessionId);
+    await waitFor(() => window.screen().includes("Update now?"));
+    assert.ok(window.screen().includes("Update now?"), "while it runs, a window has its screen");
+    window.type("n\r");
+    await waitFor(() => !manager.isLive(started.sessionId));
+
+    const summary = await manager.get(started.sessionId);
+    assert.equal(summary.status, "exited", "the page's own question (GET /api/sessions/:id) can still say it ended");
+    await assert.rejects(
+      manager.attach(started.sessionId, { id: "later", send() {}, close() {} }),
+      (error) => error.code === "session_ended" && error.status === 409,
+      "but a window opened later is refused: there is no screen left to replay"
+    );
+  });
+});
+
 test("Hermes, not clean: 409 hermes_not_clean, no session; the clean answer is checked again for the click, whatever the page last showed", POSIX_ONLY, async () => {
   await withWorld({}, async (w) => {
     const manager = w.manager();

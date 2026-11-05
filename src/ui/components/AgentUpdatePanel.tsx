@@ -51,7 +51,6 @@ import {
   HERMES_GUIDE_STEPS,
   HERMES_GUIDE_TITLE,
   HERMES_UNCHECKED_LINE,
-  HERMES_UPDATE_HEADING,
   RESTART_LABEL,
   RESTART_NOT_NOW,
   checkFoundAnswer,
@@ -59,6 +58,7 @@ import {
   hermesBlocked,
   hermesReasonLines,
   hermesUnchecked,
+  hermesUpdateHeading,
   installedVersionNumber,
   isCursorUnknown,
   offersUpdate,
@@ -551,8 +551,8 @@ export default function AgentUpdatePanel({
         <UpdateJobConsole key={run.run.id} jobId={run.run.id} agentId={agentId} label={name} autoFocus={run.fresh} onSettled={() => finish(false)} />
       ) : run?.run.kind === "session" ? (
         <div className="os-agent-update__session">
-          <h4 className="os-agent-update__run-title">{HERMES_UPDATE_HEADING}</h4>
-          <AgentUpdateTerminal key={run.run.id} sessionId={run.run.id} label={HERMES_UPDATE_HEADING} autoFocus={run.fresh} onEnded={() => finish(true)} />
+          <h4 className="os-agent-update__run-title">{hermesUpdateHeading(run.ended)}</h4>
+          <AgentUpdateTerminal key={run.run.id} sessionId={run.run.id} label={hermesUpdateHeading(run.ended)} autoFocus={run.fresh} onEnded={() => finish(true)} />
         </div>
       ) : null}
 

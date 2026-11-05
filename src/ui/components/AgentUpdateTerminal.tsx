@@ -44,8 +44,10 @@ export default function AgentUpdateTerminal({
   label: string;
   // Take the keys at once: only right after the person pressed Update, never when the page finds the session again.
   autoFocus?: boolean;
-  // The update session ended, however it ended. Told once.
-  onEnded(): void;
+  // The update session ended, however it ended. Told once. `connected` says whether this terminal ever reached "open" (it had the
+  // session's screen) before it learned of the end. A terminal that did keeps its last screen. One that did not (it was shown for a
+  // session that had already ended, which the server no longer has a screen for) has nothing to show: the page can drop the run.
+  onEnded(connected: boolean): void;
 }) {
   const [prefs] = useState(readPrefs);
   const [ended, setEnded] = useState(false);
@@ -69,7 +71,7 @@ export default function AgentUpdateTerminal({
   useEffect(() => {
     if (!ended || told.current) return;
     told.current = true;
-    latest.current.onEnded();
+    latest.current.onEnded(opened.current);
   }, [ended]);
 
   // Is the session still there? One question at a time: a slow answer must not pile up behind the next tick.

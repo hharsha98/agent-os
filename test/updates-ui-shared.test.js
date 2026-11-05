@@ -626,20 +626,24 @@ test("release batch review round: a session that ended while the person is on Pl
   const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
   // 2. The saved answer moves while the Hermes session is thought live and the page is not on Install (the terminal that would say it
   //    ended is not on screen): ask the server once per move; no live session means the run has ended, and the re-read can go ahead.
+  //    (The ask is keyed on the session AND the answer: see "release batch final round" below.)
   assert.match(
     page,
-    /if \(hermesWorking && stepIndex !== STEP\.install\) \{\s*if \(endedAskedFor\.current !== hermesSaved\) \{\s*endedAskedFor\.current = hermesSaved;\s*void settleHermesRun\(\);\s*\}\s*return;\s*\}/,
+    /if \(hermesWorking && hermesRun && stepIndex !== STEP\.install\) \{\s*const askKey = `\$\{hermesRun\.sessionId\}\|\$\{hermesSaved\}`;\s*if \(endedAskedFor\.current !== askKey\) \{\s*endedAskedFor\.current = askKey;\s*void settleHermesRun\(hermesRun\.sessionId, askKey\);\s*\}\s*return;\s*\}/,
     "one ask per move, and nothing else happens while the session may still run"
   );
-  const settle = bodyOf(page, "async function settleHermesRun\\(\\) \\{");
+  const settle = bodyOf(page, "async function settleHermesRun\\(sessionId: string, askKey: string\\) \\{");
   assert.match(settle, /await findLiveUpdateSession\("hermes"\)/);
-  assert.match(settle, /\} catch \{\s*return;\s*\}/, "a server that cannot say leaves the run as it is (never ended on a guess)");
+  assert.match(
+    settle,
+    /\} catch \{\s*if \(endedAskedFor\.current === askKey\) endedAskedFor\.current = null;\s*return;\s*\}/,
+    "a server that cannot say leaves the run as it is (never ended on a guess), and only clears the ask's key"
+  );
   assert.match(settle, /if \(!alive\.current \|\| live\) return;/, "a live session changes nothing");
-  assert.match(settle, /setHermesRun\(\(current\) => \(current && !current\.ended \? \{ \.\.\.current, ended: true \} : current\)\);/);
-  // 4. The dialog's group has no work left and no sentence is showing: it closes. With a sentence (a refusal) it stays.
+  // 4. The dialog's group has no work left and no sentence is showing: it closes (before it is painted). With a sentence (a refusal) it stays.
   assert.match(
     page,
-    /useEffect\(\(\) => \{\s*if \(confirmGroup && !confirmHasWork && !installConfirmError && !installBusy\) setConfirmGroup\(null\);\s*\}, \[confirmGroup, confirmHasWork, installConfirmError, installBusy\]\);/
+    /useLayoutEffect\(\(\) => \{\s*if \(confirmGroup && !confirmHasWork && !installConfirmError && !installBusy\) setConfirmGroup\(null\);\s*\}, \[confirmGroup, confirmHasWork, installConfirmError, installBusy\]\);/
   );
   // 5. SetupModal: when the confirm button goes and focus has fallen outside the dialog, Cancel takes it; no other dialog changes.
   const modal = source("ui/components/SetupModal.tsx").replace(/\/\/.*$/gm, "");
@@ -658,4 +662,78 @@ test("release batch review round: a session that ended while the person is on Pl
   assert.match(routeComment, /systemCheck\(\{\}\)/);
   assert.match(routeComment, /60 s/);
   assert.doesNotMatch(routeComment, /no git call and no CLI runs inside a page request/);
+});
+
+test("release batch final round: a run marked ended off the Install step keeps its refresh; the ask belongs to one run; the dialog closes unpainted and focus has a place to go", () => {
+  const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
+  // 1. settleHermesRun ends the run through the SAME code the terminal's end uses (endHermesRun: mark ended, then the delayed refresh of
+  //    the computer, the plan and the saved update answer after AFTER_SESSION_MS), so that code exists once.
+  assert.match(page, /const hermesRunRef = useRef\(hermesRun\);\s*hermesRunRef\.current = hermesRun;/);
+  const end = bodyOf(page, "function endHermesRun\\(\\) \\{");
+  assert.match(end, /setHermesRun\(\(current\) => \(current \? \{ \.\.\.current, ended: true \} : current\)\);/);
+  assert.match(end, /hermesTimer\.current = setTimeout\(\(\) => \{[\s\S]*?void refreshServerState\(true\);\s*updates\.reload\(\);[\s\S]*?\}, AFTER_SESSION_MS\);/);
+  assert.equal(page.split("AFTER_SESSION_MS").length - 1, 2, "the delayed refresh is written once (the import and its one use)");
+  const told = bodyOf(page, "function onHermesEnded\\(connected = true\\) \\{");
+  assert.match(
+    told,
+    /if \(!hermesRunRef\.current\?\.ended\) endHermesRun\(\);\s*if \(!connected\) setHermesRun\(null\);/,
+    "a run already marked ended is not ended a second time (one refresh), and a terminal that never connected drops the run"
+  );
+  // 2. The ask belongs to one run: it carries the session id it asked about, a failed ask clears its key (no timer, no loop), and only
+  //    that run is marked ended when the answer comes: a newer session that started meanwhile is never touched.
+  const settle = bodyOf(page, "async function settleHermesRun\\(sessionId: string, askKey: string\\) \\{");
+  assert.match(settle, /if \(endedAskedFor\.current === askKey\) endedAskedFor\.current = null;/, "a failed or timed-out ask clears its key");
+  assert.doesNotMatch(settle, /setTimeout|setInterval/, "and nothing retries by itself");
+  assert.match(settle, /const current = hermesRunRef\.current;\s*if \(!current \|\| current\.ended \|\| current\.sessionId !== sessionId\) return;\s*endHermesRun\(\);/, "only the run that was asked about");
+  assert.doesNotMatch(settle, /setHermesRun\(/, "the run is ended through endHermesRun only");
+  assert.match(page, /\}, \[hermesSaved, plan, stepIndex, jobRunning, hermesWorking, hermesRun\?\.sessionId\]\);/, "a new session re-runs the effect");
+  // (The leave rule is the old one again, pinned in test/setup-page-logic.test.js: an ended run goes when the person leaves a step for
+  //  any step but Install. An ended session's output cannot be shown again, so nothing is kept for a later visit: see the next test.)
+  // 3. The dialog's closing effect runs before paint, and the confirm dialog names where focus goes when its opener is gone.
+  assert.match(page, /import \{[^}]*useLayoutEffect[^}]*\} from "react";/);
+  assert.match(page, /<SetupModal[^>]*?focusWhenOpenerGone=\{titleRef\}/, "SetupPage's confirm dialog passes the step title");
+  const modal = source("ui/components/SetupModal.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(modal, /focusWhenOpenerGone\?: RefObject<HTMLElement \| null>;/, "one optional prop");
+  assert.match(
+    modal,
+    /const opener = previouslyFocused\.current as HTMLElement \| null;\s*if \(focusWhenOpenerGone && !opener\?\.isConnected\) focusWhenOpenerGone\.current\?\.focus\(\);\s*else opener\?\.focus\?\.\(\);/,
+    "with the prop unset, or the opener still there, focus goes back to the opener as before"
+  );
+  for (const file of ["ui/components/SetupInstallPanel.tsx", "ui/components/AgentUpdatePanel.tsx"]) {
+    assert.doesNotMatch(source(file), /focusWhenOpenerGone/, `${file}: no other dialog passes it`);
+  }
+});
+
+test("release batch final round fix: a terminal for a session that ended before it connected drops the run; the heading says what is true once it ended", () => {
+  // The server keeps no screen for an ended session (attach is refused: session_ended), so a terminal shown again for one is blank. It
+  // tells the page whether it ever reached "open" when it reports the end, and the page drops the run when it never did.
+  const terminal = source("ui/components/AgentUpdateTerminal.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(terminal, /onEnded\(connected: boolean\): void;/);
+  assert.match(terminal, /latest\.current\.onEnded\(opened\.current\);/, "opened.current is set when the terminal reaches open, and only then");
+  assert.match(terminal, /connection === "open"\) \{\s*opened\.current = true;/);
+  const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(page, /onEnded=\{onHermesEnded\}/, "the terminal's end reaches onHermesEnded with its argument");
+  // The leave rule is the old one: any step but Install clears an ended run.
+  assert.match(page, /if \(stepIndex === STEP\.install\) return;\s*setHermesError\(""\);\s*setHermesRun\(\(current\) => \(current && current\.ended \? null : current\)\);/);
+  assert.doesNotMatch(page, /lastStep|leftInstall/, "no 'left Install' bookkeeping any more");
+  assert.doesNotMatch(page.replace(/\/\/.*$/gm, ""), /finished terminal/, "and no promise of a finished terminal on a later visit");
+  const rawPage = source("pages/SetupPage.tsx");
+  assert.doesNotMatch(rawPage, /its finished terminal stays for the next visit|shows as the finished terminal on their next visit|is shown on their next visit to Install/, "the comments promise nothing the screen cannot show");
+
+  // The heading's second sentence is for a session that can still be typed into.
+  assert.equal(shared.HERMES_UPDATE_HEADING, "Hermes update. Type into it if Hermes asks you something.");
+  assert.equal(shared.HERMES_UPDATE_HEADING_ENDED, "Hermes update.");
+  assert.equal(shared.hermesUpdateHeading(false), shared.HERMES_UPDATE_HEADING);
+  assert.equal(shared.hermesUpdateHeading(true), shared.HERMES_UPDATE_HEADING_ENDED);
+  assert.doesNotMatch(shared.hermesUpdateHeading(true), /Type into it/);
+  // Both pages that show the heading choose it by whether their run has ended, for the visible heading and for the terminal's label.
+  assert.match(page, /<h3 className="os-agent-update__run-title">\{hermesUpdateHeading\(hermesRun\.ended\)\}<\/h3>/);
+  assert.match(page, /label=\{hermesUpdateHeading\(hermesRun\.ended\)\}/);
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /<h4 className="os-agent-update__run-title">\{hermesUpdateHeading\(run\.ended\)\}<\/h4>/);
+  assert.match(panel, /label=\{hermesUpdateHeading\(run\.ended\)\}/);
+  for (const text of [page, panel]) assert.doesNotMatch(text, /HERMES_UPDATE_HEADING\b/, "neither page uses the running heading directly");
+  // The Agents page does not drop a run: it only mounts a terminal for a session that is live (it just started it, or found it live),
+  // so there is no ended session to show there (see the report).
+  assert.doesNotMatch(panel, /onEnded=\{\(connected/);
 });

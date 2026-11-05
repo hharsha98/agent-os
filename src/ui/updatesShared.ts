@@ -166,6 +166,10 @@ export const HERMES_GUIDE_STEPS: ReadonlyArray<{ text: string; command: string }
 ];
 
 export const HERMES_UPDATE_HEADING = "Hermes update. Type into it if Hermes asks you something.";
+// Once the session has ended nothing can ask and nothing typed goes anywhere, so the second sentence goes. Both pages that show the
+// heading (Setup's Install step and the Agents page) choose with this, for the visible heading and for the terminal's accessible label.
+export const HERMES_UPDATE_HEADING_ENDED = "Hermes update.";
+export const hermesUpdateHeading = (ended: boolean) => (ended ? HERMES_UPDATE_HEADING_ENDED : HERMES_UPDATE_HEADING);
 
 // After a Hermes update session ends, the server forgets what it detected and checks Hermes again (it looks at the session
 // once a second). A page waits a little longer than that before it asks, so it does not get the old answer. The Agents page

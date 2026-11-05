@@ -604,7 +604,7 @@ describe("desktop packaging and the desktop CI job", async () => {
 
   test("CI builds the desktop shell and runs its unit tests on Linux, macOS and Windows", () => {
     const desktop = jobOf(ci, "desktop");
-    for (const runner of ["ubuntu-22\\.04", "macos-14", "windows-latest"]) assert.match(desktop, new RegExp(runner));
+    for (const runner of ["ubuntu-22\\.04", "macos-15", "windows-latest"]) assert.match(desktop, new RegExp(runner));
     assert.match(desktop, /fail-fast:\s*false/);
     assert.match(desktop, /libwebkit2gtk-4\.1-dev/);
     assert.match(desktop, /run:\s*npm ci\s*\n/);

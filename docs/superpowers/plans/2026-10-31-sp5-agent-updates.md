@@ -106,7 +106,7 @@ Hermes:
   2. "Follow main: hermes update --set-channel main"
   3. "Keep your branch in place when updating: hermes config set updates.parked_branch_strategy update_in_place"
   4. "Update: hermes update"
-- Update session heading: "Hermes update. Type into it if Hermes asks you something."
+- Update session heading: "Hermes update. Type into it if Hermes asks you something." Once the session has ended: "Hermes update." (R56)
 
 Restart banner and confirm (copy from the spec, word for word):
 - "Restart session to use v{new}"

@@ -86,9 +86,11 @@ The Update confirm dialog:
 - Body: "Runs {agent}'s own updater: {command}."
 - Open sessions: "Open sessions keep running on the version they started with until you restart them." For OpenClaw: "Open sessions may stop working until you restart them." (R50)
 - OpenClaw only: "Dry run: {current} → {target}." and "Its Gateway restarts, and the update can take several minutes." (R50)
+- Setup's OpenClaw row with Update chosen, which has no dry-run answer: "Open sessions may stop working until you restart them. The update can take several minutes." (R50)
 - Buttons: "Cancel", "Update"
 
 Hermes:
+- Clean and up to date, on Setup's row and in the 409 `hermes_up_to_date`: "Hermes is up to date." (R48)
 - Not clean: "Agent OS updates Hermes only from an unchanged official copy." followed by one reason line per finding:
   - "Agent OS can't find Hermes's folder."
   - "Its folder doesn't come from the official Hermes repository."

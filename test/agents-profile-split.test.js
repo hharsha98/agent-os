@@ -171,12 +171,14 @@ test("F1: it stays cheap, because it runs in a page request: no path is looked u
     return p;
   };
   const base = { resolveHermesHome: async () => "/data/work", serverEnv: {}, home: "/Users/someone", realpath: spy };
+  // The form the code looks a path up in: resolved, and on Windows with its drive and in lower case ("/data/work" reads d:\data\work).
+  const looked = (p) => (process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p));
   // The same text on both sides: nothing is looked up.
   assert.equal(await withProfileSplit("hermes", safety, { ...base, peekShell: () => shell({ HERMES_HOME: "/data/work/" }) }), safety);
   assert.deepEqual(calls, []);
   // Different text: the two paths, once each.
   await withProfileSplit("hermes", safety, { ...base, peekShell: () => shell({ HERMES_HOME: "/data/other" }) });
-  assert.deepEqual(calls.sort(), ["/data/other", "/data/work"]);
+  assert.deepEqual(calls.sort(), [looked("/data/other"), looked("/data/work")]);
   // OpenClaw: only the variables whose text differs; a name is never looked up.
   calls.length = 0;
   await withProfileSplit("openclaw", safety, {
@@ -184,7 +186,7 @@ test("F1: it stays cheap, because it runs in a page request: no path is looked u
     peekShell: () => shell({ OPENCLAW_PROFILE: "a", OPENCLAW_STATE_DIR: "/s/one", OPENCLAW_HOME: "/h" }),
     serverEnv: { OPENCLAW_PROFILE: "b", OPENCLAW_STATE_DIR: "/s/two", OPENCLAW_HOME: "/h" }
   });
-  assert.deepEqual(calls.sort(), ["/s/one", "/s/two"]);
+  assert.deepEqual(calls.sort(), [looked("/s/one"), looked("/s/two")]);
   // No claim, no lookup: the shell was not read, or the agent has no profile.
   calls.length = 0;
   await withProfileSplit("hermes", safety, { ...base, peekShell: () => null });

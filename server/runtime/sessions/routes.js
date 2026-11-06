@@ -9,6 +9,7 @@
 // addresses exist.
 import express from "express";
 import { builderErrorResponse } from "../builders/resolve.js";
+import { agentsUpdatingInJobs } from "../setup/jobs.js";
 import { errorBody, isSessionId } from "./errors.js";
 import { recentSessionFolders } from "./folders.js";
 import { sendTo } from "./handoff.js";
@@ -269,10 +270,13 @@ export function createSessionsRouter({ manager = getSessionManager(), approvals 
     })
   );
 
+  // The live sessions, and whether a Setup job is running an agent's update (Se I1 of the final review): quitting kills
+  // `openclaw update` or an npm install partway, so the question must come even when no session is open. The route adds
+  // the second part: the manager knows sessions only, and the Setup jobs are not its business.
   router.post(
     "/quit-check",
     handle(async (_req, res) => {
-      res.json(await manager.quitCheck());
+      res.json({ ...(await manager.quitCheck()), updating: agentsUpdatingInJobs().size > 0 });
     })
   );
 

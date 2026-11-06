@@ -174,6 +174,15 @@ describe("release workflow", async () => {
 });
 
 describe("desktop window", () => {
+  // The bundled Node (resources/node) is built for macOS 13.5 and newer (its Mach-O header says minos 13.5). On an older Mac the app
+  // opened and then showed "built-in server stopped… dyld…", while the download table offered it. The bundle's own minimum makes
+  // macOS refuse it with a clear message instead (final review, Re M2).
+  test("the Mac app says it needs macOS 13.5 or newer, the oldest the bundled Node runs on", async () => {
+    const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
+    assert.equal(conf.bundle.macOS.minimumSystemVersion, "13.5");
+    assert.equal(conf.bundle.macOS.signingIdentity, "-", "the signing setting beside it is untouched");
+  });
+
   test("cannot be made smaller than 1024x640 (the smallest the laptop layout is built for)", async () => {
     const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
     const main = conf.app.windows.find((window) => window.label === "main");

@@ -2347,6 +2347,12 @@ export interface AgentSafetyStatus {
   choices?: AgentSafetyAction[];
   // Calm facts about this safeguard, shown with an info mark (e.g. when OpenClaw can ask for approval).
   notes?: string[];
+  // The mode that was read: OpenClaw's tools.exec.mode ("full", "ask", "auto", ...), Hermes's approvals.mode ("manual" or
+  // "smart"; none for off, an unknown word or a read that failed). The Safety page words its row by it.
+  mode?: string;
+  // True when sessions use another Hermes or OpenClaw profile than this answer was read from (the login shell's
+  // environment differs from the server's): the answer then says nothing about the profile a session runs in.
+  otherProfile?: boolean;
 }
 
 export interface AgentDetail {
@@ -2910,6 +2916,9 @@ export interface QuitCheckItem {
 
 export interface QuitCheckResponse {
   live: QuitCheckItem[];
+  // True while a Setup job runs an agent's update step: quitting would stop the updater partway (final review, Se I1). A
+  // server that does not send it means no update.
+  updating?: boolean;
 }
 
 export interface RecordingSummary {

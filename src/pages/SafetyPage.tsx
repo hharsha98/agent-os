@@ -27,6 +27,7 @@ import SafetyStopInfo from "../ui/components/SafetyStopInfo";
 import SetupModal from "../ui/components/SetupModal";
 import { useInterval } from "../ui/components/useInterval";
 import { AGENT_DETAIL_LIMIT_MS, withTimeout } from "../ui/homeShared";
+import { THIS_MACHINE } from "../ui/machineLabel";
 import {
   ARM_PHRASE,
   BUSY_WORD,
@@ -398,7 +399,7 @@ export default function SafetyPage() {
             machineLostWords(expiresLabel)
           ) : (
             <>
-              Agent OS can see the screen and use the mouse and keyboard on this Mac. It turns itself off in <span className="os-mono" role="timer" aria-live="off">{countdown}</span>
+              Agent OS can see the screen and use the mouse and keyboard on {THIS_MACHINE}. It turns itself off in <span className="os-mono" role="timer" aria-live="off">{countdown}</span>
               {expiresLabel ? <> at {expiresLabel}</> : null}.
             </>
           )}
@@ -493,7 +494,7 @@ export default function SafetyPage() {
           <p>At Level 2, Agent OS can do more than work in the Workspace:</p>
           <ul className="os-saf-arm-list">
             <li>See your screen.</li>
-            <li>Move the mouse and type in other apps on this Mac.</li>
+            <li>Move the mouse and type in other apps on {THIS_MACHINE}.</li>
             <li><Clock size={14} aria-hidden="true" /> Turn off by itself after <span className="os-mono">30</span> minutes. To use it again, you type the phrase again.</li>
             <li>Shell commands stay off unless you switch them on separately, and each one still needs your confirmation.</li>
           </ul>

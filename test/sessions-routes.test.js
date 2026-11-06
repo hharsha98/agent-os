@@ -430,7 +430,7 @@ test("fixed paths come before /:id: folders, settings and quit-check reach their
 
       const quit = await api("POST", "/api/sessions/quit-check", {});
       assert.equal(quit.status, 200);
-      assert.deepEqual(quit.json, { live: [{ id: KNOWN_ID, title: "Claude Code · project", kind: "agent" }] });
+      assert.deepEqual(quit.json, { live: [{ id: KNOWN_ID, title: "Claude Code · project", kind: "agent" }], updating: false }, "final fix, Se I1: the answer also says whether an agent is updating (it was { live } only)");
 
       // Routing is case sensitive: "FOLDERS" is not the folders address, and
       // as an id it fails the pattern.

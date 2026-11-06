@@ -49,7 +49,7 @@ import {
 import { friendlyError as updateError } from "../ui/agentsShared";
 import { BRAIN_AGENT_LABEL } from "../ui/brainShared";
 import { findLiveUpdateSession, startUpdate } from "../updatesApi";
-import { AFTER_SESSION_MS, hermesUpdateHeading } from "../ui/updatesShared";
+import { AFTER_SESSION_MS, hermesReasonsShown, hermesUpdateHeading } from "../ui/updatesShared";
 import { useUpdates } from "../ui/useUpdates";
 import {
   AGENT_NAMES,
@@ -1139,6 +1139,7 @@ export default function SetupPage() {
                   disabled={installBusy}
                   canSkip={false}
                   hasBlockedReason={plan.blocked.some((b) => b.agentId === agentId)}
+                  hermesReasons={hermesReasonsShown("hermes", updates.data?.hermes)}
                   consent={
                     agentId === "openclaw"
                       ? { accepted: openClawRiskAccepted, onToggle: setOpenClawRiskAccepted }

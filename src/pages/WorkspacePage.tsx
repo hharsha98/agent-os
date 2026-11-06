@@ -36,6 +36,7 @@ import { agoLabel } from "../ui/components/RelativeTime";
 import WorkspaceNoteForm from "../ui/components/WorkspaceNoteForm";
 import WorkspacePreview, { SavedByWords } from "../ui/components/WorkspacePreview";
 import { canRevealInFinder, revealInFinder } from "../ui/desktop";
+import { FILE_MANAGER } from "../ui/machineLabel";
 import { withTimeout } from "../ui/homeShared";
 import {
   ALWAYS_CHIPS,
@@ -403,7 +404,7 @@ export default function WorkspacePage() {
     try {
       await revealInFinder(sandbox.absolute);
     } catch {
-      setNotice({ tone: "warn", text: `Finder could not be opened. The folder is at ${sandbox.absolute}` });
+      setNotice({ tone: "warn", text: `${FILE_MANAGER.failed} The folder is at ${sandbox.absolute}` });
     }
   }
 
@@ -569,7 +570,7 @@ export default function WorkspacePage() {
           {!selectedId && canRevealFolder ? (
             <button type="button" className="os-btn os-btn--ghost" onClick={() => void revealFolder()}>
               <FolderOpen size={15} aria-hidden="true" />
-              Show in Finder
+              {FILE_MANAGER.show}
             </button>
           ) : null}
         </span>

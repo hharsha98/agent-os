@@ -189,13 +189,31 @@ export interface ApprovalConfirm {
   confirm: string;
 }
 
-// The confirm before an answer is sent. A command is shown exactly as OpenClaw gave it; another kind's summary loses a
-// trailing full stop so the sentence reads once.
+// The confirm's sentence for a command in three pieces, so the dialog can set the command in a box that keeps its real
+// line breaks and scrolls (final review, Sa 1). Null when the dialog has no command to show: a Deny, another kind of
+// approval, or a card with no summary.
+export interface ApprovalConfirmParts {
+  before: string;
+  command: string;
+  after: string;
+}
+
+export function approvalConfirmParts(card: Pick<ApprovalCard, "kind" | "summary">, decision: ApprovalDecision): ApprovalConfirmParts | null {
+  if (decision === "deny" || card.kind !== "exec") return null;
+  const summary = String(card.summary ?? "").trim();
+  if (!summary) return null;
+  return { before: "OpenClaw runs", command: summary, after: "this one time. It asks again next time." };
+}
+
+// The confirm before an answer is sent. A command is shown exactly as OpenClaw gave it, line breaks included; another
+// kind's summary loses a trailing full stop so the sentence reads once.
 export function approvalConfirm(card: Pick<ApprovalCard, "kind" | "summary">, decision: ApprovalDecision): ApprovalConfirm {
   if (decision === "deny") return { title: "Deny this?", body: "OpenClaw is told no.", confirm: "Deny" };
   const summary = String(card.summary ?? "").trim();
   if (card.kind === "exec") {
-    return { title: "Allow this once?", body: `OpenClaw runs ${summary || "it"} this one time. It asks again next time.`, confirm: "Allow once" };
+    const parts = approvalConfirmParts(card, decision);
+    const body = parts ? `${parts.before} ${parts.command} ${parts.after}` : "OpenClaw runs it this one time. It asks again next time.";
+    return { title: "Allow this once?", body, confirm: "Allow once" };
   }
   const what = summary.replace(/[.\s]+$/, "") || "it";
   return { title: "Allow this once?", body: `OpenClaw goes ahead with this one time: ${what}. It asks again next time.`, confirm: "Allow once" };

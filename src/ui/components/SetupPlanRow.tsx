@@ -49,7 +49,8 @@ export default function SetupPlanRow({
   disabled = false,
   canSkip,
   consent,
-  hasBlockedReason = false
+  hasBlockedReason = false,
+  hermesReasons = true
 }: {
   label: string;
   license?: string;
@@ -67,6 +68,9 @@ export default function SetupPlanRow({
   consent?: OpenClawConsent;
   // The plan names a reason for this agent (plan.blocked). The page draws it above the groups, so the row may point there.
   hasBlockedReason?: boolean;
+  // Hermes's row only: does the Agents page have reasons to show for its changed copy (hermesReasonsShown)? When not, the lock line
+  // keeps its first sentence and does not send the person to Agents for reasons that are not there (re-review N3).
+  hermesReasons?: boolean;
 }) {
   const installStep = installSteps.find((s) => s.action === "install");
   const nodeStep = installSteps.find((s) => s.action === "prereq-node");
@@ -107,7 +111,7 @@ export default function SetupPlanRow({
       what = (
         <span className="os-setup-lock">
           {keepStep.noUpdate === "up-to-date" ? null : <Lock size={15} aria-hidden="true" />}
-          {setupNoUpdateLine(keepStep.agentId, keepStep.noUpdate)}
+          {setupNoUpdateLine(keepStep.agentId, keepStep.noUpdate, hermesReasons)}
         </span>
       );
     } else if (chosen === "update") {
@@ -207,7 +211,7 @@ export default function SetupPlanRow({
           {showConsent && consent ? (
             <label className="os-setup-row__consent">
               <input type="checkbox" checked={consent.accepted} disabled={disabled} onChange={(e) => consent.onToggle(e.target.checked)} />
-              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands.</span>
+              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands, unless it already asks.</span>
             </label>
           ) : null}
         </div>

@@ -277,6 +277,52 @@ test("OpenClaw cards: matched to their session or shown in every OpenClaw panel;
   assert.equal(alerts.APPROVAL_NO_ANSWER, "Agent OS hasn't answered. OpenClaw may have your answer already: the card goes once it has.");
 });
 
+test("a command with several lines is confirmed with its real line breaks, in three pieces so the page can set it in a scrolling box (final fix, Sa 1)", () => {
+  const multi = card({ summary: "echo all tests passed\nrm -rf ~/project" });
+  assert.equal(
+    alerts.approvalConfirm(multi, "allow-once").body,
+    "OpenClaw runs echo all tests passed\nrm -rf ~/project this one time. It asks again next time.",
+    "the sentence keeps the line break; nothing is joined into one line"
+  );
+  assert.deepEqual(alerts.approvalConfirmParts(multi, "allow-once"), {
+    before: "OpenClaw runs",
+    command: "echo all tests passed\nrm -rf ~/project",
+    after: "this one time. It asks again next time."
+  });
+  assert.deepEqual(alerts.approvalConfirmParts(card(), "allow-once"), { before: "OpenClaw runs", command: "npm test", after: "this one time. It asks again next time." });
+  assert.equal(alerts.approvalConfirmParts(card({ summary: "" }), "allow-once"), null, "no command, no box: the sentence says it");
+  assert.equal(alerts.approvalConfirmParts(card(), "deny"), null);
+  assert.equal(alerts.approvalConfirmParts(card({ kind: "plugin", summary: "Deploy: push the site" }), "allow-once"), null, "another kind is a sentence, not a command");
+  const css = readFileSync(new URL("../src/ui/alerts.css", import.meta.url), "utf8");
+  const rule = (selector) => css.match(new RegExp(`${selector.replace(/[.]/g, "\\.")}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  for (const selector of [".os-approval__cmd", ".os-approval__command-box"]) {
+    assert.match(rule(selector), /white-space:\s*pre-wrap/, `${selector} shows real line breaks`);
+    assert.match(rule(selector), /overflow(-y)?:\s*auto/, `${selector} scrolls when it is long`);
+    assert.match(rule(selector), /max-height:/, `${selector} is capped`);
+  }
+  // Re-review R1: an overlay scrollbar (the Mac's default) hides itself until the box is scrolled, so a long command looked like
+  // a short one. A styled scrollbar and thumb are drawn whenever a box overflows (overflow stays auto: a short command, which does
+  // not overflow, shows none). `scrollbar-color` and `scrollbar-width` must not be set: in current Chromium they switch the
+  // styled scrollbar off.
+  for (const selector of [".os-approval__cmd", ".os-approval__summary", ".os-approval__command-box"]) {
+    const escaped = selector.replace(/[.]/g, "\\.");
+    assert.match(css, new RegExp(`${escaped}::-webkit-scrollbar[,\\s{]`), `${selector} has a styled scrollbar`);
+    assert.match(css, new RegExp(`${escaped}::-webkit-scrollbar-thumb[,\\s{]`), `${selector} has a styled thumb`);
+  }
+  assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ""), /scrollbar-color|scrollbar-width/);
+});
+
+test("Safety's empty state promises a card only while OpenClaw has an approval client open, in the owner's words (final fix, Sa M1)", () => {
+  const empty = readFileSync(new URL("../src/ui/components/SafetyApprovals.tsx", import.meta.url), "utf8");
+  assert.ok(
+    empty.includes(
+      'body="When OpenClaw wants to run a command and its Control UI or Mac app is open, a card with the command shows up here and in its session. You choose Allow once or Deny. Agent OS never answers for you. A Team Room that is waiting to save a file asks in that Team Room."'
+    ),
+    "the first sentence, and the rest as it was"
+  );
+  assert.doesNotMatch(empty, /a card with the exact command/, "a card does not always show the exact command");
+});
+
 test("an answered card shows its answer, then leaves a few seconds after OpenClaw drops it", () => {
   const a = card({ id: "a" });
   const b = card({ id: "b", summary: "rm -rf build" });

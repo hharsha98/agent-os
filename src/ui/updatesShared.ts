@@ -34,6 +34,51 @@ export function anyUpdateAvailable(data: UpdatesResponse | null | undefined): bo
   return Boolean(data?.agents.some((row) => row.state === "available"));
 }
 
+// 1, 0 or -1 as the version number in `a` is newer than, equal to or older than the one in `b`; null when either has none. The
+// parts compare as numbers ("2.1.10" is newer than "2.1.9") and a missing part is 0 ("2.1" equals "2.1.0"): the same rule as the
+// server's compareVersions (updates/versions.js).
+function compareVersionNumbers(a: string | null | undefined, b: string | null | undefined): -1 | 0 | 1 | null {
+  const left = versionNumber(a);
+  const right = versionNumber(b);
+  if (!left || !right) return null;
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const x = leftParts[index] ?? 0;
+    const y = rightParts[index] ?? 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+// The saved row is up to 24 hours old, while the Installed line above it is read fresh. An agent's own updater (or brew, or npm)
+// can move it after the morning check, and then the block would say "Update available" beside an Installed that already equals
+// Latest (final review, Se M2). A row that says "available" while the installed version is not older than Latest therefore reads
+// as up to date, with no Update button; a Latest that is older than what is installed is not said at all. Anything that cannot
+// be compared leaves the saved row as it is. The sidebar's dot reads only the saved rows: the Shell holds no detected versions
+// (they are read on the Agents page), so the dot can stay on until the next check.
+export function reconcileWithInstalled(status: AgentUpdateStatus | undefined, detected: string | null | undefined): AgentUpdateStatus | undefined {
+  if (!status || status.state !== "available") return status;
+  const order = compareVersionNumbers(detected, status.latest);
+  if (order === null || order < 0) return status;
+  return { ...status, state: "up-to-date", latest: order > 0 ? null : status.latest };
+}
+
+// When `reconcileWithInstalled` changes a row, the panel says "Up to date" while the sidebar's dot, which reads only the saved
+// rows, stays on for up to 24 hours (re-review N2). So the panel asks the server for one fresh check, which updates the saved
+// row and clears the dot. This is the guard that keeps it to ONE ask: the first call for an agent answers yes, every later one
+// no. A page visit makes one guard (the panel's file holds it outside the component), so a second panel, a re-render, a remount
+// when the person picks another agent and comes back, or a fresh answer that still says "available" can never start a loop or
+// a second check.
+export function createRecheckOnce(): (agentId: string) => boolean {
+  const asked = new Set<string>();
+  return (agentId: string) => {
+    if (asked.has(agentId)) return false;
+    asked.add(agentId);
+    return true;
+  };
+}
+
 // Where the dot leads: the first agent with an update, in the order the Agents page lists them (`order`).
 export function firstAvailableAgent(data: UpdatesResponse | null | undefined, order: readonly string[]): string | null {
   const available = new Set((data?.agents ?? []).filter((row) => row.state === "available").map((row) => row.agentId));
@@ -124,8 +169,17 @@ export const SETUP_HERMES_NO_UPDATE_LINE = `${HERMES_BLOCKED_LINE} See Agents fo
 // channel move back). The plan marks its keep step `noUpdate: "up-to-date"`, and the row then says that, because the "unchanged
 // official copy" sentence would be false for a clean copy. It is also the server's refusal sentence (hermes_up_to_date).
 export const SETUP_HERMES_UP_TO_DATE_LINE = "Hermes is up to date.";
-export const setupNoUpdateLine = (agentId: string, noUpdate?: string | null) =>
-  agentId === "hermes" ? (noUpdate === "up-to-date" ? SETUP_HERMES_UP_TO_DATE_LINE : SETUP_HERMES_NO_UPDATE_LINE) : SETUP_NO_UPDATE_LINE;
+// `reasonsShown` says whether the Agents page has reason lines to show for Hermes (hermesReasonsShown, the rule it draws by). With
+// none (the checks are off, the first check has not ended, or it failed) " See Agents for why." would point at nothing, so the row
+// keeps its first sentence only (re-review N3). A caller that says nothing keeps the full line.
+export const setupNoUpdateLine = (agentId: string, noUpdate?: string | null, reasonsShown = true) =>
+  agentId === "hermes"
+    ? noUpdate === "up-to-date"
+      ? SETUP_HERMES_UP_TO_DATE_LINE
+      : reasonsShown
+        ? SETUP_HERMES_NO_UPDATE_LINE
+        : HERMES_BLOCKED_LINE
+    : SETUP_NO_UPDATE_LINE;
 
 // "Not clean" with no reason at all is what the server sends before its first check of Hermes's folder has ended, and when
 // that check could not run (checks.js hermesClean). It is not a changed copy, so the page does not draw the reasons and
@@ -134,6 +188,14 @@ export const HERMES_UNCHECKED_LINE = "Agent OS hasn't checked Hermes's folder ye
 
 export function hermesUnchecked(agentId: string, status: AgentUpdateStatus | undefined, hermes: UpdatesResponse["hermes"] | undefined): boolean {
   return hermesBlocked(agentId, status, hermes) && (hermes?.reasons?.length ?? 0) === 0;
+}
+
+// Whether the Agents page draws the reasons Hermes is not an unchanged official copy, and the guide: whenever the server sent
+// reasons this page has words for, whatever the saved row says (final review, Se M3). Setup's row says "See Agents for why."
+// for a Hermes that is not clean, and the row can read up to date, failed or unknown at the same time as the copy is changed.
+// No Update is offered for that copy either way (offersUpdate is unchanged).
+export function hermesReasonsShown(agentId: string, hermes: UpdatesResponse["hermes"] | undefined): boolean {
+  return agentId === "hermes" && hermes?.clean !== true && hermesReasonLines(hermes?.reasons).length > 0;
 }
 
 // One line per finding, in this order (the order of the reviewed sentences, which is the order the server lists them in).

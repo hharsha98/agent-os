@@ -146,6 +146,90 @@ test("agent checks: Hermes on or off, from the real safety answer", () => {
   assert.deepEqual(mixed.map((r) => r.state), ["on", "on", "off"]);
 });
 
+test("the Safety rows word the check by mode: 'asks before risky commands' for OpenClaw in auto and Hermes in smart, the old words for every other mode (final fix, Re I4)", () => {
+  const rows = (hermesMode, openclawMode) =>
+    safety.agentGuardRows(
+      detail({ safety: { permissive: false, actions: [], mode: hermesMode } }),
+      detail({ safety: { permissive: false, actions: [], mode: openclawMode } }),
+      CHECKED
+    );
+  const risky = rows("smart", "auto");
+  assert.equal(risky[0].title, "Hermes asks before risky commands");
+  assert.equal(risky[1].title, "OpenClaw asks before risky commands");
+  assert.deepEqual(risky.map((r) => r.state), ["on", "on", "on"], "the state is what it was");
+  for (const [hermes, openclaw] of [["manual", "ask"], [undefined, undefined], ["paranoid", "allowlist"], ["manual", "full"]]) {
+    const old = rows(hermes, openclaw);
+    assert.equal(old[0].title, "Hermes asks before running commands", `${hermes}`);
+    assert.equal(old[1].title, "OpenClaw asks before running commands", `${openclaw}`);
+  }
+  // Only the mode that matters changes its agent's words: Hermes smart leaves OpenClaw ask alone, and the other way round.
+  assert.deepEqual(rows("smart", "ask").slice(0, 2).map((r) => r.title), ["Hermes asks before risky commands", "OpenClaw asks before running commands"]);
+  assert.deepEqual(rows("manual", "auto").slice(0, 2).map((r) => r.title), ["Hermes asks before running commands", "OpenClaw asks before risky commands"]);
+  // The spoken name uses the same words.
+  assert.match(safety.guardRowLabel(risky[0]), /^Hermes asks before risky commands\. On\./);
+  assert.match(safety.guardRowLabel(risky[1]), /^OpenClaw asks before risky commands\. On\./);
+});
+
+test("a profile the sessions don't use makes the Hermes and OpenClaw rows 'Status unknown', in the page's existing words (final fix, Sa 2)", () => {
+  const other = (over = {}) => detail({ safety: { permissive: false, actions: [], known: true, mode: "smart", otherProfile: true, ...over } });
+  const rows = safety.agentGuardRows(other(), other({ mode: "auto" }), CHECKED);
+  assert.deepEqual(rows.map((r) => [r.key, r.state]), [["hermes-approvals", "unknown"], ["openclaw-exec", "unknown"]], "never On for a profile the sessions don't use");
+  assert.equal(rows[0].sub, "Could not be read right now.");
+  assert.match(safety.guardRowLabel(rows[0]), /Status unknown/);
+  // One agent at a time.
+  const onlyHermes = safety.agentGuardRows(other(), detail(), CHECKED);
+  assert.deepEqual(onlyHermes.map((r) => [r.key, r.state]), [["hermes-approvals", "unknown"], ["openclaw-exec", "on"], ["openclaw-cookies", "on"]]);
+  // Not set, or false, reads as before.
+  for (const otherProfile of [undefined, false]) {
+    const same = safety.agentGuardRows(other({ otherProfile }), other({ otherProfile }), CHECKED);
+    assert.deepEqual(same.map((r) => r.state), ["on", "on", "on"], String(otherProfile));
+  }
+});
+
+test("final fix, Se M4: 'this Mac' is said only on a Mac; Windows reads 'this PC' and anything else 'this computer' (the menu footer's pattern)", async () => {
+  const { thisMachine, THIS_MACHINE } = await import("../src/ui/machineLabel.ts");
+  assert.equal(thisMachine("MacIntel"), "this Mac");
+  assert.equal(thisMachine("MacARM"), "this Mac");
+  assert.equal(thisMachine("Win32"), "this PC");
+  assert.equal(thisMachine("Windows"), "this PC");
+  assert.equal(thisMachine("Linux x86_64"), "this computer");
+  assert.equal(thisMachine("X11; Linux"), "this computer");
+  assert.equal(thisMachine(""), "this computer");
+  assert.equal(thisMachine(undefined), "this computer");
+  assert.equal(typeof THIS_MACHINE, "string");
+  assert.match(THIS_MACHINE, /^this (Mac|PC|computer)$/);
+  // The words that were written "this Mac" now name this computer, in every place the review listed.
+  const { readFileSync } = await import("node:fs");
+  const code = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8").replace(/\/\/.*$/gm, "");
+  for (const file of ["ui/components/AgentBay.tsx", "ui/safetyShared.ts", "pages/SafetyPage.tsx"]) {
+    assert.doesNotMatch(code(file), /this Mac/, `${file} no longer says "this Mac" on every computer`);
+    assert.match(code(file), /THIS_MACHINE/, `${file} uses the computer's own words`);
+  }
+  // The words that stay as they were wherever the computer is a Mac.
+  assert.equal(safety.LEVELS[2].blurb, `Agent OS can also see the screen and use the mouse and keyboard on ${THIS_MACHINE}. Off until you turn it on.`);
+  const rows = safety.agentGuardRows({ detected: { installed: false, error: "hermes was not found on PATH." }, safety: { permissive: false, summary: "", actions: [] } }, null, { hermes: true, openclaw: true });
+  assert.equal(rows[0].sub, `Hermes is not installed on ${THIS_MACHINE}.`);
+});
+
+test("re-review N4: 'Show in Finder' and 'Finder could not be opened' follow the computer: Finder on a Mac, File Explorer on Windows, the file manager on Linux", async () => {
+  const { fileManagerWords, FILE_MANAGER } = await import("../src/ui/machineLabel.ts");
+  assert.deepEqual(fileManagerWords("MacIntel"), { show: "Show in Finder", failed: "Finder could not be opened." });
+  assert.deepEqual(fileManagerWords("MacARM"), { show: "Show in Finder", failed: "Finder could not be opened." });
+  assert.deepEqual(fileManagerWords("Win32"), { show: "Show in File Explorer", failed: "File Explorer could not be opened." });
+  assert.deepEqual(fileManagerWords("Linux x86_64"), { show: "Show in file manager", failed: "The file manager could not be opened." });
+  assert.deepEqual(fileManagerWords(""), { show: "Show in file manager", failed: "The file manager could not be opened." });
+  assert.deepEqual(fileManagerWords(undefined), { show: "Show in file manager", failed: "The file manager could not be opened." });
+  assert.ok(typeof FILE_MANAGER.show === "string" && typeof FILE_MANAGER.failed === "string", "this computer's words, chosen once");
+  // All four places say it through the helper: the button on the folder bar and on a file, and the two notices.
+  const { readFileSync } = await import("node:fs");
+  const code = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8").replace(/\/\/.*$/gm, "");
+  for (const file of ["ui/components/WorkspacePreview.tsx", "pages/WorkspacePage.tsx"]) {
+    assert.doesNotMatch(code(file), /Show in Finder|Finder could not be opened/, `${file} no longer says Finder on every computer`);
+    assert.match(code(file), /FILE_MANAGER\.show/, `${file} labels its button`);
+    assert.match(code(file), /FILE_MANAGER\.failed/, `${file} words its notice`);
+  }
+});
+
 test("agent checks never claim a safeguard for an agent that is not there or could not be read", () => {
   const rows = safety.agentGuardRows(missing, broken, CHECKED);
   assert.deepEqual(rows.map((r) => [r.key, r.state]), [["hermes-approvals", "missing"], ["openclaw-exec", "unknown"]]);

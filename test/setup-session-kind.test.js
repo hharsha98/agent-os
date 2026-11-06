@@ -1209,7 +1209,7 @@ test("a real sign-in in a PTY against W1's fake: the link and the code are shown
           [`setup:${id}`]
         );
         assert.deepEqual((await call("GET", "/api/sessions?kind=all&live=1")).body.sessions.map((item) => item.id), [id]);
-        assert.deepEqual(await call("POST", "/api/sessions/quit-check", {}), { status: 200, body: { live: [] } });
+        assert.deepEqual(await call("POST", "/api/sessions/quit-check", {}), { status: 200, body: { live: [], updating: false } }, "final fix, Se I1: the answer also says whether an agent is updating (it was { live } only)");
 
         // The card's window, in process: the manager's attach, focus and write, which ws.js calls for every
         // window, and the frames ws.js would send. The upgrade itself is ws.js's and unchanged: it asks isLive,

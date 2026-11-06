@@ -13,6 +13,7 @@
 // Each CLI call gets the session's own environment and folder (decision Q11),
 // never the server's own environment, which holds AGENT_OS_TOKEN.
 import { killProcessTree, spawnTracked } from "../process-tree.js";
+import { programLaunch } from "../safety.js";
 
 export const SOFT_STOP_LIMIT_MS = 2000;
 export const OPENCLAW_STOP_NOTE = "Stopped the terminal. OpenClaw may still be finishing its last step.";
@@ -82,7 +83,9 @@ export function runCli(
     }
     let child;
     try {
-      child = spawn(command, args, {
+      // An npm .cmd shim on Windows starts as the program it points at (no shell); anything else is as it was.
+      const launch = programLaunch(command, args, { env: env || {} });
+      child = spawn(launch.command, launch.args, {
         cwd,
         env: env || {},
         stdio: ["ignore", "pipe", captureStderr ? "pipe" : "ignore"],

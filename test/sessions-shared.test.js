@@ -456,6 +456,58 @@ test("each quit request is its own round: a late result from an answered flow ca
   });
 });
 
+test("quitting while an agent updates asks first: the quit question says so in the update's own sentence, with no sessions listed or with them (final fix, Se I1)", async () => {
+  const UPDATING = "An update is running. Stopping it now can leave that agent half-updated.";
+  const claude = { id: "a", title: "Claude Code · my-app", kind: "agent" };
+  const hermes = { id: "h", title: "Hermes update", kind: "update" };
+  const copy = (live, updating = true) => ss.quitQuestionCopy({ phase: "asking", live, updating });
+  assert.equal(copy([]).body, UPDATING, "no session listed: only the update's line");
+  assert.equal(copy([]).title, "Quit Agent OS?");
+  assert.equal(
+    copy([claude]).body,
+    `Claude Code · my-app is still running. Quitting ends it. Its recording stays in Runs, and you can resume it later. ${UPDATING}`,
+    "a session and an update: the session's sentence, then the update's"
+  );
+  assert.equal(
+    copy([hermes]).body,
+    `The Hermes update is still running. Quitting stops it. ${UPDATING}`,
+    "a Hermes update session and a Setup update together"
+  );
+  assert.equal(copy([claude], false).body, ss.quitQuestionCopy({ phase: "asking", live: [claude] }).body, "no update: the words are as before");
+  assert.doesNotMatch(Object.values(copy([claude])).join(" "), /—/, "no em dash in visible text");
+
+  // The flow never quits at once while an update runs, with no session at all, fast or slow.
+  const calls = [];
+  const flow = (check) => {
+    calls.length = 0;
+    let open = true;
+    return {
+      check,
+      show: (view) => calls.push(["show", view.phase, view.live?.length ?? 0, view.updating === true]),
+      shown: () => calls.push(["shown"]),
+      answer: (quit) => {
+        open = false;
+        calls.push(["answer", quit]);
+      },
+      isOpen: () => open
+    };
+  };
+  await ss.runQuitFlow(flow(async () => ({ live: [], updating: true })));
+  assert.deepEqual(calls, [["show", "asking", 0, true], ["shown"]], "asks instead of quitting");
+  await ss.runQuitFlow(flow(async () => ({ live: [], updating: false })));
+  assert.deepEqual(calls, [["answer", true]], "nothing running and no update: quits at once, as before");
+  await ss.runQuitFlow(flow(async () => ({ live: [] })));
+  assert.deepEqual(calls, [["answer", true]], "an older answer with no field means no update");
+  await ss.runQuitFlow(flow(async () => ({ live: [claude], updating: true })));
+  assert.deepEqual(calls, [["show", "asking", 1, true], ["shown"]]);
+
+  // "Install & restart" asks on the same rule.
+  assert.deepEqual(ss.installQuestion({ live: [], updating: true }), { phase: "asking", live: [], updating: true });
+  assert.deepEqual(ss.installQuestion({ live: [claude], updating: true }), { phase: "asking", live: [claude], updating: true });
+  assert.equal(ss.installQuestion({ live: [], updating: false }), null, "no update, no session: install at once");
+  assert.deepEqual(ss.installQuestion({ live: [claude], updating: false }), { phase: "asking", live: [claude] });
+});
+
 test("the update banner's decision after the quit check: nothing running installs at once; sessions ask; no readable answer says so", () => {
   const item = { id: "a", title: "Claude Code · my-app", kind: "agent" };
   assert.equal(ss.installQuestion({ live: [] }), null, "nothing would be lost: install at once");

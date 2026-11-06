@@ -140,6 +140,8 @@ async function safetyStatus(detected) {
   if (status.permissive || status.known === false) return status;
   const mode = approvalsLines(result.stdout).pop();
   if (mode !== "manual" && mode !== "smart") return status;
+  // Which of the two it is, so the Safety page can word its row by mode (final review, Re I4).
+  status.mode = mode;
 
   status.notes.push('Hermes asks in its own terminal. Agent OS marks the session "May need you" when it does.');
   // The policy counts as read only when the read succeeded and printed at most one

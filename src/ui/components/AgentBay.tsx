@@ -15,6 +15,7 @@ import { AGENT_LABEL, AGENT_MAKER, AGENT_ROLE, SERVICE_AGENT_SET, SETUP_CAN_INST
 import { installState } from "../agentsPageShared";
 import { isBuilderId } from "../builderShared";
 import { AGENT_DETAIL_LIMIT_MS, withTimeout } from "../homeShared";
+import { THIS_MACHINE } from "../machineLabel";
 import { openNewSession } from "../newSession";
 import { useInterval } from "./useInterval";
 import AgentBrainCard from "./AgentBrainCard";
@@ -149,9 +150,9 @@ export default function AgentBay({
   const operator = SERVICE_AGENT_SET.has(agentId);
   const dashboard =
     agentId === "hermes"
-      ? { title: "Hermes dashboard", about: "Hermes's own page for its memory and settings, on this Mac only.", url: "http://127.0.0.1:9119", button: "Open dashboard" }
+      ? { title: "Hermes dashboard", about: `Hermes's own page for its memory and settings, on ${THIS_MACHINE} only.`, url: "http://127.0.0.1:9119", button: "Open dashboard" }
       : agentId === "openclaw"
-        ? { title: "OpenClaw Control UI", about: "OpenClaw's own control page, served by its Gateway, on this Mac only.", url: "http://127.0.0.1:18789", button: "Open Control UI" }
+        ? { title: "OpenClaw Control UI", about: `OpenClaw's own control page, served by its Gateway, on ${THIS_MACHINE} only.`, url: "http://127.0.0.1:18789", button: "Open Control UI" }
         : null;
 
   return (
@@ -216,7 +217,7 @@ export default function AgentBay({
         ) : found === "missing" ? (
           <div className="os-agent-version__missing">
             <StatusWord state="idle" label="Not installed" />
-            <p>{label} isn&apos;t installed on this Mac.</p>
+            <p>{label} isn&apos;t installed on {THIS_MACHINE}.</p>
             {SETUP_CAN_INSTALL_AGENT_SET.has(agentId) ? (
               <button type="button" className="os-btn os-btn--primary" onClick={() => navigateTo("setup", { step: "plan" })}>
                 Open Setup

@@ -19,6 +19,7 @@ import { getAdapter } from "../server/runtime/agents/index.js";
 import { clearDetectCaches } from "../server/runtime/agents/detect.js";
 import { requireLocalMode } from "../server/runtime/local-session.js";
 import { createSessionManager } from "../server/runtime/sessions/manager.js";
+import { createSessionsRouter } from "../server/runtime/sessions/routes.js";
 import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { getSetupJob, resetSetupJobsForTest } from "../server/runtime/setup/jobs.js";
@@ -782,6 +783,32 @@ test("isAgentUpdating(): true for an agent from the click on its update until it
     window.type("n\r");
     await waitFor(() => !manager.isLive(started.sessionId));
     await waitFor(() => !isAgentUpdating("hermes"));
+  });
+});
+
+test("the quit check says an agent is updating while a Setup job runs its update step, and no session is needed for that (final fix, Se I1)", POSIX_ONLY, async () => {
+  await withWorld({}, async (w) => {
+    const manager = w.manager();
+    const app = express();
+    app.use(express.json());
+    app.use("/api/sessions", createSessionsRouter({ manager }));
+    const server = await new Promise((resolve) => {
+      const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
+    });
+    const quitCheck = async () => (await fetch(`http://127.0.0.1:${server.address().port}/api/sessions/quit-check`, { method: "POST" })).json();
+    try {
+      assert.deepEqual(await quitCheck(), { live: [], updating: false }, "nothing runs");
+
+      await w.hold("claude");
+      const job = await startAgentUpdate("claude", { manager });
+      assert.deepEqual(await quitCheck(), { live: [], updating: true }, "an update step runs and no session is open: quitting must ask");
+      await w.release("claude");
+      await waitForJob(job.jobId);
+      assert.deepEqual(await quitCheck(), { live: [], updating: false }, "and not once the job has ended");
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });
 

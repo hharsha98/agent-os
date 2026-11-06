@@ -392,7 +392,12 @@ if (AGENT === "hermes") {
     process.exit(0);
   }
   if (args[0] === "config" && args[1] === "get" && args[2] === "tools.exec.mode") {
-    out(cfg().openclawExecMode || "ask");
+    const mode = cfg().openclawExecMode || "ask";
+    // "UNSET": an unset path as the real OpenClaw 2026.10.10 answers it: nothing on stdout, the sentence on stderr, exit 1.
+    // "FAIL": a read that failed (a locked config, a timeout): exit 1 and no such sentence (re-review R2).
+    if (mode === "UNSET") { process.stderr.write("Config path is valid but unset: tools.exec.mode.\\n"); process.exit(1); }
+    if (mode === "FAIL") { process.stderr.write("config store is locked\\n"); process.exit(1); }
+    out(mode);
     process.exit(0);
   }
   if (args[0] === "config" && args[1] === "get" && args[2] === "browser.allowSystemProfileImport") {
@@ -2298,6 +2303,37 @@ test(
         assert.notEqual(res.body.error, "safeguards_off");
         assert.equal(res.status, 200);
         assert.equal(await teamsCount(home), 1, "the room was created");
+        await roomEnded(res.body.id);
+      });
+    });
+  }
+);
+
+test(
+  "routes: an OpenClaw whose exec mode is unset (the real CLI's stderr and exit 1) is refused as safeguards_off; one whose setting could not be read is refused too, in its own words, and no room is made (re-review R2)",
+  SKIP_POSIX,
+  async () => {
+    await setScript({ hermes: [{ text: "NOTE: h" }], openclaw: [{ text: "NOTE: o" }] });
+    await withTeamEnv(async (home) => {
+      await withRouter(async (api) => {
+        // Unset is the permissive default (full): it was refused before the fix to OpenClaw's read, and still is.
+        await setScript({ openclawExecMode: "UNSET" });
+        let res = await api("POST", "/", { task: "x", confirm: true });
+        assert.equal(res.status, 409);
+        assert.equal(res.body.error, "safeguards_off");
+        assert.deepEqual(res.body.agents, ["openclaw"]);
+        // A read that failed says nothing about the mode, so the room must not start on a guess.
+        await setScript({ openclawExecMode: "FAIL" });
+        res = await api("POST", "/", { task: "x", confirm: true });
+        assert.equal(res.status, 409);
+        assert.equal(res.body.error, "safeguards_unknown");
+        assert.deepEqual(res.body.agents, ["openclaw"]);
+        assert.equal(res.body.message, "Agent OS could not read OpenClaw's approvals setting, so it did not start the Team Room. Try again in a moment.");
+        assert.equal(await teamsCount(home), 0, "no room is created while OpenClaw's setting is unknown");
+        // Readable again: the room starts.
+        await setScript({ openclawExecMode: "ask" });
+        res = await api("POST", "/", { task: "x", confirm: true, limits: { maxTurns: 2 } });
+        assert.equal(res.status, 200);
         await roomEnded(res.body.id);
       });
     });

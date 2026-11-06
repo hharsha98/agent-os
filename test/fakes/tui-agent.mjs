@@ -362,6 +362,13 @@ function oneShot() {
   if (joined === "login status") return answer("Logged in using ChatGPT");
   if (args[0] === "status") return answer(JSON.stringify({ status: "authenticated" }));
   if (args[0] === "doctor") return answer(args.includes("--json") ? "{}" : "ok");
+  // OpenClaw's two safety settings are unset, answered as the real OpenClaw 2026.10.10 answers an unset path (re-review R2):
+  // nothing on stdout, the sentence on stderr, exit 1. Agent OS reads that as "not set", which is the permissive default.
+  if (name === "openclaw" && args[0] === "config" && args[1] === "get" && (args[2] === "tools.exec.mode" || args[2] === "browser.allowSystemProfileImport")) {
+    log({ event: "probe", ...argvRecord() });
+    process.stderr.write(`Config path is valid but unset: ${args[2]}.\n`, () => process.exit(1));
+    return true;
+  }
   // Hermes's approvals setting reads as on ("manual"), as the earlier audit fake answered.
   if (args[0] === "config" && args[1] === "get") return answer(args[2] === "approvals.mode" ? "manual" : "");
   if (name === "openclaw" && args[0] === "approvals") return approvals();

@@ -5,6 +5,7 @@ import { useApiBlobUrl, useApiText } from "../../apiBlob";
 import type { WorkspaceListedFile, WorkspaceListing } from "../../types";
 import { canRevealInFinder, revealInFinder } from "../desktop";
 import { withTimeout } from "../homeShared";
+import { FILE_MANAGER } from "../machineLabel";
 import MiniMarkdown from "../miniMarkdown";
 import {
   PREVIEW_FETCH_MAX_BYTES,
@@ -157,7 +158,7 @@ export default function WorkspacePreview({ file, roots, onRefresh, onNotice, aut
     try {
       await revealInFinder(absolute);
     } catch {
-      onNotice({ tone: "warn", text: `Finder could not be opened. The file is at ${absolute}` });
+      onNotice({ tone: "warn", text: `${FILE_MANAGER.failed} The file is at ${absolute}` });
     }
   }
 
@@ -291,7 +292,7 @@ export default function WorkspacePreview({ file, roots, onRefresh, onNotice, aut
           {canReveal ? (
             <button type="button" className="os-btn os-btn--secondary" onClick={() => void reveal()}>
               <FolderOpen size={15} aria-hidden="true" />
-              Show in Finder
+              {FILE_MANAGER.show}
             </button>
           ) : null}
           {target ? (

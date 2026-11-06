@@ -43,8 +43,8 @@ function baseEnv(dir, extra = {}) {
 // Runs a shim the way agent detection does: no terminal, stdin closed at once.
 function runProbe(file, args, env, timeout = 5000) {
   return new Promise((resolve) => {
-    const child = execFile(file, args, { env, timeout }, (error, stdout) => {
-      resolve({ code: error ? (error.code ?? null) : 0, killed: Boolean(error?.killed), stdout: String(stdout) });
+    const child = execFile(file, args, { env, timeout }, (error, stdout, stderr) => {
+      resolve({ code: error ? (error.code ?? null) : 0, killed: Boolean(error?.killed), stdout: String(stdout), stderr: String(stderr ?? "") });
     });
     child.stdin?.end();
   });
@@ -199,7 +199,13 @@ test("detection probes answer at once without a terminal, and service controls a
     assert.match((await runProbe(bin.paths.codex, ["exec", "--help"], env)).stdout, /^Usage: codex/);
     assert.deepEqual(JSON.parse((await runProbe(bin.paths.claude, ["auth", "status"], env)).stdout), { loggedIn: true });
     assert.equal((await runProbe(bin.paths.hermes, ["config", "get", "approvals.mode"], env)).stdout.trim(), "manual");
-    assert.equal((await runProbe(bin.paths.openclaw, ["config", "get", "tools.exec.mode"], env)).stdout.trim(), "");
+    // An unset OpenClaw path answers as the real CLI does (2026.10.10, re-review R2): nothing on stdout, the sentence on stderr, exit 1.
+    for (const key of ["tools.exec.mode", "browser.allowSystemProfileImport"]) {
+      const unset = await runProbe(bin.paths.openclaw, ["config", "get", key], env);
+      assert.equal(unset.stdout.trim(), "", key);
+      assert.equal(unset.code, 1, key);
+      assert.match(unset.stderr, new RegExp(`Config path is valid but unset: ${key.replace(/\./g, "\\.")}`), key);
+    }
     assert.equal((await runProbe(bin.paths.hermes, ["gateway", "status"], env)).stdout.trim(), "gateway is not running");
     assert.deepEqual(JSON.parse((await runProbe(bin.paths.openclaw, ["gateway", "status", "--json"], env)).stdout), {
       running: false

@@ -110,6 +110,48 @@ export function cleanAlertText(value, max = ALERT_TEXT_MAX) {
   return limit === 0 ? "" : `${points.slice(0, limit - 1).join("")}…`;
 }
 
+// Every form of a line break a program can print: "\r\n" (one break, not two), "\r", "\n", vertical tab, form feed,
+// U+0085 and the line and paragraph separators U+2028 and U+2029.
+const LINE_BREAKS = /\r\n|[\r\n\v\f\u0085\u2028\u2029]/g;
+
+// A command for the approval card. Two rules, both about a person answering for a risky step.
+//  - A line break stays a real line break (Sa 1 of the final review), so "echo ok" and a second line "rm -rf ~/project"
+//    can't read as one harmless line.
+//  - NOTHING IS EVER DELETED (re-review R1). Every control or invisible character is shown as a visible token in the form
+//    OpenClaw's own display uses (`\u{1B}`), in its place. A removed character can hide the text around it: the old
+//    cleaning took `ESC ]0; rm -rf ~/project; BEL` as a window title and showed only what came before it, while the shell
+//    ran all of it. The characters shown as tokens: the control characters (C0, DEL, C1) bar the new line, the format
+//    characters (zero-width ones, the bidi controls that could reorder the text, the byte order mark, the soft hyphen), the
+//    Unicode spaces other than the plain space (no-break, ideographic, em and the rest), the default-ignorable code points
+//    (the Hangul fillers, the variation selectors, the tag characters), the braille blank, private-use characters and a
+//    lone surrogate half. A tab becomes a plain space.
+// Colour codes are NOT removed either: they show as `\u{1B}[31m`. Runs of plain spaces collapse, the spaces around a break
+// go, and three or more breaks in a row become one blank line, so plain padding can't push the end of a command out of
+// sight (K25); a line holding only invisible characters shows its token, so it never looks blank. The text is cut to `max`
+// code points counted AFTER the tokens, like cleanAlertText, and a cut text ends in "…". Notifications, alert lines and
+// OpenClaw's error words keep using cleanAlertText, which removes them and stays one short line.
+const SHOWN_AS_TOKENS = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zs}\u2800]/gu;
+
+function visibleToken(character) {
+  if (character === " " || character === "\n") return character;
+  return `\\u{${character.codePointAt(0).toString(16).toUpperCase()}}`;
+}
+
+export function cleanCommandText(value, max = ALERT_TEXT_MAX) {
+  const text = String(value ?? "")
+    .replace(LINE_BREAKS, "\n")
+    .replace(/\t/g, " ")
+    .replace(SHOWN_AS_TOKENS, visibleToken)
+    .replace(/ {2,}/g, " ")
+    .replace(/ ?\n ?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const limit = Number.isInteger(max) && max >= 0 ? max : ALERT_TEXT_MAX;
+  const points = Array.from(text);
+  if (points.length <= limit) return text;
+  return limit === 0 ? "" : `${points.slice(0, limit - 1).join("")}…`;
+}
+
 // The one signal shape (spec: {sessionId, kind, text, at}, plus K1's source
 // and, for a limit, resetAt). A wrong kind, source, id or time is a caller's
 // bug, never data, so it throws.

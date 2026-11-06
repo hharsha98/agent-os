@@ -54,15 +54,18 @@ import {
   RESTART_LABEL,
   RESTART_NOT_NOW,
   checkFoundAnswer,
+  createRecheckOnce,
   dryRunLine,
   hermesBlocked,
   hermesReasonLines,
+  hermesReasonsShown,
   hermesUnchecked,
   hermesUpdateHeading,
   installedVersionNumber,
   isCursorUnknown,
   offersUpdate,
   openSessionsLine,
+  reconcileWithInstalled,
   restartDialogBody,
   restartDialogTitle,
   sessionsToRestart,
@@ -207,6 +210,9 @@ function UpdateJobConsole({
   );
 }
 
+// One guard for the whole page visit, shared by every panel: each agent asks for its one fresh check here (re-review N2).
+const askedFreshCheck = createRecheckOnce();
+
 export default function AgentUpdatePanel({
   agentId,
   label,
@@ -225,7 +231,11 @@ export default function AgentUpdatePanel({
   // The short name ("Hermes", "Cursor"): the one the server's own sentences use ("Hermes is already updating."), not the
   // long one in the page's heading ("Hermes Agent").
   const name = AGENT_LABEL[agentId] ?? label;
-  const status = statusOf(updates.data, agentId);
+  // The saved row, except that "available" gives way to the version detected now when that is not older than Latest (Se M2).
+  const savedStatus = statusOf(updates.data, agentId);
+  const status = reconcileWithInstalled(savedStatus, installedVersion);
+  // True while this panel reads the row differently from the saved answer, which the sidebar's dot still follows (re-review N2).
+  const disagrees = Boolean(savedStatus) && status !== savedStatus;
   const hermes = updates.data?.hermes;
   // This agent's open sessions, from the shared sessions list (an update session is not one of them).
   const knownSessions = sessionsList.source.state === "ok" ? sessionsList.source.data.sessions : [];
@@ -259,6 +269,14 @@ export default function AgentUpdatePanel({
   const consoleTakesKeys = useRef(false);
   const latest = useRef({ updates, onChanged });
   latest.current = { updates, onChanged };
+  // The dot reads only the saved rows, so while this panel says "Up to date" over an "available" one the dot would stay on for up
+  // to 24 hours. One fresh check updates the saved row and clears it. It is not waited for, a failure shows nothing (the panel
+  // already reads the row right), and the guard (module level, one for the page visit) lets each agent ask once, so a row that
+  // still says available afterwards, or a second panel, cannot start a loop or a second check. The provider runs one check at a time.
+  useEffect(() => {
+    if (!disagrees || !askedFreshCheck(agentId)) return;
+    void latest.current.updates.recheck().catch(() => undefined);
+  }, [disagrees, agentId]);
 
   useEffect(() => {
     alive.current = true;
@@ -474,7 +492,8 @@ export default function AgentUpdatePanel({
 
       {unchecked ? (
         <p className="os-agent-update__note">{HERMES_UNCHECKED_LINE}</p>
-      ) : blocked ? (
+      ) : blocked || hermesReasonsShown(agentId, hermes) ? (
+        // Also when the saved row says up to date, failed or unknown: Setup's "See Agents for why." must have an answer here (Se M3).
         <div className="os-agent-update__blocked">
           <p className="os-agent-update__note">{HERMES_BLOCKED_LINE}</p>
           {reasonLines.length ? (

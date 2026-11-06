@@ -3,7 +3,7 @@
 // still fires "agentos:locked" the same way the rest of the app does.
 // Nothing here ever stores an API key past the moment it's POSTed (see
 // SetupBrainPanel.tsx): this module only shapes requests/responses.
-import { request } from "./api";
+import { ApiError, request } from "./api";
 import type { AgentDetected, AgentServiceStatus, SessionSummary } from "./types";
 
 // Server error codes -> plain English. request() throws Error(<server error
@@ -40,7 +40,10 @@ const FRIENDLY_ERRORS: Record<string, string> = {
 export function friendlyError(error: unknown, fallback = "Something went wrong. Please try again.") {
   const message = error instanceof Error ? error.message : "";
   if (!message) return fallback;
-  return FRIENDLY_ERRORS[message] || message;
+  // A code with no words of Setup's own shows the sentence the server sent with it (for example update_running), not
+  // the raw code (final review, Se M1).
+  const detail = error instanceof ApiError ? error.detail : "";
+  return FRIENDLY_ERRORS[message] || detail || message;
 }
 
 // A job id is not a secret, so it may live in sessionStorage. That lets a
@@ -777,6 +780,10 @@ export interface AgentSafetyStatus {
   // false when Agent OS could not read the setting (the read failed, timed out or printed
   // nothing): `permissive` is then not a finding and screens show "—". Absent from older servers.
   known?: boolean;
+  // The mode that was read (OpenClaw's tools.exec.mode, Hermes's approvals.mode manual or smart), for the Safety row's words.
+  mode?: string;
+  // True when sessions use another profile than this answer was read from: the row then says "Status unknown".
+  otherProfile?: boolean;
 }
 
 export interface AgentDetail {

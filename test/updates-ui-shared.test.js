@@ -418,7 +418,7 @@ test("E1 I2: Setup's plan row for an installed Hermes that has no update step sa
     assert.equal(shared.setupNoUpdateLine(agentId), "Agent OS does not update this agent yet. It stays as it is.", agentId);
   }
   const row = source("ui/components/SetupPlanRow.tsx");
-  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId, keepStep\.noUpdate\)/, "the row asks by the agent it shows (and the plan's mark)");
+  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId, keepStep\.noUpdate(?:, hermesReasons)?\)/, "the row asks by the agent it shows (and the plan's mark)");
   assert.doesNotMatch(row.replace(/\/\/.*$/gm, ""), /does not update this agent yet/, "and holds no copy of the sentence");
 });
 
@@ -440,8 +440,11 @@ test("E1 M1: the restart banner's button is off while this agent's update runs",
 
 test("E1 M2: when an update ends the page reads the saved answer (GET /api/updates); it does not start a second check beside the server's own", () => {
   const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
-  assert.equal(panel.split("recheck(").length - 1, 1, "recheck() (POST /api/updates/refresh) is left to the Check for updates button only");
-  assert.match(panel, /async function checkAgain\(\) \{[^}]*updates\.recheck\(\)/, "and that is where it is");
+  // Two places ask for a check (POST /api/updates/refresh): the Check for updates button, and, since re-review N2, the one guarded
+  // ask for a row the panel reads as up to date while the saved answer still calls it available. Neither is the end of an update.
+  assert.equal(panel.split("recheck(").length - 1, 2, "recheck() is the Check for updates button and the guarded stale-row ask (N2), nothing else");
+  assert.match(panel, /async function checkAgain\(\) \{[^}]*updates\.recheck\(\)/, "the button is one");
+  assert.match(panel, /if \(!disagrees \|\| !askedFreshCheck\(agentId\)\) return;\s*void latest\.current\.updates\.recheck\(\)/, "the other is guarded");
   assert.doesNotMatch(panel, /afterSession\) void latest\.current\.updates\.recheck/, "the end of a Hermes session no longer rechecks");
   assert.match(panel, /latest\.current\.updates\.reload\(\);\s*latest\.current\.onChanged\(\);/, "both kinds of update end with a read of the saved answer");
 });
@@ -459,7 +462,7 @@ test("E2 R48 on Setup: a Hermes row whose keep step is marked noUpdate up-to-dat
   assert.equal(shared.setupNoUpdateLine("claude", "up-to-date"), "Agent OS does not update this agent yet. It stays as it is.");
 
   const row = source("ui/components/SetupPlanRow.tsx").replace(/\/\/.*$/gm, "");
-  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId, keepStep\.noUpdate\)/, "the row passes the plan's mark");
+  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId, keepStep\.noUpdate(?:, hermesReasons)?\)/, "the row passes the plan's mark");
   assert.doesNotMatch(row, /Hermes is up to date/, "and holds no copy of the sentence");
   // A lock beside "Hermes is up to date." would read as "blocked": it is drawn for every other no-update row only.
   assert.match(row, /keepStep\.noUpdate === "up-to-date" \? null : <Lock /);
@@ -491,6 +494,113 @@ test("E2 R48: a refused Hermes update (409 hermes_up_to_date) shows the server's
   assert.match(setup, /return updateError\(error\)/, "and the sentence is what it returns");
   const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
   assert.match(panel, /setStartError\(friendlyError\(error\)\);\s*updates\.reload\(\);/, "the Agents page shows it in the dialog and reads the saved answer again");
+});
+
+test("final fix, Se M1: Setup shows the server's own sentence for an error code it has no words for, never the raw code", async () => {
+  const setup = await import("../src/setupApi.ts");
+  // Starting an update in Setup while the same agent updates from Agents: the server answers 409 update_running with a sentence.
+  assert.equal(setup.friendlyError(new ApiError("update_running", "Claude Code is already updating.", 409)), "Claude Code is already updating.");
+  // A code Setup has its own words for keeps them.
+  assert.equal(setup.friendlyError(new ApiError("job_already_running", "A job is running.", 409)), "Another setup job is already running. Wait for it to finish, then try again.");
+  // No sentence from the server, or no ApiError at all: as before.
+  assert.equal(setup.friendlyError(new ApiError("weird_code", "", 500)), "weird_code");
+  assert.equal(setup.friendlyError(new Error("boom")), "boom");
+  assert.equal(setup.friendlyError(null), "Something went wrong. Please try again.");
+  assert.equal(setup.friendlyError(undefined, "Custom."), "Custom.");
+});
+
+test("final fix, Se M2: a detected Installed version that is not older than Latest reads as up to date, with no Update button; one that is older is left alone", () => {
+  const available = row("claude", "available", { installed: "2.1.309", latest: "2.1.318" });
+  // The agent's own updater moved it after the morning check: the Installed line shows 2.1.318, the saved row still says available.
+  const same = shared.reconcileWithInstalled(available, "2.1.318 (Claude Code)");
+  assert.equal(same.state, "up-to-date");
+  assert.equal(same.latest, "2.1.318", "Latest is still said: it equals what is installed");
+  assert.equal(shared.offersUpdate("claude", same, undefined), false, "no Update button");
+  assert.deepEqual(shared.stateWord("claude", same), { tone: "ready", label: "Up to date" });
+  // Newer than the saved Latest: never print a Latest that is older than what is installed.
+  const newer = shared.reconcileWithInstalled(available, "2.1.320");
+  assert.equal(newer.state, "up-to-date");
+  assert.equal(newer.latest, null);
+  assert.equal(shared.offersUpdate("claude", newer, undefined), false);
+  assert.equal(shared.reconcileWithInstalled(available, "2.1.318").installed, "2.1.309", "the rest of the row is the saved row's");
+  assert.equal(available.state, "available", "the saved row is not changed");
+  // Numbers compare as numbers: 2.1.9 is older than 2.1.10, 2.1 equals 2.1.0.
+  assert.equal(shared.reconcileWithInstalled(row("claude", "available", { latest: "2.1.10" }), "2.1.9").state, "available");
+  assert.equal(shared.reconcileWithInstalled(row("claude", "available", { latest: "2.1.0" }), "2.1").state, "up-to-date");
+  // Older, unreadable or missing: the saved row stands.
+  assert.equal(shared.reconcileWithInstalled(available, "2.1.309"), available);
+  for (const unreadable of [null, undefined, "", "not installed", "—"]) {
+    assert.equal(shared.reconcileWithInstalled(available, unreadable), available, String(unreadable));
+  }
+  assert.equal(shared.reconcileWithInstalled(row("claude", "available", { latest: null }), "2.1.318").state, "available", "no Latest to compare with");
+  // Only an "available" row is reconsidered.
+  for (const state of ["up-to-date", "failed", "unknown", "not-installed"]) {
+    const other = row("claude", state);
+    assert.equal(shared.reconcileWithInstalled(other, "9.9.9"), other, state);
+  }
+  assert.equal(shared.reconcileWithInstalled(undefined, "2.1.318"), undefined);
+  // The Agents panel reads the row through it, with the installed line the page detected.
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /reconcileWithInstalled\(savedStatus, installedVersion\)/, "the panel reads its row through it (the saved row is `savedStatus`: re-review N2 names it)");
+});
+
+test("re-review N3: Setup's lock line for a Hermes with no update step drops ' See Agents for why.' when the server sent no reasons, so it never points at nothing", () => {
+  const FIRST = "Agent OS updates Hermes only from an unchanged official copy.";
+  assert.equal(FIRST, shared.HERMES_BLOCKED_LINE);
+  // Reasons to show on Agents: the line is as it was.
+  assert.equal(shared.setupNoUpdateLine("hermes", null, true), `${FIRST} See Agents for why.`);
+  assert.equal(shared.setupNoUpdateLine("hermes"), `${FIRST} See Agents for why.`, "a caller that says nothing keeps the old line");
+  // No reasons (checks off, the first check not ended, a failed one): the first sentence only.
+  assert.equal(shared.setupNoUpdateLine("hermes", null, false), FIRST);
+  assert.equal(shared.setupNoUpdateLine("hermes", "", false), FIRST);
+  // Everything else is untouched: "up to date" says that whatever the reasons, and another agent has its own sentence.
+  for (const reasons of [true, false]) {
+    assert.equal(shared.setupNoUpdateLine("hermes", "up-to-date", reasons), "Hermes is up to date.");
+    assert.equal(shared.setupNoUpdateLine("claude", null, reasons), "Agent OS does not update this agent yet. It stays as it is.");
+  }
+  // The row asks with what the Agents page will show: Setup passes hermesReasonsShown, the same rule the Agents page draws by.
+  const row = source("ui/components/SetupPlanRow.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(row, /setupNoUpdateLine\(keepStep\.agentId, keepStep\.noUpdate, hermesReasons\)/);
+  const page = source("pages/SetupPage.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(page, /hermesReasons=\{hermesReasonsShown\("hermes", updates\.data\?\.hermes\)\}/, "from the same saved answer the Agents page reads");
+});
+
+test("re-review N2: when the panel reads a row as up to date that the saved answer still calls available, it asks for ONE fresh check (so the dot clears), once per agent per page visit, not waited for, and a failure shows nothing", () => {
+  // The guard: the first ask for an agent is yes, every later one is no (it can't loop when the row still says available), and agents don't share it.
+  const once = shared.createRecheckOnce();
+  assert.equal(once("claude"), true);
+  assert.equal(once("claude"), false, "a second panel, a re-render or a remount does not ask again");
+  assert.equal(once("claude"), false);
+  assert.equal(once("codex"), true, "another agent has its own one");
+  assert.equal(shared.createRecheckOnce()("claude"), true, "a new page visit starts again");
+  // The panel: one guard for the whole page visit (outside the component), asked in an effect that only runs while the row
+  // and the saved answer disagree; the check is not awaited, and its failure is dropped.
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  const guardAt = panel.search(/const askedFreshCheck = createRecheckOnce\(\)/);
+  const componentAt = panel.search(/export default function AgentUpdatePanel/);
+  assert.ok(guardAt > 0 && guardAt < componentAt, "the guard lives outside the component, so every panel shares it");
+  assert.match(panel, /const savedStatus = statusOf\(updates\.data, agentId\);\s*const status = reconcileWithInstalled\(savedStatus, installedVersion\);/);
+  assert.match(panel, /const disagrees = Boolean\(savedStatus\) && status !== savedStatus;/);
+  assert.match(panel, /useEffect\(\(\) => \{\s*if \(!disagrees \|\| !askedFreshCheck\(agentId\)\) return;\s*void latest\.current\.updates\.recheck\(\)\.catch\(\(\) => undefined\);\s*\}, \[disagrees, agentId\]\);/);
+  assert.doesNotMatch(panel, /await latest\.current\.updates\.recheck/, "never waited for");
+});
+
+test("final fix, Se M3: the Agents page shows Hermes's reason lines whenever the server sent reasons, not only when a newer version is out; Update stays off", () => {
+  const changed = { clean: false, reasons: ["dirty_tree"] };
+  for (const state of ["available", "up-to-date", "failed", "unknown"]) {
+    assert.equal(shared.hermesReasonsShown("hermes", changed), true, state);
+    assert.equal(shared.offersUpdate("hermes", row("hermes", state), changed), false, `${state}: no Update`);
+  }
+  assert.equal(shared.hermesReasonsShown("hermes", { clean: true, reasons: [] }), false);
+  assert.equal(shared.hermesReasonsShown("hermes", { clean: true, reasons: ["dirty_tree"] }), false, "a clean copy has nothing to explain");
+  assert.equal(shared.hermesReasonsShown("hermes", { clean: false, reasons: [] }), false, "no reasons sent: nothing to show");
+  assert.equal(shared.hermesReasonsShown("hermes", { clean: false, reasons: ["from_the_future"] }), false, "a code this page does not know is left out, not shown as a code");
+  assert.equal(shared.hermesReasonsShown("claude", changed), false);
+  assert.equal(shared.hermesReasonsShown("hermes", undefined), false);
+  // R48 still holds: an up-to-date Hermes is refused, and the plan row for a clean copy says "Hermes is up to date."
+  assert.equal(shared.setupNoUpdateLine("hermes", "up-to-date"), "Hermes is up to date.");
+  const panel = source("ui/components/AgentUpdatePanel.tsx").replace(/\/\/.*$/gm, "");
+  assert.match(panel, /hermesReasonsShown\(agentId, hermes\)/, "the panel draws the reasons from it");
 });
 
 // ---- SP5 release batch ---------------------------------------------------------------------------------------------

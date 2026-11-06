@@ -27,13 +27,16 @@
 // OS's own: OpenClaw finds its Gateway as it does in Terminal. The output is
 // read for the named fields and then dropped.
 import { sessionError } from "./errors.js";
-import { cleanAlertText } from "./signals.js";
+import { cleanAlertText, cleanCommandText } from "./signals.js";
 import { runCli as defaultRunCli } from "./soft-stop.js";
 
 export const APPROVALS_POLL_MS = 3000;
 export const APPROVALS_CALL_LIMIT_MS = 10000;
 export const APPROVAL_DECISIONS = Object.freeze(["allow-once", "deny"]);
-export const APPROVAL_SUMMARY_MAX = 300;
+// A command is the thing a person answers for, so its card keeps up to this many characters, line breaks included
+// (final review, Sa 1; it was 300). A longer one still ends in "…". OpenClaw's own error text stays short.
+export const APPROVAL_SUMMARY_MAX = 4000;
+const APPROVAL_ERROR_MAX = 300;
 
 // The kinds `approvals pending` lists (OpenClaw 2026.10.4).
 const APPROVAL_KINDS = new Set(["exec", "plugin", "system-agent"]);
@@ -82,16 +85,15 @@ function withoutTerminalSequences(value) {
   return String(value ?? "").replace(TERMINAL_SEQUENCE, "");
 }
 
-// A card's summary: OpenClaw's own words, with colour and title sequences gone
-// and, through cleanAlertText, the control characters and the invisible
-// reordering ones. It is cleaned in full first and cut after that, and a cut
-// summary ends in "…" (299 characters and the sign), so a card never looks
-// complete when it is not: the end of a long command is the part a person
-// must be able to see before they click Allow once.
+// A card's summary: OpenClaw's own words, and NOTHING of them deleted (re-review R1). The summary is the command as it runs,
+// and a removed escape sequence can take real command text with it (`echo a ESC ]0; rm -rf ~/project; BEL` shows only
+// `echo a`, and the shell runs all of it), so it does not go through withoutTerminalSequences. cleanCommandText shows each
+// control or invisible character as a visible token (`\u{1B}`) and keeps the line breaks as real line breaks (a second
+// line must read as a second line, Sa 1). It is cut after that, and a cut summary ends in "…" (3999 characters and the
+// sign), so a card never looks complete when it is not: the end of a long command is the part a person must be able to
+// see before they click Allow once.
 function summaryOf(value) {
-  const text = cleanAlertText(withoutTerminalSequences(value), Number.MAX_SAFE_INTEGER);
-  const points = Array.from(text);
-  return points.length > APPROVAL_SUMMARY_MAX ? `${points.slice(0, APPROVAL_SUMMARY_MAX - 1).join("")}…` : text;
+  return cleanCommandText(value, APPROVAL_SUMMARY_MAX);
 }
 
 // Cards in OpenClaw's own words, newest first. An entry without a usable id,
@@ -148,7 +150,7 @@ function publicCard(card, sessions) {
 }
 
 function cliText(value) {
-  return cleanAlertText(withoutTerminalSequences(value), APPROVAL_SUMMARY_MAX);
+  return cleanAlertText(withoutTerminalSequences(value), APPROVAL_ERROR_MAX);
 }
 
 // The words of a refused answer (409 approval_failed): OpenClaw's own error

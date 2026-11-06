@@ -16,6 +16,7 @@ import {
   APPROVAL_NO_ANSWER,
   FROM_OPENCLAW,
   approvalConfirm,
+  approvalConfirmParts,
   approvalDoneHeading,
   approvalHeading,
   approvalView,
@@ -26,6 +27,18 @@ import type { Answered } from "../alertsShared";
 import AgentConfirmModal from "./AgentConfirmModal";
 import { useInterval } from "./useInterval";
 import "../alerts.css";
+
+// Whether a box really scrolls (its text is taller than the box), re-read when the text changes. Only then is it worth a stop
+// on the Tab key: a box that shows everything has nothing to scroll to.
+function useScrolls<T extends HTMLElement>(text: string) {
+  const ref = useRef<T>(null);
+  const [scrolls, setScrolls] = useState(false);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    setScrolls(Boolean(node) && node!.scrollHeight > node!.clientHeight + 1);
+  }, [text]);
+  return { ref, scrolls };
+}
 
 export default function ApprovalCard({
   card,
@@ -49,6 +62,8 @@ export default function ApprovalCard({
   const heading = answered ? approvalDoneHeading(answered) : approvalHeading(card);
   const Icon = answered === "allow-once" ? CircleCheck : answered === "deny" ? CircleX : CircleHelp;
   const articleRef = useRef<HTMLElement>(null);
+  // The command box (or, for another kind, the summary) is the one box on the card that can scroll.
+  const box = useScrolls<HTMLParagraphElement>(card.summary);
   const leaving = useRef(onLeaveWithFocus);
   leaving.current = onLeaveWithFocus;
   // A card that leaves takes its keyboard focus with it (the page body gets it), for example the answered card about 6
@@ -70,12 +85,16 @@ export default function ApprovalCard({
         {from ? <span className="os-approval__from">{FROM_OPENCLAW}</span> : null}
       </h3>
       {card.kind === "exec" ? (
-        <p className="os-approval__cmd os-mono">
+        // The command with its real line breaks, in a box that scrolls when it is long (Sa 1 of the final review). Once
+        // it really scrolls, the keys can reach it to read the rest.
+        <p className="os-approval__cmd os-mono" ref={box.ref} tabIndex={box.scrolls ? 0 : undefined}>
           <span aria-hidden="true">$ </span>
           {card.summary}
         </p>
       ) : (
-        <p className="os-approval__summary">{card.summary}</p>
+        <p className="os-approval__summary" ref={box.ref} tabIndex={box.scrolls ? 0 : undefined}>
+          {card.summary}
+        </p>
       )}
       {error && !answered ? <p className="os-approval__error">{error}</p> : null}
       {answered ? null : (
@@ -236,6 +255,7 @@ export function ApprovalList({
   }
 
   const copy = asking ? approvalConfirm(asking.card, asking.decision) : null;
+  const parts = asking ? approvalConfirmParts(asking.card, asking.decision) : null;
   if (items.length === 0 && !asking) return <>{empty}</>;
   return (
     <>
@@ -267,7 +287,15 @@ export function ApprovalList({
           onClose={closeAsking}
           giveFocusBack={() => focusAfter.current === null}
         >
-          <p className="os-approval__confirm">{copy.body}</p>
+          {parts ? (
+            // The command in a box that keeps its line breaks and scrolls (Sa 1). It is not a stop on the Tab key here: the
+            // dialog's first stop must stay Cancel.
+            <p className="os-approval__confirm">
+              {parts.before} <span className="os-approval__command-box os-mono">{parts.command}</span> {parts.after}
+            </p>
+          ) : (
+            <p className="os-approval__confirm">{copy.body}</p>
+          )}
           {asking.error ? (
             <p className="os-approval__error" role="alert">
               {asking.error}

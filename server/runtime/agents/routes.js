@@ -14,6 +14,7 @@ import { buildCommandPreview, getRunManager } from "../runs/run-manager.js";
 import { withTaskLine } from "../runs/task-line.js";
 import { runtimePaths } from "../store.js";
 import { getAdapter, ADAPTERS } from "./index.js";
+import { withProfileSplit } from "./profile-split.js";
 
 const MAX_PROMPT_LENGTH = 20000;
 
@@ -180,7 +181,10 @@ export function createAgentsRouter() {
         adapter.safetyStatus(detected),
         adapter.service ? adapter.service.status(detected) : Promise.resolve(null)
       ]);
-      res.json({ detected, config, safety, service });
+      // Hermes and OpenClaw: when sessions use another profile than this panel reads, the answer says so and the Safety
+      // page stops claiming a safeguard it never saw (final review, Sa 2). It only looks at the login-shell read the server
+      // already has; it never waits for it.
+      res.json({ detected, config, safety: await withProfileSplit(adapter.id, safety), service });
     } catch (error) {
       next(error);
     }

@@ -54,6 +54,9 @@ export interface StoppableSession {
   agentLabel?: string;
   folderName?: string;
   folderShown?: boolean;
+  // A session in a separate copy (R25): its title adds the copy's branch, as sessionTitle does.
+  copyOf?: string | null;
+  branch?: string | null;
 }
 
 export interface StopAllDeps {
@@ -426,7 +429,8 @@ export function sessionStopTitle(session: StoppableSession): string {
   if (session.kind === "setup") return `${agent} · ChatGPT sign-in`;
   if (session.kind === "update") return `${agent} update`;
   if (session.folderShown === false) return `${agent} · Set by OpenClaw`;
-  return `${agent} · ${session.folderName || "—"}`;
+  const where = `${agent} · ${session.folderName || "—"}`;
+  return session.copyOf && session.branch ? `${where} · ${session.branch}` : where;
 }
 
 export function stopAllMessage(result: StopAllResult): { message: string; tone: "ok" | "warn" | "danger" | "neutral" } {

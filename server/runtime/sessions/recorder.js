@@ -379,6 +379,10 @@ function summary(sessionId, meta, bytes, live, firstStartedAt) {
     folder,
     folderName: text(meta.folderName) || (folder ? path.basename(folder) : ""),
     folderShown: meta.folderShown !== false,
+    // A session that ran in a separate copy (R25): the project it copied, kept in meta.json after the copy was removed,
+    // and the copy's branch. `folder` is then the copy's own folder, which is not where the person works.
+    copyOf: text(meta.copyOf) || null,
+    branch: text(meta.branch) || null,
     startedAt: meta.startedAt,
     firstStartedAt,
     endedAt: text(meta.endedAt) || null,

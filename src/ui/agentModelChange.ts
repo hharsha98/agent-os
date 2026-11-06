@@ -17,7 +17,7 @@ const BUSY_WAIT_MS = 500;
 
 export const OPENCLAW_PINNED_NOTE = "Chats that already have a model pinned keep it until you send /model default in them.";
 export const OPENCLAW_RISK_LABEL =
-  "I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands.";
+  "I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands, unless it already asks.";
 
 // What each step of a model job is, in words (the job reports ids).
 const STEP_LABEL: Record<string, string> = {

@@ -149,9 +149,19 @@ async function safetyStatus(detected) {
     runCommand(detected.path, ["config", "get", "tools.exec.mode"], EXEC_MODE_TIMEOUT_MS),
     runCommand(detected.path, ["config", "get", "browser.allowSystemProfileImport"], EXEC_MODE_TIMEOUT_MS)
   ]);
+  // `actions` are fixes for things that are too open; `choices` are optional
+  // switches that are never a finding; `notes` are calm facts shown with an
+  // info mark.
   const actions = [];
+  const choices = [];
+  const notes = [];
   const summaries = [];
-  const execValue = configValue(execResult.stdout);
+  const exec = execModeRead(execResult);
+  // A read that failed, or whose lines cannot be told apart, says nothing about the mode (final review, Sa M2): the
+  // answer is "not known", as Hermes's is (hermes.js approvalsSafety), and nothing is offered. It used to read as "full",
+  // so a locked config showed "OpenClaw can run commands without asking" and offered a Fix that could loosen a "deny".
+  if (!exec.known) return { permissive: false, summary: EXEC_UNREADABLE, actions: [], choices: [], notes: [], known: false };
+  const execValue = exec.value;
   // A missing value defaults to "full" upstream, which is the permissive one.
   if (!execValue || execValue === "full") {
     summaries.push("OpenClaw can run commands without asking (tools.exec.mode = full).");
@@ -160,8 +170,29 @@ async function safetyStatus(detected) {
       label: "Make OpenClaw ask before running commands",
       description: "Sets tools.exec.mode to ask, so OpenClaw prompts before running shell commands."
     });
+  } else if (execValue === "ask") {
+    summaries.push("OpenClaw asks before each new command (tools.exec.mode = ask).");
+    // OpenClaw's own recommended mode: its reviewer lets routine commands run
+    // and asks only about risky ones. Offered, never applied by Agent OS itself.
+    choices.push({
+      id: "exec-auto",
+      label: "Ask only for risky commands",
+      description:
+        "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run and asks you about risky ones, like deleting."
+    });
+  } else if (execValue === "auto") {
+    summaries.push(
+      "OpenClaw runs routine commands on its own and asks only for risky ones (tools.exec.mode = auto)."
+    );
   } else {
     summaries.push(`OpenClaw tools.exec.mode is "${execValue}".`);
+  }
+  // In ask and auto, OpenClaw can only show an approval while one of its
+  // approval clients is connected to its Gateway; with none it refuses at once.
+  if (execValue === "ask" || execValue === "auto") {
+    notes.push(
+      "OpenClaw asks for approval only while its Control UI or Mac app is open. Without one, it says no to commands that need approval."
+    );
   }
   // Unset means the upstream default, which allows importing cookies from
   // the user's system browser profile.
@@ -174,13 +205,48 @@ async function safetyStatus(detected) {
       description: "Sets browser.allowSystemProfileImport to false, so OpenClaw cannot copy logins from your browser."
     });
   }
-  return { permissive: actions.length > 0, summary: summaries.join(" "), actions };
+  // `mode` is the exec mode that was read, so the Safety page can word its row by mode (final review, Re I4).
+  return { permissive: actions.length > 0, summary: summaries.join(" "), actions, choices, notes, known: true, mode: execValue || "full" };
 }
 
 // `config get` prints a sentence instead of a value when the path is unset.
 function configValue(stdout) {
   const value = String(stdout || "").trim().split("\n").pop().trim().toLowerCase();
   return /unset|not set|no value/.test(value) ? "" : value;
+}
+
+const EXEC_UNREADABLE = "Agent OS could not read OpenClaw's approvals setting.";
+// What OpenClaw says for a path that is unset: a sentence instead of a value (on stdout with exit 0 in older builds, on
+// stderr with exit 1 in 2026.10.10).
+const UNSET_SENTENCE = /valid but unset|not set|no value/i;
+// The modes Agent OS reads from more than one line of output (a notice may come before or after the value): "full" is handled
+// before this (it wins from any line), and these are the others it knows (L2 of the last re-review: deny and allowlist were missing,
+// so a notice beside them read as "not known" and the Team Room refused).
+const KNOWN_EXEC_MODES = new Set(["ask", "auto", "deny", "allowlist"]);
+
+// What `openclaw config get tools.exec.mode` printed, as { known, value } (final review, Sa M2). A read that failed or timed
+// out is not known (the Hermes guard). A read that worked and printed nothing is an unset path, the upstream default, full
+// (the real CLI prints a sentence for that, which configValue turns into "" as well). "full" wins from ANY line, so a notice
+// printed after the value can never turn it into something safer (failing open would hide the permissive mode). With more
+// than one line, a line that is exactly one of the modes Agent OS knows (ask, auto, deny, allowlist) is the value; if there
+// is not exactly one such word, the mode is not known. One line is the value.
+function execModeRead(result) {
+  // A path that is unset is not a failed read, even when OpenClaw says it with exit 1 (re-review R2): 2026.10.10 prints
+  // nothing on stdout, "Config path is valid but unset…" on stderr and exits 1, which is the permissive default, full. So
+  // before giving up on a failed read, the sentence is looked for on either stream (the way channelIsDefault does for Hermes).
+  if (!result?.ok) {
+    const said = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`.split(/\r?\n/);
+    return said.some((line) => UNSET_SENTENCE.test(line)) ? { known: true, value: "" } : { known: false, value: "" };
+  }
+  const lines = String(result.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim().toLowerCase())
+    .filter(Boolean);
+  if (lines.length === 0) return { known: true, value: "" };
+  if (lines.includes("full")) return { known: true, value: "full" };
+  if (lines.length === 1) return { known: true, value: configValue(lines[0]) };
+  const words = [...new Set(lines.filter((line) => KNOWN_EXEC_MODES.has(line)))];
+  return words.length === 1 ? { known: true, value: words[0] } : { known: false, value: "" };
 }
 
 function runningFromText(text) {
@@ -483,9 +549,12 @@ function parseLine(line) {
 
 // no-browser-cookies needs a gateway restart to take effect (the real CLI
 // prints "Restart the gateway to apply"); exec-ask applies without one (the
-// real CLI prints "will apply without restarting the gateway").
+// real CLI prints "will apply without restarting the gateway"), and so does
+// exec-auto, which changes the same setting (the CLI prints "Change will apply
+// without restarting the gateway.").
 const SAFETY_ACTIONS = {
   "exec-ask": { setting: ["tools.exec.mode", "ask"], restartsGateway: false },
+  "exec-auto": { setting: ["tools.exec.mode", "auto"], restartsGateway: false },
   "no-browser-cookies": { setting: ["browser.allowSystemProfileImport", "false"], restartsGateway: true }
 };
 

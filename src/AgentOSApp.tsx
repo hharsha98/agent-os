@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ApiGuidePage, { type ApiIntegration, type CodexApiStatus } from "./ApiGuidePage";
+import { apiFetch } from "./sessionKey";
 import AgentConfirmModal from "./ui/components/AgentConfirmModal";
 
 type AgentId = "openclaw" | "hermes";
@@ -217,7 +218,7 @@ const PALETTE = [
 ];
 
 async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options

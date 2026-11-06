@@ -35,7 +35,7 @@ test("the Orbit's label and note say what is lit, in words", () => {
   assert.equal(home.orbitLabel({ claude: "live", openclaw: "live" }, true), "Agent OS at the centre with five agents around it. Working now: OpenClaw, Claude Code.");
   // Fix round 1: while the runs list is unknown, the label claims nothing about what is running.
   assert.equal(home.orbitLabel({}, false), "Agent OS at the centre with five agents around it. What each agent is doing is not known right now.");
-  // Fix round 1: no "Amber means it needs you." until SP4 can show amber; both branches read the same.
+  // Without an amber (waiting) line there is no "Amber means it needs you."; the amber case is in sessions-alerts-ui-logic.test.js.
   assert.equal(home.orbitNote({}), "A line lights only while that agent works.");
   assert.equal(home.orbitNote({ claude: "live" }), "A line lights only while that agent works.");
 });

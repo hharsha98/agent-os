@@ -77,6 +77,12 @@ for (const key of [
   delete testEnv[key];
 }
 if (process.platform !== "win32") testEnv.SHELL = FAKE_LOGIN_SHELL;
+// The version checks (SP5) reach the npm registry and run the agents' own CLIs, so no test may run them by
+// accident. Two walls: they are switched off (updateChecksEnabled in server/runtime/updates/checks.js; the
+// tests that cover them switch them on themselves, against fakes), and the registry they would ask is a
+// dead loopback address (the only override checks.js honours).
+testEnv.AGENT_OS_UPDATE_CHECKS = "0";
+testEnv.AGENT_OS_TEST_NPM_REGISTRY = "http://127.0.0.1:9";
 
 // Node 22 writes TAP when its output is not a terminal; Node 23 and later write
 // their "spec" format everywhere. A log (CI, a file, a test that reads the

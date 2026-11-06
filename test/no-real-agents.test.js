@@ -465,7 +465,10 @@ test("a rootPid left out means this process itself: not nothing, and not everyth
 
 // Runs the real scripts/run-tests.mjs on one probe file. A stand-in `ps` comes
 // first on PATH: it fails while `<dir>/ps-broken` exists and is the real /bin/ps
-// otherwise. A --require hook records any process.exit() call the runner makes.
+// otherwise, and every time it fails it adds a line to `<dir>/ps-failed.log`, so
+// a probe can wait until a poll of the watcher really met the broken `ps`
+// instead of guessing how long that takes on a busy machine.
+// A --require hook records any process.exit() call the runner makes.
 // NODE_TEST_CONTEXT is removed so this inner `node --test` is a run of its own.
 async function runRunner(probeSource) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-runner-"));
@@ -473,10 +476,14 @@ async function runRunner(probeSource) {
     const bin = path.join(dir, "bin");
     await mkdir(bin);
     const broken = path.join(dir, "ps-broken");
-    await writeFile(path.join(bin, "ps"), `#!/bin/sh\n[ -e '${broken}' ] && exit 1\nexec /bin/ps "$@"\n`);
+    const failedLog = path.join(dir, "ps-failed.log");
+    await writeFile(
+      path.join(bin, "ps"),
+      `#!/bin/sh\nif [ -e '${broken}' ]; then echo failed >> '${failedLog}'; exit 1; fi\nexec /bin/ps "$@"\n`
+    );
     await chmod(path.join(bin, "ps"), 0o755);
     const probe = path.join(dir, "probe.mjs");
-    await writeFile(probe, probeSource(broken));
+    await writeFile(probe, probeSource(broken, failedLog));
     const exitLog = path.join(dir, "exit-calls.log");
     const hook = path.join(dir, "trace-exit.cjs");
     await writeFile(
@@ -502,27 +509,33 @@ async function runRunner(probeSource) {
       execFile(
         process.execPath,
         [path.join(root, "scripts", "run-tests.mjs"), probe],
-        { env, cwd: root, timeout: 60000 },
+        // Only bounds how long a healthy run may take: a loaded machine needs far more than the 1 to 3 s it takes alone.
+        { env, cwd: root, timeout: 150000 },
         (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout: String(stdout), stderr: String(stderr) })
       );
     });
     return { ...result, exitCalls: await readFile(exitLog, "utf8").catch(() => "") };
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
-const sleepAndBreakPs = (broken, { thenFix }) =>
+// Breaks `ps` and keeps it broken until the stand-in `ps` has really failed once (the watcher polls every
+// 200 ms, but on a busy machine one `ps` can take longer than any fixed window, so no window is guessed
+// at), then mends it when `thenFix` says so. The wait only bounds a healthy run; if it ran out, the
+// runner's line would be missing and the test would fail on that.
+const sleepAndBreakPs = (broken, failedLog, { thenFix }) =>
   [
-    'import { unlinkSync, writeFileSync } from "node:fs";',
+    'import { existsSync, unlinkSync, writeFileSync } from "node:fs";',
     `writeFileSync(${JSON.stringify(broken)}, "");`,
-    "await new Promise((resolve) => setTimeout(resolve, 700));",
+    "const giveUpAt = Date.now() + 120000;",
+    `while (!existsSync(${JSON.stringify(failedLog)}) && Date.now() < giveUpAt) await new Promise((resolve) => setTimeout(resolve, 20));`,
     thenFix ? `unlinkSync(${JSON.stringify(broken)});` : "",
     "await new Promise((resolve) => setTimeout(resolve, 100));"
   ].join("\n");
 
 test("the runner does not call a run clean when ps stopped working: it says so and exits 1", POSIX_ONLY, async () => {
-  const run = await runRunner((broken) => sleepAndBreakPs(broken, { thenFix: false }));
+  const run = await runRunner((broken, failedLog) => sleepAndBreakPs(broken, failedLog, { thenFix: false }));
   assert.equal(run.code, 1);
   assert.match(run.stderr, /^no-real-agents watcher: could not check for real agents \(ps failed\), so this run is not proven clean\.$/m);
   assert.doesNotMatch(run.stdout + run.stderr, /no real agent started/);
@@ -530,7 +543,7 @@ test("the runner does not call a run clean when ps stopped working: it says so a
 });
 
 test("the runner reports the polls that could not run ps, still passes when the final sweep worked, and ends without process.exit()", POSIX_ONLY, async () => {
-  const run = await runRunner((broken) => sleepAndBreakPs(broken, { thenFix: true }));
+  const run = await runRunner((broken, failedLog) => sleepAndBreakPs(broken, failedLog, { thenFix: true }));
   assert.equal(run.code, 0, run.stderr);
   assert.match(run.stdout, /^no-real-agents watcher: no real agent started \(\d+ checks?, [1-9]\d* could not run ps\)$/m);
   assert.equal(run.exitCalls, "", "the runner set process.exitCode and let the process end by itself");

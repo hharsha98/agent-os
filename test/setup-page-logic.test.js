@@ -5,6 +5,7 @@
 // imported directly. setupGroupShared.ts must keep only `import type` imports.
 // No server, no browser: the page itself is checked by the Setup probe of the UI audit.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as shared from "../src/ui/setupGroupShared.ts";
 import { HOME_AGENTS, withTimeout } from "../src/ui/homeShared.ts";
@@ -495,4 +496,61 @@ test("Setup, Agents and Home call the five agents by the same names", () => {
   assert.deepEqual(Object.keys(shared.AGENT_NAMES).sort(), HOME_AGENTS.map((a) => a.id).sort());
   assert.equal(shared.AGENT_NAMES.codex, "Codex CLI");
   assert.equal(shared.AGENT_NAMES.cursor, "Cursor Agent");
+});
+
+// ---- SP5 Task U2: Hermes's update is a terminal session, never a job step ---------------------------------------
+
+test("splitRunSteps: Hermes's update (runsIn session) leaves the job's steps; the job starts only if work is left for it", () => {
+  const hermesUpdate = step("hermes", "update", { runsIn: "session" });
+  const openclawUpdate = step("openclaw", "update");
+  const openclawKeep = step("openclaw", "keep");
+
+  // Hermes and OpenClaw both updated: the job gets OpenClaw's step alone, Hermes goes to its terminal.
+  let split = shared.splitRunSteps([hermesUpdate, openclawUpdate]);
+  assert.deepEqual(split.jobSteps.map((s) => s.id), ["openclaw-update"]);
+  assert.deepEqual(split.sessionSteps.map((s) => s.id), ["hermes-update"]);
+  assert.equal(split.jobWanted, true);
+
+  // Hermes updated, OpenClaw kept: only a keep step is left, which is no work, so no job at all.
+  split = shared.splitRunSteps([hermesUpdate, openclawKeep]);
+  assert.deepEqual(split.jobSteps.map((s) => s.id), ["openclaw-keep"]);
+  assert.equal(split.sessionSteps.length, 1);
+  assert.equal(split.jobWanted, false);
+
+  // Hermes alone.
+  split = shared.splitRunSteps([hermesUpdate]);
+  assert.deepEqual(split.jobSteps, []);
+  assert.equal(split.jobWanted, false);
+
+  // Install and prereq-node count as work too.
+  assert.equal(shared.splitRunSteps([hermesUpdate, step("openclaw", "prereq-node"), step("openclaw", "install")]).jobWanted, true);
+
+  // Without Hermes's update nothing changes: every step goes to the job as before, and the job is always wanted.
+  split = shared.splitRunSteps([openclawKeep]);
+  assert.deepEqual(split.jobSteps.map((s) => s.id), ["openclaw-keep"]);
+  assert.deepEqual(split.sessionSteps, []);
+  assert.equal(split.jobWanted, true, "the old behaviour: the group's button decides, the job is started");
+  split = shared.splitRunSteps([]);
+  assert.deepEqual([split.jobSteps, split.sessionSteps, split.jobWanted], [[], [], true]);
+
+  // Only the plan's own mark counts, not the agent's name.
+  assert.equal(shared.runsInSession(step("hermes", "update")), false);
+  assert.equal(shared.runsInSession(hermesUpdate), true);
+});
+
+test("wiring: Setup never puts hermes-update into a job; it starts the update service and embeds the terminal", () => {
+  const page = readFileSync(new URL("../src/pages/SetupPage.tsx", import.meta.url), "utf8").replace(/\/\/.*$/gm, "");
+  assert.match(page, /splitRunSteps\(/);
+  assert.match(page, /startUpdate\("hermes"\)/, "Hermes goes through POST /api/updates/hermes");
+  assert.match(page, /AgentUpdateTerminal/, "and its terminal is embedded");
+  // The job gets the split's job steps, never the group's whole selection.
+  assert.match(page, /steps: jobSteps\.map\(/);
+  assert.doesNotMatch(page, /startInstallJob\(\{\s*steps: selectedSteps\(/, "the whole selection is not sent to the job");
+  // A failed or cancelled job is told before "Continue unlocks when the install finishes." (Hermes may still be running).
+  const note = page.slice(page.indexOf("const installNote"), page.indexOf("const hermesPart"));
+  assert.ok(note.indexOf('"failed"') !== -1 && note.indexOf('"cancelled"') !== -1 && note.indexOf('"cancelled"') < note.indexOf("hermesRunning"), "the job's failure and cancel come before the Hermes note");
+  // A Hermes-only confirm replaces the old job's hold on Continue, as every confirm did before; a running job stays.
+  assert.match(page, /earlierJob\.status !== "running"\) \{\s*rememberJobId\("install", null\);\s*if \(alive\.current\) \{\s*setInstallJob\(null\);/, "a finished old job is cleared");
+  // The finished terminal and a start error go when the person leaves the Install step.
+  assert.match(page, /if \(stepIndex === STEP\.install\) return;\s*setHermesError\(""\);\s*setHermesRun\(\(current\) => \(current && current\.ended \? null : current\)\);/);
 });

@@ -31,6 +31,8 @@ export const OPTIONAL_CHIPS: TypeKey[] = ["image", "audio", "video", "pdf", "oth
 // and returns the text of a file only up to 256 KB (MAX_TEXT_PREVIEW_BYTES).
 export const LIST_LIMIT = 500;
 export const PREVIEW_MAX_BYTES = 256 * 1024;
+// A preview that has to fetch the whole file first (image, audio, video, PDF, the locked HTML view) stops here (R33).
+export const PREVIEW_FETCH_MAX_BYTES = 200 * 1024 * 1024;
 
 type NameAndKind = Pick<WorkspaceFile, "name" | "kind">;
 type WhereItLives = Pick<WorkspaceFile, "root" | "relativePath">;

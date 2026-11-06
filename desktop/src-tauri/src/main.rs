@@ -11,11 +11,13 @@
 //!
 //! ```text
 //!   Agent OS.app
-//!     |-- this Rust shell (window, menu, quit handling)
+//!     |-- this Rust shell (window, menu, quit handling, notifications)
 //!     |      spawns -->  resources/node/bin/node resources/server/server.mjs
 //!     |                    AGENT_OS_PORT=0  AGENT_OS_TOKEN=<random>  AGENT_OS_STATIC_DIR=...
 //!     |                    AGENT_OS_STDIN_SHUTDOWN=1 (stdin stays open: the quit line)
 //!     |      reads  <--  stdout "AGENT_OS_READY:<port>"
+//!     |      reads  <--  stdout "AGENT_OS_ALERT:<json>"  (a session needs you: a notification
+//!     |                    when the window is hidden or not focused; a click shows the window)
 //!     |      opens  -->  http://127.0.0.1:<port>/?launch=<token>&desktop=1
 //! ```
 //!
@@ -28,7 +30,7 @@
 use std::collections::VecDeque;
 use std::env;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
@@ -37,10 +39,30 @@ use std::time::{Duration, Instant};
 
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Listener, Manager, WebviewWindow};
+use tauri_plugin_notification::{ActionPerformed, NotificationExt};
 use url::Url;
 
 /// What the server prints on stdout once it is listening.
 const READY_LINE_PREFIX: &str = "AGENT_OS_READY:";
+/// What the server prints on stdout when a session needs the person (only when it runs with
+/// AGENT_OS_PACKAGED=1; server/runtime/sessions/signals.js, printAlertLine): this prefix, then
+/// one line of JSON, {"sessionId","agent","kind","text"}.
+const ALERT_LINE_PREFIX: &str = "AGENT_OS_ALERT:";
+/// The alert kinds that raise a notification (the server prints no others).
+const ALERT_KINDS: [&str; 3] = ["waiting", "approval", "limit"];
+/// The longest alert text a notification shows, in characters (the server cuts it the same way).
+const ALERT_TEXT_MAX: usize = 200;
+/// The longest agent name a notification title shows, in characters (the server prints a short
+/// fixed name; this only keeps a wrong or odd value from filling the title).
+const ALERT_AGENT_MAX: usize = 40;
+/// An alert line is about 2.5 KB at most (200 characters, escaped, plus the ids); a longer one is
+/// not an alert and is not parsed.
+const ALERT_LINE_MAX_BYTES: usize = 8 * 1024;
+/// The most bytes read_lines_lossy keeps of one line. The rest of a longer line is read and
+/// dropped, so one stray binary dump can neither fill memory nor stop the reader.
+const LINE_MAX_BYTES: usize = 1 << 20;
+/// The action the notification plugin reports for a click on the notification itself.
+const NOTIFICATION_TAP: &str = "tap";
 /// How long to wait for that line before showing an error.
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 /// How many trailing stderr lines the error page can show.
@@ -240,41 +262,158 @@ fn parse_ready_line(line: &str) -> Option<u16> {
     line.strip_prefix(READY_LINE_PREFIX)?.trim().parse().ok()
 }
 
+/// One alert from the server, read from its `AGENT_OS_ALERT:` line.
+#[derive(Debug, PartialEq)]
+struct AlertNote {
+    /// Not shown in the notification; a line without one is not an alert.
+    #[allow(dead_code)]
+    session_id: String,
+    agent: String,
+    kind: String,
+    text: String,
+}
+
+/// Reads one `AGENT_OS_ALERT:<json>` line. Anything else is not an alert: another line, broken
+/// JSON, a missing or non-string field, an empty session id or agent, or a kind other than
+/// waiting, approval or limit, or a line longer than ALERT_LINE_MAX_BYTES (never parsed). The text
+/// is cut to 200 characters and the agent name to 40, control characters removed (characters, not
+/// bytes, so no letter is split).
+fn parse_alert_line(line: &str) -> Option<AlertNote> {
+    if line.len() > ALERT_LINE_MAX_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line.strip_prefix(ALERT_LINE_PREFIX)?).ok()?;
+    let field = |name: &str| -> Option<String> { value.get(name)?.as_str().map(str::to_owned) };
+    let session_id = field("sessionId")?;
+    let agent: String = field("agent")?.chars().filter(|c| !c.is_control()).take(ALERT_AGENT_MAX).collect();
+    let kind = field("kind")?;
+    let text = field("text")?;
+    if session_id.is_empty() || agent.trim().is_empty() || !ALERT_KINDS.contains(&kind.as_str()) {
+        return None;
+    }
+    Some(AlertNote {
+        session_id,
+        agent,
+        kind,
+        text: text.chars().take(ALERT_TEXT_MAX).collect(),
+    })
+}
+
+/// The notification's title (both forms are new sentences for the owner's review, SP4 Q32).
+fn alert_title(kind: &str, agent: &str) -> Option<String> {
+    match kind {
+        "waiting" | "approval" => Some(format!("{agent} is waiting for you")),
+        "limit" => Some(format!("{agent}'s plan ran out")),
+        _ => None,
+    }
+}
+
+/// A notification only when the person is not looking at the window (spec SP4, Alerts UI): it is
+/// hidden (macOS: closed with the red button, or Agent OS hidden), minimized, or another app is in
+/// front. While the window is in front, the page itself shows the alert.
+fn should_notify(visible: bool, focused: bool) -> bool {
+    !visible || !focused
+}
+
+/// A click on the notification itself brings the window back. Agent OS's notifications carry no
+/// action buttons, so a click is the only action that can arrive.
+fn notification_click_shows_window(action_id: &str) -> bool {
+    action_id == NOTIFICATION_TAP
+}
+
+/// Calls `each` with every line `reader` gives, without its line ending ("\n" or "\r\n"), until
+/// the end of the input or a read error. Bytes that are not UTF-8 become U+FFFD instead of ending
+/// the loop (SP4 ruling R21): `BufRead::lines()` stops at the first such line, and then nobody
+/// drains the pipe, so a chatty server would block on a full pipe. A line longer than
+/// LINE_MAX_BYTES is given to `each` as its first LINE_MAX_BYTES bytes; the rest of it is read and
+/// dropped, and the next line comes as usual.
+fn read_lines_lossy<R: BufRead>(mut reader: R, mut each: impl FnMut(&str)) {
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match (&mut reader).take(LINE_MAX_BYTES as u64).read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                } else if read >= LINE_MAX_BYTES {
+                    // Too long for one line: the rest of it is not kept.
+                    skip_rest_of_line(&mut reader);
+                }
+                each(&String::from_utf8_lossy(&buf));
+            }
+        }
+    }
+}
+
+/// Reads and drops everything up to and including the next "\n" (or to the end of the input).
+fn skip_rest_of_line<R: BufRead>(reader: &mut R) {
+    loop {
+        let (found, used) = match reader.fill_buf() {
+            Ok([]) => return,
+            Ok(available) => match available.iter().position(|byte| *byte == b'\n') {
+                Some(at) => (true, at + 1),
+                None => (false, available.len()),
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        reader.consume(used);
+        if found {
+            return;
+        }
+    }
+}
+
 /// Reads the server's output for one startup attempt. Both pipes are drained
 /// for the server's whole life: if nobody read them, a chatty server would
 /// eventually block on a full pipe (or hit a broken one) and hang or crash.
+/// Both are read as bytes (read_lines_lossy), so a line that is not UTF-8
+/// never stops the draining (SP4 ruling R21).
 /// stderr is kept as a short tail for the error page, with the login token
-/// scrubbed out in case anything ever echoes it.
+/// scrubbed out in case anything ever echoes it. On stdout the ready line is
+/// reported once, and every alert line goes to notify_alert.
 fn watch_server(
     stdout: ChildStdout,
     stderr: ChildStderr,
     token: String,
     tx: mpsc::Sender<ServerStartup>,
+    app: AppHandle,
 ) {
     let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     {
         let tail = Arc::clone(&tail);
         let token = token.clone();
         thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            read_lines_lossy(BufReader::new(stderr), |line| {
                 let mut tail = tail.lock().unwrap();
                 if tail.len() >= STDERR_TAIL_LINES {
                     tail.pop_front();
                 }
                 tail.push_back(line.replace(&token, "[hidden]"));
-            }
+            });
         });
     }
 
     let mut reported = false;
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+    read_lines_lossy(BufReader::new(stdout), |line| {
         if !reported {
-            if let Some(port) = parse_ready_line(&line) {
+            if let Some(port) = parse_ready_line(line) {
                 reported = true;
                 let _ = tx.send(ServerStartup::Ready(port));
+                return;
             }
         }
-    }
+        if let Some(note) = parse_alert_line(line) {
+            // The window check and the notification run on the main thread, so this reader
+            // never waits on the window and keeps draining the server's output.
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || notify_alert(&handle, &note));
+        }
+    });
 
     if !reported {
         let text = tail
@@ -285,6 +424,55 @@ fn watch_server(
             .collect::<Vec<_>>()
             .join("\n");
         let _ = tx.send(ServerStartup::Exited(text));
+    }
+}
+
+/// Shows one alert as a desktop notification, only when the person is not looking at the window
+/// (should_notify). Runs on the main thread (see watch_server), where the window answers at once.
+/// A notification that cannot be shown is reported on stderr and otherwise ignored: an alert must
+/// never stop the app.
+fn notify_alert(app: &AppHandle, note: &AlertNote) {
+    let Some(title) = alert_title(&note.kind, &note.agent) else {
+        return;
+    };
+    // A window that cannot be asked (or none at all) counts as hidden.
+    let (visible, focused) = app
+        .get_webview_window("main")
+        .map(|window| {
+            (
+                window.is_visible().unwrap_or(false),
+                window.is_focused().unwrap_or(false),
+            )
+        })
+        .unwrap_or((false, false));
+    if !should_notify(visible, focused) {
+        return;
+    }
+    let mut notification = app.notification().builder().title(title);
+    if !note.text.is_empty() {
+        notification = notification.body(note.text.as_str());
+    }
+    if let Err(err) = notification.show() {
+        // Not eprintln!: that panics when stderr cannot be written, and this runs on the main thread.
+        let _ = writeln!(std::io::stderr(), "Agent OS couldn't show a notification: {err}");
+    }
+}
+
+/// A click on one of Agent OS's notifications brings the window back (it may be hidden). The
+/// plugin calls the handler on a background thread; showing the window does not wait there. It is
+/// registered before the server starts, because the plugin reports clicks only on notifications
+/// shown after a handler exists.
+fn listen_for_notification_clicks(app: &tauri::App) {
+    let handle = app.handle().clone();
+    let registered = app.notification().on_action(move |performed: &ActionPerformed| {
+        if notification_click_shows_window(performed.action_id()) {
+            show_main_window(&handle);
+        }
+    });
+    if let Err(err) = registered {
+        // Never on desktop (the plugin says so). Notifications still show; a click then only
+        // brings the app to the front.
+        let _ = writeln!(std::io::stderr(), "Agent OS couldn't listen for notification clicks: {err}");
     }
 }
 
@@ -421,7 +609,12 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         // "Choose folder…" in the New session dialog. Only the open dialog is
         // granted (dialog:allow-open); it hands the page the path the person picked.
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        // Desktop notifications when a session needs you and the window is hidden or not focused.
+        // Only this shell raises them (notify_alert, from the server's AGENT_OS_ALERT lines). The
+        // page has no notification:* permission (capabilities/default.json), so no script in it
+        // can send one (SP4 ruling R20).
+        .plugin(tauri_plugin_notification::init());
     if updater_configured {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
@@ -434,6 +627,9 @@ fn main() {
                 .get_webview_window("main")
                 .expect("the \"main\" window is declared in tauri.conf.json");
 
+            // Before the server starts: the plugin reports clicks only on notifications shown
+            // after a click handler exists.
+            listen_for_notification_clicks(app);
             start_server(app, &window);
             build_menu(app)?;
             listen_for_quit_answers(app);
@@ -516,7 +712,8 @@ fn start_server(app: &tauri::App, window: &WebviewWindow) {
 
     let (tx, rx) = mpsc::channel();
     let watch_token = token.clone();
-    thread::spawn(move || watch_server(stdout, stderr, watch_token, tx));
+    let watch_app = app.handle().clone();
+    thread::spawn(move || watch_server(stdout, stderr, watch_token, tx, watch_app));
 
     let window = window.clone();
     thread::spawn(move || {
@@ -1065,5 +1262,223 @@ mod stop_server_tests {
     fn stopping_with_no_server_does_nothing() {
         let state: ServerState = Arc::new(Mutex::new(None));
         assert_eq!(stop_server_within(&state, Duration::from_millis(10)), None);
+    }
+}
+
+#[cfg(test)]
+mod alert_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // What server/runtime/sessions/signals.js alertLine() prints for these two alerts.
+    // test/release-config.test.js checks that the server still prints exactly these lines.
+    const CLAUDE_LINE: &str = r#"AGENT_OS_ALERT:{"sessionId":"3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b","agent":"Claude Code","kind":"waiting","text":"Wants to use Bash"}"#;
+    const CODEX_LINE: &str = r#"AGENT_OS_ALERT:{"sessionId":"3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b","agent":"Codex","kind":"approval","text":"Approval requested: run \"npm test\" in café"}"#;
+
+    // An alert line for a Codex session with this kind and text.
+    fn line(kind: &str, text: &str) -> String {
+        format!(
+            "{ALERT_LINE_PREFIX}{}",
+            serde_json::json!({ "sessionId": "s-1", "agent": "Codex", "kind": kind, "text": text })
+        )
+    }
+
+    #[test]
+    fn an_alert_line_from_the_server_parses_into_a_note() {
+        assert_eq!(ALERT_LINE_PREFIX, "AGENT_OS_ALERT:");
+        assert_eq!(
+            parse_alert_line(CLAUDE_LINE),
+            Some(AlertNote {
+                session_id: "3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b".into(),
+                agent: "Claude Code".into(),
+                kind: "waiting".into(),
+                text: "Wants to use Bash".into(),
+            })
+        );
+        let codex = parse_alert_line(CODEX_LINE).expect("the Codex line is an alert");
+        assert_eq!(codex.kind, "approval");
+        assert_eq!(codex.text, "Approval requested: run \"npm test\" in café", "the JSON escapes are undone");
+    }
+
+    #[test]
+    fn only_waiting_approval_and_limit_raise_a_notification() {
+        for kind in ["waiting", "approval", "limit"] {
+            assert_eq!(parse_alert_line(&line(kind, "t")).map(|note| note.kind), Some(kind.to_string()), "{kind}");
+        }
+        for kind in ["turn_done", "resolved", "", "WAITING", "waiting "] {
+            assert_eq!(parse_alert_line(&line(kind, "t")), None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_whole_alert_is_ignored() {
+        let not_alerts = [
+            "",
+            "AGENT_OS_READY:4321",
+            "Agent OS is running at http://127.0.0.1:4321/",
+            "AGENT_OS_ALERT:",
+            "AGENT_OS_ALERT:not json",
+            r#"AGENT_OS_ALERT:["waiting"]"#,
+            r#"AGENT_OS_ALERT:{"sessionId":"s-1","agent":"Codex","kind":"waiting"}"#,
+            r#"AGENT_OS_ALERT:{"sessionId":"s-1","agent":"Codex","kind":"waiting","text":7}"#,
+            r#"AGENT_OS_ALERT:{"sessionId":"","agent":"Codex","kind":"waiting","text":"t"}"#,
+            r#"AGENT_OS_ALERT:{"sessionId":"s-1","agent":" ","kind":"waiting","text":"t"}"#,
+            r#" AGENT_OS_ALERT:{"sessionId":"s-1","agent":"Codex","kind":"waiting","text":"t"}"#,
+            r#"agent_os_alert:{"sessionId":"s-1","agent":"Codex","kind":"waiting","text":"t"}"#,
+            r#"AGENT_OS_ALERT:{"sessionId":"s-1","agent":"Codex","kind":"waiting","text":"t"} and more"#,
+        ];
+        for text in not_alerts {
+            assert_eq!(parse_alert_line(text), None, "{text:?}");
+        }
+        assert!(parse_alert_line(&line("waiting", "")).is_some(), "an empty text is still an alert: the title says enough");
+    }
+
+    #[test]
+    fn the_alert_text_is_cut_to_200_characters_not_bytes() {
+        let note = parse_alert_line(&line("waiting", &"é".repeat(250))).expect("an alert");
+        assert_eq!(note.text, "é".repeat(200), "200 letters, none of them split");
+        let exact = "a".repeat(200);
+        assert_eq!(parse_alert_line(&line("limit", &exact)).expect("an alert").text, exact);
+    }
+
+    #[test]
+    fn the_title_says_which_agent_and_what_happened() {
+        assert_eq!(alert_title("waiting", "Claude Code").as_deref(), Some("Claude Code is waiting for you"));
+        assert_eq!(alert_title("approval", "OpenClaw").as_deref(), Some("OpenClaw is waiting for you"));
+        assert_eq!(alert_title("limit", "Codex").as_deref(), Some("Codex's plan ran out"));
+        assert_eq!(alert_title("turn_done", "Codex"), None);
+        assert_eq!(alert_title("resolved", "Codex"), None);
+    }
+
+    #[test]
+    fn a_notification_shows_only_when_the_window_is_hidden_or_not_focused() {
+        assert!(!should_notify(true, true), "the person is looking at Agent OS: the page shows the alert");
+        assert!(should_notify(true, false), "another app is in front");
+        assert!(should_notify(false, false), "the window is hidden (macOS: closed with the red button) or minimized");
+        assert!(should_notify(false, true));
+    }
+
+    #[test]
+    fn a_click_on_the_notification_brings_the_window_back() {
+        assert_eq!(NOTIFICATION_TAP, "tap");
+        assert!(notification_click_shows_window("tap"));
+        for other in ["", "dismiss", "Tap", "snooze"] {
+            assert!(!notification_click_shows_window(other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_does_not_stop_the_reader() {
+        let alert = line("limit", "Codex's plan limit was reached.");
+        let mut input = b"first\n\xff\xfe not text \xc3\n".to_vec();
+        input.extend_from_slice(alert.as_bytes());
+        input.extend_from_slice(b"\nlast");
+        // What the old reader (BufRead::lines) did: it stopped at the first line that is not
+        // UTF-8, and nothing drained the pipe after that.
+        let old: Vec<String> = Cursor::new(input.as_slice()).lines().map_while(Result::ok).collect();
+        assert_eq!(old, ["first"]);
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(input.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines, ["first", "\u{fffd}\u{fffd} not text \u{fffd}", alert.as_str(), "last"]);
+        assert_eq!(parse_alert_line(&lines[2]).map(|note| note.kind), Some("limit".to_string()));
+    }
+
+    #[test]
+    fn a_title_never_holds_a_very_long_or_odd_agent_name() {
+        let with_agent = |agent: &str| {
+            format!(
+                "{ALERT_LINE_PREFIX}{}",
+                serde_json::json!({ "sessionId": "s-1", "agent": agent, "kind": "waiting", "text": "t" })
+            )
+        };
+        let long = parse_alert_line(&with_agent(&"A".repeat(100))).expect("an alert");
+        assert_eq!(long.agent, "A".repeat(40), "40 characters at most");
+        assert_eq!(alert_title(&long.kind, &long.agent).as_deref(), Some(format!("{} is waiting for you", "A".repeat(40)).as_str()));
+        let letters = parse_alert_line(&with_agent(&"é".repeat(100))).expect("an alert");
+        assert_eq!(letters.agent, "é".repeat(40), "characters, not bytes: none is split");
+        let odd = parse_alert_line(&with_agent("Co\u{7}de\n\u{1b}[31m X")).expect("an alert");
+        assert_eq!(odd.agent, "Code[31m X", "control characters are removed");
+        assert_eq!(parse_alert_line(&with_agent("Claude Code")).expect("an alert").agent, "Claude Code");
+        assert_eq!(parse_alert_line(&with_agent("\u{7}\n \u{1b}")), None, "a name that is only control characters and spaces is no name");
+    }
+
+    #[test]
+    fn a_line_over_the_size_limit_is_not_an_alert() {
+        let big = format!("{ALERT_LINE_PREFIX}{}", serde_json::json!({ "sessionId": "s-1", "agent": "Codex", "kind": "waiting", "text": "t", "pad": "x".repeat(ALERT_LINE_MAX_BYTES) }));
+        assert!(big.len() > ALERT_LINE_MAX_BYTES);
+        assert_eq!(parse_alert_line(&big), None);
+        // Deeply nested and very long: refused at once, never parsed.
+        assert_eq!(parse_alert_line(&format!("{ALERT_LINE_PREFIX}{}", "[".repeat(100_000))), None);
+        // A real alert with the longest text the server prints (200 characters, all escaped) fits.
+        let worst = format!("{ALERT_LINE_PREFIX}{}", serde_json::json!({ "sessionId": "3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b", "agent": "Claude Code", "kind": "approval", "text": "\u{1}".repeat(200) }));
+        assert!(worst.len() < ALERT_LINE_MAX_BYTES, "{} bytes", worst.len());
+        assert!(parse_alert_line(&worst).is_some());
+    }
+
+    #[test]
+    fn a_very_long_line_is_cut_short_and_the_next_line_still_comes() {
+        let mut input = vec![b'x'; 2 * LINE_MAX_BYTES + 5];
+        input.extend_from_slice(b"\nnext\r\nlast");
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(input.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 3, "the long line, the next one and the last one");
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES, "only the first LINE_MAX_BYTES bytes are kept");
+        assert!(lines[0].bytes().all(|byte| byte == b'x'));
+        assert_eq!(&lines[1..], ["next", "last"]);
+    }
+
+    #[test]
+    fn a_line_right_at_the_size_limit_and_one_without_an_ending_are_handled() {
+        let alert = line("waiting", "Wants to use Bash");
+        // LINE_MAX_BYTES - 1 letters and the ending: the whole line, nothing dropped.
+        let mut exact = vec![b'y'; LINE_MAX_BYTES - 1];
+        exact.push(b'\n');
+        exact.extend_from_slice(alert.as_bytes());
+        exact.push(b'\n');
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(exact.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES - 1);
+        assert_eq!(lines[1], alert);
+        // LINE_MAX_BYTES letters and the ending: the letters are kept, the ending is dropped, and the next line is whole.
+        let mut full = vec![b'z'; LINE_MAX_BYTES];
+        full.push(b'\n');
+        full.extend_from_slice(alert.as_bytes());
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(full.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES);
+        assert_eq!(lines[1], alert);
+        // A long line that ends with the input, no ending at all: cut, and the reader ends.
+        let ending = vec![b'q'; LINE_MAX_BYTES + 100];
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(ending.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), LINE_MAX_BYTES);
+    }
+
+    #[test]
+    fn bytes_that_are_not_utf8_inside_an_alert_line_still_make_an_alert() {
+        let mut input = b"AGENT_OS_ALERT:{\"sessionId\":\"s-1\",\"agent\":\"Codex\",\"kind\":\"waiting\",\"text\":\"a".to_vec();
+        input.extend_from_slice(b"\xff\xc3");
+        input.extend_from_slice(b"b\"}\nnext\n");
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(input.as_slice()), |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 2, "the bad bytes do not end the reader");
+        assert_eq!(lines[1], "next");
+        let note = parse_alert_line(&lines[0]).expect("an alert, with the bad bytes replaced");
+        assert_eq!(note.text, "a\u{fffd}\u{fffd}b");
+        assert_eq!(note.agent, "Codex");
+    }
+
+    #[test]
+    fn line_endings_go_and_the_ready_line_still_parses() {
+        let input: &[u8] = b"AGENT_OS_READY:4321\r\nplain\n\nno ending\r";
+        let mut lines = Vec::new();
+        read_lines_lossy(Cursor::new(input), |line| lines.push(line.to_string()));
+        assert_eq!(lines, ["AGENT_OS_READY:4321", "plain", "", "no ending\r"]);
+        let old: Vec<String> = Cursor::new(input).lines().map_while(Result::ok).collect();
+        assert_eq!(lines, old, "for text that is UTF-8, the same lines BufRead::lines() gave");
+        assert_eq!(parse_ready_line(&lines[0]), Some(4321));
     }
 }

@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import { containsBlockedFlag } from "../agent-flags.js";
 import { childEnv } from "../live-chat.js";
 import { killProcessTree, spawnTracked } from "../process-tree.js";
-import { redactText, withSiblingNodePath } from "../safety.js";
+import { programLaunch, redactText, withSiblingNodePath } from "../safety.js";
 import {
   appendRunEventLine,
   countRunEvents,
@@ -390,7 +390,9 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
 
     let child;
     try {
-      child = spawnTracked(plan.command, plan.args, {
+      // An npm .cmd shim on Windows starts as the program it points at (no shell); anything else is as it was.
+      const launch = programLaunch(plan.command, plan.args, { env });
+      child = spawnTracked(launch.command, launch.args, {
         cwd: plan.cwd,
         env,
         stdio: [stdinMode, "pipe", "pipe"],

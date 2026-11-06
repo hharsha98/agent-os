@@ -10,6 +10,7 @@ import {
   Check,
   Clapperboard,
   ChevronDown,
+  CircleHelp,
   Cpu,
   FlaskConical,
   FolderOpen,
@@ -56,13 +57,22 @@ import { NEW_RUN_EVENT, openNewRun } from "./newRun";
 import type { NewRunRequest } from "./newRun";
 import { NEW_SESSION_EVENT, openNewSession } from "./newSession";
 import type { NewSessionRequest } from "./newSession";
+import { SHELL_TOAST_EVENT, slotMessage } from "./shellToast";
+import type { ShellToastRequest, ShellToastTone } from "./shellToast";
 import { withTimeout } from "./homeShared";
+import { navigateTo } from "../nav";
+import type { SessionSummary } from "../types";
+import { alertToast, alertToastSessions, homeStripItems, toastStillAlerting, waitingBadgeText, waitingCount } from "./alertsShared";
+import { isDesktopApp } from "./desktop";
 import { revealGetStarted } from "./onboardingShared";
 import { createLatestRead } from "./latestRead";
 import { levelOf } from "./safetyShared";
 import { stopAllMessage } from "./stopAll";
 import QuitQuestion, { useDesktopQuit } from "./components/QuitQuestion";
 import { SessionsListProvider, useLiveSessionCount, useSessionsList } from "./useSessionsList";
+import { UpdatesProvider, useUpdates } from "./useUpdates";
+import { AGENTS_ORDER } from "./agentsShared";
+import { UPDATE_DOT_TIP, anyUpdateAvailable, firstAvailableAgent } from "./updatesShared";
 import { PALETTE_EVENT } from "./palette";
 import { isMacPlatform, isPaletteKey } from "./sessionsShared";
 
@@ -145,6 +155,8 @@ interface ShellProps {
   page: string;
   onNavigate: (page: string) => void;
   demoPublic: boolean;
+  // false while the product status has not answered yet, so `demoPublic` is only a guess. Left out, it counts as known.
+  demoKnown?: boolean;
   children: ReactNode;
 }
 
@@ -155,7 +167,11 @@ export default function Shell(props: ShellProps) {
   return (
     <OnboardingProvider enabled={!props.demoPublic}>
       <SessionsListProvider enabled={!props.demoPublic}>
-        <ShellFrame {...props} />
+        {/* SP5: the version checks' answer, for the sidebar's update dot and the Agents page. Never asked of the public demo:
+            it waits until the product status says whether this is one, so not even the first read goes out. */}
+        <UpdatesProvider enabled={!props.demoPublic && (props.demoKnown ?? true)}>
+          <ShellFrame {...props} />
+        </UpdatesProvider>
       </SessionsListProvider>
     </OnboardingProvider>
   );
@@ -189,8 +205,39 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   const liveSessions = useLiveSessionCount();
   // false in the public demo and wherever the server says sessions do not exist: then nothing here offers or opens
   // the New session dialog (a dialog that could never start anything).
-  const sessionsAvailable = useSessionsList().available && !demoPublic;
+  const sessionsList = useSessionsList();
+  const sessionsAvailable = sessionsList.available && !demoPublic;
+  // SP5: the footer's dot while any agent has a newer version; it opens Agents on the first one that does. Never in the
+  // public demo, where this computer's agents are not the point.
+  const updates = useUpdates();
+  const updateDot = !demoPublic && anyUpdateAvailable(updates.data);
+  const updateAgent = firstAvailableAgent(updates.data, AGENTS_ORDER);
   const quitQuestion = useDesktopQuit();
+  // SP4 alerts from the shared sessions list (ruling R22). The badge counts agent sessions that wait for you (K22) and
+  // opens the one that has waited longest; a list that could not be refreshed shows no badge, as the menu shows no count.
+  const knownSessions = useMemo<SessionSummary[]>(
+    () => (sessionsList.source.state === "ok" && !sessionsList.source.stale ? sessionsList.source.data.sessions : []),
+    [sessionsList.source]
+  );
+  const waitingN = waitingCount(knownSessions);
+  const firstWaitingId = homeStripItems(knownSessions).find((item) => item.kind === "waiting")?.id ?? "";
+  // In a browser tab, a session that newly needs you also gets a message at the bottom of the window (spec, Alerts UI:
+  // "In browser mode, an in-app toast only"). The desktop app shows none: its Rust shell raises a notification while the
+  // window is hidden or not focused (Task X4). The first read of the list is not news.
+  // The message remembers which sessions it is about and goes away, like its ×, on the next read of the list where none of
+  // them waits or is held any more (M5; spec: alerts clear when the agent resolves, on user input, or when the session
+  // leaves that state). A list that could not be refreshed says nothing new, so the message stays.
+  const [alertNote, setAlertNote] = useState<{ id: number; message: string; sessionIds: string[] } | null>(null);
+  const alertBase = useRef<SessionSummary[] | null>(null);
+  useEffect(() => {
+    if (sessionsList.source.state !== "ok" || sessionsList.source.stale) return;
+    const next = sessionsList.source.data.sessions;
+    const message = isDesktopApp() ? null : alertToast(alertBase.current, next);
+    const sessionIds = message ? alertToastSessions(alertBase.current, next) : [];
+    alertBase.current = next;
+    if (message) setAlertNote({ id: Date.now(), message, sessionIds });
+    else setAlertNote((note) => (note && !toastStillAlerting(note.sessionIds, next) ? null : note));
+  }, [sessionsList.source]);
 
   const onboardingCounts = onboarding.data?.counts;
   // The same rule as the Get started pill: the server counts a skipped step as
@@ -367,6 +414,21 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
     return () => window.removeEventListener(NEW_SESSION_EVENT, onNewSession);
   }, [sessionsAvailable]);
 
+  // A page's own short message (showShellToast, src/ui/shellToast.ts) is drawn in the same slot as the shell's messages, so
+  // two toasts never overlap. It is kept here as the latest page note; slotMessage decides what the slot shows: a message
+  // that stays until closed (a stop-all failure, a browser tab's "needs you") is never replaced, and the note waits for it.
+  const [pageNote, setPageNote] = useState<{ id: number; message: string; tone: ShellToastTone } | null>(null);
+  useEffect(() => {
+    function onShellToast(event: Event) {
+      const request = (event as CustomEvent<ShellToastRequest>).detail;
+      if (request && typeof request.message === "string" && request.message) {
+        setPageNote({ id: Date.now(), message: request.message, tone: request.tone ?? "neutral" });
+      }
+    }
+    window.addEventListener(SHELL_TOAST_EVENT, onShellToast);
+    return () => window.removeEventListener(SHELL_TOAST_EVENT, onShellToast);
+  }, []);
+
   const onboardingData = onboarding.data;
   const setOnboardingHidden = onboarding.setHidden;
   const paletteItems: PaletteItem[] = useMemo(() => {
@@ -445,6 +507,18 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
     onBlur: () => setTip(null)
   });
 
+  // The one message at the bottom of the window: the shell's own (the stop-all result, else a browser tab's "needs you"
+  // message) or a page's note, see slotMessage. `close` clears whichever one is shown.
+  const shellOwn = toast
+    ? { id: toast.id, key: `shell-${toast.id}`, message: toast.message, tone: toast.tone, close: () => setToast(null) }
+    : alertNote
+      ? { id: alertNote.id, key: `alert-${alertNote.id}`, message: alertNote.message, tone: "warn" as const, close: () => setAlertNote(null) }
+      : null;
+  const shellPage = pageNote
+    ? { id: pageNote.id, key: `page-${pageNote.id}`, message: pageNote.message, tone: pageNote.tone, close: () => setPageNote(null) }
+    : null;
+  const inSlot = slotMessage(shellOwn, shellPage);
+
   return (
     <div className="aos-phase2-shell os-shell">
       <div className="os-statusbar">
@@ -485,7 +559,20 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
             )}
           </span>
         </button>
-        {/* SP4: "Waiting for you (n)" badge, hidden while n = 0 */}
+        {waitingN > 0 ? (
+          <button
+            type="button"
+            className="os-statusbar__wait"
+            aria-label={waitingBadgeText(waitingN)}
+            onClick={() => {
+              setMenuOpen(false);
+              navigateTo("sessions", firstWaitingId ? { session: firstWaitingId } : {});
+            }}
+          >
+            <CircleHelp size={15} aria-hidden="true" />
+            <span>{waitingBadgeText(waitingN)}</span>
+          </button>
+        ) : null}
         <HoldToStopAll onResult={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />
       </div>
 
@@ -564,6 +651,19 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
           <Monitor size={14} aria-hidden="true" />
           <span className="os-nav__label">{demoPublic ? "Public demo" : MACHINE_LABEL}</span>
           <span className="os-nav__label os-mono os-sidebar__version">v{__APP_VERSION__}</span>
+          {updateDot ? (
+            <button
+              type="button"
+              className="os-sidebar__update"
+              aria-label={UPDATE_DOT_TIP}
+              title={UPDATE_DOT_TIP}
+              onClick={() => {
+                setMenuOpen(false);
+                setRailExpanded(false);
+                navigateTo("agents", updateAgent ? { agent: updateAgent } : {});
+              }}
+            />
+          ) : null}
         </div>
       </aside>
       {menuOpen ? <button className="os-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}
@@ -579,7 +679,7 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
         {children}
       </div>
       <UpdateBanner />
-      {toast ? <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
+      {inSlot ? <Toast key={inSlot.key} message={inSlot.message} tone={inSlot.tone} onClose={inSlot.close} /> : null}
       {paletteOpen ? <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} /> : null}
       {stopAllOpen ? (
         <StopAllRunsModal onClose={() => setStopAllOpen(false)} onDone={(result) => setToast({ id: Date.now(), ...stopAllMessage(result) })} />

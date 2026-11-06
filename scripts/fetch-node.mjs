@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 
 // The one place the bundled Node version is pinned. Bump it on purpose:
 // it must stay on the Node 24 LTS line (the server bundle targets node24).
-export const NODE_VERSION = "24.21.0";
+export const NODE_VERSION = "24.22.2";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = path.join(root, "desktop", ".cache", "node");

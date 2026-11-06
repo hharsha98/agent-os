@@ -430,22 +430,43 @@ export async function resolveLoginShellEnv({
 }
 
 let cached = null;
+// The answer once the cached read has finished (null until then).
+let cachedAnswer = null;
 
 // Resolved once per server (spec H2): every caller gets the same promise.
 export function getLoginShellEnv() {
-  if (!cached) cached = resolveLoginShellEnv();
+  if (!cached) {
+    const reading = resolveLoginShellEnv();
+    cached = reading;
+    reading.then(
+      (answer) => {
+        // Only if nothing reset the cache while it ran.
+        if (cached === reading) cachedAnswer = answer;
+      },
+      () => {}
+    );
+  }
   return cached;
+}
+
+// The cached read if it has finished, else null, at once. A page request must never wait for the login shell (it can take
+// up to 10 s): the server starts the read when it starts (server/index.js), and a caller that only wants to compare what
+// it finds makes no claim while this is null (final review, Sa 2).
+export function peekLoginShellEnv() {
+  return cachedAnswer;
 }
 
 export function resetLoginShellEnvForTests() {
   cached = null;
+  cachedAnswer = null;
 }
 
 // A session's environment from `baseEnv` (the login-shell environment), as a
 // new object. Removes ONLY Agent OS's own variables (AGENT_OS_*,
 // HERMES_AGENT_OS_*) and the nested-session markers; sets the terminal
 // variables, the session id and, for Claude Code with the H4 opt-in on,
-// CLAUDE_CODE_NO_FLICKER. Never sets HOME, USERPROFILE, CLAUDE_CONFIG_DIR,
+// CLAUDE_CODE_NO_FLICKER, and for Claude Code with a hook (SP4) AGENT_OS_HOOK_URL
+// and AGENT_OS_HOOK_TOKEN. Never sets HOME, USERPROFILE, CLAUDE_CONFIG_DIR,
 // CODEX_HOME, XDG_CONFIG_HOME, HERMES_HOME, any OPENCLAW_* variable or
 // CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (H1, H2): those pass through as the person
 // has them. Windows variable names ignore case, so there the checks do too.
@@ -453,7 +474,7 @@ export function resetLoginShellEnvForTests() {
 // baseEnv that is not an object: both are a caller's bug.
 export function sessionEnv(
   baseEnv,
-  { sessionId, agentOsVersion = RUNTIME_VERSION, claudeFullscreen = false, agentId, platform = process.platform } = {}
+  { sessionId, agentOsVersion = RUNTIME_VERSION, claudeFullscreen = false, agentId, platform = process.platform, hook = null } = {}
 ) {
   // A caller's mistake must not become a session with an empty id or no PATH.
   if (typeof sessionId !== "string" || sessionId === "") throw new TypeError("sessionEnv needs a sessionId (a non-empty string)");
@@ -467,6 +488,14 @@ export function sessionEnv(
     AGENT_OS_SESSION_ID: sessionId
   };
   if (agentId === "claude" && claudeFullscreen === true) additions.CLAUDE_CODE_NO_FLICKER = "1";
+  // SP4 (H2): Claude Code is the only agent that runs Agent OS's hooks, so no
+  // other agent's environment ever carries a hook token. The caller passes a
+  // hook ({ url, token }) only for an agent session, never an update or a
+  // setup session. The person's own AGENT_OS_* names are removed below either way.
+  if (agentId === "claude" && hook && typeof hook.url === "string" && hook.url !== "" && typeof hook.token === "string" && hook.token !== "") {
+    additions.AGENT_OS_HOOK_URL = hook.url;
+    additions.AGENT_OS_HOOK_TOKEN = hook.token;
+  }
   const replaced = new Set(Object.keys(additions).map(fold));
   const env = {};
   for (const [key, value] of Object.entries(baseEnv)) {

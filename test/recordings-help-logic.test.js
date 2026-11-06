@@ -37,6 +37,34 @@ test("the recordings answer is checked: a list, newest first, odd entries made s
   assert.deepEqual(rec.readRecordings([]), { rows: [], removedByCap: 0 }, "a bare list is accepted too");
 });
 
+test("A-M3: a recording of a session in a separate copy names the project it copied and the copy's branch, never the copy's own folder; every other row reads as before", () => {
+  const home = (path) => path.replace("/Users/you", "~");
+  const copy = row({
+    folder: "/Users/you/.hermes-agent-os/worktrees/3f2c9a7e-1b4d-4c8e-9f00-0123456789ab",
+    copyOf: "/Users/you/projects/my-app",
+    branch: "agentos/claude-1"
+  });
+  assert.equal(rec.recordingFolder(copy), "/Users/you/projects/my-app");
+  assert.equal(rec.recordingPlace(copy, home), "~/projects/my-app · agentos/claude-1");
+  assert.equal(rec.recordingFolder(row()), "/Users/you/projects/my-app");
+  assert.equal(rec.recordingPlace(row(), home), "~/projects/my-app", "no copy: only the folder");
+  assert.equal(rec.recordingPlace(row({ branch: "main" }), home), "~/projects/my-app", "a branch alone is not a copy");
+  assert.equal(rec.recordingPlace(row({ copyOf: "/Users/you/projects/my-app", branch: null }), home), "~/projects/my-app");
+  assert.equal(rec.recordingPlace(row({ kind: "update" }), home), "Agent update");
+  assert.equal(rec.recordingPlace(row({ folderShown: false }), home), "Folder set by OpenClaw");
+  assert.equal(rec.recordingPlace(row({ folder: "" }), () => ""), "—");
+  assert.equal(rec.recordingBranch(copy, null), "agentos/claude-1");
+  assert.equal(rec.recordingBranch(copy, "agentos/claude-2"), "agentos/claude-2", "the sessions list's word wins when it has one");
+  assert.equal(rec.recordingBranch(row(), undefined), null);
+  const body = rec.readRecordings({
+    recordings: [
+      { sessionId: "c", folder: "/x/worktrees/c", folderName: "my-app", copyOf: "/Users/you/projects/my-app", branch: "agentos/claude-1", startedAt: iso(1000) },
+      { sessionId: "d", folder: "/Users/you/my-app", folderName: "my-app", copyOf: 7, branch: "", startedAt: iso(2000) }
+    ]
+  });
+  assert.deepEqual(body.rows.map((r) => [r.copyOf, r.branch]), [["/Users/you/projects/my-app", "agentos/claude-1"], [null, null]]);
+});
+
 test("what a row offers: open a live session, resume an ended one or say why not, nothing for an update", () => {
   assert.deepEqual(rec.rowAction(row({ live: true }), undefined, "ok"), { kind: "open" });
   assert.deepEqual(rec.rowAction(row({ live: true }), session({ status: "exited" }), "ok"), { kind: "resume", available: true, reason: "" }, "the sessions list is newer: it ended");
@@ -85,8 +113,8 @@ test("a resumed session's row: Recorded is its first start and Length covers all
   assert.deepEqual(rec.recordingLength(row({ firstStartedAt: "" }), NOW), { value: "11 m 40 s", soFar: false });
 });
 
-test("the decided words: the replay note, the cap note, the empty state", () => {
-  assert.equal(rec.REPLAY_LATER, "Replay arrives in a later update");
+test("the decided words: the cap note and the empty state; the SP3 replay note is gone (Task U11 built the replay)", () => {
+  assert.equal("REPLAY_LATER" in rec, false);
   assert.equal(rec.CAP_NOTE, "Older recordings were removed to stay under 1 GB.");
   assert.equal(rec.EMPTY_TITLE, "No recordings yet");
   assert.equal(rec.EMPTY_BODY, "Every session is recorded here: what its terminal showed, including anything you typed that appeared on screen.");
@@ -114,7 +142,20 @@ test("help: closing the window says what it really does on a Mac, on Windows and
   assert.ok(!tab.steps.some((s) => /asks first/.test(s.body)), "a browser tab has no quit question");
 });
 
-test("help: every sentence is true today; nothing promises alerts, the Home strip, the badge, notifications or hand-offs", () => {
+test("help: the first list ends with the hand-off step (Task X8), which promises typing only, never sending", () => {
+  const items = help.ROUTE_WORDS.map((parts) => parts.map((part) => part.text).join(""));
+  assert.equal(items.length, 4);
+  assert.equal(
+    items[3],
+    "A hand-off, like Send to Codex for review, uses the same route. It types a prepared request into the other agent and stops. You press Enter."
+  );
+  assert.deepEqual(
+    help.ROUTE_WORDS[3].filter((part) => part.bold).map((part) => part.text),
+    ["types a prepared request"]
+  );
+});
+
+test("help: every sentence is true today; nothing promises alerts, the Home strip, the badge or notifications", () => {
   const sections = [true, false].flatMap((desktop) => [true, false].map((isMac) => help.lifeSection({ desktop, isMac })));
   const all = [
     help.HELP_TITLE, help.HELP_LEDE, help.ROUTE_TITLE, help.ROUTE_QUIET,
@@ -123,7 +164,7 @@ test("help: every sentence is true today; nothing promises alerts, the Home stri
     ...help.GLOSSARY.flatMap((g) => [g.term, g.text]),
     ...sections.flatMap((s) => [s.title, s.quiet, s.engineNote, ...s.steps.flatMap((x) => [x.title, x.body])])
   ].join("\n");
-  for (const later of [/tab marker/i, /home strip/i, /badge/i, /notification/i, /hand-off/i, /\balert/i, /send to codex/i, /review guide/i, /watches for/i, /\bhook\b/i, /this Mac/]) {
+  for (const later of [/tab marker/i, /home strip/i, /badge/i, /notification/i, /\balert/i, /review guide/i, /watches for/i, /\bhook\b/i, /this Mac/]) {
     assert.doesNotMatch(all, later);
   }
   assert.doesNotMatch(all, /—/, "no em dash in the help words");

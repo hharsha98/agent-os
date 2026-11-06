@@ -31,7 +31,9 @@
  * @typedef {Object} SafetyStatus
  * @property {boolean} permissive
  * @property {string} summary
- * @property {SafetyAction[]} actions
+ * @property {SafetyAction[]} actions - fixes for something too open (each gets a "Fix" button)
+ * @property {SafetyAction[]} [choices] - optional switches the person may turn on (a "Turn on" button); never a finding
+ * @property {string[]} [notes] - calm facts about this safeguard, shown with an info mark
  */
 
 /**
@@ -79,7 +81,10 @@
  *   run after a plan limit: originalPrompt, continuedFrom, and for Claude resume {sessionId, fork} and maxBudgetUsd)
  * @property {(line: string, stream: "stdout"|"stderr", ctx?: Object) => Array<Object>|null} parseLine
  * @property {{status: (detected: DetectedAgent) => Promise<ServiceStatus>, start: (detected: DetectedAgent) => RunPlan, stop: (detected: DetectedAgent) => RunPlan}} [service]
- * @property {(actionId: string, detected: DetectedAgent) => RunPlan|null} [safetyAction] - builds the plan for a safetyStatus() action id
+ * @property {(actionId: string, detected: DetectedAgent) => RunPlan|null|Promise<RunPlan|null>} [safetyAction] - builds the
+ *   plan for an id from safetyStatus()'s `actions` or `choices` (the route runs an id only while one of them offers it;
+ *   it awaits the answer, so an adapter may look things up first). The plan may carry a `then` plan (with a `note` line
+ *   for the panel) that the route runs after the first one succeeds
  */
 
 export const ADAPTER_SHAPE_VERSION = 1;

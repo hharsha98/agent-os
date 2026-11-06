@@ -1,14 +1,16 @@
 // One agent's row on the Plan step. Everything on it comes off the plan the
 // server computed (GET /api/setup/plan): what is installed, what an install or an
 // update would do, the licence and the source links. Nothing is invented here, so
-// an installed agent with no update step (Hermes today, Task B1) simply cannot be
-// updated, and the row says so.
+// an installed agent with no update step (Hermes unless its folder is an unchanged
+// official copy that is not already up to date, SP5) simply cannot be updated, and the
+// row says so.
 import type { ReactNode } from "react";
 import { ExternalLink, Lock } from "lucide-react";
 import OpenAddress from "./OpenAddress";
 import SetupSegmented from "./SetupSegmented";
 import SetupStatus from "./SetupStatus";
 import { formatMinutes, formatSize, totalsOf, type PlanSelection } from "../setupGroupShared";
+import { SETUP_OPENCLAW_MINUTES_LINE, openSessionsLine, setupNoUpdateLine } from "../updatesShared";
 import type { SetupPlanStep } from "../../setupApi";
 
 export interface OpenClawConsent {
@@ -47,7 +49,8 @@ export default function SetupPlanRow({
   disabled = false,
   canSkip,
   consent,
-  hasBlockedReason = false
+  hasBlockedReason = false,
+  hermesReasons = true
 }: {
   label: string;
   license?: string;
@@ -65,6 +68,9 @@ export default function SetupPlanRow({
   consent?: OpenClawConsent;
   // The plan names a reason for this agent (plan.blocked). The page draws it above the groups, so the row may point there.
   hasBlockedReason?: boolean;
+  // Hermes's row only: does the Agents page have reasons to show for its changed copy (hermesReasonsShown)? When not, the lock line
+  // keeps its first sentence and does not send the person to Agents for reasons that are not there (re-review N3).
+  hermesReasons?: boolean;
 }) {
   const installStep = installSteps.find((s) => s.action === "install");
   const nodeStep = installSteps.find((s) => s.action === "prereq-node");
@@ -101,14 +107,26 @@ export default function SetupPlanRow({
     );
     sub = <span className="os-mono">{keepStep.installedVersion || "—"}</span>;
     if (!updateStep) {
+      // "Hermes is up to date." is not a block, so a lock beside it would mislead; every other no-update row keeps its lock.
       what = (
         <span className="os-setup-lock">
-          <Lock size={15} aria-hidden="true" />
-          Agent OS does not update this agent yet. It stays as it is.
+          {keepStep.noUpdate === "up-to-date" ? null : <Lock size={15} aria-hidden="true" />}
+          {setupNoUpdateLine(keepStep.agentId, keepStep.noUpdate, hermesReasons)}
         </span>
       );
     } else if (chosen === "update") {
-      what = `Runs ${label}'s own updater. It replaces the agent's program files. Your settings stay.`;
+      // OpenClaw's old session stays alive but cannot work until restarted, and its update takes minutes (R50): the same warning
+      // as the Update dialog's. Setup has no dry-run answer, so it makes no claim about the Gateway.
+      what = (
+        <>
+          {`Runs ${label}'s own updater. It replaces the agent's program files. Your settings stay.`}
+          {keepStep.agentId === "openclaw" ? (
+            <span className="os-setup-needs">
+              {openSessionsLine("openclaw")} {SETUP_OPENCLAW_MINUTES_LINE}
+            </span>
+          ) : null}
+        </>
+      );
     } else {
       what = "Stays as it is.";
     }
@@ -193,7 +211,7 @@ export default function SetupPlanRow({
           {showConsent && consent ? (
             <label className="os-setup-row__consent">
               <input type="checkbox" checked={consent.accepted} disabled={disabled} onChange={(e) => consent.onToggle(e.target.checked)} />
-              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands.</span>
+              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands, unless it already asks.</span>
             </label>
           ) : null}
         </div>

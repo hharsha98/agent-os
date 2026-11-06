@@ -358,7 +358,7 @@ export default function BrainLocalCard({
           {openclawTicked ? (
             <label className="os-brain-risk">
               <input type="checkbox" checked={riskAccepted} onChange={(e) => onRiskChange(e.target.checked)} />
-              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands.</span>
+              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands, unless it already asks.</span>
             </label>
           ) : null}
           <button

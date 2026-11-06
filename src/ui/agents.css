@@ -87,6 +87,54 @@
 .os-agent-version__links { display: flex; gap: var(--os-sp-4); margin: var(--os-sp-3) 0 0; font-size: var(--os-fs-13); }
 .os-agent-version__links a { color: var(--os-accent-strong); }
 
+/* Update (SP5, AgentUpdatePanel): Latest, the state word and when it was checked, Update and Check for updates, then the
+   console of a running update, all under the Installed line in the Version block. */
+.os-agent-update { display: flex; flex-direction: column; gap: var(--os-sp-2); min-width: 0; margin-top: var(--os-sp-2); }
+.os-agent-update__status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--os-sp-1) var(--os-sp-4); margin: 0; font-size: var(--os-fs-14); }
+.os-agent-update__checked { font-size: var(--os-fs-13); color: var(--os-text-3); }
+.os-agent-update__note { margin: 0; max-width: 70ch; font-size: var(--os-fs-13); line-height: var(--os-lh-body); color: var(--os-text-2); }
+.os-agent-update__actions { display: flex; flex-wrap: wrap; gap: var(--os-sp-3); margin-top: var(--os-sp-1); }
+/* Hermes is not an unchanged official copy: the reasons, then the four steps that make it safe to update. */
+.os-agent-update__blocked { display: flex; flex-direction: column; gap: var(--os-sp-2); padding: var(--os-sp-3) var(--os-sp-4); background: var(--os-surface-2); border: 1px solid var(--os-line-1); border-radius: var(--os-r-md); }
+.os-agent-update__reasons,
+.os-agent-update__guide { margin: 0; padding-left: var(--os-sp-5); max-width: 70ch; font-size: var(--os-fs-13); line-height: var(--os-lh-body); color: var(--os-text-2); }
+.os-agent-update__reasons li,
+.os-agent-update__guide li { margin: 0 0 var(--os-sp-1); }
+.os-agent-update__guide-title { margin: var(--os-sp-2) 0 0; font-size: var(--os-fs-13); font-weight: 600; color: var(--os-text-1); }
+.os-agent-update__guide code { font-size: var(--os-fs-12); color: var(--os-text-1); overflow-wrap: anywhere; }
+.os-agent-update__job,
+.os-agent-update__session { margin-top: var(--os-sp-3); min-width: 0; }
+.os-agent-update__run-title { margin: 0 0 var(--os-sp-2); font-size: var(--os-fs-14); font-weight: 600; color: var(--os-text-1); }
+/* The Hermes update's terminal: the Sessions page's frame, at a fixed height (as the ChatGPT sign-in's, brain.css). */
+.os-agent-update__term {
+  position: relative;
+  height: 280px;
+  overflow: hidden;
+  background: var(--os-term-bg);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  transition: border-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-agent-update__term:focus-within { border-color: var(--os-accent); }
+.os-agent-update__notice { margin: var(--os-sp-2) 0 0; min-height: 1.4em; font-size: var(--os-fs-13); color: var(--os-text-2); }
+/* The Update dialog's lines sit one gap apart (the paragraphs' own margins would double it), and it lists the open sessions. */
+.os-agent-update__dialog { display: flex; flex-direction: column; gap: var(--os-sp-2); }
+.os-agent-update__dialog p { margin: 0; }
+.os-agent-update__sessions { margin: 0; padding-left: var(--os-sp-5); }
+/* Restart session (RestartBanner): one banner per open session still on an older version, and the sentence of a restart that
+   stopped a session it could not resume. The button wraps under the words in a narrow block (as the session limit banner's). */
+.os-agent-update__restarts { display: flex; flex-direction: column; gap: var(--os-sp-2); min-width: 0; }
+.os-agent-update__restarts .os-banner { flex-wrap: wrap; }
+.os-agent-update__restarts .os-banner__text { flex: 1 1 calc(var(--os-sp-10) * 3); }
+.os-agent-update__restarts .os-banner__body p { margin: 0; }
+.os-agent-update__restarts .os-banner__body p + p { margin-top: var(--os-sp-1); }
+@media (prefers-reduced-motion: reduce) {
+  .os-agent-update__term { transition: none; }
+}
+@media (max-width: 599px) {
+  .os-agent-update__term { height: 240px; }
+}
+
 /* Sections: each panel becomes a hairline row, title left, content right. The title is the
    panel's first child (Brain on a coding agent has it inside a header, which is let go of with
    display: contents so the title and the "In use" tag take a cell each). */

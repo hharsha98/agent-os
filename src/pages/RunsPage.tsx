@@ -1,6 +1,8 @@
 // Runs: the Board of every run in three bays (Active, Held, Landed), the Session recordings tab (every recorded
 // session, Task U4), and one run's console when ?run=<id> is set. ?tab=recordings opens the recordings tab, and
 // ?highlight=<session id> marks one of its rows ("Open recording" on an ended Sessions tab lands there).
+// ?replay=<session id> (with ?tab=recordings) shows that recording's replay in place of the list (Task U11); its
+// "Session recordings" button goes back to the list with the row marked.
 import { useEffect, useState } from "react";
 import { ArrowLeft, Plus } from "lucide-react";
 import { listRuns } from "../api";
@@ -29,6 +31,7 @@ export default function RunsPage() {
   const [selectedId, setSelectedId] = useState(() => queryParam("run"));
   const [tab, setTab] = useState<TabId>(tabFromUrl);
   const [highlight, setHighlight] = useState(() => queryParam("highlight"));
+  const [replayId, setReplayId] = useState(() => queryParam("replay"));
   // True when the run was opened by something the person did (Start run in the dialog, a row on the Board), so the
   // console takes keyboard focus: the control they used is gone. A page loaded straight on ?run= does not grab focus.
   const [focusConsole, setFocusConsole] = useState(() => takeFocusNextRun());
@@ -65,6 +68,7 @@ export default function RunsPage() {
       setSelectedId(queryParam("run"));
       setTab(tabFromUrl());
       setHighlight(queryParam("highlight"));
+      setReplayId(queryParam("replay"));
       if (queryParam("run") && takeFocusNextRun()) setFocusConsole(true);
       // The Get started checklist sends ?example=safe: open the dialog with the example typed in, then tidy
       // the address. The timer lets the Shell (the parent, whose listener is added after this page's effects
@@ -96,6 +100,11 @@ export default function RunsPage() {
     setTab(next);
     navigateTo("runs", next === "recordings" ? { tab: "recordings" } : {});
   }
+  // Back from a replay to the list, with that recording's row marked; the row takes the keyboard (the Replay button
+  // that opened the replay is on it).
+  function closeReplay() {
+    navigateTo("runs", { tab: "recordings", highlight: replayId });
+  }
 
   const bays = runs ? splitBays(runs) : null;
   const offline = runs === null && (failed || timedOut);
@@ -106,7 +115,9 @@ export default function RunsPage() {
   // Where sessions do not run (404 not_available), the tab says so and claims nothing about this computer.
   const recUnavailable = recordings.value.state === "unavailable";
 
-  const lede = selectedId
+  // A recording's replay (Task U11) takes the place of the tabs, like a run's console.
+  const replaying = !selectedId && tab === "recordings" && replayId !== "";
+  const lede = selectedId || replaying
     ? undefined
     : tab === "board"
       ? "A run is one task an agent does on its own. It starts Active, may be Held by a limit, and ends Landed."
@@ -121,7 +132,7 @@ export default function RunsPage() {
         titleId="os-runs-title"
         lede={lede}
         actions={
-          selectedId || activeEmpty ? undefined : (
+          selectedId || activeEmpty || replaying ? undefined : (
             <button type="button" className="os-btn os-btn--primary" onClick={() => openNewRun()}>
               <Plus size={17} aria-hidden="true" />
               New run
@@ -137,6 +148,14 @@ export default function RunsPage() {
             All runs
           </button>
           <RunConsole runId={selectedId} focusTitle={focusConsole} onEnded={() => void loadRuns()} />
+        </div>
+      ) : replaying ? (
+        <div className="os-runs__replay">
+          <button type="button" className="os-btn os-btn--ghost os-runs__back" onClick={closeReplay}>
+            <ArrowLeft size={15} aria-hidden="true" />
+            Session recordings
+          </button>
+          <SessionRecordings value={recordings.value} highlight="" replay={replayId} onReload={recordings.reload} onCloseReplay={closeReplay} />
         </div>
       ) : (
         <>

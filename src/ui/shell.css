@@ -253,6 +253,7 @@
 .os-toast__text {
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .os-toast .os-toast__close {
   flex: 0 0 auto;
@@ -470,6 +471,38 @@
   content: "·";
   content: "·" / "";
   margin-right: var(--os-sp-2);
+}
+
+/* SP5: the update dot, shown while an agent has a newer version. A quiet accent dot at the end of the footer that opens
+   Agents (a 24px square to press, the dot itself is 8px). Its words are its tooltip and its name for screen readers. */
+.os-sidebar__update {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--os-r-pill);
+  cursor: pointer;
+  transition: background-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-sidebar__update::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: var(--os-r-pill);
+  background: var(--os-accent);
+}
+.os-sidebar__update:hover {
+  background: var(--os-surface-2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .os-sidebar__update {
+    transition: none;
+  }
 }
 
 .os-menu-backdrop {
@@ -700,6 +733,13 @@
     min-height: 32px;
     margin-top: var(--os-sp-3);
   }
+  /* The update dot sits on the footer icon's corner instead of taking a place in the row. */
+  .os-sidebar:not(.is-expanded) .os-sidebar__update {
+    position: absolute;
+    top: var(--os-sp-1);
+    right: var(--os-sp-2);
+    margin: 0;
+  }
 }
 
 /* A narrower window drops the optional top bar pieces, least important first.
@@ -760,5 +800,37 @@
   }
   .os-holdstop.is-holding .os-holdstop__fill {
     transform: scaleX(0.5);
+  }
+}
+
+/* SP4 (Task U5): "Waiting for you (n)" between the Safety level and Hold to stop all, shown only while n > 0. */
+.os-statusbar .os-statusbar__wait {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--os-sp-2);
+  height: var(--os-bar-ctl-h);
+  min-height: var(--os-bar-ctl-h);
+  padding: 0 var(--os-sp-3);
+  border: 1px solid var(--os-warn-line);
+  border-radius: var(--os-r-sm);
+  background: var(--os-warn-wash);
+  color: var(--os-text-1);
+  font-family: var(--os-font-ui);
+  font-size: var(--os-fs-13);
+  font-weight: 560;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--os-dur-quick) var(--os-ease-out);
+}
+.os-statusbar .os-statusbar__wait:hover {
+  border-color: var(--os-warn);
+}
+.os-statusbar .os-statusbar__wait svg {
+  color: var(--os-warn);
+}
+@media (max-width: 900px) {
+  .os-statusbar .os-statusbar__wait span {
+    display: none;
   }
 }

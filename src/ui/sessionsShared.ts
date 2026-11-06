@@ -12,6 +12,10 @@ import type {
   SessionSummary
 } from "../types";
 import type { StatusState } from "./components/StatusWord";
+// Node cannot follow an extensionless import when a test loads this file straight from src/; tsconfig does not allow the
+// extension, so TypeScript's only complaint (TS5097) is silenced on this one line (the alertsShared.ts pattern).
+// @ts-expect-error TS5097
+import { CANCEL_UPDATE_LINE } from "./updatesShared.ts";
 
 // ---------------------------------------------------------------------------
 // Titles, status words and the side panel's line
@@ -21,13 +25,20 @@ import type { StatusState } from "./components/StatusWord";
 // folder until spike S5, so its sessions read "OpenClaw · Set by OpenClaw". An update session is
 // "<agent> update" (spec, Session kinds). "—" stands in for a folder name that is not known, and the agent's
 // name falls back to its id, then to "Agent" (the same rule as Stop all's sessionStopTitle, which a test keeps equal).
-export function sessionTitle(s: Pick<SessionSummary, "kind" | "agentId" | "agentLabel" | "folderName" | "folderShown">): string {
+// A session in a separate copy (R25) names the project's folder, never the copy's own, and adds the copy's branch, so
+// two sessions in one project can be told apart: "Claude Code · my-app · agentos/claude-1". `branch: false` leaves
+// the branch out where the branch is shown next to the title anyway (a split pane's header).
+export function sessionTitle(
+  s: Pick<SessionSummary, "kind" | "agentId" | "agentLabel" | "folderName" | "folderShown"> & { copyOf?: string | null; branch?: string | null },
+  { branch = true }: { branch?: boolean } = {}
+): string {
   const agent = s.agentLabel || s.agentId || "Agent";
   // A setup session (plan brains §1) is OpenClaw's ChatGPT sign-in in a brain card: "OpenClaw · ChatGPT sign-in".
   if (s.kind === "setup") return `${agent} · ChatGPT sign-in`;
   if (s.kind === "update") return `${agent} update`;
   if (s.folderShown === false) return `${agent} · Set by OpenClaw`;
-  return `${agent} · ${s.folderName || "—"}`;
+  const where = `${agent} · ${s.folderName || "—"}`;
+  return branch && s.copyOf && s.branch ? `${where} · ${s.branch}` : where;
 }
 
 // The kit's status words (planning decision Q18): "Starting" and "Ended" are new labels on existing
@@ -93,27 +104,60 @@ export function endedLine(s: EndFields): string {
   return "Ended.";
 }
 
-// The side panel's one line for the state, SP3 versions (spec, Session activity states). Before alerts
-// exist, live says only "Working."; waiting and held never happen in SP3 but get true words anyway. An
-// ended session's recording holds at least its header line, so 0 bytes means the 1 GB cap (Q38) or a
+// "2:21 am" for a time today, "Oct 30, 2:21 am" for another day; "" when it isn't a time. The Runs page's
+// formatResetTime words (src/ui/builderShared.ts), kept here as a copy because that file imports at run time and this
+// one must not (test/sessions-alerts-ui-logic.test.js pins the words).
+export function resetWords(iso: string | null | undefined, now: number): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date
+    .toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    .replace(/\s?(AM|PM)$/i, (match) => ` ${match.trim().toLowerCase()}`);
+  if (date.toDateString() === new Date(now).toDateString()) return time;
+  return `${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${time}`;
+}
+
+// What the line reads besides the SP3 fields. Each SP4 field is optional here, so a summary without it reads as basic.
+// (trustNeeded and hooksOff are read by panelAlertLines in alertsShared.ts, the lines under this one.)
+type PanelLineFields = Pick<SessionSummary, "status" | "agentLabel" | "recordingBytes"> &
+  EndFields & {
+    stateSince?: string | null;
+    agentId?: string;
+    alerts?: SessionSummary["alerts"];
+    idleBy?: SessionSummary["idleBy"];
+    resetAt?: string | null;
+    alert?: SessionSummary["alert"];
+  };
+
+// The side panel's one line for the state (spec, Session activity states; the prototype's info()). Live says whether
+// Agent OS hears this agent's questions: "full" once a turn-done session's first signal arrived, otherwise basic.
+// OpenClaw's approval question is a card in the panel. Idle entered by a turn_done signal is "Ready for the next
+// message." (K21). An ended session's recording holds at least its header line, so 0 bytes means the 1 GB cap (Q38) or a
 // delete removed it: then Runs has no row for it, and the line does not send the person there.
-export function sessionPanelLine(
-  s: Pick<SessionSummary, "status" | "agentLabel" | "recordingBytes"> & { stateSince?: string | null } & EndFields,
-  now: number
-): string {
+export function sessionPanelLine(s: PanelLineFields, now: number): string {
   switch (s.status) {
     case "starting":
       return `Starting ${s.agentLabel}…`;
     case "live":
-      return "Working.";
+      // OpenClaw's approvals are alerts of their own (cards, polled every 3 s), so it says the full line although its
+      // session alerts are never "full" (it has no turn-done signal). Hermes and Cursor stay basic (R18).
+      return s.alerts === "full" || s.agentId === "openclaw"
+        ? "Working. Agent OS alerts you when it asks you something."
+        : `Working. Alerts for ${s.agentLabel} are basic.`;
     case "waiting":
-      return "The question is in the terminal. Agent OS never answers for you.";
+      return s.agentId === "openclaw" && s.alert?.kind === "approval"
+        ? "The question is in the card below."
+        : "The question is in the terminal. Agent OS never answers for you.";
     case "idle": {
+      if (s.idleBy === "turn_done") return "Ready for the next message.";
       const time = sessionDuration(s.stateSince, now);
       return time === "—" ? "Idle. Nothing is running." : `Idle for ${time}. Nothing is running.`;
     }
-    case "held":
-      return "Plan limit reached.";
+    case "held": {
+      const when = resetWords(s.resetAt, now);
+      return when ? `Plan limit reached. Resets ${when}.` : "Plan limit reached.";
+    }
     case "exited":
       return s.recordingBytes > 0 ? `${endedLine(s)} The recording is in Runs.` : `${endedLine(s)} Its recording was removed.`;
     default:
@@ -200,7 +244,7 @@ export interface KeyLike {
   shiftKey: boolean;
 }
 
-export type AppShortcut = { action: "palette" } | { action: "new-session" } | { action: "switch"; index: number };
+export type AppShortcut = { action: "palette" } | { action: "new-session" } | { action: "switch"; index: number } | { action: "split" };
 
 // The letter pressed, also on a keyboard layout that types another letter in that place (for example
 // Cyrillic): then the key's place (event.code) decides.
@@ -224,10 +268,15 @@ export function isPaletteKey(event: KeyLike, { isMac }: { isMac: boolean }): boo
   return held && isLetter(event, "k");
 }
 
-// The only keys a terminal leaves to Agent OS: ⌘K, ⌘T and ⌘1-9 on a Mac; Ctrl+Shift+K/T/1-9 elsewhere.
-// Everything else goes to the agent, Ctrl+K and Ctrl+R included. A browser keeps ⌘T and ⌘1-9 (Ctrl+T,
-// Ctrl+1-9, Ctrl+Shift+T) for itself, so in browser mode only the palette key is Agent OS's. ⌘\ (split)
-// arrives with SP4 and is not taken yet.
+// The backslash key, by its place first: Shift turns it into "|" (Ctrl+Shift+\ on Windows and Linux).
+function isBackslash(event: KeyLike): boolean {
+  return event.code === "Backslash" || event.key === "\\";
+}
+
+// The only keys a terminal leaves to Agent OS: ⌘K, ⌘T, ⌘1-9 and ⌘\ on a Mac; Ctrl+Shift+K/T/1-9/\ elsewhere.
+// Everything else goes to the agent, Ctrl+K, Ctrl+R and Ctrl+\ (the terminal's quit key) included. A browser keeps
+// ⌘T and ⌘1-9 (Ctrl+T, Ctrl+1-9, Ctrl+Shift+T) for itself, so in browser mode only the palette key is Agent OS's;
+// split view has its Split view button there (Task U6).
 export function isAppShortcut(event: KeyLike, { isMac, desktop }: { isMac: boolean; desktop: boolean }): AppShortcut | null {
   if (event.altKey) return null;
   const held = isMac ? event.metaKey && !event.ctrlKey && !event.shiftKey : event.ctrlKey && event.shiftKey && !event.metaKey;
@@ -235,6 +284,7 @@ export function isAppShortcut(event: KeyLike, { isMac, desktop }: { isMac: boole
   if (isLetter(event, "k")) return { action: "palette" };
   if (!desktop) return null;
   if (isLetter(event, "t")) return { action: "new-session" };
+  if (isBackslash(event)) return { action: "split" };
   const digit = rowDigit(event);
   return digit === null ? null : { action: "switch", index: digit - 1 };
 }
@@ -242,9 +292,10 @@ export function isAppShortcut(event: KeyLike, { isMac, desktop }: { isMac: boole
 // The side panel footer's hints: desktop app only, nothing in browser mode (spec, Browser mode).
 export function shortcutHints({ isMac, desktop }: { isMac: boolean; desktop: boolean }): Array<{ keys: string; word: string }> {
   if (!desktop) return [];
+  // The split keys are written again in splitShared.ts (splitKeys); test/sessions-split-logic.test.js keeps them equal.
   return isMac
-    ? [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }]
-    : [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }];
+    ? [{ keys: "⌘T", word: "new" }, { keys: "⌘1-9", word: "switch" }, { keys: "⌘\\", word: "split" }]
+    : [{ keys: "Ctrl+Shift+T", word: "new" }, { keys: "Ctrl+Shift+1-9", word: "switch" }, { keys: "Ctrl+Shift+\\", word: "split" }];
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +311,14 @@ export const QUIT_FAST_MS = 700;
 // How much longer the question waits for the list before it says it could not check.
 export const QUIT_CHECK_MS = 6000;
 
-export type QuitView = { phase: "checking" } | { phase: "asking"; live: QuitCheckItem[] } | { phase: "unknown" };
+// `updating`: a Setup job is running an agent's update, which quitting would stop partway (final review, Se I1). Left out
+// when no update runs, so a view with only sessions is the same as it always was.
+export type QuitView = { phase: "checking" } | { phase: "asking"; live: QuitCheckItem[]; updating?: boolean } | { phase: "unknown" };
+
+// What the quit check answered, as a view: the sessions, and `updating` only when an update runs.
+function askingView(answer: { live: QuitCheckItem[]; updating?: boolean }): QuitView {
+  return answer.updating === true ? { phase: "asking", live: answer.live, updating: true } : { phase: "asking", live: answer.live };
+}
 
 // "A", "A and B", "A, B and C", "A, B, C, D and 2 more".
 export function joinNames(names: string[], max = 4): string {
@@ -299,12 +357,15 @@ export function quitQuestionCopy(view: QuitView): { title: string; body: string;
         : `${names.charAt(0).toUpperCase()}${names.slice(1)} ${updates.length === 1 ? "is" : "are"} still running. Quitting stops ${updates.length === 1 ? "it" : "them"}.`
     );
   }
+  // An update that a Setup job runs is no session, so it can be the only thing the question has to say. It uses the
+  // update's own warning (CANCEL_UPDATE_LINE), the one Setup's Cancel shows.
+  if (view.updating === true) sentences.push(CANCEL_UPDATE_LINE);
   return { ...base, body: sentences.join(" ") };
 }
 
 export interface QuitFlow {
   // POST /api/sessions/quit-check.
-  check: () => Promise<{ live: QuitCheckItem[] }>;
+  check: () => Promise<{ live: QuitCheckItem[]; updating?: boolean }>;
   // Draw (or redraw) the question.
   show: (view: QuitView) => void;
   // Tell the shell the question is on screen ("agentos://quit-shown"). Called at most once.
@@ -315,7 +376,10 @@ export interface QuitFlow {
   isOpen: () => boolean;
 }
 
-type Checked = { live: QuitCheckItem[] } | null;
+type Checked = { live: QuitCheckItem[]; updating?: boolean } | null;
+
+// Nothing would be lost: no session runs and no update runs.
+const nothingRuns = (answer: { live: QuitCheckItem[]; updating?: boolean }) => answer.live.length === 0 && answer.updating !== true;
 
 function within<T>(promise: Promise<T>, ms: number, late: T): Promise<T> {
   return new Promise<T>((resolve) => {
@@ -333,17 +397,17 @@ export async function runQuitFlow(flow: QuitFlow): Promise<void> {
   const checked: Promise<Checked> = Promise.resolve()
     .then(() => flow.check())
     .then(
-      (answer) => (answer && Array.isArray(answer.live) ? { live: answer.live } : null),
+      (answer) => (answer && Array.isArray(answer.live) ? { live: answer.live, updating: answer.updating === true } : null),
       () => null
     );
   const first = await within<Checked | "slow">(checked, QUIT_FAST_MS, "slow");
   if (!flow.isOpen()) return;
   if (first !== "slow") {
-    if (first && first.live.length === 0) {
+    if (first && nothingRuns(first)) {
       flow.answer(true);
       return;
     }
-    flow.show(first ? { phase: "asking", live: first.live } : { phase: "unknown" });
+    flow.show(first ? askingView(first) : { phase: "unknown" });
     flow.shown();
     return;
   }
@@ -351,11 +415,11 @@ export async function runQuitFlow(flow: QuitFlow): Promise<void> {
   flow.shown();
   const later = await within<Checked>(checked, QUIT_CHECK_MS, null);
   if (!flow.isOpen()) return;
-  if (later && later.live.length === 0) {
+  if (later && nothingRuns(later)) {
     flow.answer(true);
     return;
   }
-  flow.show(later ? { phase: "asking", live: later.live } : { phase: "unknown" });
+  flow.show(later ? askingView(later) : { phase: "unknown" });
 }
 
 export interface QuitRounds {
@@ -408,9 +472,9 @@ export function createQuitRounds(): QuitRounds {
 // What the update banner does with the answer to the quit check before "Install & restart" downloads anything
 // (that restart ends every session, and the shell cannot ask first on this path): null means nothing runs, so
 // install at once; otherwise the question to ask. An answer that cannot be read asks too, and says so.
-export function installQuestion(check: { live?: QuitCheckItem[] | null } | null | undefined): QuitView | null {
+export function installQuestion(check: { live?: QuitCheckItem[] | null; updating?: boolean } | null | undefined): QuitView | null {
   if (!check || !Array.isArray(check.live)) return { phase: "unknown" };
-  return check.live.length > 0 ? { phase: "asking", live: check.live } : null;
+  return nothingRuns({ live: check.live, updating: check.updating }) ? null : askingView({ live: check.live, updating: check.updating });
 }
 
 // ---------------------------------------------------------------------------
@@ -553,7 +617,12 @@ export function parseServerFrame(text: string): SessionServerFrame | null {
     const endedBy = f.endedBy === "stop" || f.endedBy === "quit" ? f.endedBy : null;
     return { t: "state", status: f.status, exitCode: numberOrNull(f.exitCode), signal: textOrNull(f.signal), endedBy, resetAt: textOrNull(f.resetAt) };
   }
-  if (f.t === "alert") return typeof f.raw === "string" ? { t: "alert", raw: f.raw } : null;
+  if (f.t === "alert") {
+    // SP4's frame (K8): a new or changed alert, or "resolved" when it cleared. SP3's { t: "alert", raw } is not read.
+    const kind = f.kind;
+    if (kind !== "waiting" && kind !== "approval" && kind !== "limit" && kind !== "resolved") return null;
+    return { t: "alert", kind, text: typeof f.text === "string" ? f.text : "" };
+  }
   return null;
 }
 

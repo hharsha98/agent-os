@@ -86,9 +86,15 @@ export async function checkSessionFolder(
 
   const [homeReal, agentOsReal, managedReal] = await Promise.all([canonical(home), canonical(agentOsHome), canonical(managedRoot)]);
   if (foldCase(real, platform) === foldCase(homeReal, platform)) return refuse("is_home");
-  const inWorktrees = isSameOrInside(real, path.join(agentOsReal, "worktrees"), platform);
+  const worktreesReal = path.join(agentOsReal, "worktrees");
+  const inWorktrees = isSameOrInside(real, worktreesReal, platform);
   if (isSameOrInside(real, agentOsReal, platform) && !inWorktrees) return refuse("inside_agent_os");
-  if (isSameOrInside(real, managedReal, platform)) return refuse("inside_agent_os");
+  // <AGENT_OS_HOME>/worktrees stays allowed (D12) even when AGENT_OS_HOME is the managed Node folder or sits inside it
+  // (AGENT_OS_HOME=~/.agent-os, the managed folder's default place). A managed folder placed inside worktrees/ itself
+  // stays refused.
+  if (isSameOrInside(real, managedReal, platform) && !(inWorktrees && !isSameOrInside(managedReal, worktreesReal, platform))) {
+    return refuse("inside_agent_os");
+  }
   if (!isSameOrInside(real, homeReal, platform)) return refuse("outside_home");
   return { ok: true, path: real, name: path.basename(real) };
 }
@@ -123,21 +129,25 @@ export async function recentSessionFolders({ limit = 8 } = {}) {
   for (const meta of metas) {
     if (!meta || typeof meta !== "object" || Array.isArray(meta)) continue;
     if (meta.kind === "update" || meta.folderShown === false) continue;
-    if (typeof meta.folder !== "string" || !meta.folder) continue;
+    // A session in a separate copy gives back the project it copied (ruling R25, K14).
+    const folder = typeof meta.copyOf === "string" && meta.copyOf ? meta.copyOf : meta.folder;
+    if (typeof folder !== "string" || !folder) continue;
     const at = lastUsedMs(meta);
-    if (at !== null) candidates.push({ folder: meta.folder, at });
+    if (at !== null) candidates.push({ folder, at });
   }
   candidates.sort((a, b) => b.at - a.at);
   const max = Math.max(0, Math.floor(Number(limit) || 0));
   const out = [];
   const seenTyped = new Set();
   const seenReal = new Set();
+  // Recent folders never list a separate copy (R25): one typed by hand, or one whose project is unknown.
+  const worktreesReal = path.join(await canonical(runtimePaths().root), "worktrees");
   for (const { folder, at } of candidates) {
     if (out.length >= max) break;
     if (seenTyped.has(folder)) continue;
     seenTyped.add(folder);
     const check = await checkSessionFolder(folder);
-    if (!check.ok || seenReal.has(check.path)) continue;
+    if (!check.ok || seenReal.has(check.path) || isSameOrInside(check.path, worktreesReal, process.platform)) continue;
     seenReal.add(check.path);
     out.push({ path: check.path, name: check.name, lastUsedAt: new Date(at).toISOString() });
   }

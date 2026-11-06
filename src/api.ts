@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { openEventStream } from "./eventStream";
+import { apiFetch } from "./sessionKey";
 import type {
   AgentDetail,
   AgentListResponse,
@@ -111,7 +113,7 @@ export class ApiError extends Error {
 }
 
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
     ...options
@@ -1047,7 +1049,8 @@ export function stopRun(id: string) {
 }
 
 // Subscribes to a run's live SSE stream. Same-origin, so the session cookie
-// rides along automatically; no token is ever put in the URL. Closes on
+// rides along automatically and apiFetch adds the page key header; no token or
+// key is ever put in the URL. Closes on
 // unmount, and on a stream error that isn't a clean "end" it re-checks the
 // session so an expired cookie surfaces as the lock screen instead of a
 // silently frozen trace.
@@ -1069,40 +1072,39 @@ export function useRunStream(runId: string | null) {
     endedCleanlyRef.current = false;
     if (!runId) return;
 
-    const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
-
-    source.onopen = () => setStatus("open");
-    const onEvent = (message: MessageEvent) => {
-      try {
-        const event = JSON.parse(message.data) as RunStreamEvent;
-        setEvents((prev) => [...prev, event]);
-      } catch {
-        // malformed frame; skip rather than crash the trace
+    // Read with fetch (openEventStream), not EventSource: EventSource cannot send the page key header (R32).
+    const source = openEventStream(`/api/runs/${encodeURIComponent(runId)}/stream`, {
+      onOpen: () => setStatus("open"),
+      // The server names each frame after the event's type ("event: text"); an unnamed frame is "message".
+      onEvent: (name, data) => {
+        if (name === "end") {
+          endedCleanlyRef.current = true;
+          setStatus("ended");
+          source.close();
+          return;
+        }
+        if (name !== "message" && !RUN_STREAM_EVENT_TYPES.includes(name)) return;
+        try {
+          const event = JSON.parse(data) as RunStreamEvent;
+          setEvents((prev) => [...prev, event]);
+        } catch {
+          // malformed frame; skip rather than crash the trace
+        }
+      },
+      onError: () => {
+        setStatus("ended");
+        if (endedCleanlyRef.current) return;
+        void request<{ authenticated?: boolean }>("/api/session")
+          .then((session) => {
+            if (session && session.authenticated === false) {
+              window.dispatchEvent(new CustomEvent("agentos:locked"));
+            }
+          })
+          .catch(() => {
+            // a network hiccup here shouldn't itself trigger the lock flow
+          });
       }
-    };
-    // The server names each frame after the event's type ("event: text"), and
-    // EventSource only routes unnamed frames to onmessage, so listen by name.
-    source.onmessage = onEvent;
-    for (const type of RUN_STREAM_EVENT_TYPES) source.addEventListener(type, onEvent);
-    source.addEventListener("end", () => {
-      endedCleanlyRef.current = true;
-      setStatus("ended");
-      source.close();
     });
-    source.onerror = () => {
-      source.close();
-      setStatus("ended");
-      if (endedCleanlyRef.current) return;
-      void request<{ authenticated?: boolean }>("/api/session")
-        .then((session) => {
-          if (session && session.authenticated === false) {
-            window.dispatchEvent(new CustomEvent("agentos:locked"));
-          }
-        })
-        .catch(() => {
-          // a network hiccup here shouldn't itself trigger the lock flow
-        });
-    };
 
     return () => {
       source.close();
@@ -1138,7 +1140,7 @@ export class TeamRoomError extends Error {
 }
 
 async function teamRoomRequest<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
     ...options
@@ -1224,38 +1226,38 @@ export function useTeamRoomStream(roomId: string | null, reconnectKey: number | 
     endedCleanlyRef.current = false;
     if (!roomId) return;
 
-    const source = new EventSource(`/api/team-rooms/${encodeURIComponent(roomId)}/stream`);
-
-    source.onopen = () => setStatus("open");
-    const onEvent = (message: MessageEvent) => {
-      try {
-        const event = JSON.parse(message.data) as TeamRoomEvent;
-        setEvents((prev) => [...prev, event]);
-      } catch {
-        // malformed frame; skip rather than crash the transcript
+    // Read with fetch (openEventStream), not EventSource: EventSource cannot send the page key header (R32).
+    const source = openEventStream(`/api/team-rooms/${encodeURIComponent(roomId)}/stream`, {
+      onOpen: () => setStatus("open"),
+      onEvent: (name, data) => {
+        if (name === "end") {
+          endedCleanlyRef.current = true;
+          setStatus("ended");
+          source.close();
+          return;
+        }
+        if (name !== "message" && !(TEAM_ROOM_EVENT_TYPES as string[]).includes(name)) return;
+        try {
+          const event = JSON.parse(data) as TeamRoomEvent;
+          setEvents((prev) => [...prev, event]);
+        } catch {
+          // malformed frame; skip rather than crash the transcript
+        }
+      },
+      onError: () => {
+        setStatus("ended");
+        if (endedCleanlyRef.current) return;
+        void request<{ authenticated?: boolean }>("/api/session")
+          .then((session) => {
+            if (session && session.authenticated === false) {
+              window.dispatchEvent(new CustomEvent("agentos:locked"));
+            }
+          })
+          .catch(() => {
+            // a network hiccup here shouldn't itself trigger the lock flow
+          });
       }
-    };
-    source.onmessage = onEvent;
-    for (const type of TEAM_ROOM_EVENT_TYPES) source.addEventListener(type, onEvent);
-    source.addEventListener("end", () => {
-      endedCleanlyRef.current = true;
-      setStatus("ended");
-      source.close();
     });
-    source.onerror = () => {
-      source.close();
-      setStatus("ended");
-      if (endedCleanlyRef.current) return;
-      void request<{ authenticated?: boolean }>("/api/session")
-        .then((session) => {
-          if (session && session.authenticated === false) {
-            window.dispatchEvent(new CustomEvent("agentos:locked"));
-          }
-        })
-        .catch(() => {
-          // a network hiccup here shouldn't itself trigger the lock flow
-        });
-    };
 
     return () => {
       source.close();

@@ -1,15 +1,16 @@
-// Help: "How a session works" (the prototype's how-it-works.html, in its SP3 form). Not in the menu: Safety's "How
-// stopping works" and the Sessions page's "How a session works" link here. Every sentence is true today: the alerts,
-// the Home strip, the top-bar badge, desktop notifications and hand-offs arrive later, so this page does not show them
-// (the prototype's Lane B, its hand-off item and its "Review guide" button are left out). What closing the window does
-// depends on where Agent OS runs (lifeSection, helpShared.ts). The diagrams are the prototype's SVGs on the app's tokens.
+// Help: "How a session works" (the prototype's how-it-works.html). Not in the menu: Safety's "How stopping works" and
+// the Sessions page's "How a session works" link here. Every sentence is true today: the alerts lane is told in words
+// (alertWords, SP4) and the hand-off is the route's fourth step (Task X8), while the prototype's Lane B drawing and its
+// "Review guide" button are left out. What closing the window does depends on where Agent OS runs (lifeSection,
+// helpShared.ts). The diagrams are
+// the prototype's SVGs on the app's tokens.
 import { useEffect } from "react";
 import type { CSSProperties } from "react";
 import { CircleHelp, CircleStop, History, Lock, Maximize, Power, SquareTerminal, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import PageHeader from "../ui/components/PageHeader";
 import { isDesktopApp } from "../ui/desktop";
-import { GLOSSARY, HELP_LEDE, HELP_TITLE, PROMISES, ROUTE_QUIET, ROUTE_TITLE, ROUTE_WORDS, lifeSection } from "../ui/helpShared";
+import { ALERTS_TITLE, GLOSSARY, HELP_LEDE, HELP_TITLE, PROMISES, ROUTE_QUIET, ROUTE_TITLE, ROUTE_WORDS, alertWords, lifeSection } from "../ui/helpShared";
 import type { LifeStep } from "../ui/helpShared";
 import "../ui/help.css";
 
@@ -230,6 +231,19 @@ export default function HelpPage() {
           </h3>
           <ol className="os-help-list">
             {ROUTE_WORDS.map((parts, index) => (
+              <li key={index}>
+                <span>{parts.map((part, i) => (part.bold ? <b key={i}>{part.text}</b> : <span key={i}>{part.text}</span>))}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+        <div className="os-help-words">
+          <h3>
+            <CircleHelp size={17} aria-hidden="true" />
+            {ALERTS_TITLE}
+          </h3>
+          <ol className="os-help-list">
+            {alertWords({ desktop: isDesktopApp() }).map((parts, index) => (
               <li key={index}>
                 <span>{parts.map((part, i) => (part.bold ? <b key={i}>{part.text}</b> : <span key={i}>{part.text}</span>))}</span>
               </li>

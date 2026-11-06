@@ -1,5 +1,5 @@
 // Safety: one level control (Look only / Run agents / Machine control), the safeguards that are
-// always working, pending approvals (an honest empty state until SP4) and how Hold to stop all
+// always working, pending approvals (OpenClaw's cards and the sessions waiting for you, SP4) and how Hold to stop all
 // works. Every transition is exactly the request the design brief specifies -- no client-side
 // guessing of what the server will do, and no level is shown until the server has told us one.
 //
@@ -27,6 +27,7 @@ import SafetyStopInfo from "../ui/components/SafetyStopInfo";
 import SetupModal from "../ui/components/SetupModal";
 import { useInterval } from "../ui/components/useInterval";
 import { AGENT_DETAIL_LIMIT_MS, withTimeout } from "../ui/homeShared";
+import { THIS_MACHINE } from "../ui/machineLabel";
 import {
   ARM_PHRASE,
   BUSY_WORD,
@@ -398,7 +399,7 @@ export default function SafetyPage() {
             machineLostWords(expiresLabel)
           ) : (
             <>
-              Agent OS can see the screen and use the mouse and keyboard on this Mac. It turns itself off in <span className="os-mono" role="timer" aria-live="off">{countdown}</span>
+              Agent OS can see the screen and use the mouse and keyboard on {THIS_MACHINE}. It turns itself off in <span className="os-mono" role="timer" aria-live="off">{countdown}</span>
               {expiresLabel ? <> at {expiresLabel}</> : null}.
             </>
           )}
@@ -493,7 +494,7 @@ export default function SafetyPage() {
           <p>At Level 2, Agent OS can do more than work in the Workspace:</p>
           <ul className="os-saf-arm-list">
             <li>See your screen.</li>
-            <li>Move the mouse and type in other apps on this Mac.</li>
+            <li>Move the mouse and type in other apps on {THIS_MACHINE}.</li>
             <li><Clock size={14} aria-hidden="true" /> Turn off by itself after <span className="os-mono">30</span> minutes. To use it again, you type the phrase again.</li>
             <li>Shell commands stay off unless you switch them on separately, and each one still needs your confirmation.</li>
           </ul>

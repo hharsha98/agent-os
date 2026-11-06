@@ -60,7 +60,8 @@
 .os-saf-can__w--warn svg { color: var(--os-warn); }
 .os-saf-can__w--idle svg { color: var(--os-text-3); }
 
-/* Pending approvals (empty until SP4) */
+/* Pending approvals (SP4): OpenClaw's cards (alerts.css), the sessions that ask in their own terminal, and the empty
+   state with its example card. */
 .os-saf-approvals { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: var(--os-sp-5); align-items: start; }
 @media (max-width: 1100px) { .os-saf-approvals { grid-template-columns: minmax(0, 1fr); } }
 .os-saf-ghost { padding: var(--os-sp-4); border: 1px dashed var(--os-line-2); border-radius: var(--os-r-md); color: var(--os-text-2); }
@@ -69,6 +70,18 @@
 .os-saf-ghost__title { font-size: var(--os-fs-14); color: var(--os-text-1); }
 .os-saf-ghost__cmd { font-size: var(--os-fs-13); }
 .os-saf-ghost__acts { display: flex; gap: var(--os-sp-2); }
+.os-saf-section > .os-banner { margin-bottom: var(--os-sp-4); }
+.os-saf-section .os-approvals { max-width: 760px; }
+.os-saf-approvals__loading { margin: 0; }
+.os-saf-waits { display: flex; flex-direction: column; gap: var(--os-sp-2); max-width: 760px; margin: var(--os-sp-4) 0 0; padding: 0; list-style: none; }
+.os-saf-wait { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--os-sp-3); padding: var(--os-sp-3) var(--os-sp-4); border: 1px solid var(--os-warn-line); border-radius: var(--os-r-md); background: var(--os-warn-wash); }
+.os-saf-wait > svg { color: var(--os-warn); }
+.os-saf-wait p { margin: 0; min-width: 0; font-size: var(--os-fs-14); overflow-wrap: anywhere; }
+.os-saf-wait__sub { display: block; margin-top: 2px; font-size: var(--os-fs-13); color: var(--os-text-2); }
+@media (max-width: 900px) {
+  .os-saf-wait { grid-template-columns: auto minmax(0, 1fr); }
+  .os-saf-wait > .os-btn { grid-column: 2; justify-self: start; }
+}
 
 /* The safeguards table: "Applies to" and "Status" are quiet, small type, so the safeguard's own title is the loudest
    thing in its row (as in the prototype). A short line height keeps a two-line "Applies to" tight in its 150px column. */

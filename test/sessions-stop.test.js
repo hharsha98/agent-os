@@ -24,6 +24,7 @@ import { spawnPty } from "../server/runtime/sessions/pty-host.js";
 import { SOFT_STOP_LIMIT_MS, runSoftStop } from "../server/runtime/sessions/soft-stop.js";
 import { writeJson as writeJsonFile } from "../server/runtime/store.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 
 const isWindows = process.platform === "win32";
 const SKIP_POSIX = { skip: isWindows ? "the fake agents are POSIX shell shims" : false };
@@ -291,6 +292,8 @@ function fakeWorld(over = {}) {
       const pty = world.ptys.find((candidate) => candidate.pid === pid);
       if (pty && world.killMakesExit) pty.exit(null, "SIGTERM");
     },
+    // No real git in these tests (SP4 X7): only test/sessions-changes.test.js runs it.
+    ...NO_GIT_OPTIONS,
     ...over
   };
   world.manager = createSessionManager(world.deps);
@@ -735,9 +738,12 @@ function killLeftovers(running, kill = (pid, signal) => process.kill(pid, signal
 // Real PTY, mirror, recorder, folder policy, process-tree kill and soft stop;
 // only the profiles, the gate, detection and the brain are given, so no real
 // agent can start. Every terminal and every CLI call the soft stop starts joins
-// `running`; `outcomes` collects what each soft stop answered.
-function realDeps(profiles, { spawned, running, cliPids, outcomes = [] }) {
+// `running`; `outcomes` collects what each soft stop answered. `softStopLimitMs` replaces the soft stop's
+// 2 s budget (SOFT_STOP_LIMIT_MS) for a test that is about the CLI calls themselves and not about the
+// budget: two fake CLI runs can take longer than 2 s on a busy machine, and the answer is then "timeout".
+function realDeps(profiles, { spawned, running, cliPids, outcomes = [], softStopLimitMs = undefined }) {
   return {
+    ...NO_GIT_OPTIONS,
     isExecutionAllowed: async () => true,
     detect: async (agentId) => ({ installed: true, path: profiles[agentId].command }),
     resolveBrain: async () => null,
@@ -764,6 +770,7 @@ function realDeps(profiles, { spawned, running, cliPids, outcomes = [] }) {
     softStop: async (input) => {
       const result = await runSoftStop({
         ...input,
+        ...(softStopLimitMs === undefined ? {} : { limitMs: softStopLimitMs }),
         onSpawn: (pid) => {
           cliPids.push(pid);
           watchPid(running, pid);
@@ -967,7 +974,8 @@ test("real PTY: Stop runs `claude agents --json` and then `claude stop <id>` thr
               resumeMode: "id"
             }
           },
-          { spawned, running, cliPids, outcomes }
+          // This test is about the real CLI path, not the soft stop's budget (the hung CLI test has that).
+          { spawned, running, cliPids, outcomes, softStopLimitMs: 60000 }
         )
       );
       const summary = await manager.create({ agentId: "claude", folder: project });

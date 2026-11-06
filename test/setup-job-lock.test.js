@@ -37,6 +37,13 @@ const startDirect = () => startOpenclawPlanJob({ plan: "chatgpt", model: "gpt-6.
 
 const lookAtWaiting = () => new Promise((resolve) => setTimeout(resolve, LOOK_AT_WAITING_MS));
 
+// A start that waits for a finishing job to save gives up after JOB_SETTLE_TIMEOUT_MS (5 s of the clock, in
+// jobs.js) and is then refused. On a very busy machine a test can be held up for that long between "the starts
+// are waiting" and "the save is let through", and then every waiting start is refused and none wins. With
+// Date frozen (setTimeout stays real) the waiting start never runs out of time: it ends when the job is saved,
+// which is the thing these tests are about. Not used by the test that measures how fast a refusal comes.
+const freezeClock = (t) => t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+
 // Holds the first save that `matches(job, savesOfThisJob)` is true for, until
 // release(). `arrived` resolves (with the job id) when that save is held, `log`
 // has one entry per save asked for and a "released" marker, in order.
@@ -73,7 +80,8 @@ const jobFile = (agentOsHome, id) => path.join(agentOsHome, "setup", "jobs", `${
 const storedJob = async (agentOsHome, id) => JSON.parse(await readFile(jobFile(agentOsHome, id), "utf8"));
 const jobIds = async (agentOsHome) => (await readdir(path.join(agentOsHome, "setup", "jobs"))).map((name) => name.replace(/\.json$/, ""));
 
-test("a start made while a job that has just ended is still saving waits for the save, then starts (200)", posixSkip, async () => {
+test("a start made while a job that has just ended is still saving waits for the save, then starts (200)", posixSkip, async (t) => {
+  freezeClock(t);
   await withPlanEnv(
     async ({ call, agentOsHome }) => {
       const hold = holdSave((job) => job.status !== "running");
@@ -134,7 +142,8 @@ test("a start made while a job is still running is refused 409 at once, with no 
   );
 });
 
-test("two starts that both wait for the same finishing job: exactly one starts, the other is refused 409", posixSkip, async () => {
+test("two starts that both wait for the same finishing job: exactly one starts, the other is refused 409", posixSkip, async (t) => {
+  freezeClock(t);
   await withPlanEnv(
     async ({ call, agentOsHome }) => {
       const hold = holdSave((job) => job.status !== "running");
@@ -160,7 +169,8 @@ test("two starts that both wait for the same finishing job: exactly one starts, 
   );
 });
 
-test("a retry made while a different job has just ended waits for its save; while it is running, it is refused", posixSkip, async () => {
+test("a retry made while a different job has just ended waits for its save; while it is running, it is refused", posixSkip, async (t) => {
+  freezeClock(t);
   await withPlanEnv(
     async ({ call, agentOsHome }) => {
       // An earlier model-change job that failed; its one step needs no command, so a retry finishes on its own.

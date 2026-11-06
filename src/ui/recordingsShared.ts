@@ -12,6 +12,10 @@ export interface RecordingRow {
   folder: string;
   folderName: string;
   folderShown: boolean;
+  // A session that ran in a separate copy (R25): the project it copied and the copy's branch (null for every other
+  // session). `folder` is then the copy's own folder, which is not where the person works.
+  copyOf: string | null;
+  branch: string | null;
   // The LATEST start: a resume resets it. It still orders the list (newest first).
   startedAt: string;
   // When the recording itself began: a resumed session's first start. Recorded shows it and Length runs from it. An
@@ -29,8 +33,8 @@ export interface RecordingsBody {
 }
 
 // Decided words (decision Q38 and the Session recordings copy, Q32, owner). The recording holds output only, but an
-// agent echoes what you type, so typed text that appears on screen (a pasted secret too) is in the recording.
-export const REPLAY_LATER = "Replay arrives in a later update";
+// agent echoes what you type, so typed text that appears on screen (a pasted secret too) is in the recording. The SP3
+// note about a later replay is gone: Task U11 built the replay (replayShared.ts).
 export const CAP_NOTE = "Older recordings were removed to stay under 1 GB.";
 export const EMPTY_TITLE = "No recordings yet";
 export const EMPTY_BODY = "Every session is recorded here: what its terminal showed, including anything you typed that appeared on screen.";
@@ -63,6 +67,8 @@ export function readRecordings(answer: unknown): RecordingsBody | null {
       folder: text(r.folder),
       folderName: text(r.folderName),
       folderShown: r.folderShown !== false,
+      copyOf: text(r.copyOf) || null,
+      branch: text(r.branch) || null,
       startedAt,
       firstStartedAt: text(r.firstStartedAt) || startedAt,
       endedAt: text(r.endedAt) || null,
@@ -73,6 +79,26 @@ export function readRecordings(answer: unknown): RecordingsBody | null {
   rows.sort((a, b) => startMs(b.startedAt) - startMs(a.startedAt));
   const removed = body ? count(body.removedByCap) : 0;
   return { rows, removedByCap: removed };
+}
+
+// The folder a row names: the project for a session that ran in a separate copy (the copy's own folder is inside
+// Agent OS's data folder and may be removed), else the session's folder. A raw path: the page shortens the home folder.
+export function recordingFolder(row: Pick<RecordingRow, "folder" | "copyOf">): string {
+  return row.copyOf || row.folder;
+}
+
+// The words under a row's title: where the session ran. `collapse` shortens the home folder (collapseHomePath in
+// agentsShared.ts, which this file cannot import). A separate copy reads as the project and the copy's branch (R25).
+export function recordingPlace(row: Pick<RecordingRow, "kind" | "folder" | "folderShown" | "copyOf" | "branch">, collapse: (path: string) => string): string {
+  if (row.kind === "update") return "Agent update";
+  if (!row.folderShown) return "Folder set by OpenClaw";
+  const folder = collapse(recordingFolder(row)) || "—";
+  return row.copyOf && row.branch ? `${folder} · ${row.branch}` : folder;
+}
+
+// The branch the replay header shows: the sessions list's word when the session is in it, else the row's own.
+export function recordingBranch(row: Pick<RecordingRow, "branch">, sessionBranch: string | null | undefined): string | null {
+  return sessionBranch || row.branch || null;
 }
 
 export type RowAction = { kind: "open" } | { kind: "resume"; available: boolean; reason: string } | { kind: "none" };

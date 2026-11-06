@@ -1,5 +1,6 @@
-// The New session dialog: an agent and a folder (the prototype's Home dialog, without the separate-copy offer,
-// which is SP4). The Sessions page (its button and ⌘T), Home, Agents and the palette all open this one: the Shell
+// The New session dialog: an agent and a folder (the prototype's Home dialog). When a live session already uses the
+// folder, it offers a separate copy (a git worktree on a new branch, recommended) or the same folder (spec SP4,
+// Worktree offer). The Sessions page (its button and ⌘T), Home, Agents and the palette all open this one: the Shell
 // mounts it, like New run. It never sends what it knows will be refused: an agent that isn't installed, no terminal
 // module, or the most sessions at once are said in plain words first, and at Look only the Look only note replaces
 // the form (decision Q14: a Look only refusal comes before a folder refusal). A folder the server refuses (the
@@ -7,11 +8,11 @@
 // the desktop app, from recent folders, or (in a browser tab, or when the picker fails) as a typed full path.
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { Check, FolderOpen } from "lucide-react";
+import { Check, FolderOpen, GitFork } from "lucide-react";
 import { getExecutionGateStatus, listAgents } from "../../api";
 import { navigateTo } from "../../nav";
-import { createSession, listSessionFolders, sessionGotNoAnswer } from "../../sessionsApi";
-import type { AgentSummary, ExecutionGateStatus } from "../../types";
+import { checkFolder, createSession, listSessionFolders, sessionGotNoAnswer } from "../../sessionsApi";
+import type { AgentSummary, ExecutionGateStatus, FolderCheck } from "../../types";
 import { AGENT_LABEL, AGENT_MAKER, SETUP_CAN_INSTALL_AGENT_SET, collapseHomePath } from "../agentsShared";
 import { isDesktopApp } from "../desktop";
 import { withTimeout } from "../homeShared";
@@ -19,6 +20,10 @@ import {
   FOLDER_EXAMPLE,
   LOOK_ONLY_NOTE,
   OPENCLAW_FOLDER_NOTE,
+  OVERWRITE_NOTE,
+  RECOMMENDED,
+  SAME_FOLDER_LABEL,
+  SAME_FOLDER_NOTE,
   SESSION_AGENT_ORDER,
   askToFocusNextSession,
   createdSessionId,
@@ -28,9 +33,11 @@ import {
   needsFolder,
   peekSessionDraft,
   pickSessionAgent,
+  quickStartChoice,
   rememberSessionDraft,
   startProblem,
-  typedFolderProblem
+  typedFolderProblem,
+  worktreeOffer
 } from "../newSession";
 import type { NewSessionRequest, StartProblem } from "../newSession";
 import { useSessionsList } from "../useSessionsList";
@@ -45,6 +52,8 @@ const AGENTS_TIMEOUT_MS = 15000;
 const GATE_TIMEOUT_MS = 10000;
 const PTY_WORDS = "Agent OS could not load its terminal module on this computer, so sessions can't start.";
 const STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+// A typed folder is checked for the worktree offer once typing stops for this long (a picked one at once).
+const FOLDER_CHECK_DEBOUNCE_MS = 400;
 
 interface RecentFolder {
   path: string;
@@ -70,6 +79,10 @@ export default function NewSessionDialog({ request, onClose }: { request: NewSes
   const [busy, setBusy] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const [problem, setProblem] = useState<StartProblem | null>(null);
+  // The worktree offer (spec SP4): the server's folder check for the folder and agent on screen (`key`), and the
+  // person's choice between a separate copy and the same folder.
+  const [folderCheck, setFolderCheck] = useState<{ key: string; result: FolderCheck | null } | null>(null);
+  const [where, setWhere] = useState<"copy" | "same">("copy");
   const alive = useRef(true);
   // Set once a session started: the dialog then leaves the focus alone as it closes (see giveFocusBack below).
   const started = useRef(false);
@@ -148,12 +161,79 @@ export default function NewSessionDialog({ request, onClose }: { request: NewSes
   const typed = !desktop || pickerFailed;
   const typedIssue = folderWanted && typed ? typedFolderProblem(folder) : "";
   const folderIssue = problem?.field === "folder" ? problem.text : typedIssue;
+  // Once a folder is known (and sessions can start), the server says which live sessions already use it, whether it
+  // is a git project, and the branch a separate copy would get. Start stays on while that check runs: start() waits
+  // for the check in flight (`pendingCheck`). Agent OS never makes a separate copy the person did not see offered
+  // (quickStartChoice): when the check finds a shared folder and the offer was not on screen yet, nothing starts, the
+  // offer is shown with Separate copy picked, and the next Start (or a pick first) decides. A folder nobody else uses
+  // starts at once. A check that fails offers nothing, and the session starts in the folder as asked.
+  const trimmedFolder = folder.trim();
+  const checkKey = folderWanted && trimmedFolder !== "" && typedIssue === "" && lookOnly === false ? `${agentId}\n${trimmedFolder}` : "";
+  const checked = folderCheck !== null && folderCheck.key === checkKey ? folderCheck : null;
+  const offer = checked ? worktreeOffer(checked.result, agentId) : null;
+  const copyOffered = Boolean(offer?.copyLabel);
+  // The check in flight for `key` (answers null when it fails or is given up), and what is on screen right now: the
+  // answer shown, the key it is for, and the pick (read by start(), whose own render may be out of date by then).
+  const pendingCheck = useRef<{ key: string; promise: Promise<FolderCheck | null> } | null>(null);
+  const whereRef = useRef<"copy" | "same">("copy");
+  whereRef.current = where;
+  const checkedRef = useRef<{ key: string; result: FolderCheck | null } | null>(null);
+  checkedRef.current = checked;
+  const checkKeyRef = useRef("");
+  checkKeyRef.current = checkKey;
+  useEffect(() => {
+    if (!checkKey) {
+      pendingCheck.current = null;
+      return;
+    }
+    let current = true;
+    const askedFolder = trimmedFolder;
+    const askedAgent = agentId;
+    let settle: (result: FolderCheck | null) => void = () => undefined;
+    const promise = new Promise<FolderCheck | null>((resolve) => {
+      settle = resolve;
+    });
+    pendingCheck.current = { key: checkKey, promise };
+    const timer = window.setTimeout(
+      () => {
+        checkFolder(askedFolder, askedAgent)
+          .then((result) => {
+            settle(result);
+            if (current && alive.current) setFolderCheck({ key: checkKey, result });
+          })
+          .catch(() => {
+            settle(null);
+            if (current && alive.current) setFolderCheck({ key: checkKey, result: null });
+          });
+      },
+      typed ? FOLDER_CHECK_DEBOUNCE_MS : 0
+    );
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+      // Given up (the folder or the agent changed, or the dialog closed): a Start that waits goes on without an offer.
+      settle(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkKey]);
+  // Each new offer starts on the recommended choice (the prototype's).
+  const offerKey = copyOffered ? checkKey : "";
+  useEffect(() => {
+    setWhere("copy");
+  }, [offerKey]);
   const full = limits !== null && limits.live >= limits.maxLive;
   const ptyBlocked = limits !== null && !limits.ptyOk;
   const offline = (gate === null && gateFailed) || (agents === null && agentsFailed);
   const checking = (agents === null && !agentsFailed) || (gate === null && !gateFailed);
   const cannotStart =
-    busy || gate === null || lookOnly !== false || agents === null || installed !== true || ptyBlocked || full || (folderWanted && (!folder.trim() || typedIssue !== ""));
+    busy ||
+    gate === null ||
+    lookOnly !== false ||
+    agents === null ||
+    installed !== true ||
+    ptyBlocked ||
+    full ||
+    (folderWanted && (!folder.trim() || typedIssue !== ""));
 
   function selectAgent(id: string) {
     setPicked(id);
@@ -214,7 +294,27 @@ export default function NewSessionDialog({ request, onClose }: { request: NewSes
     setBusy(true);
     setProblem(null);
     try {
-      const created = await createSession({ agentId, folder: folderWanted ? folder.trim() : null });
+      // The choice (quickStartChoice): from the offer on screen and the person's pick, or, when the check is still
+      // running, from the answer when it comes. A shared folder found that way starts nothing: the offer is shown (its
+      // answer is rendered by the check's own effect, with Separate copy picked) and the person decides.
+      const onScreen = checkedRef.current;
+      const waiting = pendingCheck.current;
+      let answer: FolderCheck | null = null;
+      if (onScreen === null && waiting && waiting.key === checkKey) {
+        answer = await waiting.promise;
+        if (!alive.current) return;
+        // The folder or the agent changed while Start waited: what was clicked is no longer on screen, so nothing starts.
+        if (checkKeyRef.current !== checkKey) {
+          setBusy(false);
+          return;
+        }
+      }
+      const choice = quickStartChoice(onScreen, answer, agentId, whereRef.current);
+      if (choice.action === "show-offer") {
+        setBusy(false);
+        return;
+      }
+      const created = await createSession({ agentId, folder: folderWanted ? folder.trim() : null, copy: choice.copy });
       if (!alive.current) return;
       // A 2xx answer that is not a session (`null`, say) is an answer that could not be read, like a body that is
       // not JSON (a SyntaxError, which sessionGotNoAnswer counts as an answer). Nothing is acted on before this check.
@@ -410,6 +510,53 @@ export default function NewSessionDialog({ request, onClose }: { request: NewSes
               {folderNote}
             </div>
           )}
+
+          {offer ? (
+            <div className="os-field os-newsess__offer">
+              <p className="os-newsess__offer-title" id="os-newsess-offer-title">
+                <GitFork size={16} aria-hidden="true" />
+                <span>{offer.title}</span>
+              </p>
+              <p className="os-newrun__note">{OVERWRITE_NOTE}</p>
+              {offer.copyLabel ? (
+                <div className="os-newsess__choices" role="radiogroup" aria-labelledby="os-newsess-offer-title">
+                  <label className={`os-newsess__choice${where === "copy" ? " os-newsess__choice--on" : ""}`}>
+                    <input
+                      type="radio"
+                      name="os-newsess-where"
+                      value="copy"
+                      checked={where === "copy"}
+                      disabled={busy}
+                      onChange={() => setWhere("copy")}
+                    />
+                    <span className="os-newsess__choice-body">
+                      <span className="os-newsess__choice-line">
+                        <strong>{offer.copyLabel}</strong>
+                        <span className="os-newsess__tag">{RECOMMENDED}</span>
+                      </span>
+                      <span>{offer.copyNote}</span>
+                    </span>
+                  </label>
+                  <label className={`os-newsess__choice${where === "same" ? " os-newsess__choice--on" : ""}`}>
+                    <input
+                      type="radio"
+                      name="os-newsess-where"
+                      value="same"
+                      checked={where === "same"}
+                      disabled={busy}
+                      onChange={() => setWhere("same")}
+                    />
+                    <span className="os-newsess__choice-body">
+                      <strong>{SAME_FOLDER_LABEL}</strong>
+                      <span>{SAME_FOLDER_NOTE}</span>
+                    </span>
+                  </label>
+                </div>
+              ) : offer.notGitNote ? (
+                <p className="os-newrun__note">{offer.notGitNote}</p>
+              ) : null}
+            </div>
+          ) : null}
 
           {folderWanted && recent.length ? (
             <div className="os-field">

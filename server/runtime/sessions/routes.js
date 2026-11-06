@@ -9,16 +9,24 @@
 // addresses exist.
 import express from "express";
 import { builderErrorResponse } from "../builders/resolve.js";
+import { agentsUpdatingInJobs } from "../setup/jobs.js";
 import { errorBody, isSessionId } from "./errors.js";
 import { recentSessionFolders } from "./folders.js";
+import { sendTo } from "./handoff.js";
+import { handOver, keepGoing, keepGoingInfo } from "./keep-going.js";
 import { getSessionManager } from "./manager.js";
+import { createOpenclawApprovals } from "./openclaw-approvals.js";
 import { ptyAvailable } from "./pty-host.js";
-import { deleteRecording, listRecordings, openRecording, recordingsRemovedByCap } from "./recorder.js";
+import { listRecordings, openRecording, recordingsRemovedByCap } from "./recorder.js";
 import { readSessionSettings, writeSessionSettings } from "./settings.js";
 import { getLoginShellEnv } from "./shell-env.js";
 
 const UNKNOWN_SESSION = { error: "unknown_session", message: "That session doesn't exist anymore." };
 const INTERNAL_ERROR = { error: "internal_error", message: "Something went wrong with sessions. Try again." };
+// The approvals source when the router is built without one (tests that
+// mount it alone): it never sees an open OpenClaw session, so its list is
+// empty and nothing can be answered, with the real one's checks and words.
+const NO_OPEN_SESSIONS = Object.freeze({ liveAgentSessions: () => [] });
 
 // Express 4 does not catch a rejected promise from a handler, so every handler
 // goes through this.
@@ -172,7 +180,10 @@ function unknownSessionOnBadEncoding(error, _req, res, next) {
   res.status(404).json(UNKNOWN_SESSION);
 }
 
-export function createSessionsRouter({ manager = getSessionManager() } = {}) {
+// keepGoingDeps: what keep going asks outside the manager (keep-going.js's KEEP_GOING_DEFAULTS); tests pass fakes.
+export function createSessionsRouter({ manager = getSessionManager(), approvals = null, keepGoingDeps = undefined } = {}) {
+  // OpenClaw approvals (SP4, Task X3): server/index.js hands in its one poller.
+  const approvalsSource = approvals ?? createOpenclawApprovals({ manager: NO_OPEN_SESSIONS });
   // Case sensitive like the app ("/api/sessions/FOLDERS" is not the folders
   // address; as an id it fails SESSION_ID_RE).
   const router = express.Router({ caseSensitive: true });
@@ -226,7 +237,11 @@ export function createSessionsRouter({ manager = getSessionManager() } = {}) {
     "/",
     handle(async (req, res) => {
       const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
-      const session = await manager.create({ agentId: body.agentId, folder: body.folder });
+      // copy: only a literal true asks for a separate copy (spec SP4, Worktree offer); the server picks the copy's
+      // folder and branch, never the page.
+      const input = { agentId: body.agentId, folder: body.folder };
+      if (body.copy === true) input.copy = true;
+      const session = await manager.create(input);
       res.status(201).json(session);
     })
   );
@@ -255,10 +270,43 @@ export function createSessionsRouter({ manager = getSessionManager() } = {}) {
     })
   );
 
+  // The live sessions, and whether a Setup job is running an agent's update (Se I1 of the final review): quitting kills
+  // `openclaw update` or an npm install partway, so the question must come even when no session is open. The route adds
+  // the second part: the manager knows sessions only, and the Setup jobs are not its business.
   router.post(
     "/quit-check",
     handle(async (_req, res) => {
-      res.json(await manager.quitCheck());
+      res.json({ ...(await manager.quitCheck()), updating: agentsUpdatingInJobs().size > 0 });
+    })
+  );
+
+  // OpenClaw approvals (SP4, ruling R16): the cards waiting at OpenClaw's
+  // Gateway while an OpenClaw session is open, as { approvals, error }, and the
+  // person's answer to one. Only Allow once or Deny, and only from this POST,
+  // which only the person's click sends: nothing answers by itself.
+  router.get(
+    "/approvals",
+    handle(async (_req, res) => {
+      res.json(approvalsSource.snapshot());
+    })
+  );
+
+  router.post(
+    "/approvals/resolve",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      const { message } = await approvalsSource.resolve(body.id, body.decision);
+      res.json({ ok: true, message: message ?? null });
+    })
+  );
+
+  // The worktree offer (spec SP4): which live sessions already use a folder, whether it is a git project, and the
+  // branch a separate copy would get. Read-only: nothing is made. Only the folder and the agent reach the manager.
+  router.post(
+    "/folder-check",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      res.json(await manager.folderCheck({ folder: body.folder, agentId: body.agentId }));
     })
   );
 
@@ -286,10 +334,88 @@ export function createSessionsRouter({ manager = getSessionManager() } = {}) {
     })
   );
 
+  // Restart session (SP5, R40): stop, then resume, with no keys. Only the person's click on the page's confirm sends
+  // it. Same guards as Stop: the router is mounted local-mode only, and router.param checks the id.
+  router.post(
+    "/:id/restart",
+    handle(async (req, res) => {
+      res.json(await manager.restart(req.params.id));
+    })
+  );
+
   router.post(
     "/:id/dismiss",
     handle(async (req, res) => {
       res.json(await manager.dismiss(req.params.id));
+    })
+  );
+
+  // Send to Codex for review / Send to Claude Code (SP4 Hand-off). The body names the other agent and nothing else:
+  // the note, the target session and every write rule are the server's (handoff.js). The answer is a HandoffResult:
+  // "typed", "opening" (a new session starts and is typed into once it is ready) or "copy".
+  router.post(
+    "/:id/send",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      res.json(await sendTo(manager, req.params.id, body.to));
+    })
+  );
+
+  // The changes panel (SP4): a live session's last read, or one fresh read of
+  // an ended one. Read-only: nothing here writes to the folder or to git.
+  router.get(
+    "/:id/changes",
+    handle(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      res.json(await manager.changes(req.params.id));
+    })
+  );
+
+  // One file's read-only diff. `path` must name a file in the session's current
+  // changes; the manager checks it against that list, never against the disk.
+  // A repeated or nested `path` is not a string and reaches it as "".
+  router.get(
+    "/:id/changes/diff",
+    handle(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      const file = typeof req.query.path === "string" ? req.query.path : "";
+      res.json(await manager.diff(req.params.id, file));
+    })
+  );
+
+  // The recording's moments (spec "Recordings in Runs"): the prompt, permission
+  // asked and files changed markers from meta.json, read from memory while the
+  // session runs. A prompt marker never holds the prompt's text (R23).
+  router.get(
+    "/:id/markers",
+    handle(async (req, res) => {
+      res.json({ markers: await manager.markers(req.params.id) });
+    })
+  );
+
+  // Plan ran out, keep going (SP4, Task X10): what keeping going would do and
+  // cost, and doing it once the person confirmed in the page. The body is
+  // never read: the brain and the model come from the server (ruling R26).
+  router.get(
+    "/:id/keep-going",
+    handle(async (req, res) => {
+      res.json(await keepGoingInfo(manager, req.params.id, keepGoingDeps));
+    })
+  );
+
+  router.post(
+    "/:id/keep-going",
+    handle(async (req, res) => {
+      res.json(await keepGoing(manager, req.params.id, keepGoingDeps));
+    })
+  );
+
+  // Cursor's "Hand to Claude Code or Codex": only `to` is read from the body.
+  router.post(
+    "/:id/hand-over",
+    handle(async (req, res) => {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      res.json(await handOver(manager, req.params.id, body.to, keepGoingDeps));
     })
   );
 
@@ -300,10 +426,21 @@ export function createSessionsRouter({ manager = getSessionManager() } = {}) {
     })
   );
 
+  // Delete recording (Task U11): through the manager, which removes the recording's moments with its files and
+  // refuses while the session runs or is being resumed or dismissed.
   router.delete(
     "/:id/recording",
     handle(async (req, res) => {
-      res.json(await deleteRecording(req.params.id, { isLive: liveCheck(manager) }));
+      res.json(await manager.deleteRecording(req.params.id));
+    })
+  );
+
+  // Remove separate copy (spec SP4). The page asks first; the manager refuses while a session runs in the copy and
+  // while the copy has changes that aren't committed, and keeps the copy's branch.
+  router.delete(
+    "/:id/worktree",
+    handle(async (req, res) => {
+      res.json(await manager.removeWorktree(req.params.id));
     })
   );
 

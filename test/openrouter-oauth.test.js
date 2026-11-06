@@ -323,6 +323,7 @@ test("round trip through the routes: connect -> start address (cookie) -> OpenRo
       assert.ok(!page.includes(secret), "the callback page echoed a secret");
     }
     assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.match(response.headers.get("content-security-policy") || "", /(^|;)\s*frame-ancestors 'self'(;|$)/, "R33: this page's own CSP still says who may frame it");
     assert.equal(hits.exchange, 1);
 
     const statusText = await (await fetch(`${base}/api/setup/openrouter/connect/${started.flowId}`, { headers: authedHeaders })).text();

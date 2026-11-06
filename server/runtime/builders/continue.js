@@ -116,7 +116,8 @@ function continuableProblem(run, task) {
   return null;
 }
 
-async function claudeOpenRouterOption({ run, config, handoffTokens, hasKey }) {
+// Exported for session keep going (SP4, server/runtime/sessions/keep-going.js); the body is unchanged.
+export async function claudeOpenRouterOption({ run, config, handoffTokens, hasKey }) {
   const model = config.claude.mode === "openrouter" ? config.claude.model : DEFAULT_CLAUDE_MODEL;
   const fork = run.agentId === "claude" && Boolean(run.sessionId);
   const option = {
@@ -155,7 +156,8 @@ async function claudeOpenRouterOption({ run, config, handoffTokens, hasKey }) {
   return option;
 }
 
-async function codexOpenRouterOption({ run, config, handoffTokens, hasKey }) {
+// Exported for session keep going (SP4, server/runtime/sessions/keep-going.js); the body is unchanged.
+export async function codexOpenRouterOption({ run, config, handoffTokens, hasKey }) {
   const chosen = config.codex.mode === "openrouter" ? config.codex.model : null;
   const option = {
     id: "codex-openrouter",

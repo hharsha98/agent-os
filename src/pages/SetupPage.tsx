@@ -8,12 +8,13 @@
 // before; only what is drawn is new, and what the page does not know it does not
 // say: an unknown value is "—", a request that got no answer is never "nothing
 // was changed", and the last good data stays on screen under a warning.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { ArrowRight, PackageCheck, RefreshCw, X } from "lucide-react";
-import { listAgents } from "../api";
+import { ApiError, listAgents } from "../api";
 import { navigateTo, queryParam } from "../nav";
 import type { AgentSummary } from "../types";
+import AgentUpdateTerminal from "../ui/components/AgentUpdateTerminal";
 import Banner from "../ui/components/Banner";
 import EmptyState from "../ui/components/EmptyState";
 import PageHeader from "../ui/components/PageHeader";
@@ -45,7 +46,11 @@ import {
   retrySetupJob,
   startInstallJob
 } from "../setupApi";
+import { friendlyError as updateError } from "../ui/agentsShared";
 import { BRAIN_AGENT_LABEL } from "../ui/brainShared";
+import { findLiveUpdateSession, startUpdate } from "../updatesApi";
+import { AFTER_SESSION_MS, hermesReasonsShown, hermesUpdateHeading } from "../ui/updatesShared";
+import { useUpdates } from "../ui/useUpdates";
 import {
   AGENT_NAMES,
   ALL_AGENT_IDS,
@@ -56,16 +61,20 @@ import {
   brainFooterNote,
   canLandYet,
   checkFooterNote,
+  confirmTitle,
   formatMinutes,
   formatSize,
   gotNoAnswer,
   groupAction,
+  hermesPlanOutcome,
+  hermesSavedAnswer,
   landingStep,
   mergeSelections,
   needsOpenClawConsent,
   railStep,
   readProblem,
   reaskNote,
+  splitRunSteps,
   totalsOf,
   withAskedUpdate,
   type GroupId,
@@ -273,6 +282,38 @@ export default function SetupPage() {
   // Asking about an earlier install got no answer: it is not known whether one is running.
   const [jobUnknown, setJobUnknown] = useState(false);
 
+  // Hermes's update (SP5) runs in a terminal session, never in a job: Hermes may ask a question, and the person answers it in
+  // the terminal. `hermesRun` is that session on the Install step. `fresh` is true right after the person confirmed (the
+  // terminal then takes the keys); `ended` once the session finished (its terminal stays on screen, to read how it went).
+  const [hermesRun, setHermesRun] = useState<{ sessionId: string; fresh: boolean; ended: boolean } | null>(null);
+  // Why the session did not start, when the job did start (when nothing else started, the confirm shows the reason).
+  const [hermesError, setHermesError] = useState("");
+  const hermesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The run as the page holds it now, for code that answers later than the render that started it (settleHermesRun, onHermesEnded).
+  const hermesRunRef = useRef(hermesRun);
+  hermesRunRef.current = hermesRun;
+  const updates = useUpdates();
+  // Setup follows the saved Hermes answer (release batch, item 1). `hermesSaved` says what the page holds of it now: null until the
+  // page has read the saved answer at all (not the same as "the server has no row for Hermes yet", which is "none|..."), otherwise the
+  // row's state and the clean answer together, so a change of either one alone counts. It is kept in a ref too, because loadAll runs
+  // from an effect that only ever sees the first render. `planReadHermes` is what the page held when the last plan read started
+  // (undefined until the first one). A saved answer that moved since then means the plan on screen may still offer an update that the
+  // answer no longer calls for (Hermes's own check ends after the page's one read of the plan, and R49's retry can change it later).
+  const savedHermes = hermesSavedAnswer(updates.data);
+  const hermesSaved = savedHermes?.key ?? null;
+  const hermesSavedRef = useRef(hermesSaved);
+  hermesSavedRef.current = hermesSaved;
+  const planReadHermes = useRef<string | null | undefined>(undefined);
+  // Plan reads are numbered and only the newest answer goes on screen, as with the brain reads: refreshServerState's plan waits for the
+  // slow brain read (up to a minute on a Mac with OpenClaw) and must not land over a newer plan that was read meanwhile.
+  const planReadSeq = useRef(0);
+  const shownPlanSeq = useRef(0);
+  // What the page last asked about whether the Hermes session that it thinks is live really is: that session's id and the saved answer
+  // ("<session id>|<answer key>"), so it asks once per move and per run (a second update in the same visit asks again, even when the
+  // row comes back to an answer that was already asked about). A failed ask clears it, so the next change of the effect's
+  // dependencies may ask again.
+  const endedAskedFor = useRef<string | null>(null);
+
   // What the AI brain panel is doing (it runs its own configure job and
   // result screen); used for the rail and for the footer's buttons.
   const [brainStatus, setBrainStatus] = useState<BrainPanelStatus>("idle");
@@ -287,6 +328,7 @@ export default function SetupPage() {
     alive.current = true;
     return () => {
       alive.current = false;
+      if (hermesTimer.current) clearTimeout(hermesTimer.current);
     };
   }, []);
 
@@ -329,6 +371,20 @@ export default function SetupPage() {
     return null;
   }
 
+  // A Hermes update session that is still live on the server (the person left Setup, or reloaded, while Hermes updated): its
+  // terminal comes back, because a question Hermes asks always needs one to be answered in. A server that can't say counts as
+  // "none". True when a live one was found.
+  async function restoreHermesUpdate(): Promise<boolean> {
+    try {
+      const sessionId = await findLiveUpdateSession("hermes");
+      if (!sessionId || !alive.current) return false;
+      setHermesRun((current) => (current && !current.ended ? current : { sessionId, fresh: false, ended: false }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // The address names an agent (?agent=openclaw, from the Agents page's "Update in Setup"): on the Plan step its row
   // starts at Update. withAskedUpdate decides whether the plan offers it; the person can still pick Keep.
   function chooseAskedUpdate(forPlan: SetupPlan | null) {
@@ -353,6 +409,7 @@ export default function SetupPage() {
     // The plan, the brain options and the agents list are read together but judged apart:
     // one that fails must not hide the others. Each answer goes on screen when it arrives, so the
     // brain read (a real OpenClaw takes about a minute, up to its limit) does not hold the plan back.
+    const planSeq = beginPlanRead();
     const planRead = settled(withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS));
     const brainSeq = ++brainReadSeq.current;
     const brainShown = settled(withTimeout(getBrainOptions(refresh), BRAIN_READ_LIMIT_MS)).then((brainRes) => {
@@ -374,10 +431,9 @@ export default function SetupPage() {
     const planRes = await planRead;
     if (!alive.current) return;
     if (planRes.status === "fulfilled") {
-      setPlan(planRes.value);
-      setPlanError("");
-      setSelections((prev) => mergeSelections(prev, planRes.value));
-    } else {
+      applyPlan(planSeq, planRes.value);
+    } else if (planSeq > shownPlanSeq.current) {
+      // (A newer read's answer is already on screen: this older read's failure is not news.)
       setPlanError(readProblem(planRes.reason, "the setup plan"));
     }
 
@@ -409,7 +465,10 @@ export default function SetupPage() {
         else if (needsAction) auto = STEP.plan;
         else auto = brainReady(checkRes, brainRes.value) ? STEP.ready : STEP.brain;
       }
-      const restored = await restoreJobs();
+      // A job found on the server wins; failing that, a Hermes update that is still running takes the person to its terminal.
+      const restoredJob = await restoreJobs();
+      const hermesLive = await restoreHermesUpdate();
+      const restored = restoredJob ?? (hermesLive ? STEP.install : null);
       if (!alive.current) return;
       const landing = landingStep({ asked, restored, moved: movedRef.current, auto });
       if (landing !== null) {
@@ -427,6 +486,7 @@ export default function SetupPage() {
   // re-read gets no answer the old data stays, with a note saying so.
   async function refreshServerState(includePlan: boolean) {
     const brainSeq = ++brainReadSeq.current;
+    const planSeq = includePlan ? beginPlanRead() : 0;
     try {
       const [checkRes, brainRes, planRes] = await Promise.all([
         withTimeout(getSetupCheck(true), CHECK_TIMEOUT_MS),
@@ -442,18 +502,103 @@ export default function SetupPage() {
         setBrain(brainRes);
         setBrainError("");
       }
-      if (planRes) {
-        setPlan(planRes);
-        setPlanError("");
-        // The plan changed under the choices (an agent was just installed or updated). Keep what the person chose
-        // meanwhile while the new plan still offers it; a choice the job just carried out falls back to its default.
-        setSelections((prev) => mergeSelections(prev, planRes));
-      }
+      // The plan changed under the choices (an agent was just installed or updated). applyPlan keeps what the person chose
+      // meanwhile while the new plan still offers it; a choice the job just carried out falls back to its default.
+      if (planRes) applyPlan(planSeq, planRes);
       setStale(false);
     } catch {
       if (alive.current) setStale(true);
     }
   }
+
+  // Every plan read takes a number and records the saved answer the page held when it started. Only the newest read's answer goes on
+  // screen (applyPlan), and the record is what the effect below compares the saved answer with, so a re-read cannot loop.
+  function beginPlanRead(): number {
+    planReadHermes.current = hermesSavedRef.current;
+    return ++planReadSeq.current;
+  }
+
+  // Puts a plan read's answer on screen unless a newer read's answer already is: an older read that comes back late is dropped
+  // silently. The person's choices change only as mergeSelections already changes them (a choice the new plan no longer offers
+  // falls back to its default).
+  function applyPlan(seq: number, planRes: SetupPlan): boolean {
+    if (seq <= shownPlanSeq.current) return false;
+    shownPlanSeq.current = seq;
+    setPlan(planRes);
+    setPlanError("");
+    setSelections((prev) => mergeSelections(prev, planRes));
+    return true;
+  }
+
+  // Reads only the plan, for when the saved Hermes answer moved after the page last read it (release batch, item 1). The version
+  // answers behind the plan are the saved ones, and the route runs no version check and no git of its own; it does call
+  // systemCheck({}), whose cache lasts 60 s, so a re-read can run a detection of the computer. A read that fails leaves the plan on
+  // screen and shows nothing new; the record goes back (unless a newer read has started), so the next change asks again.
+  async function rereadPlan() {
+    const before = planReadHermes.current;
+    const seq = beginPlanRead();
+    try {
+      const planRes = await withTimeout(getSetupPlan("all"), READ_TIMEOUT_MS);
+      if (!alive.current) return;
+      applyPlan(seq, planRes);
+    } catch {
+      if (alive.current && seq === planReadSeq.current) planReadHermes.current = before;
+    }
+  }
+
+  // The session the page thinks is live (`hermesRun`) is ended by the terminal on the Install step, and only that terminal says so.
+  // When the saved answer moves while the person is elsewhere, ask the server: no live session means the run is over, and the
+  // re-read below may go ahead. A live session changes nothing; a server that cannot say (or does not answer in time) leaves the run
+  // as it is and clears the ask's key, so the next change of the effect's dependencies may ask again (no timer, no retry loop). Only
+  // the run that was asked about is ended: a newer session started while the answer was on its way is running, and is never marked.
+  // It ends through endHermesRun, the code the terminal's own end uses, so the run's refresh (the computer, the plan and the saved
+  // update answer) is not lost. (Its output cannot be shown later: the server keeps no screen for an ended session. A terminal that
+  // is shown again for it says so through onHermesEnded(false), and the run is dropped.)
+  async function settleHermesRun(sessionId: string, askKey: string) {
+    let live: string | null;
+    try {
+      live = await findLiveUpdateSession("hermes");
+    } catch {
+      if (endedAskedFor.current === askKey) endedAskedFor.current = null;
+      return;
+    }
+    if (!alive.current || live) return;
+    const current = hermesRunRef.current;
+    if (!current || current.ended || current.sessionId !== sessionId) return;
+    endHermesRun();
+  }
+
+  // The saved Hermes answer moved since the last plan read, and nothing is running: read the plan again. Only on the Plan step (a
+  // person who comes back to it finds it read again, because the step is a dependency), and never while a job or a Hermes
+  // session runs (the plan under a running update is the job's business, and its own end re-reads it). A plan read made before the
+  // page had the saved answer has no record to compare with: the first answer is a change only when the PLAN disagrees with it
+  // (hermesPlanOutcome says what the plan was built on, as far as Hermes goes); a matching one just becomes the record. A
+  // disagreeing one reads the plan again, which is cheap and cannot loop, because the record is set when that read starts.
+  const jobRunning = installJob?.status === "running";
+  const hermesWorking = Boolean(hermesRun && !hermesRun.ended);
+  useEffect(() => {
+    const before = planReadHermes.current;
+    if (before === undefined || hermesSaved === null) return;
+    if (before === null) {
+      if (!plan) return;
+      if (hermesPlanOutcome(plan) === savedHermes?.outcome) {
+        planReadHermes.current = hermesSaved;
+        return;
+      }
+    } else if (before === hermesSaved) return;
+    // Moved while the session is thought live and the terminal that would say it ended is not on screen: ask once per move.
+    if (hermesWorking && hermesRun && stepIndex !== STEP.install) {
+      const askKey = `${hermesRun.sessionId}|${hermesSaved}`;
+      if (endedAskedFor.current !== askKey) {
+        endedAskedFor.current = askKey;
+        void settleHermesRun(hermesRun.sessionId, askKey);
+      }
+      return;
+    }
+    if (stepIndex !== STEP.plan || jobRunning || hermesWorking) return;
+    void rereadPlan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hermesSaved, plan, stepIndex, jobRunning, hermesWorking, hermesRun?.sessionId]);
 
   useEffect(() => {
     planRef.current = plan;
@@ -498,6 +643,17 @@ export default function SetupPage() {
     titleRef.current?.focus();
   }, [stepIndex]);
 
+  // Hermes's finished terminal stays while it can be read (right after it ended, on the Install step) and goes when the person
+  // leaves that step, so a later view of Install does not show an old update under its heading. One that still runs stays: the
+  // person comes back to it. A reason it did not start is old news once they leave. (A run marked ended while the person was on
+  // another step goes the same way, and its refresh is already on its way: its output was never on screen and cannot be shown
+  // again, because the server keeps no screen for an ended session.)
+  useEffect(() => {
+    if (stepIndex === STEP.install) return;
+    setHermesError("");
+    setHermesRun((current) => (current && current.ended ? null : current));
+  }, [stepIndex]);
+
   // The Ready step's count is only true while Ready is on screen.
   useEffect(() => {
     if (stepIndex !== STEP.ready) setReadyProblems(null);
@@ -535,7 +691,7 @@ export default function SetupPage() {
   // Back skips the same steps Continue skips: Install only if a job exists, AI brain only
   // if Hermes or OpenClaw is installed, Sign in only if a coding agent is.
   function appliesTo(index: number) {
-    if (index === STEP.install) return Boolean(installJob);
+    if (index === STEP.install) return Boolean(installJob || hermesRun);
     if (index === STEP.brain) return groupInstalled(OPERATOR_IDS);
     if (index === STEP.signin) return groupInstalled(CODING_IDS);
     return true;
@@ -611,25 +767,111 @@ export default function SetupPage() {
   const needsConsent = needsOpenClawConsent(operatorWorkSteps);
   const operatorsBlocked = needsConsent && !openClawRiskAccepted;
 
+  // Starts Hermes's update session (the update service, POST /api/updates/hermes) and puts its terminal on the Install step.
+  // Resolves with the sentence for why it did not start, or "" when it did.
+  async function startHermesUpdate(): Promise<string> {
+    try {
+      const started = await startUpdate("hermes");
+      // The server answers a session for Hermes, never a job; anything else is an answer this page can't use.
+      if (started.kind !== "session") return updateError(new Error("Agent OS gave an answer that could not be read."));
+      if (alive.current) setHermesRun({ sessionId: started.id, fresh: true, ended: false });
+      return "";
+    } catch (error) {
+      if (error instanceof ApiError) {
+        // 409 update_running: the update is live already (another window started it, or this page before it lost the answer).
+        // Show its terminal instead of only saying so.
+        if (error.message === "update_running") {
+          const sessionId = await findLiveUpdateSession("hermes").catch(() => null);
+          if (sessionId) {
+            if (alive.current) setHermesRun((current) => (current && !current.ended ? current : { sessionId, fresh: true, ended: false }));
+            return "";
+          }
+        }
+        // What the server decided may differ from what the plan showed (Hermes's folder changed since the last check, or its
+        // row now says it is up to date): read it again. The refusal's own sentence is what the page shows.
+        if (error.message === "hermes_not_clean" || error.message === "hermes_up_to_date") void refreshServerState(true);
+      }
+      return updateError(error);
+    }
+  }
+
+  // The update session ended, however it ended (its terminal said so, or settleHermesRun found no live session). The server checks
+  // Hermes again once it has (it looks at the session once a second), so the page waits a little longer than that, then reads the
+  // computer, the plan and the saved update answer again.
+  function endHermesRun() {
+    setHermesRun((current) => (current ? { ...current, ended: true } : current));
+    if (hermesTimer.current) clearTimeout(hermesTimer.current);
+    hermesTimer.current = setTimeout(() => {
+      if (!alive.current) return;
+      void refreshServerState(true);
+      updates.reload();
+    }, AFTER_SESSION_MS);
+  }
+
+  // The terminal tells the page its session ended, once each time it is shown, and whether it ever connected. A run that is already
+  // marked ended (settleHermesRun did it while the person was elsewhere, and its refresh is on its way or done) is not ended a
+  // second time, so the refresh never runs twice. A terminal that never connected was shown for a session that had already ended:
+  // the server keeps no screen for it, so the pane would be blank under a heading about typing into it. The run is dropped (after
+  // its refresh is secured), and Install shows its own "Nothing to install". A terminal that connected and watched the end keeps
+  // its last screen, as it always did.
+  function onHermesEnded(connected = true) {
+    if (!hermesRunRef.current?.ended) endHermesRun();
+    if (!connected) setHermesRun(null);
+  }
+
   async function confirmInstall() {
-    if (!confirmGroup) return;
+    if (!confirmGroup || !workIn(confirmGroup).length) return;
     setInstallBusy(true);
     setInstallConfirmError("");
+    setHermesError("");
+    setHermesRun((current) => (current && current.ended ? null : current));
+    // The job the page shows now, to be replaced by a new one, or (Hermes only) cleared once Hermes's update has started.
+    const earlierJob = installJob;
+    // Hermes's update leaves the job's steps (the server refuses a job that names it) and runs in its terminal instead. The job
+    // goes first: if it cannot start, nothing has started and the confirm says why. Hermes follows at once, and the two run
+    // side by side on the Install step, the job's log above Hermes's terminal. With only Hermes (and steps that are kept) there
+    // is no job.
+    const { jobSteps, sessionSteps, jobWanted } = splitRunSteps(selectedSteps(idsOf(confirmGroup)));
+    let jobStarted = false;
     try {
-      const job = await withTimeout(
-        startInstallJob({
-          steps: selectedSteps(idsOf(confirmGroup)).map((s) => s.id),
-          acceptOpenClawRisk: confirmGroup === "operators" && needsConsent && openClawRiskAccepted
-        }),
-        ACTION_TIMEOUT_MS
-      );
-      // The server has started the job whether or not this page is still on screen, so its id is
-      // always remembered (a sessionStorage write, nothing to unmount). Only the screen updates wait.
-      rememberJobId("install", job.id);
+      if (jobWanted) {
+        const job = await withTimeout(
+          startInstallJob({
+            steps: jobSteps.map((s) => s.id),
+            acceptOpenClawRisk: confirmGroup === "operators" && needsConsent && openClawRiskAccepted
+          }),
+          ACTION_TIMEOUT_MS
+        );
+        // The server has started the job whether or not this page is still on screen, so its id is
+        // always remembered (a sessionStorage write, nothing to unmount). Only the screen updates wait.
+        rememberJobId("install", job.id);
+        jobStarted = true;
+        if (alive.current) {
+          setInstallJob(job);
+          setPollFailed(false);
+          setJobUnknown(false);
+        }
+      }
+      if (sessionSteps.length) {
+        const problem = await startHermesUpdate();
+        if (problem && !jobStarted) {
+          // Nothing started: the confirm stays open, with the reason next to its button.
+          if (alive.current) setInstallConfirmError(problem);
+          return;
+        }
+        // The job did start: the reason is told on the Install step, beside the job it did not hold up.
+        if (problem && alive.current) setHermesError(problem);
+        // Hermes only: every confirm replaced the job before, and a finished earlier one (a failed install, say) must not keep
+        // Continue off beside Hermes's terminal. One that still runs stays, with its log: it keeps Continue off until it ends.
+        if (!problem && !jobStarted && earlierJob && earlierJob.status !== "running") {
+          rememberJobId("install", null);
+          if (alive.current) {
+            setInstallJob(null);
+            setPollFailed(false);
+          }
+        }
+      }
       if (!alive.current) return;
-      setInstallJob(job);
-      setPollFailed(false);
-      setJobUnknown(false);
       setConfirmGroup(null);
       goToStep(STEP.install);
     } catch (error) {
@@ -717,14 +959,22 @@ export default function SetupPage() {
     (plan?.steps || []).map((s) => [s.id, s.commandPreview])
   );
 
-  // One re-read at a time: the Retry buttons and Check again all come through here.
-  async function onRecheck() {
+  // One re-read at a time: the Retry buttons and Check again all come through here. Check again alone also asks for a fresh check of
+  // the agents' versions (release batch, item 3), because the plan reads the saved answer and a stale "Hermes is up to date." could
+  // otherwise stand for up to 24 hours with no way past it on this page. useUpdates' recheck has no Hermes-only form, so it checks
+  // all five. It starts once the page's own re-read has answered, is not waited for (the button is about the table), and a check that
+  // fails changes nothing and shows nothing; when the saved answer moves, the plan is read again on the Plan step. Never on page load:
+  // only on this click.
+  async function onRecheck(askUpdates = false) {
     if (rechecking) return;
     setRechecking(true);
     try {
       await loadAll(true);
     } finally {
       if (alive.current) setRechecking(false);
+      // Only after the page's own re-read has answered (however it went), and only if the page is still here: the agents' versions
+      // are asked once, not twice at the same moment (release batch review, 6).
+      if (askUpdates && alive.current) void updates.recheck().catch(() => undefined);
     }
   }
 
@@ -758,6 +1008,16 @@ export default function SetupPage() {
   const confirmSteps = confirmGroup ? selectedSteps(idsOf(confirmGroup)) : [];
   const confirmTotals = totalsOf(confirmSteps.filter((s) => s.action === "install" || s.action === "prereq-node"));
   const confirmAction = confirmGroup ? groupAction(confirmGroup, workIn(confirmGroup)) || "" : "";
+  // After a refused start the plan is read again and may have lost the step the dialog was opened for (a Hermes update the row
+  // now calls up to date): the dialog then has no work, says so, and has no button that would start a job of kept agents.
+  const confirmHasWork = confirmGroup ? workIn(confirmGroup).length > 0 : false;
+  // When the group runs out of work while the dialog is open and no sentence is showing (the person opened "Update Hermes Agent?",
+  // and the saved answer moved before they pressed it), there is nothing to explain: the dialog closes. With a refusal's sentence it
+  // stays, as "Nothing to run" with that sentence. (Not while its own start is still running.) It runs before the screen is painted, so a
+  // "Nothing to run" with an empty body never shows for a frame.
+  useLayoutEffect(() => {
+    if (confirmGroup && !confirmHasWork && !installConfirmError && !installBusy) setConfirmGroup(null);
+  }, [confirmGroup, confirmHasWork, installConfirmError, installBusy]);
 
   const operatorsLabel = groupAction("operators", operatorWorkSteps);
   const codingLabel = groupAction("coding", codingWorkSteps);
@@ -798,7 +1058,7 @@ export default function SetupPage() {
         <button
           type="button"
           className="os-btn os-btn--secondary"
-          onClick={() => void onRecheck()}
+          onClick={() => void onRecheck(true)}
           disabled={rechecking || (!check && !checkError)}
         >
           <RefreshCw size={16} aria-hidden="true" />
@@ -879,6 +1139,7 @@ export default function SetupPage() {
                   disabled={installBusy}
                   canSkip={false}
                   hasBlockedReason={plan.blocked.some((b) => b.agentId === agentId)}
+                  hermesReasons={hermesReasonsShown("hermes", updates.data?.hermes)}
                   consent={
                     agentId === "openclaw"
                       ? { accepted: openClawRiskAccepted, onToggle: setOpenClawRiskAccepted }
@@ -945,17 +1206,44 @@ export default function SetupPage() {
     </>
   );
 
-  const installNote = !installJob
-    ? jobUnknown
-      ? "It is not known whether anything is running."
-      : "Nothing is running."
-    : installJob.status === "running"
-      ? "Continue unlocks when the install finishes."
-      : installJob.status === "succeeded"
-        ? "Install finished."
-        : installJob.status === "failed"
-          ? "A step failed. Retry it above, or go back to the plan."
-          : "Setup was cancelled. Retry it above, or go back to the plan.";
+  // Hermes's update runs in a terminal, not in the job: while it runs, Continue waits for it too, and the footer says what it
+  // already says while a job runs. Nothing is invented for it. A job that failed or was cancelled is told first, though: it
+  // needs the person's attention whether or not Hermes is still running.
+  const hermesRunning = Boolean(hermesRun && !hermesRun.ended);
+  const installNote =
+    installJob?.status === "failed"
+      ? "A step failed. Retry it above, or go back to the plan."
+      : installJob?.status === "cancelled"
+        ? "Setup was cancelled. Retry it above, or go back to the plan."
+        : hermesRunning
+          ? "Continue unlocks when the install finishes."
+          : !installJob
+            ? jobUnknown
+              ? "It is not known whether anything is running."
+              : "Nothing is running."
+            : installJob.status === "running"
+              ? "Continue unlocks when the install finishes."
+              : "Install finished.";
+  // Hermes's update on the Install step: its heading and terminal (the same words and terminal as the Agents page), or why it
+  // did not start. The heading is an h3 under the step's h2.
+  const hermesPart =
+    hermesRun || hermesError ? (
+      <div className="os-agent-update__session">
+        {hermesRun ? (
+          <>
+            <h3 className="os-agent-update__run-title">{hermesUpdateHeading(hermesRun.ended)}</h3>
+            <AgentUpdateTerminal
+              key={hermesRun.sessionId}
+              sessionId={hermesRun.sessionId}
+              label={hermesUpdateHeading(hermesRun.ended)}
+              autoFocus={hermesRun.fresh}
+              onEnded={onHermesEnded}
+            />
+          </>
+        ) : null}
+        {hermesError ? <Banner tone="danger">{hermesError}</Banner> : null}
+      </div>
+    ) : null;
   const installStep = installJob ? (
     <>
       <div className="os-setup-panel__content">
@@ -972,13 +1260,14 @@ export default function SetupPage() {
           onRetry={onRetryInstall}
           busy={installBusy}
         />
+        {hermesPart}
       </div>
       <SetupFooter onBack={() => goToStep(previousStep(STEP.install))} backDisabled={installJob.status === "running"} note={installNote}>
         <button
           type="button"
           className="os-btn os-btn--primary"
           onClick={() => goToStep(afterInstall())}
-          disabled={installJob.status !== "succeeded"}
+          disabled={installJob.status !== "succeeded" || hermesRunning}
         >
           Continue
           <ArrowRight size={16} aria-hidden="true" />
@@ -999,7 +1288,7 @@ export default function SetupPage() {
               </button>
             }
           />
-        ) : (
+        ) : hermesPart ? null : (
           <EmptyState
             icon={PackageCheck}
             title="Nothing to install"
@@ -1011,9 +1300,10 @@ export default function SetupPage() {
             }
           />
         )}
+        {hermesPart}
       </div>
       <SetupFooter onBack={() => goToStep(previousStep(STEP.install))} note={installNote}>
-        <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(afterInstall())}>
+        <button type="button" className="os-btn os-btn--primary" onClick={() => goToStep(afterInstall())} disabled={hermesRunning}>
           Continue
           <ArrowRight size={16} aria-hidden="true" />
         </button>
@@ -1152,24 +1442,30 @@ export default function SetupPage() {
 
       {confirmGroup ? (
         <SetupModal
-          title={`${confirmAction}?`}
+          title={confirmTitle(confirmAction)}
           confirmLabel={confirmAction}
+          showConfirm={confirmHasWork}
+          focusWhenOpenerGone={titleRef}
           onConfirm={confirmInstall}
           onClose={() => setConfirmGroup(null)}
           busy={installBusy}
           error={installConfirmError}
         >
-          <p>This will run:</p>
-          <ul>
-            {confirmSteps.map((s) => (
-              <li key={s.id}>{planStepLabels[s.id] || s.id}</li>
-            ))}
-          </ul>
-          {confirmGroup === "coding" && confirmTotals.complete ? (
-            <p>
-              About {formatSize(confirmTotals.mb)} to download and store, roughly {formatMinutes(confirmTotals.minutes)}. Anything
-              already installed is kept as it is.
-            </p>
+          {confirmHasWork ? (
+            <>
+              <p>This will run:</p>
+              <ul>
+                {confirmSteps.map((s) => (
+                  <li key={s.id}>{planStepLabels[s.id] || s.id}</li>
+                ))}
+              </ul>
+              {confirmGroup === "coding" && confirmTotals.complete ? (
+                <p>
+                  About {formatSize(confirmTotals.mb)} to download and store, roughly {formatMinutes(confirmTotals.minutes)}. Anything
+                  already installed is kept as it is.
+                </p>
+              ) : null}
+            </>
           ) : null}
         </SetupModal>
       ) : null}

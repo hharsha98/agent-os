@@ -19,6 +19,7 @@ import { OPENCLAW_SIGNIN_ACTION } from "../server/runtime/sessions/profiles.js";
 import { createSessionsRouter } from "../server/runtime/sessions/routes.js";
 import { resetLoginShellEnvForTests } from "../server/runtime/sessions/shell-env.js";
 import { FAKE_LOGIN_SHELL, makeFakeAgentBin } from "./helpers/fake-agents.js";
+import { NO_GIT_OPTIONS } from "./helpers/no-git.js";
 
 const run = (id, kind, status = "running") => ({ id, kind, status, title: `${kind} ${id}` });
 const room = (id, status = "running") => ({ id, status, task: `task of ${id}` });
@@ -1217,7 +1218,7 @@ test(
           clearDetectCaches();
           resetLoginShellEnvForTests();
           await setExecutionGateStatus({ enabled: true, reason: "stop-all test" });
-          const manager = createSessionManager();
+          const manager = createSessionManager({ ...NO_GIT_OPTIONS });
           const requests = [];
           const app = express();
           app.use((req, _res, next) => {
@@ -1396,7 +1397,7 @@ test(
           assert.equal(os.homedir(), home, "tests must never see the real home folder");
           clearDetectCaches();
           resetLoginShellEnvForTests();
-          const manager = createSessionManager();
+          const manager = createSessionManager({ ...NO_GIT_OPTIONS });
           const app = express();
           app.use(express.json());
           app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager }));

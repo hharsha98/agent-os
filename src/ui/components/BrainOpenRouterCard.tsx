@@ -417,7 +417,7 @@ export default function BrainOpenRouterCard({
           {openclawTicked ? (
             <label className="os-brain-risk">
               <input type="checkbox" checked={riskAccepted} onChange={(e) => onRiskChange(e.target.checked)} />
-              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands.</span>
+              <span>I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands, unless it already asks.</span>
             </label>
           ) : null}
           <button type="button" className="os-btn os-btn--primary os-brain-card__cta" onClick={give} disabled={!canGive}>

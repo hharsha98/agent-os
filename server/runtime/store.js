@@ -109,8 +109,33 @@ export async function writeJson(filePath, data) {
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
   );
   await fs.writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
-  await fs.rename(tempPath, filePath);
+  try {
+    await renameOver(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
   return data;
+}
+
+// Windows refuses to rename over a file that another process has open for a moment (a reader, an antivirus scan, the
+// search indexer) with EPERM, EACCES or EBUSY. So there the rename is tried again for about a second before the write
+// fails; elsewhere a rename over an open file just works, and those codes mean a real permission problem.
+// The real setTimeout is kept from load time, so a test that mocks the timers cannot stall a write.
+const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RENAME_RETRIES = 10;
+const realSetTimeout = globalThis.setTimeout;
+
+async function renameOver(from, to) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (error) {
+      if (process.platform !== "win32" || !RENAME_RETRY_CODES.has(error?.code) || attempt >= RENAME_RETRIES) throw error;
+      await new Promise((resolve) => realSetTimeout(resolve, 20 * (attempt + 1)));
+    }
+  }
 }
 
 export async function fileExists(filePath) {

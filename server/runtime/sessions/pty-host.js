@@ -10,6 +10,7 @@ import { access, constants as fsConstants, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { trackPid, untrackPid } from "../process-tree.js";
+import { programLaunch } from "../safety.js";
 import { sessionError } from "./errors.js";
 
 export const PTY_UNAVAILABLE_REASON = "Agent OS could not load its terminal module on this computer.";
@@ -226,7 +227,9 @@ export async function spawnPty({ command, args = [], cwd, env, cols = 120, rows 
   const childEnv = stringEnv(env);
   let child;
   try {
-    child = loaded.pty.spawn(command, [...args], {
+    // An npm .cmd shim on Windows starts as the program it points at (no shell); anything else is as it was.
+    const launch = programLaunch(command, args, { env: childEnv });
+    child = loaded.pty.spawn(launch.command, [...launch.args], {
       name: childEnv.TERM || "xterm-256color",
       cols: toSize(cols, 120, 500),
       rows: toSize(rows, 32, 200),

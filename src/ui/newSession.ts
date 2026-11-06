@@ -1,7 +1,7 @@
 // Pure logic of the New session dialog: how any page asks for it, the checks that give a plain reason before
 // anything is sent, and the words for what the server may answer. No React and only `import type` (decision
 // P14), so `node --test` loads it straight from src/ (test/sessions-page-logic.test.js).
-import type { ExecutionGateStatus } from "../types";
+import type { ExecutionGateStatus, FolderCheck } from "../types";
 
 export const NEW_SESSION_EVENT = "aos-new-session";
 export interface NewSessionRequest {
@@ -124,4 +124,71 @@ export function takeFocusNextSession(): boolean {
   const asked = focusNextSession;
   focusNextSession = false;
   return asked;
+}
+
+// ---- The worktree offer (spec SP4) ----------------------------------------------------------------------------
+// When a live session already uses the chosen folder, the dialog offers "Separate copy (new branch
+// agentos/<agent>-<n>)" (recommended) or "Same folder". A separate copy is a git worktree on its own branch, which
+// the server makes inside Agent OS's folder. A folder that isn't a git project gets only Same folder. OpenClaw picks
+// its own folder (spike S5 did not confirm that it honours one), so it never gets the offer. The words come from the
+// spec and the prototype's Home dialog; the server's folder check says who uses the folder and names the branch.
+export const SAME_FOLDER_LABEL = "Same folder";
+export const RECOMMENDED = "Recommended";
+export const OVERWRITE_NOTE = "Two agents editing the same files can overwrite each other.";
+export const SAME_FOLDER_NOTE = "Both agents see and change the same files right now. Fine for reading and review.";
+export const NOT_GIT_NOTE = "This folder isn't a git project, so Agent OS can't make a separate copy.";
+
+export interface WorktreeOffer {
+  // "<agent> already has a session in <folder>", or "<agents> already have sessions in <folder>".
+  title: string;
+  // "Separate copy (new branch agentos/<agent>-<n>)" and its note, or null when no copy can be made.
+  copyLabel: string | null;
+  copyNote: string | null;
+  // NOT_GIT_NOTE for a folder that isn't a git project, else null.
+  notGitNote: string | null;
+}
+
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+// null: no offer (no answer yet, nobody uses the folder, or an agent without a folder).
+export function worktreeOffer(check: FolderCheck | null, agentId: string): WorktreeOffer | null {
+  if (!check || !needsFolder(agentId) || !Array.isArray(check.inUse)) return null;
+  const names = [
+    ...new Set(check.inUse.map((session) => session?.agentLabel).filter((name): name is string => typeof name === "string" && name !== ""))
+  ];
+  if (names.length === 0) return null;
+  const folderName = check.name || check.path;
+  const title =
+    names.length === 1 ? `${names[0]} already has a session in ${folderName}` : `${joinNames(names)} already have sessions in ${folderName}`;
+  const copy = check.git === true && typeof check.branch === "string" && check.branch !== "";
+  return {
+    title,
+    copyLabel: copy ? `Separate copy (new branch ${check.branch})` : null,
+    copyNote: copy
+      ? `Agent OS makes a second checkout of ${folderName} (a git worktree) on a new branch. Your files stay untouched until you merge it.`
+      : null,
+    notGitNote: check.git === false ? NOT_GIT_NOTE : null
+  };
+}
+
+// What Start does (fix round 1b: Agent OS never makes a separate copy the person did not see offered).
+// - The offer was on screen when Start was pressed (`onScreen` is the check's answer then): the person's pick counts,
+//   a copy only when it offered one and Separate copy is picked.
+// - It was not (the check was still running; `answer` is what it said, null when it failed): a folder that nobody else
+//   uses starts at once in the folder, as does a failed check; a shared folder starts nothing: the offer is shown
+//   (Separate copy picked, as recommended) and the next Start, or a pick, decides.
+export type StartChoice = { action: "start"; copy: boolean } | { action: "show-offer" };
+export function quickStartChoice(
+  onScreen: { result: FolderCheck | null } | null,
+  answer: FolderCheck | null,
+  agentId: string,
+  picked: "copy" | "same"
+): StartChoice {
+  if (onScreen) {
+    return { action: "start", copy: Boolean(worktreeOffer(onScreen.result, agentId)?.copyLabel) && picked === "copy" };
+  }
+  return worktreeOffer(answer, agentId) ? { action: "show-offer" } : { action: "start", copy: false };
 }

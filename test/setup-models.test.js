@@ -490,8 +490,11 @@ async function withModelEnv(fn, { hermes = true, openclaw = true, hermesConfig, 
     resetOpenRouterFlows();
     resetSetupJobsForTest();
     await new Promise((resolve) => server.close(resolve));
-    await rm(home, { recursive: true, force: true });
-    await rm(agentOsHome, { recursive: true, force: true });
+    // A fake CLI read the server started but did not wait for (OpenClaw's settings and sign-in reads, when
+    // the answer does not need them) may still write its record line into HOME while it is removed
+    // (ENOTEMPTY under load); rm tries again a few times.
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await rm(agentOsHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -1412,4 +1415,19 @@ test("Local to OpenRouter needs a connected sign-in; with one the agent's own ke
     },
     { hermesConfig: { "model.provider": "custom", "model.default": "agentos-qwen3-14b:64k" }, openclawPrimary: "ollama/agentos-qwen3-14b:64k" }
   );
+});
+
+test("the OpenClaw tick box says Agent OS switches it to ask 'unless it already asks', in every place it is written (final fix, Re M3)", async () => {
+  // A person already on "ask" or "auto" gets no change (setup/jobs.js only changes full or unset), so the box must not promise one.
+  const WORDS = "I understand OpenClaw can act on this computer. Agent OS will switch it to ask before running commands, unless it already asks.";
+  const OLD = "Agent OS will switch it to ask before running commands.";
+  const read = (file) => readFile(new URL(`../src/${file}`, import.meta.url), "utf8");
+  const shared = await read("ui/agentModelChange.ts");
+  assert.ok(shared.includes(`"${WORDS}"`), "the shared sentence");
+  for (const file of ["ui/components/BrainOpenRouterCard.tsx", "ui/components/BrainLocalCard.tsx", "ui/components/SetupPlanRow.tsx"]) {
+    const source = await read(file);
+    assert.ok(source.includes(`<span>${WORDS}</span>`), `${file} says it`);
+    assert.equal(source.includes(OLD), false, `${file} keeps no old copy`);
+  }
+  assert.equal(shared.includes(OLD), false);
 });

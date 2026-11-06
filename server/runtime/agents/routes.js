@@ -14,6 +14,7 @@ import { buildCommandPreview, getRunManager } from "../runs/run-manager.js";
 import { withTaskLine } from "../runs/task-line.js";
 import { runtimePaths } from "../store.js";
 import { getAdapter, ADAPTERS } from "./index.js";
+import { withProfileSplit } from "./profile-split.js";
 
 const MAX_PROMPT_LENGTH = 20000;
 
@@ -180,7 +181,10 @@ export function createAgentsRouter() {
         adapter.safetyStatus(detected),
         adapter.service ? adapter.service.status(detected) : Promise.resolve(null)
       ]);
-      res.json({ detected, config, safety, service });
+      // Hermes and OpenClaw: when sessions use another profile than this panel reads, the answer says so and the Safety
+      // page stops claiming a safeguard it never saw (final review, Sa 2). It only looks at the login-shell read the server
+      // already has; it never waits for it.
+      res.json({ detected, config, safety: await withProfileSplit(adapter.id, safety), service });
     } catch (error) {
       next(error);
     }
@@ -356,7 +360,18 @@ export function createAgentsRouter() {
         return;
       }
       const detected = await adapter.detect();
-      const plan = adapter.safetyAction(req.params.actionId, detected);
+      // A fix or choice runs only while the agent's panel offers it right now: a
+      // stricter setting (say OpenClaw's "deny") must never be moved to a looser
+      // one just because the adapter knows the id.
+      const offered = await adapter.safetyStatus(detected);
+      const isOffered = [...(offered?.actions ?? []), ...(offered?.choices ?? [])].some(
+        (item) => item.id === req.params.actionId
+      );
+      if (!isOffered) {
+        res.status(409).json({ ok: false, error: "This change isn't offered right now. Refresh the page." });
+        return;
+      }
+      const plan = await adapter.safetyAction(req.params.actionId, detected);
       if (!plan) {
         res.status(404).json({ ok: false, error: "unknown safety action" });
         return;
@@ -370,17 +385,29 @@ export function createAgentsRouter() {
       }
       const finished = await waitForRunTerminal(run.id, plan.timeoutMs);
       let followUp = null;
+      let followUpNote = null;
       if (plan.restartsGateway && finished?.status === "succeeded" && adapter.service) {
         const serviceStatus = await adapter.service.status(detected);
         if (serviceStatus?.running) {
           try {
             followUp = await getRunManager().startRun(adapter.service.restart(detected));
+            followUpNote = "Restarting the gateway so this takes effect…";
           } catch {
             followUp = null; // best-effort: the safety change itself already succeeded
           }
         }
       }
-      res.json({ run: finished || run, followUp });
+      // A second step the plan names (Hermes's "ask-risky": the rule first, then the mode).
+      // It starts only when the first run succeeded, and never together with a restart.
+      if (plan.then && !followUp && finished?.status === "succeeded") {
+        try {
+          followUp = await getRunManager().startRun(plan.then);
+          followUpNote = plan.then.note ?? null;
+        } catch {
+          followUp = null; // best-effort, like the restart: the first change already succeeded
+        }
+      }
+      res.json({ run: finished || run, followUp, followUpNote });
     } catch (error) {
       next(error);
     }

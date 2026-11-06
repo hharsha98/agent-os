@@ -185,19 +185,24 @@ import {
   saveWorkflow
 } from "./runtime/workflows.js";
 import { getDesktopContext, getVoiceControlStatus, runVoiceCommand } from "./runtime/voice-control.js";
-import { installShutdownHandlers } from "./runtime/shutdown.js";
+import { installShutdownHandlers, registerShutdownTask } from "./runtime/shutdown.js";
 import { getRunManager } from "./runtime/runs/run-manager.js";
 import { createRunsRouter } from "./runtime/runs/routes.js";
 import { createAgentsRouter } from "./runtime/agents/routes.js";
 import { createTeamRoomsRouter } from "./runtime/team-room/routes.js";
 import { recoverStaleRooms } from "./runtime/team-room/moderator.js";
 import { createSetupRouter } from "./runtime/setup/routes.js";
+import { getUpdateChecks } from "./runtime/updates/checks.js";
+import { createUpdatesRouter } from "./runtime/updates/routes.js";
 import { createBuildersRouter } from "./runtime/builders/routes.js";
 import { createOnboardingRouter } from "./runtime/onboarding.js";
 import { createSecretsRouter } from "./runtime/secrets/routes.js";
 import { createOpenRouterCallbackHandler, createOpenRouterStartHandler } from "./runtime/setup/openrouter-oauth.js";
 import { setServerPort } from "./runtime/server-info.js";
+import { createHooksRouter } from "./runtime/sessions/hooks.js";
+import { createClaudeAgentsPoller } from "./runtime/sessions/claude-agents-poll.js";
 import { getSessionManager } from "./runtime/sessions/manager.js";
+import { createOpenclawApprovals } from "./runtime/sessions/openclaw-approvals.js";
 import { enforceRecordingCap } from "./runtime/sessions/recorder.js";
 import { createRecordingsRouter, createSessionsRouter } from "./runtime/sessions/routes.js";
 import { excludeFromSessionEnv, getLoginShellEnv } from "./runtime/sessions/shell-env.js";
@@ -259,6 +264,13 @@ const originalBuilderUrl = getBuilderUrl();
 app.use(hostAllowlistMiddleware());
 app.use(originCheckMiddleware());
 app.use(securityHeadersMiddleware());
+// Claude Code's hook endpoints (spec SP4, Task X2a). Claude calls them, not a
+// browser, so they sit outside the cookie-gated /api/ prefix and check a
+// bearer token per session instead; they come before the 2 MB JSON parser
+// because they read their own body (at most 256 KB kept) and answer 204
+// before any work (H5). The Host allowlist and the Origin check above still
+// run first, and outside local mode every /hooks address answers 403.
+app.use("/hooks", createHooksRouter({ manager: getSessionManager() }));
 app.use(express.json({ limit: "2mb" }));
 // Local-mode only: every /api, /agent-builder-source, /_next request needs
 // the session cookie or the x-agent-os-token header. Demo and public mode
@@ -1067,8 +1079,22 @@ app.use("/api/onboarding", requireAdminWhenPublic, createOnboardingRouter());
 // their recordings. Local mode only: in the public demo and the admin-token
 // public mode every one of these addresses answers 404 not_available.
 const sessionManager = getSessionManager();
-app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager }));
+// OpenClaw approvals (SP4, ruling R16): OpenClaw is asked only while an
+// OpenClaw session is open, and an approval is answered only from the
+// person's click (POST /api/sessions/approvals/resolve).
+const openclawApprovals = createOpenclawApprovals({ manager: sessionManager });
+registerShutdownTask("openclaw-approvals", () => openclawApprovals.stop());
+app.use("/api/sessions", requireLocalMode, createSessionsRouter({ manager: sessionManager, approvals: openclawApprovals }));
 app.use("/api/recordings", requireLocalMode, createRecordingsRouter({ manager: sessionManager }));
+// Agent updates (SP5): which agents have a newer version, and the one service that updates them (a Setup
+// job, or a terminal session for Hermes). Local mode only, like the sessions it can start. The checks
+// themselves start after the server is listening (below) and stop when Agent OS quits.
+app.use("/api/updates", requireLocalMode, createUpdatesRouter({ manager: sessionManager }));
+registerShutdownTask("update-checks", () => getUpdateChecks().stop());
+// Claude Code's own list of its sessions as a fallback for alerts (SP4, R12): one poller for every
+// live Claude Code session, stopped when Agent OS quits.
+const claudeAgentsPoller = createClaudeAgentsPoller({ manager: sessionManager });
+registerShutdownTask("claude-agents-poll", () => claudeAgentsPoller.stop());
 
 app.get("/api/modules/:id/sessions", requireAdminWhenPublic, async (req, res, next) => {
   try {
@@ -1906,6 +1932,10 @@ const server = app.listen(port, bindHost, () => {
   // first new session waits for it (10 s at most). Sessions exist only in
   // local mode, so nothing runs in the public demo or public mode.
   if (isLocalMode()) getLoginShellEnv().catch((error) => console.error(error));
+  // SP5: ask, read-only, whether each agent has a newer version, now and then every 24 hours. Only in local
+  // mode (the updates routes exist only there). start() does nothing unless updateChecksEnabled() (checks.js):
+  // the desktop app and `npm run dev` turn it on, a plain `node server/index.js` (every test server) does not.
+  if (isLocalMode()) getUpdateChecks().start();
 });
 
 // The sessions WebSocket (/api/sessions/:id/attach). Express middleware never

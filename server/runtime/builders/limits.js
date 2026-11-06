@@ -21,7 +21,9 @@ export const CLAUDE_LIMIT_TEXT = /usage limit|hit your limit|rate limit reached/
 // curly U+2019 in real output; a plain one is accepted too).
 export const USAGE_LIMIT_TEXT = /You[’']ve hit your usage limit/i;
 
-const LIMIT_MESSAGE = {
+// One fixed sentence per agent. Since SP4 it is also the alert text of a held
+// session (Task X1b).
+export const LIMIT_MESSAGE = {
   claude: "Claude Code's plan limit was reached.",
   codex: "Codex's plan limit was reached.",
   cursor: "Cursor's plan limit was reached."

@@ -186,10 +186,10 @@ test("Live meter: every row, and null (shown as —) for each one whose source a
     ["Model", null, null],
     ["Running for", "12 m 40 s", null],
     ["Context used", null, null],
-    ["Plan used", null, null]
+    ["Plan used", null, "5-hour limit"]
   ]);
   const openrouter = page.meterRows(session({ brain: { kind: "openrouter", label: "OpenRouter" } }), NOW);
-  assert.deepEqual(openrouter.map((r) => r.label), ["Brain", "Model", "Running for", "Context used", "Cost so far"]);
+  assert.deepEqual(openrouter.map((r) => r.label), ["Brain", "Model", "Running for", "Context used", "Plan used", "Cost so far"]);
   assert.equal(openrouter[0].dim, "pay per use");
   assert.equal(page.meterRows(session({ brain: { kind: "local", label: "Local" } }), NOW)[0].dim, "on this computer");
   const none = page.meterRows(session({ agentId: "hermes", brain: null }), NOW);
@@ -383,7 +383,9 @@ test("the final-fix pieces are wired where the probes look: Escape on the topmos
   assert.ok(modal.includes("if (giveBack.current())"), "closing hands the focus back only when the dialog says so");
   const newSession = read("src/ui/components/NewSessionDialog.tsx");
   assert.ok(newSession.includes("started.current = true;") && newSession.includes("giveFocusBack={() => !started.current}"), "a started session keeps the focus off the old terminal");
-  assert.ok(read("src/pages/SessionsPage.tsx").includes("autoFocus={terminalTakesKeys({ focusTerminal, wanted, selectedId, wantedListed })}"), "the page asks terminalTakesKeys");
+  const sessionsPage = read("src/pages/SessionsPage.tsx");
+  assert.ok(sessionsPage.includes("const takesKeys = terminalTakesKeys({ focusTerminal, wanted, selectedId, wantedListed });"), "the page asks terminalTakesKeys");
+  assert.ok(sessionsPage.includes("autoFocus={focused && takesKeys}"), "and only the focused pane's terminal takes the keyboard (Task U6)");
   assert.ok(read("src/ui/components/SessionTabs.tsx").includes("isDismissKey(event.key, tabs[index].status)"), "the tab strip asks isDismissKey");
   assert.ok(read("src/ui/components/SessionSidePanel.tsx").includes("recordingKept(session.recordingBytes) ? ("), "Open recording only while the recording exists");
   // Change brain scrolls its panel into view when its top is not on screen; the panel stops below the top bar.

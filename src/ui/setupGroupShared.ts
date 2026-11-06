@@ -1,6 +1,7 @@
 // Small shared facts for the Setup Assistant's two groups, so the Plan screen,
 // the confirm dialog and the progress screen all say the same thing.
 import type { AgentDetail, BrainOptionsResponse, SetupPlan, SetupPlanStep, SystemCheck } from "../setupApi";
+import type { UpdatesResponse } from "../updatesApi";
 
 export const OPERATOR_IDS = ["hermes", "openclaw"] as const;
 export const CODING_IDS = ["claude", "codex", "cursor"] as const;
@@ -178,6 +179,58 @@ export function groupAction(group: GroupId, work: SetupPlanStep[]): string | und
   if (installs) return "Set up Hermes + OpenClaw";
   const names = Array.from(new Set(work.map((s) => AGENT_NAMES[s.agentId] || s.agentId)));
   return `Update ${names.join(" + ")}`;
+}
+
+// What a Setup plan offers for Hermes, and what the saved update answer says the server's plan must offer (release batch review).
+// "update": an update step. "up-to-date": no step, the keep step marked noUpdate (the row says up to date). "locked": no step, the
+// copy is not clean. "absent": Hermes has no keep step (not installed, or not supported here). The rules are the server's own
+// (setup/plan.js buildSetupPlan and the /plan route): clean and not up to date offers the step.
+export type HermesOutcome = "update" | "up-to-date" | "locked" | "absent";
+
+export function hermesPlanOutcome(plan: Pick<SetupPlan, "steps"> | null | undefined): HermesOutcome | null {
+  if (!plan) return null;
+  const steps = plan.steps.filter((s) => s.agentId === "hermes");
+  if (steps.some((s) => s.action === "update")) return "update";
+  const keep = steps.find((s) => s.action === "keep");
+  if (!keep) return "absent";
+  return keep.noUpdate === "up-to-date" ? "up-to-date" : "locked";
+}
+
+// The saved answer (GET /api/updates) as the page needs it: null while the page has not read it at all, which is not the same as
+// "the server has no row for Hermes yet" ("none"). The key puts the row's state and the clean answer together, so a change of either
+// one, alone, is a different key (R49's retry after a cold no_checkout changes only the clean answer). The outcome is what the
+// server's plan offers for that answer.
+export function hermesSavedAnswer(data: UpdatesResponse | null | undefined): { key: string; outcome: HermesOutcome } | null {
+  if (!data) return null;
+  const state = data.agents.find((row) => row.agentId === "hermes")?.state ?? null;
+  const clean = data.hermes?.clean === true;
+  const outcome: HermesOutcome = state === "not-installed" ? "absent" : !clean ? "locked" : state === "up-to-date" ? "up-to-date" : "update";
+  return { key: `${state ?? "none"}|${clean ? "clean" : "not-clean"}`, outcome };
+}
+
+// The confirm dialog's title: the group's button words with a "?", or, when the choices leave no work (a refused Hermes update
+// took its step out of the re-read plan while the dialog was open), "Nothing to run". Never "?" alone or "undefined?".
+export const NOTHING_TO_RUN_TITLE = "Nothing to run";
+export function confirmTitle(action: string | null | undefined): string {
+  return action ? `${action}?` : NOTHING_TO_RUN_TITLE;
+}
+
+// Hermes's update (SP5) is the one plan step that does not run in a job: the plan marks it `runsIn: "session"`, the page
+// starts it as a terminal session (the update service), because Hermes may ask a question, and the server refuses a job
+// that names it.
+export function runsInSession(step: Pick<SetupPlanStep, "runsIn">): boolean {
+  return step.runsIn === "session";
+}
+
+// What a group's choices become: the steps for the job, the steps that run in a terminal session, and whether to start a
+// job at all. A job is started when nothing is picked for a session (the group's button already means there is work, so
+// this is exactly as before), or when the other steps hold real work. Hermes updated with OpenClaw kept leaves only a keep
+// step, and a job for that would do nothing.
+export function splitRunSteps(steps: SetupPlanStep[]): { jobSteps: SetupPlanStep[]; sessionSteps: SetupPlanStep[]; jobWanted: boolean } {
+  const sessionSteps = steps.filter(runsInSession);
+  const jobSteps = steps.filter((s) => !runsInSession(s));
+  const jobWanted = sessionSteps.length === 0 || jobSteps.some((s) => s.action === "install" || s.action === "update" || s.action === "prereq-node");
+  return { jobSteps, sessionSteps, jobWanted };
 }
 
 // OpenClaw's consent box is only drawn when OpenClaw would really be installed, so

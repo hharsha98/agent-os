@@ -2,12 +2,16 @@
 // The tabs run across the top (an ended one says so and can be dismissed), the terminal fills the middle, and the
 // selected session's details sit on the right: folder, state, Live meter and Stop. The list is the one shared
 // sessions poll (useSessionsList, decision Q30). The selected tab is in the address (?session=<id>), so leaving the
-// page and coming back lands on the same tab. Only the selected session's terminal is attached; the others keep
-// running in the engine and come back with their screen when picked. A session that ends while it is on screen
-// keeps its terminal (and so its last screen, an agent's own error message for example) until another tab is picked;
-// that terminal is told the session ended (`ended`), so it never tries to attach again (ruling R12).
+// page and coming back lands on the same tab. Only the terminals on screen are attached; the others keep running in
+// the engine and come back with their screen when picked. Split view (spec SP4, Split; Task U6) shows two sessions
+// side by side, each pane with its own header and terminal: the selected tab is the focused pane and the side panel
+// follows it, the same session is never in both panes (alignSplit), and split view is kept per window
+// (sessionStorage). A session that ends while a pane shows it keeps its terminal (and so its last screen, an agent's
+// own error message for example) until that pane shows another session; that terminal is told the session ended
+// (`ended`), so it never tries to attach again (ruling R12).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Info, Plus, SquareTerminal } from "lucide-react";
+import type { CSSProperties } from "react";
+import { Columns2, Info, Plus, SquareTerminal } from "lucide-react";
 import { navigateTo, queryParam } from "../nav";
 import { dismissSession, resumeSession, sessionGotNoAnswer, stopSession } from "../sessionsApi";
 import type { SessionSummary } from "../types";
@@ -15,14 +19,19 @@ import AgentConfirmModal from "../ui/components/AgentConfirmModal";
 import Banner from "../ui/components/Banner";
 import EmptyState from "../ui/components/EmptyState";
 import PageHeader from "../ui/components/PageHeader";
+import SessionPaneHead from "../ui/components/SessionPaneHead";
 import SessionSettingsMenu from "../ui/components/SessionSettingsMenu";
 import SessionSidePanel from "../ui/components/SessionSidePanel";
+import SessionLimitBanner from "../ui/components/SessionLimitBanner";
 import SessionTabs, { sessionTabDomId } from "../ui/components/SessionTabs";
 import SessionTerminal from "../ui/components/SessionTerminal";
+import type { SessionTerminalHandle } from "../ui/components/SessionTerminal";
+import SplitDivider from "../ui/components/SplitDivider";
 import StatusWord from "../ui/components/StatusWord";
-import Toast from "../ui/components/Toast";
+import { showShellToast } from "../ui/shellToast";
 import { isDesktopApp } from "../ui/desktop";
 import { openNewSession, takeFocusNextSession } from "../ui/newSession";
+import { NOTIFY_NOTE_KEY, notifyNote } from "../ui/alertsShared";
 import {
   isAppShortcut,
   isMacPlatform,
@@ -52,6 +61,23 @@ import {
   visibleTabs
 } from "../ui/sessionsPageShared";
 import type { Generations, StopNote, TerminalPrefs } from "../ui/sessionsPageShared";
+import {
+  SPLIT_GAP_PX,
+  SPLIT_KEY,
+  SPLIT_LABEL,
+  alignSplit,
+  canSplit,
+  holdSelected,
+  nextLiveShown,
+  parseSplitState,
+  serializeSplitState,
+  splitButtonHint,
+  splitKeys,
+  toggleSplit,
+  wantedStanding,
+  withRatio
+} from "../ui/splitShared";
+import type { SplitState } from "../ui/splitShared";
 import { useSessionsList } from "../ui/useSessionsList";
 import "../ui/sessions.css";
 
@@ -75,6 +101,24 @@ function readPrefs(desktop: boolean): TerminalPrefs {
   }
 }
 
+// Split view is kept per window (this browser tab, or this desktop window): sessionStorage survives a reload and
+// leaving the page, and a second window starts with one terminal (Task U6). A locked-down webview keeps it until the
+// page reloads.
+function readSplit(): SplitState {
+  try {
+    return parseSplitState(window.sessionStorage.getItem(SPLIT_KEY));
+  } catch {
+    return parseSplitState(null);
+  }
+}
+function writeSplit(state: SplitState) {
+  try {
+    window.sessionStorage.setItem(SPLIT_KEY, serializeSplitState(state));
+  } catch {
+    // A locked-down webview: split view lasts until the page reloads.
+  }
+}
+
 export default function SessionsPage() {
   const list = useSessionsList();
   const { refresh } = list;
@@ -91,28 +135,77 @@ export default function SessionsPage() {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set<string>());
   const tabs = useMemo(() => visibleTabs(sessions, order, hidden), [sessions, order, hidden]);
   const [wanted, setWanted] = useState(() => queryParam("session"));
-  const selectedId = pickSelected(tabs, wanted);
+  // Split view, kept per window (readSplit); `aligned` below is that state made true to the tabs.
+  const [split, setSplit] = useState<SplitState>(readSplit);
+  // A divider drag is on: split view is kept in sessionStorage when it ends, not on every pointer move.
+  const [dragging, setDragging] = useState(false);
+  // How the tab asked for stands against the list: a tab, "pending" (a session started a moment ago; the list does not
+  // know it yet) or "gone" (the list knows it but it is put away: dismissed here or in another window).
+  const standing = wantedStanding(wanted, tabs, sessions);
+  // While the tab asked for is pending the page shows another tab, but split view keeps its pair on screen: the focused
+  // pane's session stands in as the selected tab (holdSelected) instead of the first tab, which could be neither pane.
+  const selectedId = standing === "pending" ? holdSelected(split, tabs, pickSelected(tabs, wanted)) : pickSelected(tabs, wanted);
   const selected = tabs.find((tab) => tab.id === selectedId) || null;
   // The tab asked for is not in the list yet (a session started a moment ago): no terminal takes the keys meanwhile.
-  const wantedListed = tabs.some((tab) => tab.id === wanted);
+  const wantedListed = standing === "tab";
   const key = selected ? terminalKey(selected.id, gens) : "";
-  // The terminal key that was on screen while its session was open (see the comment at the top).
-  const [liveShown, setLiveShown] = useState<string | null>(null);
+  // The terminal keys a pane showed while their session was open (see the comment at the top and nextLiveShown).
+  const [liveShown, setLiveShown] = useState<ReadonlySet<string>>(() => new Set<string>());
+  // `aligned` is split view made true to the tabs and the selected tab (alignSplit): the selected tab is the focused
+  // pane, a pane whose session left the tabs gets another one (a dismissed tab counts as left: it is in the list, so it
+  // is settled, not pending), and the same session is never in both panes. Only a tab the list has not shown yet holds
+  // alignment back, so split view waits for it instead of moving the focus there and back.
+  const aligned = body && standing !== "pending" ? alignSplit(split, tabs, selectedId) : split;
+  const splitPanes =
+    aligned.on && aligned.panes && aligned.panes.includes(selectedId)
+      ? aligned.panes.map((id) => tabs.find((tab) => tab.id === id)).filter((tab): tab is SessionSummary => Boolean(tab))
+      : [];
+  const splitOn = splitPanes.length === 2;
+  // What the panes show: the two sessions of split view, or the selected one.
+  const paneSessions: SessionSummary[] = splitOn ? splitPanes : selected ? [selected] : [];
+  const otherPaneId = splitOn ? (splitPanes.find((session) => session.id !== selectedId)?.id ?? "") : "";
   const [prefs, setPrefs] = useState<TerminalPrefs>(() => readPrefs(desktop));
   const [focusTerminal, setFocusTerminal] = useState(() => takeFocusNextSession());
-  // A sentence from the terminal itself, for example "Link copied. Open it in your browser." (ruling R25).
-  const [terminalNote, setTerminalNote] = useState<{ id: number; text: string } | null>(null);
   const [stopping, setStopping] = useState<Asking | null>(null);
   // The server's own note from the last Stop pressed here, with the terminal key of the run it stopped.
   const [stopNote, setStopNote] = useState<StopNote | null>(null);
   const [resuming, setResuming] = useState<Asking | null>(null);
   // The words of a failed Dismiss, with the ended tab they are about (they go when that tab does, see below).
   const [pageError, setPageError] = useState<{ id: string; text: string } | null>(null);
+  // The desktop app's one-time note about notifications (K17), until "Got it" (kept in this browser; a webview that
+  // refuses storage shows it again after a reload, which is harmless).
+  const [notifyDismissed, setNotifyDismissed] = useState(() => {
+    try {
+      return window.localStorage.getItem(NOTIFY_NOTE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  function dismissNotifyNote() {
+    // The button removes itself, so the keys would fall to the page: give them to the terminal that is open, else to the
+    // panel's title (the same fallback as when a session ends under you).
+    if (terminalRef.current && selected && selected.status !== "exited") terminalRef.current.focus();
+    else headingRef.current?.focus({ preventScroll: true });
+    setNotifyDismissed(true);
+    try {
+      window.localStorage.setItem(NOTIFY_NOTE_KEY, "1");
+    } catch {
+      // A locked-down webview: the note stays hidden until the page reloads.
+    }
+  }
   const alive = useRef(true);
   const askedFor = useRef("");
+  // The list the page held when it asked for a session the list did not know: a later list is the answer to that ask.
+  const askedBody = useRef<unknown>(null);
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const selectedRef = useRef(selectedId);
+  selectedRef.current = selectedId;
+  // The panes' box, which the divider measures.
+  const panesRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  // The open terminal's own focus(), the one its autoFocus uses.
+  const terminalRef = useRef<SessionTerminalHandle>(null);
   const lastSeen = useRef<{ id: string; status: string } | null>(null);
   const focusAfterDismiss = useRef(false);
 
@@ -137,18 +230,46 @@ export default function SessionsPage() {
   useEffect(() => {
     if (!wanted || !body || sessions.some((session) => session.id === wanted) || askedFor.current === wanted) return;
     askedFor.current = wanted;
+    askedBody.current = body;
     refresh();
   }, [wanted, body, sessions, refresh]);
 
-  // Another tab picked: whatever terminal was on screen goes. An open session puts its own up.
+  // The address names a tab that is not one: the list knows it but it is put away (dismissed here or in another window,
+  // or not an agent session), or the list was read again after the page asked for it and still does not know it. The
+  // page and the address then point at the tab shown, so the address stops naming a dead tab and split view settles on
+  // the tabs there are. A tab being dismissed here keeps the address until the server says it is dismissed, so a failed
+  // Dismiss puts the tab back as it was.
   useEffect(() => {
-    setLiveShown(null);
-  }, [selectedId]);
+    if (!body || !wanted || wantedListed) return;
+    const entry = sessions.find((session) => session.id === wanted);
+    const settled = entry
+      ? !hidden.has(wanted) || Boolean(entry.dismissed)
+      : askedFor.current === wanted && askedBody.current !== null && askedBody.current !== body;
+    if (!settled) return;
+    setWanted(selectedId);
+    // A keyboard hand-over that was still waiting (Enter on a pane, ⌘1-9, Resume) is dropped with the old address: once
+    // the address names a tab that is open, the terminal would take the keys from wherever they went (sweep A item 7).
+    setFocusTerminal(false);
+    navigateTo("sessions", selectedId ? { session: selectedId } : {});
+  }, [body, wanted, wantedListed, sessions, hidden, selectedId]);
+
+  // A pane's terminal stays while that pane shows its session, also once the session has ended; a pane that shows
+  // another session drops it, and an open session puts its own up (nextLiveShown).
+  const shownPanes = paneSessions.map((session) => ({ key: terminalKey(session.id, gens), status: session.status }));
+  const shownSignature = shownPanes.map((pane) => `${pane.key}=${pane.status}`).join(" ");
   useEffect(() => {
-    if (selected && selected.status !== "exited") setLiveShown(key);
+    setLiveShown((prev) => nextLiveShown(prev, shownPanes));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, selected?.status]);
-  const showTerminal = selected !== null && (selected.status !== "exited" || liveShown === key);
+  }, [shownSignature]);
+
+  // Split view is stored once it is aligned (alignSplit answers with the very same object when nothing changes, so
+  // this settles after one render), and kept in this window.
+  useEffect(() => {
+    if (aligned !== split) setSplit(aligned);
+  }, [aligned, split]);
+  useEffect(() => {
+    if (!dragging) writeSplit(split);
+  }, [split, dragging]);
 
   // When the selected session ends while you look at it, the Stop button goes; keyboard focus then goes to the
   // panel's title instead of falling to the page. A page opened on an ended tab does not move focus.
@@ -191,21 +312,46 @@ export default function SessionsPage() {
     navigateTo("sessions", { session: id });
   }
 
-  // ⌘T and ⌘1-9 (Ctrl+Shift+T and Ctrl+Shift+1-9 on Windows and Linux), in the desktop app only: a browser keeps
-  // these keys for itself (spec, App shortcuts). The terminal lets them through to here.
+  // A pointer press or the keyboard focus in a pane makes it the focused pane, and the side panel follows it (spec,
+  // Split). The keyboard stays where the person put it.
+  function focusPane(id: string) {
+    if (id !== selectedId) select(id);
+  }
+
+  // The keyboard way into a pane (Enter or Space on its header, or on the selected tab in split view): an open terminal
+  // keeps Tab for its agent, so this is how a keyboard-only person reaches either terminal. The pane that is not
+  // focused becomes the focused pane and its terminal takes the keys when it is shown; the focused one takes them now.
+  function enterPane(id: string) {
+    if (id === selectedId) terminalRef.current?.focus();
+    else select(id, true);
+  }
+
+  // The Split view button and ⌘\ (toggleSplit): off puts the selected tab on the left and the next open tab on the
+  // right; on goes back to the focused pane alone. With one tab nothing happens (the button can't be pressed then).
+  function toggleSplitView() {
+    setSplit((current) => toggleSplit(current, tabsRef.current, selectedRef.current));
+  }
+
+  // ⌘T, ⌘1-9 and ⌘\ (Ctrl+Shift+T, Ctrl+Shift+1-9 and Ctrl+Shift+\ on Windows and Linux), in the desktop app only: a
+  // browser keeps ⌘T and ⌘1-9 for itself (spec, App shortcuts), and split view has its button there. The terminal
+  // lets these keys through to here.
   useEffect(() => {
     if (!desktop) return undefined;
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.repeat) return;
       // A dialog or the palette has the keyboard: leave its keys alone.
       if (document.querySelector('[aria-modal="true"]')) return;
-      // Events from inside a terminal are NOT skipped: the terminal (Task U2) lets ⌘T and ⌘1-9 through to here
+      // Events from inside a terminal are NOT skipped: the terminal (Task U2) lets ⌘T, ⌘1-9 and ⌘\ through to here
       // untouched. The palette key is the terminal's and the Shell's own business.
       const shortcut = isAppShortcut(event, { isMac: IS_MAC, desktop: true });
       if (!shortcut || shortcut.action === "palette") return;
       event.preventDefault();
       if (shortcut.action === "new-session") {
         openNewSession();
+        return;
+      }
+      if (shortcut.action === "split") {
+        toggleSplitView();
         return;
       }
       const target = tabsRef.current[shortcut.index];
@@ -221,8 +367,10 @@ export default function SessionsPage() {
   const onTerminalState = useCallback(() => {
     if (alive.current) refresh();
   }, [refresh]);
+  // A sentence from the terminal itself, for example "Link copied. Open it in your browser." (ruling R25). It goes into the
+  // shell's one toast slot, so it never sits on top of a message the shell is showing (sweep A item 6, U5 review M7).
   const onTerminalNotice = useCallback((text: string) => {
-    if (alive.current && text) setTerminalNote({ id: Date.now(), text });
+    if (alive.current && text) showShellToast(text);
   }, []);
 
   function changePrefs(next: TerminalPrefs) {
@@ -312,6 +460,16 @@ export default function SessionsPage() {
       {notice}
     </p>
   ) : null;
+  const notifyText = notifyNote({ desktop, isMac: IS_MAC, dismissed: notifyDismissed });
+  const notifyLine = notifyText ? (
+    <p className="os-sess__notice os-sess__notify">
+      <Info size={15} aria-hidden="true" />
+      <span>{notifyText}</span>
+      <button type="button" className="os-btn os-btn--ghost os-sess__notify-ok" onClick={dismissNotifyNote}>
+        Got it
+      </button>
+    </p>
+  ) : null;
 
   if (!list.available) {
     return (
@@ -396,11 +554,65 @@ export default function SessionsPage() {
     );
   }
 
-  const title = sessionTitle(selected);
   // Empty in a browser tab, which keeps ⌘T and ⌘1-9 for itself (spec, Browser mode).
   const hints = shortcutHints({ isMac: IS_MAC, desktop });
   const stopCopy = stopping ? stopDialogCopy(stopping.session) : null;
   const resumeCopy = resuming ? resumeConfirmCopy(resuming.session) : null;
+  // Only the focused pane's terminal may take the keyboard by itself, and only when the page asked for that.
+  const takesKeys = terminalTakesKeys({ focusTerminal, wanted, selectedId, wantedListed });
+
+  // One pane: in split view its own header (press it, or click anywhere in the pane, to see its details), then the
+  // session's terminal, or the ended view, and the caption. A pane is keyed by its terminal key, so turning split view
+  // on or off, or moving the focus, never reattaches a terminal that stays on screen.
+  function renderPane(session: SessionSummary) {
+    const paneKey = terminalKey(session.id, gens);
+    const focused = session.id === selectedId;
+    const paneTitle = sessionTitle(session);
+    const showIt = session.status !== "exited" || liveShown.has(paneKey);
+    return (
+      <section
+        key={paneKey}
+        className={splitOn && focused ? "os-sess-pane is-focus" : "os-sess-pane"}
+        aria-label={splitOn ? paneTitle : undefined}
+        data-session={session.id}
+        onFocusCapture={() => focusPane(session.id)}
+        onPointerDown={() => focusPane(session.id)}
+      >
+        {splitOn ? (
+          <SessionPaneHead session={session} focused={focused} onPick={() => focusPane(session.id)} onEnter={() => enterPane(session.id)} />
+        ) : null}
+        <SessionLimitBanner session={session} />
+        {showIt ? (
+          <div className="os-sess-term">
+            <SessionTerminal
+              ref={focused ? terminalRef : undefined}
+              key={paneKey}
+              sessionId={session.id}
+              label={`${paneTitle} terminal`}
+              kittyKeyboard={prefs.kittyKeyboard}
+              webgl={prefs.webgl}
+              ended={session.status === "exited"}
+              autoFocus={focused && takesKeys}
+              sizesItself={splitOn}
+              onState={onTerminalState}
+              onAlert={onTerminalState}
+              onNotice={onTerminalNotice}
+            />
+          </div>
+        ) : (
+          <div className="os-sess-ended">
+            <SquareTerminal size={22} aria-hidden="true" />
+            <p className="os-sess-ended__title">This session has ended</p>
+            <p className="os-sess-ended__body">{sessionPanelLine(session, Date.now())}</p>
+          </div>
+        )}
+        <p className="os-sess__cap">
+          <SquareTerminal size={15} aria-hidden="true" />
+          {session.agentLabel}&apos;s own terminal program, with your own settings.
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="os-sess" aria-labelledby="os-sessions-title">
@@ -412,6 +624,8 @@ export default function SessionsPage() {
           tabs={tabs.map((session) => ({ id: session.id, title: sessionTitle(session), status: session.status, recordingBytes: session.recordingBytes }))}
           selectedId={selectedId}
           panelId={PANEL_ID}
+          alsoShownId={otherPaneId}
+          onEnterSelected={splitOn ? enterPane : undefined}
           onSelect={(id) => select(id)}
           onDismiss={(id) => void dismiss(id)}
         />
@@ -424,6 +638,20 @@ export default function SessionsPage() {
         >
           <Plus size={17} aria-hidden="true" />
         </button>
+        <span className="os-sess__vsep" aria-hidden="true" />
+        <button
+          type="button"
+          className="os-btn os-btn--ghost os-sess-splitbtn"
+          aria-label={SPLIT_LABEL}
+          aria-pressed={splitOn}
+          title={splitButtonHint({ isMac: IS_MAC, desktop, possible: splitOn || canSplit(tabs) })}
+          disabled={!splitOn && !canSplit(tabs)}
+          onClick={toggleSplitView}
+        >
+          <Columns2 size={16} aria-hidden="true" />
+          <span className="os-sess-splitbtn__label">{SPLIT_LABEL}</span>
+          {desktop ? <kbd className="os-kbd os-sess-splitbtn__kbd">{splitKeys(IS_MAC)}</kbd> : null}
+        </button>
         <span className="os-sess__spacer" />
         <SessionSettingsMenu prefs={prefs} onPrefs={changePrefs} />
       </div>
@@ -433,31 +661,33 @@ export default function SessionsPage() {
           {selected.status === "exited" ? ptyBanner : null}
           {pageError ? <Banner tone="warn">{pageError.text}</Banner> : null}
           {noticeLine}
-          {showTerminal ? (
-            <div className="os-sess-term">
-              <SessionTerminal
-                key={key}
-                sessionId={selected.id}
-                label={`${title} terminal`}
-                kittyKeyboard={prefs.kittyKeyboard}
-                webgl={prefs.webgl}
-                ended={selected.status === "exited"}
-                autoFocus={terminalTakesKeys({ focusTerminal, wanted, selectedId, wantedListed })}
-                onState={onTerminalState}
-                onNotice={onTerminalNotice}
-              />
-            </div>
-          ) : (
-            <div className="os-sess-ended">
-              <SquareTerminal size={22} aria-hidden="true" />
-              <p className="os-sess-ended__title">This session has ended</p>
-              <p className="os-sess-ended__body">{sessionPanelLine(selected, Date.now())}</p>
-            </div>
-          )}
-          <p className="os-sess__cap">
-            <SquareTerminal size={15} aria-hidden="true" />
-            {selected.agentLabel}&apos;s own terminal program, with your own settings.
-          </p>
+          {notifyLine}
+          <div
+            ref={panesRef}
+            className={splitOn ? "os-sess-panes os-sess-panes--split" : "os-sess-panes"}
+            style={
+              splitOn
+                ? ({ "--os-split": `calc((100% - ${SPLIT_GAP_PX}px) * ${aligned.ratio})` } as CSSProperties)
+                : undefined
+            }
+          >
+            {/* The divider comes first in the page (CSS order puts it between the panes), so Tab from the tab strip reaches
+                it before any terminal: an open terminal keeps Tab for its agent. */}
+            {paneSessions.flatMap((session, slot) =>
+              splitOn && slot === 0
+                ? [
+                    <SplitDivider
+                      key="split-divider"
+                      ratio={aligned.ratio}
+                      containerRef={panesRef}
+                      onRatio={(ratio) => setSplit((current) => withRatio(current, ratio))}
+                      onDragChange={setDragging}
+                    />,
+                    renderPane(session)
+                  ]
+                : [renderPane(session)]
+            )}
+          </div>
         </div>
         <SessionSidePanel
           session={selected}
@@ -467,6 +697,10 @@ export default function SessionsPage() {
           onStop={() => setStopping({ session: selected, busy: false, error: "", toSafety: false })}
           onResume={() => setResuming({ session: selected, busy: false, error: "", toSafety: false })}
           onOpenRecording={() => navigateTo("runs", { tab: "recordings", highlight: selected.id })}
+          onOpenSession={(id) => {
+            refresh();
+            select(id, true);
+          }}
         />
       </div>
 
@@ -523,8 +757,6 @@ export default function SessionsPage() {
           ) : null}
         </AgentConfirmModal>
       ) : null}
-
-      {terminalNote ? <Toast key={terminalNote.id} message={terminalNote.text} tone="neutral" onClose={() => setTerminalNote(null)} /> : null}
     </section>
   );
 }

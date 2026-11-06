@@ -44607,7 +44607,7 @@ git diff --name-only $B..HEAD | grep -i -E "(^|/)\.env($|\.)|\.(pem|key|p12|pfx)
 git diff $B..HEAD | grep -E '^(\+\+\+ |\+[^+])' | grep -E "^\+\+\+ |sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY" | grep -B1 -E "^\+[^+]" | sed -E 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1.../g' > $S/push-scan.txt; cat $S/push-scan.txt
 ```
 
-  Expected: the totals line (files changed, lines added and removed) for the report; no file line (no `.env`, key, certificate or credentials file, no `.superpowers/` file); in `push-scan.txt` only made-up test values, each read by hand (at `a6c9f4a` there are four, `ANTHROPIC_API_KEY: "sk-ant-not...` or `"sk-ant-te...` in `test/sessions-profiles.test.js`, `test/sessions-shell-env.test.js` and the SP3 plan). Values are printed shortened, never whole. Then read the diff's added docs, test fixtures and sentences for anything from Harsha's work that his data disclosure agreement covers (an employer's, client's or internal project's name or data); there is no word list, so this is a read, not a grep. A real secret, a credentials file or an NDA term stops the push: a worker removes it first, and it is never pushed to be removed later. Then:
+  Expected: the totals line (files changed, lines added and removed) for the report; no file line (no `.env`, key, certificate or credentials file, no `.superpowers/` file); in `push-scan.txt` only made-up test values, each read by hand (at `a6c9f4a` there are four, `ANTHROPIC_API_KEY: "sk-ant-not...` or `"sk-ant-te...` in `test/sessions-profiles.test.js`, `test/sessions-shell-env.test.js` and the SP3 plan). Values are printed shortened, never whole. Then read the diff's added docs, test fixtures and sentences for anything private that should not be public (an employer's, client's or internal project's name or data); there is no word list, so this is a read, not a grep. A real secret, a credentials file or an NDA term stops the push: a worker removes it first, and it is never pushed to be removed later. Then:
 
 ```bash
 git push origin feat/desktop-control-plane
@@ -46539,7 +46539,7 @@ git diff --cached --stat
 git diff --cached | grep -c -E "[^ @]+@[^ @]+\.[a-z]{2,}|\bsk-[A-Za-z0-9_-]{12,}|eyJ[A-Za-z0-9_-]{10,}|oat01"
 ```
 
-Expected: one file, and `0` (no e-mail address and nothing token-like in the diff; ordinary words such as "task-" or "desk-" do not match). Then read the added lines once more for anything of the owner's (account, plan tier, folders, MCP servers or other settings): the spec sits in a repo that may become public, and the owner works under a data disclosure agreement. Then:
+Expected: one file, and `0` (no e-mail address and nothing token-like in the diff; ordinary words such as "task-" or "desk-" do not match). Then read the added lines once more for anything of the owner's (account, plan tier, folders, MCP servers or other settings): the spec sits in a repo that may become public, so nothing private should be in it. Then:
 
 ```bash
 git commit -m "Spec: plan brains live check results (S-B1 to S-B4)" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"

@@ -145,6 +145,16 @@ export async function checkAgentsReady() {
     getAdapter("hermes").safetyStatus(detected.hermes),
     getAdapter("openclaw").safetyStatus(detected.openclaw)
   ]);
+  // OpenClaw's exec mode could not be read (a failed or timed-out read): the room must not start on a guess. A failed read
+  // has no `exec-ask` action, so without this check it would pass as if the safeguard were on (re-review R2).
+  if (openclawSafety?.known === false) {
+    throw roomError(
+      409,
+      "safeguards_unknown",
+      "Agent OS could not read OpenClaw's approvals setting, so it did not start the Team Room. Try again in a moment.",
+      { agents: ["openclaw"] }
+    );
+  }
   const off = [];
   if (hermesSafety?.permissive) {
     off.push({ agent: "hermes", message: "Hermes Agent's approvals are off, so it could run commands without asking." });

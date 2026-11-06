@@ -22,6 +22,11 @@ const CLAIM_MAX_FAILURES = 20;
 // Random per-process unless the operator pins one via AGENT_OS_TOKEN. Never
 // logged anywhere except the one login line printed at startup.
 export const sessionToken = process.env.AGENT_OS_TOKEN?.trim() || crypto.randomBytes(24).toString("hex");
+// This is the only place that reads the variable, and it reads it once. It is removed from the server's own environment
+// right away, because that environment is the default for the agent programs the server starts only to read from (detection,
+// version checks, config reads): a plugin one of them loads could otherwise read the launch token and use the whole API
+// (final review, Sa M3 and Se M12). Sessions, git and runs already get an environment of their own without it.
+delete process.env.AGENT_OS_TOKEN;
 
 // R32 (browser mode). Browsers send a 127.0.0.1 cookie to EVERY local port, so a page an agent started on another
 // port could read the session cookie and replay it from a script. So the cookie is not enough on its own:

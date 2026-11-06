@@ -93,7 +93,9 @@ const SUMMARY_KEYS = [
   "endedBy",
   "dismissed",
   "brain",
+  "agentVersion",
   "resume",
+  "restart",
   "nothingToResume",
   "alerts",
   "alert",
@@ -639,7 +641,7 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
       world.gate = false; // Look only: a sign-in is a Setup step, not agent work (spec §1, Limits)
       const summary = await world.manager.createSetupSession({ action: OPENCLAW_SIGNIN_ACTION, detected: DETECTED });
       assert.match(summary.id, UUID);
-      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 30 keys as every session, and no new one");
+      assert.deepEqual(Object.keys(summary).sort(), [...SUMMARY_KEYS].sort(), "the same 32 keys as every session, and no new one");
       assert.deepEqual(
         { ...summary, id: "-", stateSince: "-", startedAt: "-" },
         {
@@ -660,7 +662,9 @@ test("createSetupSession: one sign-in in memory only, in HOME, with the action's
           endedBy: null,
           dismissed: false,
           brain: null,
+          agentVersion: null,
           resume: { available: false, reason: null, fallback: false },
+          restart: null,
           nothingToResume: false,
           alerts: "basic",
           alert: null,
@@ -1205,7 +1209,7 @@ test("a real sign-in in a PTY against W1's fake: the link and the code are shown
           [`setup:${id}`]
         );
         assert.deepEqual((await call("GET", "/api/sessions?kind=all&live=1")).body.sessions.map((item) => item.id), [id]);
-        assert.deepEqual(await call("POST", "/api/sessions/quit-check", {}), { status: 200, body: { live: [] } });
+        assert.deepEqual(await call("POST", "/api/sessions/quit-check", {}), { status: 200, body: { live: [], updating: false } }, "final fix, Se I1: the answer also says whether an agent is updating (it was { live } only)");
 
         // The card's window, in process: the manager's attach, focus and write, which ws.js calls for every
         // window, and the frames ws.js would send. The upgrade itself is ws.js's and unchanged: it asks isLive,

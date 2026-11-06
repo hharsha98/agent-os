@@ -2347,6 +2347,12 @@ export interface AgentSafetyStatus {
   choices?: AgentSafetyAction[];
   // Calm facts about this safeguard, shown with an info mark (e.g. when OpenClaw can ask for approval).
   notes?: string[];
+  // The mode that was read: OpenClaw's tools.exec.mode ("full", "ask", "auto", ...), Hermes's approvals.mode ("manual" or
+  // "smart"; none for off, an unknown word or a read that failed). The Safety page words its row by it.
+  mode?: string;
+  // True when sessions use another Hermes or OpenClaw profile than this answer was read from (the login shell's
+  // environment differs from the server's): the answer then says nothing about the profile a session runs in.
+  otherProfile?: boolean;
 }
 
 export interface AgentDetail {
@@ -2750,6 +2756,8 @@ export interface ApprovalCard {
   summary: string;
   createdAt: string;
   expiresAt: string;
+  // True only when the server cut the summary at its limit: the command is not shown in full, so it can't be allowed from Agent OS.
+  cut?: boolean;
   sessionId: string | null;
 }
 
@@ -2792,6 +2800,13 @@ export interface SessionSummary {
   // `model` is the launch profile's model (an OpenRouter or Local brain's, a chosen Cursor model), when there is one.
   brain: { kind: "plan" | "openrouter" | "local"; label: string; model?: string } | null;
   resume: { available: boolean; reason: string | null; fallback: boolean };
+  // SP5 (R40): the agent version this run started on (the first line of the agent's `--version`), or null when none was
+  // read or the session was saved before SP5. The restart banner compares it with the installed version.
+  agentVersion?: string | null;
+  // SP5 (R40): for a live `agent` session, whether Restart session could bring it back (stop, then resume), worked out by
+  // the resume rule as if the session had ended; `reason` says why not. null for every other kind or status, and always
+  // in the live-only list (GET /api/sessions?live=1), which does not work it out.
+  restart?: { available: boolean; reason: string | null } | null;
   // true when Claude Code's resume found no saved conversation (nothing was ever sent in the session, or Claude
   // deleted an old transcript itself): there is nothing to resume. A server that doesn't send it means false.
   nothingToResume: boolean;
@@ -2903,6 +2918,9 @@ export interface QuitCheckItem {
 
 export interface QuitCheckResponse {
   live: QuitCheckItem[];
+  // True while a Setup job runs an agent's update step: quitting would stop the updater partway (final review, Se I1). A
+  // server that does not send it means no update.
+  updating?: boolean;
 }
 
 export interface RecordingSummary {

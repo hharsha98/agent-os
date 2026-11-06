@@ -251,6 +251,11 @@ test("a write that fails after the recording started reports once, keeps the hea
         // The start worked (the header is there); the first write is what fails.
         recorder.output("one");
         recorder.marker("two");
+        // The start and the first write are real disk work, which a busy machine can take longer over than any fixed wait
+        // (CI's Windows job did). So wait until the report comes, then a little longer, so that a second report would be seen.
+        for (const started = performance.now(); errors.length === 0 && performance.now() - started < 10000; ) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
         await new Promise((resolve) => setTimeout(resolve, 50));
         assert.deepEqual(errors, [full], "reported once, with the real error");
         assert.doesNotThrow(() => {

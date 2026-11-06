@@ -174,6 +174,15 @@ describe("release workflow", async () => {
 });
 
 describe("desktop window", () => {
+  // The bundled Node (resources/node) is built for macOS 13.5 and newer (its Mach-O header says minos 13.5). On an older Mac the app
+  // opened and then showed "built-in server stopped… dyld…", while the download table offered it. The bundle's own minimum makes
+  // macOS refuse it with a clear message instead (final review, Re M2).
+  test("the Mac app says it needs macOS 13.5 or newer, the oldest the bundled Node runs on", async () => {
+    const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
+    assert.equal(conf.bundle.macOS.minimumSystemVersion, "13.5");
+    assert.equal(conf.bundle.macOS.signingIdentity, "-", "the signing setting beside it is untouched");
+  });
+
   test("cannot be made smaller than 1024x640 (the smallest the laptop layout is built for)", async () => {
     const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
     const main = conf.app.windows.find((window) => window.label === "main");
@@ -604,7 +613,7 @@ describe("desktop packaging and the desktop CI job", async () => {
 
   test("CI builds the desktop shell and runs its unit tests on Linux, macOS and Windows", () => {
     const desktop = jobOf(ci, "desktop");
-    for (const runner of ["ubuntu-22\\.04", "macos-14", "windows-latest"]) assert.match(desktop, new RegExp(runner));
+    for (const runner of ["ubuntu-22\\.04", "macos-15", "windows-latest"]) assert.match(desktop, new RegExp(runner));
     assert.match(desktop, /fail-fast:\s*false/);
     assert.match(desktop, /libwebkit2gtk-4\.1-dev/);
     assert.match(desktop, /run:\s*npm ci\s*\n/);

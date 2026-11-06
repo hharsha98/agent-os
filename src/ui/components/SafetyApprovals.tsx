@@ -22,7 +22,7 @@ function ApprovalsEmpty() {
       <EmptyState
         icon={Inbox}
         title="Nothing from OpenClaw is waiting here"
-        body="When OpenClaw wants to run a command, a card with the exact command shows up here and in its session. You choose Allow once or Deny. Agent OS never answers for you. A Team Room that is waiting to save a file asks in that Team Room."
+        body="When OpenClaw wants to run a command and its Control UI or Mac app is open, a card with the command shows up here and in its session. You choose Allow once or Deny. Agent OS never answers for you. A Team Room that is waiting to save a file asks in that Team Room."
       />
       <div className="os-saf-ghost" role="group" aria-label="Example of a request card, not a real request">
         <p className="os-saf-ghost__cap"><Eye size={14} aria-hidden="true" /> What a request will look like (example, not real)</p>

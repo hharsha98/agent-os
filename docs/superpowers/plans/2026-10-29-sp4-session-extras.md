@@ -36308,7 +36308,7 @@ Expected:
 - in `push-scan.txt` only made-up test values, each read by hand. Known fine values: `sk-ant-not-a-real-key`, `sk-ant-test-not-real`, the synthetic `sk-ant-oat01-…` redaction fixtures, and any `sk-or-` test key the keep-going tests use, shown shortened, never whole;
 - `0` (no local path of the owner's and no e-mail address in added lines).
 
-Then read the diff's added docs, test fixtures and sentences for anything his data disclosure agreement covers (an employer's, client's or internal project's name or data). There is no word list: this is a read, not a search. A real secret, a credentials file or an NDA term stops the push: a worker removes it first, and it is never pushed in order to be removed later.
+Then read the diff's added docs, test fixtures and sentences for anything private that should not be public (an employer's, client's or internal project's name or data). There is no word list: this is a read, not a search. A real secret, a credentials file or an NDA term stops the push: a worker removes it first, and it is never pushed in order to be removed later.
 
 Before the push command, say in chat what is being pushed (his CLAUDE.md "show me what I am approving"):
 - the branch and the commit range;
@@ -38911,7 +38911,7 @@ git diff --cached --stat
 git diff --cached | grep -c -E "[^ @]+@[^ @]+\.[a-z]{2,}|\bsk-[A-Za-z0-9_-]{12,}|eyJ[A-Za-z0-9_-]{10,}|oat01|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
 ```
 
-Expected: one file, and `0` (no e-mail address, nothing token-like and no session id in the diff). Then read the added lines once more for anything of the owner's (account, plan tier, folders, MCP servers or other settings): the spec sits in a repo that may become public, and the owner works under a data disclosure agreement. Then:
+Expected: one file, and `0` (no e-mail address, nothing token-like and no session id in the diff). Then read the added lines once more for anything of the owner's (account, plan tier, folders, MCP servers or other settings): the spec sits in a repo that may become public, so nothing private should be in it. Then:
 
 ```bash
 git commit -m "Spec: SP4 live check results (S1, S2, S4, S5, S7)" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"

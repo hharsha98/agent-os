@@ -19,6 +19,10 @@
 //     HERMES_VOICE_ALLOW_SHELL=1 and each one carries confirmShell.
 import type { ExecutionGateStatus } from "../types";
 import type { AgentDetail, MachineControlStatus } from "../setupApi";
+// Node cannot follow an extensionless import when a test loads this file straight from src/; tsconfig does not allow the
+// extension, so TypeScript's only complaint (TS5097) is silenced on this one line (the alertsShared.ts pattern).
+// @ts-expect-error TS5097
+import { THIS_MACHINE } from "./machineLabel.ts";
 
 export const ARM_PHRASE = "ENABLE MACHINE CONTROL";
 
@@ -31,7 +35,7 @@ export const LEVELS: Record<number, { label: string; blurb: string }> = {
     blurb:
       "Runs start in a folder inside the Workspace (OpenClaw's Gateway uses its own). Sessions start in a folder you pick inside your home folder (OpenClaw picks its own for now). Anything this safety level does not allow is refused, not run."
   },
-  2: { label: "Machine control", blurb: "Agent OS can also see the screen and use the mouse and keyboard on this Mac. Off until you turn it on." }
+  2: { label: "Machine control", blurb: `Agent OS can also see the screen and use the mouse and keyboard on ${THIS_MACHINE}. Off until you turn it on.` }
 };
 
 export const LEVEL_DETAIL: Record<number, { can: string; asks: string; cannot: string }> = {
@@ -190,7 +194,9 @@ export const ALWAYS_ON: Array<{ title: string; detail: string; who: string }> = 
     title: "Updater questions are never answered for you",
     // Setup starts an updater with no input and no yes flag (server/runtime/setup/recipes.js,
     // jobs.js). What an updater then does with no answer is its own; only the part Agent OS
-    // controls is promised. Hermes has no update step in Setup at all (plan.js NO_UPDATE_STEP).
+    // controls is promised. Hermes is not in this row (see `who`): its update is never a Setup job,
+    // it runs in a terminal session the person types into, and only from an unchanged official
+    // copy (SP5, server/runtime/updates/update-service.js).
     detail:
       "Setup runs an agent's own updater with no yes flag and no typed answers, so a question it asks gets no answer from Agent OS. If an update fails, Setup shows the updater's own message.",
     who: "OpenClaw and the coding agents"
@@ -236,10 +242,13 @@ function unreadable(agentId: "hermes" | "openclaw", name: string, key: string, d
       : { ...base, state: "loading", sub: "Checking…" };
   }
   const fact = installedState(detail);
-  if (fact === "missing") return { ...base, state: "missing", sub: `${name} is not installed on this Mac.` };
+  if (fact === "missing") return { ...base, state: "missing", sub: `${name} is not installed on ${THIS_MACHINE}.` };
   if (fact === "unknown") return { ...base, state: "unknown", sub: "Could not be read right now." };
   // The agent answered, but its safety setting could not be read (known: false): not On, not Off.
   if (detail.safety?.known === false) return { ...base, state: "unknown", sub: "Could not be read right now." };
+  // Sessions use another profile than the one this answer was read from (the login shell's environment differs): the
+  // setting is not the sessions' setting, so the row says nothing about them (final review, Sa 2).
+  if (detail.safety?.otherProfile === true) return { ...base, state: "unknown", sub: "Could not be read right now." };
   return null;
 }
 
@@ -261,7 +270,8 @@ export function agentGuardRows(hermes: AgentDetail | null, openclaw: AgentDetail
       key: "hermes-approvals",
       agentId: "hermes",
       name: "Hermes",
-      title: "Hermes asks before running commands",
+      // Smart mode lets routine commands run and asks only about risky ones, so the row says that (final review, Re I4).
+      title: hermes.safety.mode === "smart" ? "Hermes asks before risky commands" : "Hermes asks before running commands",
       sub: change("Hermes"),
       state: hermes.safety.permissive ? "off" : "on"
     });
@@ -275,7 +285,8 @@ export function agentGuardRows(hermes: AgentDetail | null, openclaw: AgentDetail
         key: "openclaw-exec",
         agentId: "openclaw",
         name: "OpenClaw",
-        title: "OpenClaw asks before running commands",
+        // The same for OpenClaw's auto mode (final review, Re I4).
+        title: openclaw.safety.mode === "auto" ? "OpenClaw asks before risky commands" : "OpenClaw asks before running commands",
         sub: change("OpenClaw"),
         state: hasAction(openclaw, "exec-ask") ? "off" : "on"
       },

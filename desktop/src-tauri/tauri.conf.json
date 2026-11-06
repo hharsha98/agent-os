@@ -33,7 +33,8 @@
       "resources/node": "resources/node"
     },
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "minimumSystemVersion": "13.5"
     }
   }
 }

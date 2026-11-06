@@ -3,7 +3,7 @@
 // it as-is, otherwise we download the OFFICIAL nodejs.org build, verify its
 // published SHA-256, and unpack it into a fixed spot other code already
 // knows about (safety.js's search dirs, agents/detect.js's fallback paths).
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream, realpathSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -49,6 +49,32 @@ export function managedNodeRoot() {
     return path.join(base, "AgentOS");
   }
   return path.join(os.homedir(), ".agent-os");
+}
+
+// The folder that holds Agent OS's own Node (and the npm that came with it), and
+// the folder inside it where its programs live. Codex is installed with this npm
+// when no Node 22+ was on the computer, so its launcher lands in this bin folder.
+export function managedNodePrefix() {
+  return path.join(managedNodeRoot(), "node");
+}
+
+export function managedNodeBinDir() {
+  return process.platform === "win32" ? managedNodePrefix() : path.join(managedNodePrefix(), "bin");
+}
+
+// Is this file inside Agent OS's own Node folder? Compared by its written path,
+// and again by its real path (a launcher is often a link, and a temp folder
+// may itself be reached through one). Letter case is ignored where volumes ignore it.
+export function isInsideManagedNode(file) {
+  if (typeof file !== "string" || !file) return false;
+  const fold = (value) => (process.platform === "darwin" || process.platform === "win32" ? value.toLowerCase() : value);
+  const inside = (child, parent) => fold(path.resolve(child)).startsWith(fold(path.resolve(parent)) + path.sep);
+  if (inside(file, managedNodePrefix())) return true;
+  try {
+    return inside(realpathSync(file), realpathSync(managedNodePrefix()));
+  } catch {
+    return false;
+  }
 }
 
 // How to run the npm that came with the Node in `binDir`: an absolute command
@@ -145,7 +171,7 @@ export async function ensureManagedNode({ signal, onProgress = () => {}, accepts
 
   // A Node that Agent OS itself unpacked earlier (say for OpenClaw, and now
   // Codex wants one too) is reused instead of downloaded a second time.
-  const ownBinDir = process.platform === "win32" ? path.join(managedNodeRoot(), "node") : path.join(managedNodeRoot(), "node", "bin");
+  const ownBinDir = managedNodeBinDir();
   const ownNode = await runCommand(path.join(ownBinDir, process.platform === "win32" ? "node.exe" : "node"), ["--version"], 5000);
   const ownVersion = (ownNode.stdout || "").trim();
   if (ownNode.ok && accepts(ownVersion)) {

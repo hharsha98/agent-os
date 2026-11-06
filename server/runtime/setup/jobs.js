@@ -16,8 +16,8 @@ import { getRunManager } from "../runs/run-manager.js";
 import { runCommand, which } from "../safety.js";
 import { readJson, runtimePaths, writeJson } from "../store.js";
 import { agentGroup, getInstallRecipe } from "./recipes.js";
-import { ensureManagedNode, nodeSatisfiesCodex, npmLaunch } from "./managed-node.js";
-import { ALL_PLAN_AGENT_IDS, buildSetupPlan, setupOffersUpdate } from "./plan.js";
+import { ensureManagedNode, isInsideManagedNode, managedNodeBinDir, nodeSatisfiesCodex, npmLaunch } from "./managed-node.js";
+import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
 import { clearSystemCheckCache, systemCheck } from "./system-check.js";
 import { appendReceiptEntry } from "./receipt.js";
 import {
@@ -69,6 +69,8 @@ import {
 import { readChatgptAuth, readChatgptReadiness, readOpenclawModelsConfig, resolvePlanModel } from "./openclaw-plans.js";
 import { takeKey } from "./openrouter-oauth.js";
 import { signInStatus } from "./signin.js";
+import { registerUpdateActivity } from "../updates/activity.js";
+import { getUpdateChecks } from "../updates/checks.js";
 
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15000;
@@ -463,6 +465,59 @@ async function runHermesStaged(agentId, recipe, filePath, step, managedNodeBinDi
 
 // ---- step execution -----------------------------------------------------
 
+// R38: a Codex that lives under Agent OS's own Node (Setup put it there when the
+// computer had no Node 22+) updates itself through the npm that came with that
+// Node, so that Node's bin folder goes first on the updater's PATH. Any other
+// agent, and a Codex installed anywhere else, gets the usual environment.
+function updaterEnv(agentId, agentPath) {
+  if (agentId !== "codex" || !isInsideManagedNode(agentPath)) return {};
+  return { env: { PATH: `${managedNodeBinDir()}${path.delimiter}${process.env.PATH || ""}` } };
+}
+
+// After an update step has ended, whatever way it ended (it may have installed
+// the new version and still failed), and after an install step that succeeded:
+// forget what was detected before, and check the agent again so the Agents page
+// shows the version that is installed now (a newly installed agent gets its row at
+// once, not at the next 24 h round).
+// Asked as the change's own check (afterChange): it starts afresh even beside a check that began before the change, and
+// even though a failed update step still counts as running in the job list at this moment.
+// Awaited, so a job that has ended has its agent already checked. Never throws.
+// (Where the version checks are not enabled -- updateChecksEnabled in updates/checks.js -- refresh()
+// asks nothing and runs nothing, so only the detection memory is cleared.)
+async function afterChangeStep(agentId) {
+  try {
+    clearDetectCaches();
+    await getUpdateChecks().refresh(agentId, { afterChange: true });
+  } catch {
+    // a check that cannot run leaves the page as it was; it never fails the job
+  }
+}
+
+async function runStep(job, step, check) {
+  try {
+    await executeStep(job, step, check);
+  } finally {
+    // (A stored Hermes update step is refused before it runs anything, so there is nothing to check afterwards.)
+    if (step.action === "update" && step.agentId !== "hermes") await afterChangeStep(step.agentId);
+    // An install step that did not succeed installed nothing worth showing (and its status is set to "failed" by the caller).
+    else if (step.action === "install" && step.status === "succeeded") await afterChangeStep(step.agentId);
+  }
+}
+
+// The agents whose update step a running job has not finished: the update
+// service refuses a second update for any of them (SP5 "update_running").
+export function agentsUpdatingInJobs() {
+  const agents = new Set();
+  for (const { job } of activeJobs.values()) {
+    if (job.status !== "running" || !Array.isArray(job.steps)) continue;
+    for (const step of job.steps) {
+      if (step.action === "update" && (step.status === "pending" || step.status === "running")) agents.add(step.agentId);
+    }
+  }
+  return agents;
+}
+registerUpdateActivity((agentId) => agentsUpdatingInJobs().has(agentId));
+
 async function executeStep(job, step, check) {
   step.status = "running";
   await persistJob(job);
@@ -525,11 +580,12 @@ async function executeStep(job, step, check) {
   }
 
   if (step.action === "update") {
-    // A job saved before an agent's update was withdrawn can still hold that
-    // step, and Retry resumes the stored steps. Refuse it before anything is
-    // detected or started, so the updater never runs.
-    if (!setupOffersUpdate(step.agentId)) {
-      throw jobError("install_failed", "Agent OS no longer updates Hermes from Setup, so this step was not run. Nothing was changed.");
+    // A Hermes update is never a job: it runs in a terminal session the person can
+    // type into, and only for an unchanged official copy (SP5). A job saved
+    // before that can still hold the step, and Retry resumes the stored steps.
+    // Refuse it before anything is detected or started, so the updater never runs.
+    if (step.agentId === "hermes") {
+      throw jobError("install_failed", "Agent OS updates Hermes in a terminal, not in a Setup job, so this step was not run. Nothing was changed.");
     }
     const detected = await adapter.detect({ refresh: true });
     if (!detected.installed) {
@@ -543,6 +599,7 @@ async function executeStep(job, step, check) {
       command: detected.path,
       args: recipe.updateArgs,
       cwd: os.tmpdir(),
+      ...updaterEnv(step.agentId, detected.path),
       timeoutMs: INSTALL_TIMEOUT_MS
     });
     step.runIds.push(run.id);
@@ -604,7 +661,7 @@ async function runJobSteps(job, startIndex = 0) {
       if (step.status === "succeeded") continue;
       job.currentStepIndex = i;
       try {
-        await executeStep(job, step, check);
+        await runStep(job, step, check);
       } catch (error) {
         step.status = "failed";
         step.error = error?.message || "Setup step failed.";
@@ -646,7 +703,11 @@ async function startSetupJobLocked({ steps = [], acceptOpenClawRisk = false } = 
   // client-supplied installerUrl/args/path is never read at all.
   const selected = requestedIds.map((id) => validById.get(id)).filter(Boolean);
 
-  if (!selected.length) throw jobError("no_valid_steps", "No valid setup steps were selected.");
+  // A Hermes update runs only as a session (SP5). The fresh plan never holds it,
+  // but a request that names it is refused whole instead of being run without it.
+  if (!selected.length || requestedIds.includes("hermes-update")) {
+    throw jobError("no_valid_steps", "No valid setup steps were selected.");
+  }
 
   const needsOpenClawConsent = selected.some(
     (s) => s.agentId === "openclaw" && (s.action === "install" || s.action === "prereq-node")

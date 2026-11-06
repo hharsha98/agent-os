@@ -180,6 +180,11 @@ function stubManager() {
       calls.push(["resume", id]);
       return summary(id, { status: "starting" });
     },
+    async restart(id) {
+      calls.push(["restart", id]);
+      if (id !== KNOWN_ID) throw sessionError(404, "unknown_session", "That session doesn't exist anymore.");
+      return summary(id, { status: "starting" });
+    },
     async dismiss(id) {
       calls.push(["dismiss", id]);
       return summary(id, { dismissed: true });
@@ -251,6 +256,7 @@ const EVERY_ROUTE = [
   ["GET", `/api/sessions/${KNOWN_ID}`],
   ["POST", `/api/sessions/${KNOWN_ID}/stop`, {}],
   ["POST", `/api/sessions/${KNOWN_ID}/resume`, {}],
+  ["POST", `/api/sessions/${KNOWN_ID}/restart`, {}],
   ["POST", `/api/sessions/${KNOWN_ID}/dismiss`, {}],
   ["GET", `/api/sessions/${KNOWN_ID}/recording`],
   ["DELETE", `/api/sessions/${KNOWN_ID}/recording`],
@@ -320,6 +326,38 @@ test("no route takes a brain from the page (ruling R26): POST /api/sessions and 
   });
 });
 
+test("POST /:id/restart (SP5 Restart session) asks the manager with the id alone, answers its summary, and passes its refusals on as they are", async () => {
+  await withSessionsEnv(async () => {
+    const { manager, calls } = stubManager();
+    await withSessionsApp(manager, async (api) => {
+      // Whatever the body says, only the id reaches the manager: the stop, the resume and every rule are the server's.
+      const restarted = await api("POST", `/api/sessions/${KNOWN_ID}/restart`, { keys: "y\r", brain: "x" });
+      assert.equal(restarted.status, 200);
+      assert.equal(restarted.json.id, KNOWN_ID);
+      assert.equal(restarted.json.status, "starting");
+
+      const unknown = await api("POST", `/api/sessions/${OTHER_ID}/restart`, {});
+      assert.equal(unknown.status, 404);
+      assert.deepEqual(unknown.json, UNKNOWN_SESSION);
+
+      manager.restart = async () => {
+        throw sessionError(409, "resume_unavailable", "Claude Code isn't installed anymore.");
+      };
+      const refused = await api("POST", `/api/sessions/${KNOWN_ID}/restart`, {});
+      assert.equal(refused.status, 409);
+      assert.deepEqual(refused.json, { error: "resume_unavailable", message: "Claude Code isn't installed anymore." });
+    });
+    assert.deepEqual(
+      calls.filter(([name]) => name === "restart"),
+      [
+        ["restart", KNOWN_ID],
+        ["restart", OTHER_ID]
+      ],
+      "restart is asked with the id alone"
+    );
+  });
+});
+
 test("an id that is not a lower-case version 4 uuid is 404 unknown_session before the manager or the disk is asked", async () => {
   const badIds = [
     "not-a-uuid",
@@ -338,6 +376,7 @@ test("an id that is not a lower-case version 4 uuid is 404 unknown_session befor
           ["GET", ""],
           ["POST", "/stop"],
           ["POST", "/resume"],
+          ["POST", "/restart"],
           ["POST", "/dismiss"],
           ["GET", "/recording"],
           ["DELETE", "/recording"]
@@ -361,6 +400,7 @@ test("an id with broken percent-encoding is 404 unknown_session, not Express's o
           ["GET", ""],
           ["POST", "/stop"],
           ["POST", "/resume"],
+          ["POST", "/restart"],
           ["POST", "/dismiss"],
           ["GET", "/recording"],
           ["DELETE", "/recording"]
@@ -390,7 +430,7 @@ test("fixed paths come before /:id: folders, settings and quit-check reach their
 
       const quit = await api("POST", "/api/sessions/quit-check", {});
       assert.equal(quit.status, 200);
-      assert.deepEqual(quit.json, { live: [{ id: KNOWN_ID, title: "Claude Code · project", kind: "agent" }] });
+      assert.deepEqual(quit.json, { live: [{ id: KNOWN_ID, title: "Claude Code · project", kind: "agent" }], updating: false }, "final fix, Se I1: the answer also says whether an agent is updating (it was { live } only)");
 
       // Routing is case sensitive: "FOLDERS" is not the folders address, and
       // as an id it fails the pattern.

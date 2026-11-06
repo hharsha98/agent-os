@@ -204,9 +204,10 @@ function sessionStatusLine(script, userStatusLine) {
 // uuid), because the caller then falls back to the chat picker as before and
 // the person is never blocked. It runs in the session's folder with the
 // session's own environment (H1, H2), like the session itself, and never
-// rejects. `timeoutMs` is only for tests. On Windows a Cursor launcher that is a
-// .cmd file cannot start without a shell, so create-chat fails there and the
-// session falls back to the chat picker (a known limit; no shell is used on purpose).
+// rejects. `timeoutMs` is only for tests. On Windows a Cursor launcher that is an
+// npm .cmd shim starts as the program it points at (programLaunch in safety.js, used by runCli); any other
+// .cmd file cannot start without a shell, so create-chat fails there and the session
+// falls back to the chat picker (a known limit; no shell is used on purpose).
 export async function cursorCreateChat(command, { cwd, env, timeoutMs = CURSOR_CREATE_CHAT_TIMEOUT_MS } = {}) {
   const limit = new AbortController();
   const timer = setTimeout(() => limit.abort(), timeoutMs);

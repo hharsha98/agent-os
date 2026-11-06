@@ -143,6 +143,8 @@ describe("bundled server runs outside the repo", () => {
       AGENT_OS_TOKEN: "t",
       AGENT_OS_PACKAGED: "1",
       HERMES_AGENT_OS_SCHEDULER: "0",
+      // A packaged server checks agent versions (SP5); this one is a test and must not.
+      AGENT_OS_UPDATE_CHECKS: "0",
       // Keep agent detection away from the developer's real CLIs (~/.local/bin etc.).
       HOME: tmpHome,
       USERPROFILE: tmpHome,

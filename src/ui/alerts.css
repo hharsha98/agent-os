@@ -100,10 +100,51 @@
   font-size: var(--os-fs-13);
   overflow-wrap: anywhere;
 }
+/* A command keeps its real line breaks and scrolls when it is long (up to 4000 characters), so a second line can't read as
+   part of the first and a long command isn't cut off with no way to see the rest (final review, Sa 1). */
 .os-approval__cmd {
   padding: var(--os-sp-2) var(--os-sp-3);
   border-radius: var(--os-r-sm);
   background: var(--os-surface-2);
+  white-space: pre-wrap;
+  max-height: 12em;
+  overflow: auto;
+}
+.os-approval__summary {
+  white-space: pre-wrap;
+  max-height: 12em;
+  overflow: auto;
+}
+/* A scrollbar that is always drawn while a box overflows (re-review R1). The Mac's overlay scrollbar hides until the box is
+   scrolled, so twenty lines of `echo` and a delete after them read as a short list. A styled ::-webkit-scrollbar makes the
+   box keep a visible bar and thumb; `overflow: auto` stays, so a short command that fits shows no bar. Do not add
+   `scrollbar-color` or `scrollbar-width`: in current Chromium they switch this styling off. */
+.os-approval__cmd::-webkit-scrollbar,
+.os-approval__summary::-webkit-scrollbar,
+.os-approval__command-box::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.os-approval__cmd::-webkit-scrollbar-track,
+.os-approval__summary::-webkit-scrollbar-track,
+.os-approval__command-box::-webkit-scrollbar-track {
+  background: var(--os-surface-3);
+  border-radius: 5px;
+}
+.os-approval__cmd::-webkit-scrollbar-thumb,
+.os-approval__summary::-webkit-scrollbar-thumb,
+.os-approval__command-box::-webkit-scrollbar-thumb {
+  background: var(--os-line-3);
+  border: 2px solid var(--os-surface-3);
+  border-radius: 5px;
+}
+/* The sentence above the command box of a card whose command was cut (L1 of the last re-review). */
+.os-approval__cut {
+  margin: 0 0 var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  font-weight: 500;
+  color: var(--os-warn);
+  overflow-wrap: anywhere;
 }
 .os-approval__acts {
   display: flex;
@@ -115,8 +156,24 @@
   font-size: var(--os-fs-12);
   color: var(--os-text-2);
 }
-/* The confirm's sentence holds OpenClaw's command (up to 300 characters, maybe with no spaces): it wraps inside the dialog. */
+/* The confirm's sentence holds OpenClaw's command (up to 4000 characters, maybe with no spaces): it wraps inside the dialog,
+   keeps its line breaks, and scrolls in its own box when it is long. */
 .os-approval__confirm {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 20em;
+  overflow: auto;
+}
+.os-approval__command-box {
+  display: inline-block;
+  max-width: 100%;
+  max-height: 12em;
+  overflow: auto;
+  vertical-align: top;
+  padding: var(--os-sp-1) var(--os-sp-2);
+  border-radius: var(--os-r-sm);
+  background: var(--os-surface-2);
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .os-approval__error {

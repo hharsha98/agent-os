@@ -430,15 +430,35 @@ export async function resolveLoginShellEnv({
 }
 
 let cached = null;
+// The answer once the cached read has finished (null until then).
+let cachedAnswer = null;
 
 // Resolved once per server (spec H2): every caller gets the same promise.
 export function getLoginShellEnv() {
-  if (!cached) cached = resolveLoginShellEnv();
+  if (!cached) {
+    const reading = resolveLoginShellEnv();
+    cached = reading;
+    reading.then(
+      (answer) => {
+        // Only if nothing reset the cache while it ran.
+        if (cached === reading) cachedAnswer = answer;
+      },
+      () => {}
+    );
+  }
   return cached;
+}
+
+// The cached read if it has finished, else null, at once. A page request must never wait for the login shell (it can take
+// up to 10 s): the server starts the read when it starts (server/index.js), and a caller that only wants to compare what
+// it finds makes no claim while this is null (final review, Sa 2).
+export function peekLoginShellEnv() {
+  return cachedAnswer;
 }
 
 export function resetLoginShellEnvForTests() {
   cached = null;
+  cachedAnswer = null;
 }
 
 // A session's environment from `baseEnv` (the login-shell environment), as a

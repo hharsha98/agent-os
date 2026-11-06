@@ -32,6 +32,7 @@ import {
   startSetupJob
 } from "../server/runtime/setup/jobs.js";
 import { readReceipt } from "../server/runtime/setup/receipt.js";
+import { getUpdateChecks, resetUpdateChecksForTest } from "../server/runtime/updates/checks.js";
 import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 const isWindows = process.platform === "win32";
@@ -358,22 +359,31 @@ test(
 // =====================================================================
 
 test(
-  "buildSetupPlan(): Hermes already installed -> keep (default) and nothing else: no update step, no install step",
+  "buildSetupPlan(): Hermes already installed -> keep (default); the update step appears only when the checkout is clean, and then runs in a session",
   posixSkip,
   async () => {
     await withTempSetupEnv(async ({ home }) => {
       await installFakeHermesShim(home);
       const check = await systemCheck({ refresh: true });
       assert.equal(check.agents.hermes.detected.installed, true);
-      const plan = buildSetupPlan(check);
-      const hermesSteps = plan.steps.filter((s) => s.agentId === "hermes");
-      assert.deepEqual(
-        hermesSteps.map((s) => s.action),
-        ["keep"],
-        "until SP5's Hermes clean check, Setup offers no Hermes update step"
-      );
-      assert.equal(hermesSteps[0].default, true);
-      assert.ok(!plan.steps.some((s) => s.id === "hermes-update"));
+
+      // No answer from the Hermes clean check (the default), or "not clean": keep only, never an install.
+      for (const options of [undefined, { hermesClean: false }]) {
+        const plan = buildSetupPlan(check, options);
+        const hermesSteps = plan.steps.filter((s) => s.agentId === "hermes");
+        assert.deepEqual(hermesSteps.map((s) => s.action), ["keep"], "Hermes is updated only from an unchanged official copy");
+        assert.equal(hermesSteps[0].default, true);
+        assert.ok(!plan.steps.some((s) => s.id === "hermes-update"));
+      }
+
+      // Clean: the update step is back. It is not a job's step: it runs in a terminal session the person can type into.
+      const clean = buildSetupPlan(check, { hermesClean: true });
+      assert.deepEqual(clean.steps.filter((s) => s.agentId === "hermes").map((s) => s.action), ["keep", "update"]);
+      const update = clean.steps.find((s) => s.id === "hermes-update");
+      assert.equal(update.runsIn, "session");
+      assert.equal(update.default, false);
+      assert.equal(update.commandPreview, `${check.agents.hermes.detected.path} update`);
+      assert.ok(!/--yes/.test(`${update.commandPreview} ${update.changes.join(" ")}`), "no updater question is answered for the person");
     });
   }
 );
@@ -395,12 +405,65 @@ test("buildSetupPlan(): an installed OpenClaw still gets an update step, and its
   const update = plan.steps.find((s) => s.id === "openclaw-update");
   assert.equal(update.default, false);
   assert.equal(update.commandPreview, "/fake/openclaw update --json");
+  assert.equal(update.runsIn, undefined, "only the Hermes update runs in a session; the others are jobs");
   for (const step of plan.steps) {
     assert.ok(!/--yes/.test(`${step.commandPreview} ${step.changes.join(" ")}`), `${step.id} mentions --yes`);
   }
+
+  // A clean Hermes adds its update step (in a session); OpenClaw's step is the same.
+  const withClean = buildSetupPlan(check, { hermesClean: true });
+  assert.deepEqual(withClean.steps.filter((s) => s.agentId === "hermes").map((s) => s.action), ["keep", "update"]);
+  assert.equal(withClean.steps.find((s) => s.id === "hermes-update").runsIn, "session");
+  assert.equal(withClean.steps.find((s) => s.id === "hermes-update").commandPreview, "/fake/hermes update");
+  assert.deepEqual(withClean.steps.find((s) => s.id === "openclaw-update"), update);
+  for (const step of withClean.steps) {
+    assert.ok(!/--yes/.test(`${step.commandPreview} ${step.changes.join(" ")}`), `${step.id} mentions --yes`);
+  }
+  // Only an installed Hermes has an update step, clean or not.
+  const missing = buildSetupPlan({ ...check, agents: { ...check.agents, hermes: { detected: { installed: false } } } }, { hermesClean: true });
+  assert.ok(!missing.steps.some((s) => s.id === "hermes-update"));
 });
 
-test("startSetupJob(): a client cannot start a Hermes update by sending the old step id", posixSkip, async () => {
+test("buildSetupPlan(): a clean Hermes whose row says up to date has no update step and the keep step says why; every other case is unchanged (R48 on Setup)", () => {
+  const check = {
+    os: "linux",
+    arch: "x64",
+    tools: { node: { nodeOkForOpenClaw: true }, git: { found: true }, brew: { found: true } },
+    agents: {
+      hermes: { detected: { installed: true, version: "0.22.7", path: "/fake/hermes" } },
+      openclaw: { detected: { installed: true, version: "9.9.9", path: "/fake/openclaw" } }
+    },
+    network: []
+  };
+  const hermes = (options) => buildSetupPlan(check, options).steps.filter((s) => s.agentId === "hermes");
+
+  // Clean and up to date: Hermes would do nothing, or move back, so no step; the keep step carries the reason.
+  const upToDate = hermes({ hermesClean: true, hermesUpToDate: true });
+  assert.deepEqual(upToDate.map((s) => s.action), ["keep"]);
+  assert.equal(upToDate[0].noUpdate, "up-to-date");
+
+  // Clean and not up to date (the server passes false for an available row, a failed one and no row): the step stays.
+  for (const options of [{ hermesClean: true }, { hermesClean: true, hermesUpToDate: false }]) {
+    const steps = hermes(options);
+    assert.deepEqual(steps.map((s) => s.action), ["keep", "update"], JSON.stringify(options));
+    assert.equal("noUpdate" in steps[0], false, "no mark when the step is there");
+    assert.equal(steps[1].runsIn, "session");
+  }
+
+  // Not clean: no step, and no mark either, because the reason is the changed copy (the Agents page has the reasons), not "up to date".
+  for (const options of [{ hermesClean: false, hermesUpToDate: true }, { hermesUpToDate: true }, { hermesClean: false }, undefined]) {
+    const steps = hermes(options);
+    assert.deepEqual(steps.map((s) => s.action), ["keep"], JSON.stringify(options));
+    assert.equal("noUpdate" in steps[0], false, `no mark: ${JSON.stringify(options)}`);
+  }
+
+  // Only the Hermes step is affected; OpenClaw keeps its update step.
+  const withOpenclaw = buildSetupPlan(check, { hermesClean: true, hermesUpToDate: true });
+  assert.deepEqual(withOpenclaw.steps.filter((s) => s.agentId === "openclaw").map((s) => s.action), ["keep", "update"]);
+  assert.equal("noUpdate" in withOpenclaw.steps.find((s) => s.id === "openclaw-keep"), false);
+});
+
+test("startSetupJob(): a Hermes update is never a job: the step is refused, alone or among other steps, and nothing runs", posixSkip, async () => {
   await withTempSetupEnv(async ({ home }) => {
     await installFakeHermesShim(home);
     // Without this the test could pass for the wrong reason: if the fake Hermes
@@ -409,8 +472,19 @@ test("startSetupJob(): a client cannot start a Hermes update by sending the old 
     assert.equal(check.agents.hermes.detected.installed, true, "the fake Hermes is detected");
     assert.ok(
       buildSetupPlan(check).steps.some((s) => s.id === "hermes-keep"),
-      "the plan holds a Hermes keep step, so the missing update step is deliberate"
+      "the plan holds a Hermes keep step, so the refused update is deliberate"
     );
+    await assert.rejects(
+      () => startSetupJob({ steps: ["hermes-update"] }),
+      (error) => error.code === "no_valid_steps"
+    );
+    // The whole request is refused, not just the Hermes part: nothing is quietly done instead.
+    await assert.rejects(
+      () => startSetupJob({ steps: ["hermes-keep", "hermes-update"] }),
+      (error) => error.code === "no_valid_steps"
+    );
+    // Even a plan that offers the step (a clean checkout) hands jobs.js no way to run it: a job builds its own plan.
+    assert.ok(buildSetupPlan(check, { hermesClean: true }).steps.some((s) => s.id === "hermes-update"));
     await assert.rejects(
       () => startSetupJob({ steps: ["hermes-update"] }),
       (error) => error.code === "no_valid_steps"
@@ -458,7 +532,7 @@ test("retrySetupJob(): a stored job with a Hermes update step is refused and nev
     assert.ok(retried, "the stored job was found");
     const finished = await waitForJob(jobId);
 
-    const message = "Agent OS no longer updates Hermes from Setup, so this step was not run. Nothing was changed.";
+    const message = "Agent OS updates Hermes in a terminal, not in a Setup job, so this step was not run. Nothing was changed.";
     assert.equal(finished.status, "failed");
     assert.equal(finished.steps[0].status, "failed");
     assert.equal(finished.steps[0].error, message);
@@ -582,6 +656,48 @@ test(
     });
   }
 );
+
+// A newly installed agent is checked at once (SP5 E1, M3): without it the Agents page has no Version row for it until the next
+// 24 h round, as if the install had not worked. Update steps already did this; install steps do too, when they succeeded.
+test("startSetupJob(): after an install step succeeded the agent is checked at once and has a version row; with the checks off it is not", posixSkip, async () => {
+  await withTempSetupEnv(async () => {
+    const install = async () => {
+      resetSetupJobsForTest();
+      clearSystemCheckCache();
+      clearDetectCaches();
+      const plan = buildSetupPlan(await systemCheck({ refresh: true }));
+      assert.ok(plan.steps.some((s) => s.id === "hermes-install"), "the plan offers the install");
+      const finished = await waitForJob((await startSetupJob({ steps: ["hermes-install"] })).id);
+      assert.equal(finished.status, "succeeded");
+      return finished;
+    };
+
+    // The checks are off where no launcher asked for them (a test's server never checks): installing leaves the list empty.
+    await withEnv({ AGENT_OS_UPDATE_CHECKS: "0", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined }, async () => {
+      resetUpdateChecksForTest();
+      await install();
+      assert.deepEqual(getUpdateChecks().list(), [], "no check ran: the checks are not enabled here");
+    });
+
+    // Enabled (against a dead loopback registry, so nothing leaves this computer): the installed agent has its row.
+    await rm(path.join(os.homedir(), ".local"), { recursive: true, force: true });
+    await withEnv(
+      { AGENT_OS_UPDATE_CHECKS: "1", AGENT_OS_TEST_NPM_REGISTRY: "http://127.0.0.1:9", AGENT_OS_PACKAGED: undefined, AGENT_OS_DEV_ORIGIN: undefined },
+      async () => {
+        resetUpdateChecksForTest();
+        try {
+          assert.deepEqual(getUpdateChecks().list(), [], "nothing is known before the install");
+          await install();
+          const rows = getUpdateChecks().list();
+          assert.deepEqual(rows.map((row) => row.agentId), ["hermes"], "exactly the agent that was installed has a row");
+          assert.notEqual(rows[0].state, "not-installed", "and the check saw it installed");
+        } finally {
+          resetUpdateChecksForTest();
+        }
+      }
+    );
+  });
+});
 
 // =====================================================================
 // 6. Checksum mismatch
@@ -967,10 +1083,17 @@ test("startSetupJob(): an update that asks a question gets end of input, never a
     const finished = await waitForJob(job.id);
 
     assert.equal(finished.status, "failed", "a question nobody answered fails the update; it is not answered for the person");
-    const args = (await readFile(path.join(home, ".fake-updater-args.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(args, [["update", "--json"]], "the updater was started with no --yes");
+    // The version check Agent OS runs after an update (a dry run, SP5) is not the updater: leave it out.
+    const args = (await readFile(path.join(home, ".fake-updater-args.log"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((line) => !line.includes("--dry-run"));
+    assert.deepEqual(args, [["update", "--json"]], "the updater was started once, with no --yes");
     const answers = (await readFile(path.join(home, ".fake-updater-answer.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(answers, [""], "it saw end of input, not a typed answer");
+    // The updater and the version check Agent OS runs after it (the same fake, asked with --dry-run) each saw
+    // end of input: no run was ever given a typed answer.
+    assert.ok(answers.length >= 1 && answers.every((answer) => answer === ""), `it saw end of input, not a typed answer: ${JSON.stringify(answers)}`);
 
     // The updater's own last words reach the person: in the step's error (what
     // the Install panel shows) and in the step's log (the lines it printed).

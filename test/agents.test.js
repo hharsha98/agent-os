@@ -25,6 +25,7 @@ import { eventsFromDocument, gatewayFeaturesFromHelp } from "../server/runtime/a
 import { clearDetectCaches, resolveBinary } from "../server/runtime/agents/detect.js";
 import { configureConnection } from "../server/runtime/connections.js";
 import { createRunManager } from "../server/runtime/runs/run-manager.js";
+import { runCommand } from "../server/runtime/safety.js";
 import { FAKE_LOGIN_SHELL } from "./helpers/fake-agents.js";
 
 // Fakes first, then only the operating system's own folders. The developer's
@@ -238,13 +239,41 @@ if (args[0] === "status" && args.includes("--json")) {
 }
 
 if (args[0] === "config" && args[1] === "get" && args[2] === "tools.exec.mode") {
-  print(process.env.FAKE_OPENCLAW_EXEC_MODE ?? "full");
+  // A read that failed (a locked config, a Gateway that did not answer): nothing on stdout, a failing exit.
+  if (process.env.FAKE_OPENCLAW_EXEC_FAIL === "1") {
+    process.stderr.write("config store is locked\\n");
+    process.exit(1);
+  }
+  // An unset path, answered as the real OpenClaw 2026.10.10 answers it (runConfigGet): nothing on stdout, the sentence on stderr
+  // and exit 1. This is what the fake does when no mode is set (re-review R2); a mode set to "" or to the sentence is the older
+  // shape (exit 0), kept for the tests that pin it.
+  if (process.env.FAKE_OPENCLAW_EXEC_MODE === undefined || process.env.FAKE_OPENCLAW_EXEC_MODE === "UNSET") {
+    process.stderr.write("Config path is valid but unset: tools.exec.mode.\\n");
+    process.exit(1);
+  }
+  // The same unset answer in another wording (FAKE_OPENCLAW_UNSET_SENTENCE), or a failed read with its own stderr text.
+  if (process.env.FAKE_OPENCLAW_EXEC_MODE === "UNSET_STDERR") {
+    process.stderr.write(\`\${process.env.FAKE_OPENCLAW_UNSET_SENTENCE || ""}\\n\`);
+    process.exit(1);
+  }
+  if (process.env.FAKE_OPENCLAW_EXEC_MODE === "FAIL_WITH") {
+    if (process.env.FAKE_OPENCLAW_FAIL_STDERR) process.stderr.write(\`\${process.env.FAKE_OPENCLAW_FAIL_STDERR}\\n\`);
+    process.exit(1);
+  }
+  // FAKE_OPENCLAW_EXEC_AFTER is a notice printed after the value, and FAKE_OPENCLAW_EXEC_BEFORE one printed before it.
+  const before = process.env.FAKE_OPENCLAW_EXEC_BEFORE ? \`\${process.env.FAKE_OPENCLAW_EXEC_BEFORE}\\n\` : "";
+  const after = process.env.FAKE_OPENCLAW_EXEC_AFTER ? \`\\n\${process.env.FAKE_OPENCLAW_EXEC_AFTER}\` : "";
+  print(before + (process.env.FAKE_OPENCLAW_EXEC_MODE ?? "full") + after);
   process.exit(0);
 }
 
 if (args[0] === "config" && args[1] === "get" && args[2] === "browser.allowSystemProfileImport") {
-  // The real CLI prints a sentence, not a value, when a path is unset.
-  print(process.env.FAKE_OPENCLAW_COOKIE_IMPORT ?? "Config path is valid but unset: browser.allowSystemProfileImport.");
+  // An unset path, as the real OpenClaw 2026.10.10 answers it: nothing on stdout, a sentence on stderr, exit 1 (re-review R2).
+  if (process.env.FAKE_OPENCLAW_COOKIE_IMPORT === undefined) {
+    process.stderr.write("Config path is valid but unset: browser.allowSystemProfileImport.\\n");
+    process.exit(1);
+  }
+  print(process.env.FAKE_OPENCLAW_COOKIE_IMPORT);
   process.exit(0);
 }
 
@@ -1071,6 +1100,166 @@ test(
 );
 
 test(
+  "openclaw.safetyStatus(): says which mode it read, so the Safety page can word its row by mode (final fix, Re I4)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: openclawShim, version: "1.0.0", features: {} };
+    const clean = { FAKE_OPENCLAW_EXEC_FAIL: undefined, FAKE_OPENCLAW_EXEC_AFTER: undefined, FAKE_OPENCLAW_EXEC_BEFORE: undefined, FAKE_OPENCLAW_COOKIE_IMPORT: "false" };
+    for (const mode of ["full", "ask", "auto", "allowlist"]) {
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: mode }, async () => {
+        const status = await openclaw.safetyStatus(detected);
+        assert.equal(status.mode, mode, mode);
+        assert.equal(status.known, true, mode);
+      });
+    }
+    // A value that is unset (the CLI prints a sentence, or a read that worked printed nothing) is the upstream default, full.
+    for (const unset of ["Config path is valid but unset: tools.exec.mode.", ""]) {
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: unset }, async () => {
+        const status = await openclaw.safetyStatus(detected);
+        assert.equal(status.mode, "full", JSON.stringify(unset));
+        assert.equal(status.known, true, JSON.stringify(unset));
+        assert.equal(status.permissive, true);
+        assert.ok(status.actions.some((action) => action.id === "exec-ask"));
+      });
+    }
+  }
+);
+
+test(
+  "openclaw.safetyStatus(): a read that failed is unknown, never full: no finding, no Fix; and a notice around the value can't change the value (final fix, Sa M2)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: openclawShim, version: "1.0.0", features: {} };
+    const clean = { FAKE_OPENCLAW_EXEC_FAIL: undefined, FAKE_OPENCLAW_EXEC_AFTER: undefined, FAKE_OPENCLAW_EXEC_BEFORE: undefined, FAKE_OPENCLAW_COOKIE_IMPORT: "false" };
+    // The read fails: Agent OS knows nothing about the mode, so it claims nothing (the Hermes guard) and offers no Fix.
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_FAIL: "1" }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.equal(status.permissive, false);
+      assert.deepEqual(status.actions, [], "a failed read offers no Fix");
+      assert.deepEqual(status.choices, []);
+      assert.equal(status.summary, "Agent OS could not read OpenClaw's approvals setting.");
+      assert.equal(status.mode, undefined);
+    });
+    // A notice after the value: full stays full (the permissive answer wins from any line), and ask or auto stay what they are.
+    const notice = "Update available: run openclaw update";
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "full", FAKE_OPENCLAW_EXEC_AFTER: notice }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.mode, "full");
+      assert.equal(status.permissive, true);
+      assert.ok(status.actions.some((action) => action.id === "exec-ask"), "the Fix stays");
+    });
+    for (const mode of ["ask", "auto"]) {
+      for (const where of ["FAKE_OPENCLAW_EXEC_AFTER", "FAKE_OPENCLAW_EXEC_BEFORE"]) {
+        await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: mode, [where]: notice }, async () => {
+          const status = await openclaw.safetyStatus(detected);
+          assert.equal(status.mode, mode, `${mode} with a notice (${where})`);
+          assert.equal(status.known, true);
+          assert.equal(status.permissive, false);
+        });
+      }
+    }
+    // L2 (last re-review): deny and allowlist are modes Agent OS reads as they are, so a notice before or after them does not make the
+    // setting unknown (that refused the Team Room where it used to start).
+    for (const mode of ["deny", "allowlist"]) {
+      for (const where of ["FAKE_OPENCLAW_EXEC_AFTER", "FAKE_OPENCLAW_EXEC_BEFORE"]) {
+        await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: mode, [where]: notice }, async () => {
+          const status = await openclaw.safetyStatus(detected);
+          assert.equal(status.known, true, `${mode} with a notice (${where})`);
+          assert.equal(status.mode, mode);
+          assert.equal(status.permissive, false);
+          assert.deepEqual(status.actions, [], "no Fix: nothing here is too open");
+        });
+      }
+    }
+    // "full" on any line stays full, whatever else is printed: a notice can never make the reading safer.
+    for (const other of ["deny", "allowlist", "ask", "auto"]) {
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "full", FAKE_OPENCLAW_EXEC_AFTER: other }, async () => {
+        const status = await openclaw.safetyStatus(detected);
+        assert.equal(status.mode, "full", `full then ${other}`);
+        assert.equal(status.permissive, true);
+        assert.ok(status.actions.some((action) => action.id === "exec-ask"));
+      });
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "full", FAKE_OPENCLAW_EXEC_BEFORE: other }, async () => {
+        assert.equal((await openclaw.safetyStatus(detected)).mode, "full", `${other} then full`);
+      });
+    }
+    // Two different modes and no full, or a word Agent OS does not know beside a notice: unknown, not a guess.
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "ask", FAKE_OPENCLAW_EXEC_AFTER: "deny" }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.deepEqual(status.actions, []);
+    });
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "paranoid", FAKE_OPENCLAW_EXEC_AFTER: notice }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.deepEqual(status.actions, []);
+    });
+  }
+);
+
+test(
+  "the fake OpenClaw answers an unset path as the real CLI does: nothing on stdout, the sentence on stderr, exit 1 (re-review R2, pinned)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    await withEnv({ FAKE_OPENCLAW_EXEC_MODE: undefined, FAKE_OPENCLAW_COOKIE_IMPORT: undefined, FAKE_OPENCLAW_EXEC_FAIL: undefined }, async () => {
+      const exec = await runCommand(openclawShim, ["config", "get", "tools.exec.mode"], 10000);
+      assert.equal(exec.ok, false);
+      assert.equal(exec.code, 1);
+      assert.equal(exec.stdout, "");
+      assert.match(exec.stderr, /Config path is valid but unset: tools\.exec\.mode/);
+      const cookie = await runCommand(openclawShim, ["config", "get", "browser.allowSystemProfileImport"], 10000);
+      assert.equal(cookie.ok, false);
+      assert.equal(cookie.code, 1);
+      assert.equal(cookie.stdout, "");
+      assert.match(cookie.stderr, /Config path is valid but unset: browser\.allowSystemProfileImport/);
+    });
+  }
+);
+
+test(
+  "openclaw.safetyStatus(): an unset tools.exec.mode, answered as the real CLI does (stderr, exit 1), is full: the warning and both Fixes stay (re-review R2, N1)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: openclawShim, version: "1.0.0", features: {} };
+    const clean = { FAKE_OPENCLAW_EXEC_FAIL: undefined, FAKE_OPENCLAW_EXEC_AFTER: undefined, FAKE_OPENCLAW_EXEC_BEFORE: undefined };
+    // Both settings unset, the real answer for each.
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: undefined, FAKE_OPENCLAW_COOKIE_IMPORT: undefined }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.known, true, "the setting WAS read: it is unset");
+      assert.equal(status.mode, "full");
+      assert.equal(status.permissive, true);
+      assert.equal(status.summary.startsWith("OpenClaw can run commands without asking (tools.exec.mode = full)."), true, status.summary);
+      assert.deepEqual(status.actions.map((action) => action.id).sort(), ["exec-ask", "no-browser-cookies"], "both Fixes stay (the cookie read is unset too)");
+    });
+    // The other sentences the real CLI could use for the same thing, on either stream.
+    for (const sentence of ["Config path is valid but unset: tools.exec.mode.", "tools.exec.mode is not set", "no value for tools.exec.mode"]) {
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "UNSET_STDERR", FAKE_OPENCLAW_UNSET_SENTENCE: sentence, FAKE_OPENCLAW_COOKIE_IMPORT: "false" }, async () => {
+        const status = await openclaw.safetyStatus(detected);
+        assert.equal(status.known, true, sentence);
+        assert.equal(status.mode, "full", sentence);
+        assert.ok(status.actions.some((action) => action.id === "exec-ask"), sentence);
+      });
+    }
+    // A failure with some other text on stderr, or none, is still not known: no finding and no Fix.
+    for (const stderrText of ["config store is locked", "", "Gateway timeout"]) {
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "FAIL_WITH", FAKE_OPENCLAW_FAIL_STDERR: stderrText, FAKE_OPENCLAW_COOKIE_IMPORT: "false" }, async () => {
+        const status = await openclaw.safetyStatus(detected);
+        assert.equal(status.known, false, JSON.stringify(stderrText));
+        assert.deepEqual(status.actions, []);
+        assert.equal(status.permissive, false);
+      });
+    }
+    // The sentence on stdout with a good exit (the older shape) is full too.
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "Config path is valid but unset: tools.exec.mode.", FAKE_OPENCLAW_COOKIE_IMPORT: "false" }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.known, true);
+      assert.equal(status.mode, "full");
+    });
+  }
+);
+
+test(
   "hermes.configStatus(): a doctor failure reports problems and a fix hint",
   { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
   async () => {
@@ -1107,6 +1296,29 @@ test(
 function testWithHermesHome(name, options, fn) {
   return test(name, options, () => withTempHome(() => withEnv({ HERMES_HOME: undefined }, fn)));
 }
+
+testWithHermesHome(
+  "hermes.safetyStatus(): says which mode it read (manual or smart), so the Safety page can word its row by mode (final fix, Re I4)",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.22.5", features: {} };
+    const clean = { FAKE_HERMES_APPROVALS: undefined, FAKE_HERMES_APPROVALS_FAIL: undefined, FAKE_HERMES_APPROVALS_EMPTY: undefined, FAKE_HERMES_SMART_POLICY: undefined, FAKE_HERMES_SMART_POLICY_FAIL: undefined };
+    for (const mode of ["manual", "smart"]) {
+      await withEnv({ ...clean, FAKE_HERMES_APPROVALS: mode }, async () => {
+        assert.equal((await hermes.safetyStatus(detected)).mode, mode, mode);
+      });
+    }
+    await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "SMART" }, async () => {
+      assert.equal((await hermes.safetyStatus(detected)).mode, "smart", "capitals do not matter");
+    });
+    // Off, a word Agent OS does not know, and a read that failed say no mode.
+    for (const env of [{ FAKE_HERMES_APPROVALS: "off" }, { FAKE_HERMES_APPROVALS: "paranoid" }, { FAKE_HERMES_APPROVALS_FAIL: "1" }]) {
+      await withEnv({ ...clean, ...env }, async () => {
+        assert.equal((await hermes.safetyStatus(detected)).mode, undefined, JSON.stringify(env));
+      });
+    }
+  }
+);
 
 testWithHermesHome(
   "hermes.safetyStatus(): approvals.mode=off is permissive (YOLO mode)",

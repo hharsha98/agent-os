@@ -70,6 +70,9 @@ import { levelOf } from "./safetyShared";
 import { stopAllMessage } from "./stopAll";
 import QuitQuestion, { useDesktopQuit } from "./components/QuitQuestion";
 import { SessionsListProvider, useLiveSessionCount, useSessionsList } from "./useSessionsList";
+import { UpdatesProvider, useUpdates } from "./useUpdates";
+import { AGENTS_ORDER } from "./agentsShared";
+import { UPDATE_DOT_TIP, anyUpdateAvailable, firstAvailableAgent } from "./updatesShared";
 import { PALETTE_EVENT } from "./palette";
 import { isMacPlatform, isPaletteKey } from "./sessionsShared";
 
@@ -152,6 +155,8 @@ interface ShellProps {
   page: string;
   onNavigate: (page: string) => void;
   demoPublic: boolean;
+  // false while the product status has not answered yet, so `demoPublic` is only a guess. Left out, it counts as known.
+  demoKnown?: boolean;
   children: ReactNode;
 }
 
@@ -162,7 +167,11 @@ export default function Shell(props: ShellProps) {
   return (
     <OnboardingProvider enabled={!props.demoPublic}>
       <SessionsListProvider enabled={!props.demoPublic}>
-        <ShellFrame {...props} />
+        {/* SP5: the version checks' answer, for the sidebar's update dot and the Agents page. Never asked of the public demo:
+            it waits until the product status says whether this is one, so not even the first read goes out. */}
+        <UpdatesProvider enabled={!props.demoPublic && (props.demoKnown ?? true)}>
+          <ShellFrame {...props} />
+        </UpdatesProvider>
       </SessionsListProvider>
     </OnboardingProvider>
   );
@@ -198,6 +207,11 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
   // the New session dialog (a dialog that could never start anything).
   const sessionsList = useSessionsList();
   const sessionsAvailable = sessionsList.available && !demoPublic;
+  // SP5: the footer's dot while any agent has a newer version; it opens Agents on the first one that does. Never in the
+  // public demo, where this computer's agents are not the point.
+  const updates = useUpdates();
+  const updateDot = !demoPublic && anyUpdateAvailable(updates.data);
+  const updateAgent = firstAvailableAgent(updates.data, AGENTS_ORDER);
   const quitQuestion = useDesktopQuit();
   // SP4 alerts from the shared sessions list (ruling R22). The badge counts agent sessions that wait for you (K22) and
   // opens the one that has waited longest; a list that could not be refreshed shows no badge, as the menu shows no count.
@@ -637,6 +651,19 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
           <Monitor size={14} aria-hidden="true" />
           <span className="os-nav__label">{demoPublic ? "Public demo" : MACHINE_LABEL}</span>
           <span className="os-nav__label os-mono os-sidebar__version">v{__APP_VERSION__}</span>
+          {updateDot ? (
+            <button
+              type="button"
+              className="os-sidebar__update"
+              aria-label={UPDATE_DOT_TIP}
+              title={UPDATE_DOT_TIP}
+              onClick={() => {
+                setMenuOpen(false);
+                setRailExpanded(false);
+                navigateTo("agents", updateAgent ? { agent: updateAgent } : {});
+              }}
+            />
+          ) : null}
         </div>
       </aside>
       {menuOpen ? <button className="os-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} /> : null}

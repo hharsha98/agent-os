@@ -419,9 +419,9 @@ if (args[0] === "config" && args[1] === "get" && args[2] === "tools.exec.mode") 
 }
 
 if (args[0] === "config" && args[1] === "get" && args[2] === "browser.allowSystemProfileImport") {
-  // The real CLI prints a sentence, not a value, when a path is unset.
-  print("Config path is valid but unset: browser.allowSystemProfileImport.");
-  process.exit(0);
+  // An unset path, as the real OpenClaw 2026.10.10 answers it: nothing on stdout, the sentence on stderr, exit 1 (re-review R2).
+  process.stderr.write("Config path is valid but unset: browser.allowSystemProfileImport.\\n");
+  process.exit(1);
 }
 
 if (args[0] === "config" && args[1] === "set") {

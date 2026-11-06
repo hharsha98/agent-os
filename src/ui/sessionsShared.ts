@@ -12,6 +12,10 @@ import type {
   SessionSummary
 } from "../types";
 import type { StatusState } from "./components/StatusWord";
+// Node cannot follow an extensionless import when a test loads this file straight from src/; tsconfig does not allow the
+// extension, so TypeScript's only complaint (TS5097) is silenced on this one line (the alertsShared.ts pattern).
+// @ts-expect-error TS5097
+import { CANCEL_UPDATE_LINE } from "./updatesShared.ts";
 
 // ---------------------------------------------------------------------------
 // Titles, status words and the side panel's line
@@ -307,7 +311,14 @@ export const QUIT_FAST_MS = 700;
 // How much longer the question waits for the list before it says it could not check.
 export const QUIT_CHECK_MS = 6000;
 
-export type QuitView = { phase: "checking" } | { phase: "asking"; live: QuitCheckItem[] } | { phase: "unknown" };
+// `updating`: a Setup job is running an agent's update, which quitting would stop partway (final review, Se I1). Left out
+// when no update runs, so a view with only sessions is the same as it always was.
+export type QuitView = { phase: "checking" } | { phase: "asking"; live: QuitCheckItem[]; updating?: boolean } | { phase: "unknown" };
+
+// What the quit check answered, as a view: the sessions, and `updating` only when an update runs.
+function askingView(answer: { live: QuitCheckItem[]; updating?: boolean }): QuitView {
+  return answer.updating === true ? { phase: "asking", live: answer.live, updating: true } : { phase: "asking", live: answer.live };
+}
 
 // "A", "A and B", "A, B and C", "A, B, C, D and 2 more".
 export function joinNames(names: string[], max = 4): string {
@@ -346,12 +357,15 @@ export function quitQuestionCopy(view: QuitView): { title: string; body: string;
         : `${names.charAt(0).toUpperCase()}${names.slice(1)} ${updates.length === 1 ? "is" : "are"} still running. Quitting stops ${updates.length === 1 ? "it" : "them"}.`
     );
   }
+  // An update that a Setup job runs is no session, so it can be the only thing the question has to say. It uses the
+  // update's own warning (CANCEL_UPDATE_LINE), the one Setup's Cancel shows.
+  if (view.updating === true) sentences.push(CANCEL_UPDATE_LINE);
   return { ...base, body: sentences.join(" ") };
 }
 
 export interface QuitFlow {
   // POST /api/sessions/quit-check.
-  check: () => Promise<{ live: QuitCheckItem[] }>;
+  check: () => Promise<{ live: QuitCheckItem[]; updating?: boolean }>;
   // Draw (or redraw) the question.
   show: (view: QuitView) => void;
   // Tell the shell the question is on screen ("agentos://quit-shown"). Called at most once.
@@ -362,7 +376,10 @@ export interface QuitFlow {
   isOpen: () => boolean;
 }
 
-type Checked = { live: QuitCheckItem[] } | null;
+type Checked = { live: QuitCheckItem[]; updating?: boolean } | null;
+
+// Nothing would be lost: no session runs and no update runs.
+const nothingRuns = (answer: { live: QuitCheckItem[]; updating?: boolean }) => answer.live.length === 0 && answer.updating !== true;
 
 function within<T>(promise: Promise<T>, ms: number, late: T): Promise<T> {
   return new Promise<T>((resolve) => {
@@ -380,17 +397,17 @@ export async function runQuitFlow(flow: QuitFlow): Promise<void> {
   const checked: Promise<Checked> = Promise.resolve()
     .then(() => flow.check())
     .then(
-      (answer) => (answer && Array.isArray(answer.live) ? { live: answer.live } : null),
+      (answer) => (answer && Array.isArray(answer.live) ? { live: answer.live, updating: answer.updating === true } : null),
       () => null
     );
   const first = await within<Checked | "slow">(checked, QUIT_FAST_MS, "slow");
   if (!flow.isOpen()) return;
   if (first !== "slow") {
-    if (first && first.live.length === 0) {
+    if (first && nothingRuns(first)) {
       flow.answer(true);
       return;
     }
-    flow.show(first ? { phase: "asking", live: first.live } : { phase: "unknown" });
+    flow.show(first ? askingView(first) : { phase: "unknown" });
     flow.shown();
     return;
   }
@@ -398,11 +415,11 @@ export async function runQuitFlow(flow: QuitFlow): Promise<void> {
   flow.shown();
   const later = await within<Checked>(checked, QUIT_CHECK_MS, null);
   if (!flow.isOpen()) return;
-  if (later && later.live.length === 0) {
+  if (later && nothingRuns(later)) {
     flow.answer(true);
     return;
   }
-  flow.show(later ? { phase: "asking", live: later.live } : { phase: "unknown" });
+  flow.show(later ? askingView(later) : { phase: "unknown" });
 }
 
 export interface QuitRounds {
@@ -455,9 +472,9 @@ export function createQuitRounds(): QuitRounds {
 // What the update banner does with the answer to the quit check before "Install & restart" downloads anything
 // (that restart ends every session, and the shell cannot ask first on this path): null means nothing runs, so
 // install at once; otherwise the question to ask. An answer that cannot be read asks too, and says so.
-export function installQuestion(check: { live?: QuitCheckItem[] | null } | null | undefined): QuitView | null {
+export function installQuestion(check: { live?: QuitCheckItem[] | null; updating?: boolean } | null | undefined): QuitView | null {
   if (!check || !Array.isArray(check.live)) return { phase: "unknown" };
-  return check.live.length > 0 ? { phase: "asking", live: check.live } : null;
+  return nothingRuns({ live: check.live, updating: check.updating }) ? null : askingView({ live: check.live, updating: check.updating });
 }
 
 // ---------------------------------------------------------------------------

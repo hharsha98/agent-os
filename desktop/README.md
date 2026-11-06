@@ -13,17 +13,25 @@ Agent OS.app
   |     1. picks a random login token (32 bytes, never logged)
   |     2. starts   resources/node/bin/node  resources/server/server.mjs
   |                   AGENT_OS_PORT=0            (the OS picks a free port)
-  |                   AGENT_OS_TOKEN=<token>
+  |                   AGENT_OS_TOKEN=<token>     (the server removes it from its own
+  |                                              environment as soon as it has read it,
+  |                                              so no agent program inherits it)
   |                   AGENT_OS_STATIC_DIR=resources/server/web
   |                   AGENT_OS_PACKAGED=1
   |                   AGENT_OS_STDIN_SHUTDOWN=1  (stdin stays open: the quit line)
+  |                   AGENT_OS_LAUNCH_PATH = the PATH this app was started with (a
+  |                                          session's login shell starts with it)
   |                   PATH = your usual tool folders + the inherited PATH
-  |     3. waits (max 20 s) for the server to print  AGENT_OS_READY:<port>
+  |     3. waits (max 20 s) for the server to print  AGENT_OS_READY:<port>, and
+  |        goes on reading its output: a line  AGENT_OS_ALERT:<json>  means a
+  |        session needs you, and raises a desktop notification when the window
+  |        is hidden or not in front (a click shows the window)
   |     4. opens the window at  http://127.0.0.1:<port>/?launch=<token>&desktop=1
   |        (the server turns ?launch= into a secure cookie; you are logged in)
-  |     5. on quit, asks first when sessions are live (the page shows the
-  |        question), then writes AGENT_OS_SHUTDOWN to the server's stdin and
-  |        waits up to 10 s while it ends every session and run, then forces it
+  |     5. on quit, asks first when sessions are live or an agent's update is
+  |        running (the page shows the question), then writes
+  |        AGENT_OS_SHUTDOWN to the server's stdin and waits up to 10 s while it
+  |        ends every session and run, then forces it
   `-- resources/
         node/    the app's own Node 24 (separate from ~/.agent-os/node, which
                  Setup installs for OpenClaw)
@@ -38,7 +46,9 @@ keep running. Click the Dock icon, or choose Agent OS > Show Agent OS, to bring 
 back. On Windows and Linux there is no tray yet, so closing the window quits.
 
 Quitting (Agent OS > Quit Agent OS, Cmd+Q on a Mac, or closing the window on
-Windows and Linux) asks first when sessions are live. The app shows its window and
+Windows and Linux) asks first when sessions are live, or when a Setup job is
+running an agent's update (the question then adds that stopping it can leave
+that agent half-updated). The app shows its window and
 sends the page an event (`agentos://quit-requested`); the page answers
 `agentos://quit-shown` when its question is on screen and `agentos://quit-answer`
 with your choice. While the app is still starting there is no page to ask, so the
@@ -117,9 +127,17 @@ must sign `node`, `pty.node` and `spawn-helper` under `Contents/Resources`.
 ## Tested on
 
 - macOS 15, Apple silicon (arm64): built, launched with `open`, quit checks
-  by hand.
+  by hand. On 31 October the built app also showed a macOS notification for a
+  session that needed the person while its window was behind another app and
+  while it was closed (none while it was in front), and a click on it brought the
+  window back.
+- The Mac app declares macOS 13.5 as its minimum (`bundle.macOS.minimumSystemVersion`
+  in `tauri.conf.json`), the oldest the bundled Node runs on. It was not tried on
+  an older Mac.
 - Intel Mac, Windows and Linux: built by the release workflow, but **not
-  hand-tested** (see Releasing).
+  hand-tested** (see Releasing). On Windows, agents installed with npm start
+  through a route (the `.cmd` shim is read, never run) that only an automatic
+  test in CI's Windows job has tried.
 - Every pull request: CI builds the shell (debug, no installer) and runs its
   unit tests on Linux, macOS and Windows (`.github/workflows/ci.yml`, job
   `desktop`).
@@ -134,7 +152,7 @@ system warns on first launch:
   "Open Anyway".)
 - **Windows:** SmartScreen says "Windows protected your PC". Click **More
   info**, then **Run anyway**.
-- **Linux:** make the AppImage runnable first: `chmod +x Agent-OS_*.AppImage`.
+- **Linux:** make the AppImage runnable first: `chmod +x Agent.OS_*.AppImage`.
 
 ## Updater
 
@@ -148,6 +166,11 @@ matching public key. The public half is in `desktop/updater-pubkey.txt`; the
 private half is a GitHub Actions secret (never committed). On 1 October 2026
 an installed v0.3.0 on an Apple-silicon Mac showed the banner, installed
 v0.3.1 and restarted. Intel Mac, Windows and Linux updates are untested.
+
+On Windows, quit Agent OS and run the new `setup.exe` by hand: an update from
+inside the app may be blocked by the old version still running. The installer
+replaces the bundled `node.exe`, and the old server can still be holding it open.
+This is read from the updater's and installer's code, not run on Windows.
 
 How a build copes without a key (for example a local `npm run desktop:build`):
 
@@ -230,7 +253,8 @@ Each leg downloads the Node for its own target with
 runs `node scripts/prepare-desktop.mjs --skip-node --platform <p> --arch <a>` so
 the runner's own Node is never bundled by mistake and the server bundle carries
 node-pty's binary for that computer. The release notes shown on the Release come from
-`.github/release-notes.md`; edit that file to change them.
+`.github/release-notes.md`; edit that file to change them, before the draft is
+created (a reused draft keeps the notes it already has).
 
 The workflow runs in three stages so there is exactly one draft and one
 `latest.json`:
@@ -272,8 +296,12 @@ The workflow just prints "Updater: OFF" and builds without auto-update.
 
 ### Cutting a release
 
+If a draft or a tag for this version already exists (from an earlier try), delete
+both first, on GitHub and in your clone. A reused draft keeps its old release
+notes, and a manual "Run workflow" builds whatever the tag points at.
+
 ```bash
-node scripts/bump-version.mjs 0.4.0   # package.json, tauri.conf.json, Cargo.toml (+ lock files)
+node scripts/bump-version.mjs 0.4.0   # package.json, tauri.conf.json, Cargo.toml, server/runtime/store.js (+ lock files)
 git add -A
 git commit -m "Release v0.4.0"
 git tag v0.4.0
@@ -285,8 +313,8 @@ git push origin main v0.4.0           # pushing the tag starts the build
 2. When it finishes, open Releases. You will see a **Draft** release named
    "Agent OS v0.4.0". Review it, then click **Publish release**.
 
-`node --test test/release-config.test.js` (part of `npm test`) fails if the
-three versions disagree, so a forgotten bump is caught before you tag.
+`node --test test/release-config.test.js` (part of `npm test`) fails if any of
+the version places disagree, so a forgotten bump is caught before you tag.
 
 ### What to test on the draft before publishing
 
@@ -295,7 +323,9 @@ three versions disagree, so a forgotten bump is caught before you tag.
   also be `.sig` files and a `latest.json`.
 - Download the Apple Silicon DMG on a Mac, open it, and go through the
   right-click > Open steps from the release notes. The window should open and the
-  Setup Assistant should load.
+  Setup Assistant should load. Then start one session and let it reach its
+  prompt: the bundled terminal code (`pty.node`, `spawn-helper`) is only ad-hoc
+  signed, and only a real download shows whether macOS lets it run.
 - If you have access, try one of: the Windows `setup.exe` (SmartScreen steps,
   then launch), or the Linux AppImage (`chmod +x`, then launch).
 - Read the release notes on the draft once; they are the first thing a user

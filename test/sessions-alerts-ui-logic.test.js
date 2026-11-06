@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { APPROVAL_TOO_LONG as SERVER_TOO_LONG } from "../server/runtime/sessions/openclaw-approvals.js";
 import * as alerts from "../src/ui/alertsShared.ts";
 import * as help from "../src/ui/helpShared.ts";
 import * as home from "../src/ui/homeShared.ts";
@@ -321,6 +322,30 @@ test("Safety's empty state promises a card only while OpenClaw has an approval c
     "the first sentence, and the rest as it was"
   );
   assert.doesNotMatch(empty, /a card with the exact command/, "a card does not always show the exact command");
+});
+
+test("L1: a card whose command was cut says so above its box, has no Allow once and keeps Deny; a card that fits is unchanged", () => {
+  const SENTENCE = "This command is too long to show in full, so Agent OS can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
+  assert.equal(alerts.APPROVAL_TOO_LONG, SENTENCE, "the sentence, word for word");
+  assert.equal(alerts.APPROVAL_TOO_LONG, SERVER_TOO_LONG, "and the server's refusal says the same");
+  assert.equal(alerts.approvalCanAllow(card({ cut: true })), false);
+  assert.equal(alerts.approvalCanAllow(card({ cut: true, kind: "plugin" })), false, "every kind");
+  assert.equal(alerts.approvalCanAllow(card()), true, "a card that fits");
+  assert.equal(alerts.approvalCanAllow(card({ cut: false })), true);
+  // The card: the sentence sits above the command box, Allow once is not drawn for a cut card, Deny always is.
+  const code = readFileSync(new URL("../src/ui/components/ApprovalCard.tsx", import.meta.url), "utf8").replace(/\/\/.*$/gm, "");
+  assert.match(code, /\{approvalCanAllow\(card\) \? null : <p className="os-approval__cut">\{APPROVAL_TOO_LONG\}<\/p>\}\s*\{card\.kind === "exec" \? \(/, "above the command box");
+  assert.match(code, /\{approvalCanAllow\(card\) \? \(\s*<button[^>]*onClick=\{\(\) => onAnswer\("allow-once"\)\}>[\s\S]*?Allow once\s*<\/button>\s*\) : null\}/, "no Allow once for a cut card");
+  assert.match(code, /onClick=\{\(\) => onAnswer\("deny"\)\}/, "Deny stays");
+  // The Allow dialog, should it ever be asked for a cut card (it has no button to open it): the sentence above the box, and no way to confirm.
+  assert.match(code, /asking\.decision === "allow-once" && !approvalCanAllow\(asking\.card\) \? <p className="os-approval__cut">\{APPROVAL_TOO_LONG\}<\/p> : null/);
+  assert.match(code, /confirmDisabled=\{asking\.decision === "allow-once" && !approvalCanAllow\(asking\.card\)\}/);
+  // The same words everywhere: not typed again in the component.
+  assert.doesNotMatch(code, /too long to show/);
+  const css = readFileSync(new URL("../src/ui/alerts.css", import.meta.url), "utf8");
+  assert.match(css, /\.os-approval__cut\s*\{[^}]*\}/, "the sentence has a style");
+  const types = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
+  assert.match(types, /export interface ApprovalCard \{[^}]*cut\?: boolean;/, "the page's type has the field");
 });
 
 test("an answered card shows its answer, then leaves a few seconds after OpenClaw drops it", () => {

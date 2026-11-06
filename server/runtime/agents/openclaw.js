@@ -219,13 +219,17 @@ const EXEC_UNREADABLE = "Agent OS could not read OpenClaw's approvals setting.";
 // What OpenClaw says for a path that is unset: a sentence instead of a value (on stdout with exit 0 in older builds, on
 // stderr with exit 1 in 2026.10.10).
 const UNSET_SENTENCE = /valid but unset|not set|no value/i;
+// The modes Agent OS reads from more than one line of output (a notice may come before or after the value): "full" is handled
+// before this (it wins from any line), and these are the others it knows (L2 of the last re-review: deny and allowlist were missing,
+// so a notice beside them read as "not known" and the Team Room refused).
+const KNOWN_EXEC_MODES = new Set(["ask", "auto", "deny", "allowlist"]);
 
 // What `openclaw config get tools.exec.mode` printed, as { known, value } (final review, Sa M2). A read that failed or timed
 // out is not known (the Hermes guard). A read that worked and printed nothing is an unset path, the upstream default, full
 // (the real CLI prints a sentence for that, which configValue turns into "" as well). "full" wins from ANY line, so a notice
 // printed after the value can never turn it into something safer (failing open would hide the permissive mode). With more
-// than one line, a line that is exactly "ask" or "auto" is the value; if there is not exactly one such word, the mode is
-// not known. One line is the value.
+// than one line, a line that is exactly one of the modes Agent OS knows (ask, auto, deny, allowlist) is the value; if there
+// is not exactly one such word, the mode is not known. One line is the value.
 function execModeRead(result) {
   // A path that is unset is not a failed read, even when OpenClaw says it with exit 1 (re-review R2): 2026.10.10 prints
   // nothing on stdout, "Config path is valid but unset…" on stderr and exits 1, which is the permissive default, full. So
@@ -241,7 +245,7 @@ function execModeRead(result) {
   if (lines.length === 0) return { known: true, value: "" };
   if (lines.includes("full")) return { known: true, value: "full" };
   if (lines.length === 1) return { known: true, value: configValue(lines[0]) };
-  const words = [...new Set(lines.filter((line) => line === "ask" || line === "auto"))];
+  const words = [...new Set(lines.filter((line) => KNOWN_EXEC_MODES.has(line)))];
   return words.length === 1 ? { known: true, value: words[0] } : { known: false, value: "" };
 }
 

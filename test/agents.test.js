@@ -1159,8 +1159,38 @@ test(
         });
       }
     }
-    // Several lines and none of them a mode Agent OS knows: unknown, not a guess.
-    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "allowlist", FAKE_OPENCLAW_EXEC_AFTER: notice }, async () => {
+    // L2 (last re-review): deny and allowlist are modes Agent OS reads as they are, so a notice before or after them does not make the
+    // setting unknown (that refused the Team Room where it used to start).
+    for (const mode of ["deny", "allowlist"]) {
+      for (const where of ["FAKE_OPENCLAW_EXEC_AFTER", "FAKE_OPENCLAW_EXEC_BEFORE"]) {
+        await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: mode, [where]: notice }, async () => {
+          const status = await openclaw.safetyStatus(detected);
+          assert.equal(status.known, true, `${mode} with a notice (${where})`);
+          assert.equal(status.mode, mode);
+          assert.equal(status.permissive, false);
+          assert.deepEqual(status.actions, [], "no Fix: nothing here is too open");
+        });
+      }
+    }
+    // "full" on any line stays full, whatever else is printed: a notice can never make the reading safer.
+    for (const other of ["deny", "allowlist", "ask", "auto"]) {
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "full", FAKE_OPENCLAW_EXEC_AFTER: other }, async () => {
+        const status = await openclaw.safetyStatus(detected);
+        assert.equal(status.mode, "full", `full then ${other}`);
+        assert.equal(status.permissive, true);
+        assert.ok(status.actions.some((action) => action.id === "exec-ask"));
+      });
+      await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "full", FAKE_OPENCLAW_EXEC_BEFORE: other }, async () => {
+        assert.equal((await openclaw.safetyStatus(detected)).mode, "full", `${other} then full`);
+      });
+    }
+    // Two different modes and no full, or a word Agent OS does not know beside a notice: unknown, not a guess.
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "ask", FAKE_OPENCLAW_EXEC_AFTER: "deny" }, async () => {
+      const status = await openclaw.safetyStatus(detected);
+      assert.equal(status.known, false);
+      assert.deepEqual(status.actions, []);
+    });
+    await withEnv({ ...clean, FAKE_OPENCLAW_EXEC_MODE: "paranoid", FAKE_OPENCLAW_EXEC_AFTER: notice }, async () => {
       const status = await openclaw.safetyStatus(detected);
       assert.equal(status.known, false);
       assert.deepEqual(status.actions, []);

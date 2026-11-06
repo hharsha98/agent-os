@@ -2341,6 +2341,27 @@ test(
 );
 
 test(
+  "routes: OpenClaw's deny or allowlist mode with a notice line printed after it still counts as a safeguard that is on, so the room starts (L2)",
+  SKIP_POSIX,
+  async () => {
+    await setScript({ hermes: [{ text: "NOTE: h" }], openclaw: [{ text: "NOTE: o" }] });
+    await withTeamEnv(async (home) => {
+      await withRouter(async (api) => {
+        for (const mode of ["deny", "allowlist"]) {
+          await setScript({ openclawExecMode: `${mode}\nUpdate available: run openclaw update` });
+          const res = await api("POST", "/", { task: "x", confirm: true, limits: { maxTurns: 2 } });
+          assert.notEqual(res.body.error, "safeguards_unknown", mode);
+          assert.notEqual(res.body.error, "safeguards_off", mode);
+          assert.equal(res.status, 200, mode);
+          await roomEnded(res.body.id);
+        }
+        assert.equal(await teamsCount(home), 2, "both rooms were created");
+      });
+    });
+  }
+);
+
+test(
   "routes: Hermes in smart mode counts as a safeguard that is on, so the start is not refused as safeguards_off",
   SKIP_POSIX,
   async () => {

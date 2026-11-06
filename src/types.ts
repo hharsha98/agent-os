@@ -2756,6 +2756,8 @@ export interface ApprovalCard {
   summary: string;
   createdAt: string;
   expiresAt: string;
+  // True only when the server cut the summary at its limit: the command is not shown in full, so it can't be allowed from Agent OS.
+  cut?: boolean;
   sessionId: string | null;
 }
 

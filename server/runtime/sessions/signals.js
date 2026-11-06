@@ -137,7 +137,11 @@ function visibleToken(character) {
   return `\\u{${character.codePointAt(0).toString(16).toUpperCase()}}`;
 }
 
-export function cleanCommandText(value, max = ALERT_TEXT_MAX) {
+// The same, and whether the text was cut (L1 of the last re-review): `cut` is true when the FULL cleaned text, tokens
+// included, is longer than `max` code points, so it comes from the length, never from a "…" the command may end in
+// itself, and padding that collapses does not make a command cut. A card whose command was cut must not be allowed from
+// Agent OS: the part that made it risky can be exactly the part that is not shown.
+export function cleanCommandParts(value, max = ALERT_TEXT_MAX) {
   const text = String(value ?? "")
     .replace(LINE_BREAKS, "\n")
     .replace(/\t/g, " ")
@@ -148,8 +152,12 @@ export function cleanCommandText(value, max = ALERT_TEXT_MAX) {
     .trim();
   const limit = Number.isInteger(max) && max >= 0 ? max : ALERT_TEXT_MAX;
   const points = Array.from(text);
-  if (points.length <= limit) return text;
-  return limit === 0 ? "" : `${points.slice(0, limit - 1).join("")}…`;
+  if (points.length <= limit) return { text, cut: false };
+  return { text: limit === 0 ? "" : `${points.slice(0, limit - 1).join("")}…`, cut: true };
+}
+
+export function cleanCommandText(value, max = ALERT_TEXT_MAX) {
+  return cleanCommandParts(value, max).text;
 }
 
 // The one signal shape (spec: {sessionId, kind, text, at}, plus K1's source

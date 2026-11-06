@@ -179,6 +179,15 @@ export function approvalsForSession(cards: ReadonlyArray<ApprovalCard>, sessionI
   return cards.filter((card) => card.sessionId === sessionId || card.sessionId === null);
 }
 
+// A command the server cut at its limit (`cut`) is not shown in full, and the part that made it risky can be exactly the part
+// that is not shown, so Agent OS does not allow it: no Allow once, Deny stays (L1 of the last re-review). The same words are
+// the server's answer to an Allow once it still gets (409 approval_too_long); a test keeps the two equal.
+export const APPROVAL_TOO_LONG =
+  "This command is too long to show in full, so Agent OS can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
+export function approvalCanAllow(card: Pick<ApprovalCard, "cut">): boolean {
+  return card.cut !== true;
+}
+
 export function approvalHeading(card: Pick<ApprovalCard, "kind">): string {
   return card.kind === "exec" ? "OpenClaw wants to run" : "OpenClaw asks for approval";
 }

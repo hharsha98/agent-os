@@ -138,6 +138,14 @@
   border: 2px solid var(--os-surface-3);
   border-radius: 5px;
 }
+/* The sentence above the command box of a card whose command was cut (L1 of the last re-review). */
+.os-approval__cut {
+  margin: 0 0 var(--os-sp-2);
+  font-size: var(--os-fs-13);
+  font-weight: 500;
+  color: var(--os-warn);
+  overflow-wrap: anywhere;
+}
 .os-approval__acts {
   display: flex;
   flex-wrap: wrap;

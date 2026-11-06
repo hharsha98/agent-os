@@ -33,6 +33,7 @@ import {
   APPROVALS_POLL_MS,
   APPROVAL_DECISIONS,
   APPROVAL_SUMMARY_MAX,
+  APPROVAL_TOO_LONG,
   createOpenclawApprovals,
   matchApprovalSession,
   parsePendingApprovals
@@ -289,6 +290,7 @@ test("parsePendingApprovals keeps OpenClaw's fields for every kind, newest first
     summary: `Deploy: push\\u{7} the site\n${"x".repeat(3972)}…`, // the BEL is a visible token now, not deleted (re-review R1)
     createdAt: new Date(now - 1000).toISOString(),
     expiresAt: new Date(now + 240000).toISOString(),
+    cut: true, // the 5000-character summary was cut at the limit (L1)
     sessionId: null,
     sessionKey: null
   });
@@ -676,6 +678,68 @@ test("resolve sends only Allow once or Deny, only for an approval in the latest 
     manager.close(S1);
     await assert.rejects(approvals.resolve("appr-r1", "deny"), { status: 404, code: "approval_missing" });
     assert.deepEqual(cli.resolves().map((call) => call.args[3]), ["allow-once", "deny"], "only the two clicks were sent");
+  } finally {
+    await approvals.stop();
+  }
+});
+
+// ---- L1 (last re-review): a command too long to show must not be allowed from Agent OS ------------------------------------
+const TOO_LONG = "This command is too long to show in full, so Agent OS can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
+
+test("L1: a summary cut at the limit is marked cut: true, measured from the full cleaned text; a card that fits has no cut field at all", () => {
+  assert.equal(APPROVAL_TOO_LONG, TOO_LONG, "the sentence, word for word");
+  const cardOfSummary = (summary, over = {}) => parsePendingApprovals(pendingJson([fakeApproval({ summary, ...over })]))[0];
+  const isCut = (summary, over) => cardOfSummary(summary, over).cut === true;
+  const hasField = (summary) => "cut" in cardOfSummary(summary);
+  // The edge: 4001 characters are cut, 4000 and 3999 are not.
+  assert.equal(isCut("x".repeat(4001)), true);
+  assert.equal(isCut("x".repeat(4000)), false);
+  assert.equal(isCut("x".repeat(3999)), false);
+  assert.equal(hasField("x".repeat(4000)), false, "not cut: the card is exactly as it was, with no cut field");
+  assert.equal(hasField("echo hi"), false);
+  // A command that really ends in "…" and fits is not cut: the mark comes from the length, not from the last character.
+  assert.equal(isCut(`echo "wait…"`), false);
+  assert.equal(isCut(`${"x".repeat(3999)}…`), false, "4000 characters ending in a real …");
+  // Measured from the FULL cleaned text, not the raw one: padding that collapses does not make a card cut...
+  assert.equal(isCut(`echo hi${" ".repeat(9000)}there`), false);
+  assert.equal(isCut(`echo hi${"\n".repeat(9000)}there`), false);
+  assert.equal(isCut(`${"x".repeat(2000)}${" ".repeat(3000)}${"y".repeat(1999)}`), false, "4000 cleaned characters (raw 7000)");
+  assert.equal(isCut(`${"x".repeat(2000)}${" ".repeat(3000)}${"y".repeat(2000)}`), true, "4001 cleaned characters");
+  // ...and tokens count, since they are what is shown.
+  assert.equal(isCut("\u0007".repeat(700)), false, "3500 characters of tokens");
+  assert.equal(isCut("\u0007".repeat(900)), true, "4500 characters of tokens");
+  assert.equal(isCut(String.fromCodePoint(0x3164).repeat(4100) + "rm -rf ~/project"), true, "the review's fillers case");
+  // Every kind of approval: a plugin or system-agent summary is cut the same way.
+  assert.equal(isCut("x".repeat(4500), { kind: "plugin" }), true);
+  assert.equal(isCut("x".repeat(4500), { kind: "system-agent" }), true);
+  assert.equal(isCut("x".repeat(100), { kind: "plugin" }), false);
+});
+
+test("L1: the page's card (the snapshot) carries cut; resolve refuses Allow once for a cut card with 409 and that sentence and sends nothing, but takes a Deny, and a card that fits is answered as before", async () => {
+  const manager = fakeManager();
+  manager.open(S1);
+  const t = Date.now();
+  const cutRow = fakeApproval({ id: "appr-cut", sessionKey: keyOf(S1), summary: `${"echo step\n".repeat(500)}rm -rf ~/project`, createdAtMs: t - 1000, expiresAtMs: t + 300000 });
+  const fitsRow = fakeApproval({ id: "appr-fits", sessionKey: keyOf(S1), summary: "x".repeat(3999), createdAtMs: t - 2000, expiresAtMs: t + 300000 });
+  const cli = fakeCli(async (args) => (args[1] === "pending" ? listed([cutRow, fitsRow]) : { ok: true, code: 0, aborted: false, stdout: "resolved\n", stderr: "" }));
+  const approvals = createOpenclawApprovals({ manager, runCli: cli.run, intervalMs: 60000 });
+  try {
+    await waitFor(() => approvals.snapshot().approvals.length === 2);
+    const [cutCard, fitsCard] = approvals.snapshot().approvals;
+    assert.equal(cutCard.id, "appr-cut");
+    assert.equal(cutCard.cut, true, "the page is told");
+    assert.ok(cutCard.summary.endsWith("…"));
+    assert.equal(fitsCard.id, "appr-fits");
+    assert.equal("cut" in fitsCard, false, "a card that fits is unchanged");
+    // The answer route has the card at hand, so it refuses Allow once itself, before anything reaches OpenClaw.
+    await assert.rejects(approvals.resolve("appr-cut", "allow-once"), { status: 409, code: "approval_too_long", message: TOO_LONG });
+    assert.equal(cli.resolves().length, 0, "nothing was sent");
+    // Deny stays.
+    assert.deepEqual(await approvals.resolve("appr-cut", "deny"), { message: null });
+    assert.deepEqual(cli.resolves().map((call) => call.args.slice(2)), [["appr-cut", "deny"]]);
+    // A card that fits is allowed as before.
+    assert.deepEqual(await approvals.resolve("appr-fits", "allow-once"), { message: null });
+    assert.deepEqual(cli.resolves().map((call) => call.args.slice(2)), [["appr-cut", "deny"], ["appr-fits", "allow-once"]]);
   } finally {
     await approvals.stop();
   }

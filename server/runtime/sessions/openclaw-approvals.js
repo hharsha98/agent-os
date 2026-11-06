@@ -27,7 +27,7 @@
 // OS's own: OpenClaw finds its Gateway as it does in Terminal. The output is
 // read for the named fields and then dropped.
 import { sessionError } from "./errors.js";
-import { cleanAlertText, cleanCommandText } from "./signals.js";
+import { cleanAlertText, cleanCommandParts } from "./signals.js";
 import { runCli as defaultRunCli } from "./soft-stop.js";
 
 export const APPROVALS_POLL_MS = 3000;
@@ -52,6 +52,10 @@ const TERMINAL_SEQUENCE = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1
 const POLL_FAILED = "Agent OS couldn't read OpenClaw's approvals. Check that the OpenClaw Gateway is running on Agents.";
 const INVALID_DECISION = "Agent OS only sends Allow once or Deny.";
 const APPROVAL_MISSING = "That approval isn't waiting anymore.";
+// The sentence on a card whose command was cut, and the answer to an Allow once for it (409 approval_too_long). The page has the
+// same words (alertsShared.ts); a test keeps them equal.
+export const APPROVAL_TOO_LONG =
+  "This command is too long to show in full, so Agent OS can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
 const APPROVAL_BUSY = "Agent OS is already sending your answer to this approval.";
 const RESOLVE_NO_REASON = "OpenClaw didn't take that answer and gave no reason.";
 const RESOLVE_TIMED_OUT = "OpenClaw didn't answer in time, so Agent OS can't tell whether your answer arrived.";
@@ -92,8 +96,9 @@ function withoutTerminalSequences(value) {
 // line must read as a second line, Sa 1). It is cut after that, and a cut summary ends in "…" (3999 characters and the
 // sign), so a card never looks complete when it is not: the end of a long command is the part a person must be able to
 // see before they click Allow once.
+// Returns { text, cut }: `cut` is true when the full cleaned text was longer than the limit (L1 of the last re-review).
 function summaryOf(value) {
-  return cleanCommandText(value, APPROVAL_SUMMARY_MAX);
+  return cleanCommandParts(value, APPROVAL_SUMMARY_MAX);
 }
 
 // Cards in OpenClaw's own words, newest first. An entry without a usable id,
@@ -110,12 +115,15 @@ function cardsFrom(entries, now) {
     const expiresAt = isoFromMs(expiresAtMs);
     if (!createdAt || !expiresAt || expiresAtMs <= now) continue;
     ids.add(id);
+    const { text: summary, cut } = summaryOf(typeof entry.summary === "string" ? entry.summary : "");
     cards.push({
       id,
       kind,
-      summary: summaryOf(typeof entry.summary === "string" ? entry.summary : ""),
+      summary,
       createdAt,
       expiresAt,
+      // Only on a card that was cut: one that fits has no such field, so it is exactly what it was.
+      ...(cut ? { cut: true } : {}),
       sessionId: null,
       sessionKey: typeof entry.sessionKey === "string" ? entry.sessionKey : null
     });
@@ -145,6 +153,7 @@ function publicCard(card, sessions) {
     summary: card.summary,
     createdAt: card.createdAt,
     expiresAt: card.expiresAt,
+    ...(card.cut ? { cut: true } : {}),
     sessionId: matchApprovalSession(card.sessionKey, sessions)
   };
 }
@@ -335,6 +344,9 @@ export function createOpenclawApprovals({
     const sessions = openSessions();
     const card = typeof id === "string" ? currentCards(sessions).find((entry) => entry.id === id) : undefined;
     if (!card || sessions.length === 0) throw sessionError(404, "approval_missing", APPROVAL_MISSING);
+    // A command cut at the limit is never allowed from Agent OS: the part that made it risky can be the part that is not shown
+    // (L1). The card is at hand here, so this is checked before anything reaches OpenClaw. Deny stays.
+    if (decision === "allow-once" && card.cut) throw sessionError(409, "approval_too_long", APPROVAL_TOO_LONG);
     if (resolving.has(id)) throw sessionError(409, "approval_busy", APPROVAL_BUSY);
     resolving.add(id);
     const session = sessions.find((entry) => entry.id === card.sessionId) ?? sessions[0];

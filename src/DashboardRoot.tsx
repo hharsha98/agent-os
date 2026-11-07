@@ -211,6 +211,15 @@ export default function DashboardRoot() {
     document.title = demoPublic ? "Agent OS · public demo" : liveChat ? "Agent OS · live" : "Agent OS";
   }, [demoPublic, liveChat]);
 
+  // The Agent Builder add-on was removed in 0.4.1 and its menu entry is gone, so an old
+  // "?page=builder" link lands on the fleet page. The public demo keeps its Demo canvas.
+  useEffect(() => {
+    if (demoKnown && !demoPublic && page === "builder") {
+      navigateTo("fleet");
+      setPage("fleet");
+    }
+  }, [demoKnown, demoPublic, page]);
+
   if (locked) {
     return <LockedScreen />;
   }

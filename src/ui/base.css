@@ -295,6 +295,28 @@
   outline-offset: 2px;
   border-radius: var(--os-r-sm);
 }
+/* The Labs screens sit inside .os-shell, but the lock and loading screens wrap
+   them in .aos-phase2-shell alone, so the ring is repeated there. */
+.aos-root :focus-visible,
+.aos-phase2-shell :focus-visible {
+  outline: 2px solid var(--os-accent-strong);
+  outline-offset: 2px;
+}
+
+/* Interactive basics for every screen. Written with :where() so they carry no
+   weight of their own: a component rule that sets its own cursor or transition
+   still wins. Clickable things get the pointer, disabled ones the not-allowed
+   cursor, and colour changes ease over 150ms. */
+:where(.os-shell, .aos-root, .aos-phase2-shell) :where(button, [role="button"], [role="tab"], summary, select, label[for], a[href]) {
+  cursor: pointer;
+}
+:where(.os-shell, .aos-root, .aos-phase2-shell) :where(button, input, select, textarea):disabled,
+:where(.os-shell, .aos-root, .aos-phase2-shell) :where([aria-disabled="true"]) {
+  cursor: not-allowed;
+}
+:where(.os-shell, .aos-root, .aos-phase2-shell) :where(button, a[href], select, input, textarea, summary) {
+  transition: background-color var(--os-dur-quick) var(--os-ease-out), border-color var(--os-dur-quick) var(--os-ease-out), color var(--os-dur-quick) var(--os-ease-out), box-shadow var(--os-dur-quick) var(--os-ease-out);
+}
 
 /* Lock screen: centred both ways, same behaviour as before, new look */
 .os-locked {

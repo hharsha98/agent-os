@@ -1,6 +1,6 @@
 .aos-phase2-shell {
   min-height: 100vh;
-  background: #07090d;
+  background: var(--os-bg-0);
 }
 
 .aos-phase2-content {
@@ -24,7 +24,7 @@
 
 .aos-honest-note {
   margin: 0 0 16px;
-  color: #8f96a3;
+  color: var(--os-text-2);
   font-size: 13px;
   line-height: 1.5;
   max-width: 72ch;
@@ -76,22 +76,21 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-weight: 650;
 }
 
 .aos-status-grid article {
-  background: #101318;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 16px;
+  background: var(--os-surface-1);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-lg);
   padding: 16px;
 }
 
 .aos-status-grid span,
 .aos-status-grid small {
-  color: #8f96a3;
-  font-size: 11px;
+  color: var(--os-text-2);
+  font-size: 12px;
 }
 
 .aos-status-grid strong {
@@ -126,10 +125,10 @@
   gap: 4px;
   width: 100%;
   text-align: left;
-  background: #101318;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--os-surface-1);
+  border: 1px solid var(--os-line-2);
   color: inherit;
-  border-radius: 12px;
+  border-radius: var(--os-r-md);
   padding: 10px 12px;
   cursor: pointer;
 }
@@ -137,14 +136,14 @@
 .aos-workspace-list button.active,
 .aos-side-list > button.active,
 .aos-chat-agents button.active {
-  border-color: rgba(255, 122, 47, 0.55);
+  border-color: var(--os-accent-line);
 }
 
 .aos-workspace-list button span,
 .aos-side-list > button span,
 .aos-chat-agents button span {
-  color: #8f96a3;
-  font-size: 12px;
+  color: var(--os-text-2);
+  font-size: 13px;
 }
 
 .aos-workspace-preview,
@@ -163,36 +162,36 @@
 
 .aos-workspace-preview header span,
 .aos-workspace-preview header small {
-  color: #8f96a3;
-  font-size: 12px;
+  color: var(--os-text-2);
+  font-size: 13px;
 }
 
 .aos-workspace-preview img,
 .aos-workspace-preview video,
 .aos-workspace-preview audio {
   max-width: 100%;
-  border-radius: 12px;
+  border-radius: var(--os-r-md);
 }
 
 .aos-workspace-preview iframe {
   width: 100%;
   min-height: 420px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 12px;
-  background: #0b1220;
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
+  background: var(--os-surface-1);
 }
 
 .aos-workspace-preview pre,
 .aos-memory-content,
 .aos-goal-panels pre {
   white-space: pre-wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--os-font-mono);
+  font-size: 13px;
   overflow: auto;
   max-height: 480px;
-  background: #090b0f;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 12px;
+  background: var(--os-bg-0);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
   padding: 12px;
 }
 
@@ -206,28 +205,28 @@
 .aos-chat-log {
   min-height: 260px;
   padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 16px;
-  background: rgba(15, 23, 42, 0.35);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-lg);
+  background: rgba(12, 14, 18, 0.35);
   margin-bottom: 12px;
 }
 
 .aos-chat-bubble {
   max-width: 80%;
   padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.8);
+  border-radius: var(--os-r-md);
+  background: rgba(12, 14, 18, 0.8);
 }
 
 .aos-chat-bubble.role-user {
   align-self: flex-end;
-  background: rgba(255, 122, 47, 0.16);
+  background: var(--os-accent-soft);
 }
 
 .aos-chat-bubble span {
   display: block;
-  color: #8f96a3;
-  font-size: 11px;
+  color: var(--os-text-2);
+  font-size: 12px;
   margin-bottom: 4px;
 }
 
@@ -245,10 +244,10 @@
 .aos-chat-compose textarea {
   min-height: 88px;
   resize: vertical;
-  background: #090b0f;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--os-bg-0);
+  border: 1px solid var(--os-line-2);
   color: inherit;
-  border-radius: 12px;
+  border-radius: var(--os-r-md);
   padding: 12px;
 }
 
@@ -259,9 +258,9 @@
 }
 
 .aos-kanban-card {
-  background: #101318;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 12px;
+  background: var(--os-surface-1);
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-md);
   padding: 12px;
   margin-bottom: 8px;
 }
@@ -280,9 +279,9 @@
 }
 
 .aos-swarm-card.queued { opacity: 0.72; }
-.aos-swarm-card.running { border-color: #e3ac4e; }
-.aos-swarm-card.done { border-color: #40d886; }
-.aos-swarm-card.error { border-color: #e35d6a; }
+.aos-swarm-card.running { border-color: var(--os-warn); }
+.aos-swarm-card.done { border-color: var(--os-ok); }
+.aos-swarm-card.error { border-color: var(--os-danger); }
 
 .aos-timeline {
   margin: 0;
@@ -303,18 +302,18 @@
   gap: 16px;
   align-items: flex-start;
   padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  border-bottom: 1px solid var(--os-line-2);
 }
 
 .aos-permission-list .ok,
 .aos-permission-list .missing {
   flex: 0 0 92px;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 650;
 }
 
-.aos-permission-list .ok { color: #40d886; }
-.aos-permission-list .missing { color: #e3ac4e; }
+.aos-permission-list .ok { color: var(--os-ok); }
+.aos-permission-list .missing { color: var(--os-warn); }
 
 .aos-disabled-action {
   display: flex;
@@ -325,19 +324,21 @@
 
 .aos-disabled-action button:disabled,
 .aos-primary:disabled {
-  opacity: 0.45;
+  background: var(--os-surface-1);
+  border-color: var(--os-line-1);
+  color: var(--os-disabled);
   cursor: not-allowed;
 }
 
 .aos-howto {
-  color: #8f96a3;
+  color: var(--os-text-2);
   font-size: 13px;
   line-height: 1.55;
 }
 
 .aos-list-label {
-  font-size: 12px;
-  color: #8f96a3;
+  font-size: 13px;
+  color: var(--os-text-2);
 }
 
 .aos-layer-grid {
@@ -347,9 +348,9 @@
 }
 
 .aos-layer-card {
-  border: 1px solid #232833;
-  border-radius: 14px;
-  background: #12151c;
+  border: 1px solid var(--os-line-2);
+  border-radius: var(--os-r-lg);
+  background: var(--os-surface-2);
   padding: 14px 16px;
 }
 
@@ -368,38 +369,37 @@
 
 .aos-layer-card p {
   margin: 0;
-  color: #c3c8d2;
+  color: var(--os-text-2);
   font-size: 13px;
   line-height: 1.45;
 }
 
 .aos-layer-pill {
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 650;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
   padding: 3px 8px;
   border-radius: 999px;
 }
 
 .aos-layer-pill.live {
-  color: #b8f5c8;
-  background: rgba(46, 160, 90, 0.18);
+  color: var(--os-ok);
+  background: var(--os-ok-wash);
 }
 
 .aos-layer-pill.partial {
-  color: #f5d78a;
-  background: rgba(184, 140, 32, 0.18);
+  color: var(--os-warn);
+  background: var(--os-warn-wash);
 }
 
 .aos-layer-pill.missing {
-  color: #f0b4b4;
-  background: rgba(160, 46, 46, 0.18);
+  color: var(--os-danger);
+  background: var(--os-danger-wash);
 }
 
 .aos-layer-pill.demo {
-  color: #d5e8ff;
-  background: rgba(70, 140, 220, 0.22);
+  color: var(--os-text-1);
+  background: color-mix(in srgb, var(--os-ansi-4) 22%, transparent);
 }
 
 .aos-chat-actions {
@@ -414,19 +414,19 @@
   align-items: flex-start;
   margin-bottom: 16px;
   padding: 14px 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 122, 47, 0.28);
-  background: rgba(255, 122, 47, 0.08);
+  border-radius: var(--os-r-lg);
+  border: 1px solid var(--os-accent-line);
+  background: var(--os-accent-soft);
 }
 
-.aos-product-banner svg { color: #ff9a62; margin-top: 2px; flex: 0 0 auto; }
+.aos-product-banner svg { color: var(--os-accent-strong); margin-top: 2px; flex: 0 0 auto; }
 .aos-product-banner strong { display: block; margin-bottom: 4px; }
-.aos-product-banner p { margin: 0; color: #c3c8d2; font-size: 13px; line-height: 1.5; }
+.aos-product-banner p { margin: 0; color: var(--os-text-2); font-size: 13px; line-height: 1.5; }
 .aos-product-banner em {
   margin-left: auto;
   font-style: normal;
-  font-size: 12px;
-  color: #f0bd64;
+  font-size: 13px;
+  color: var(--os-warn);
   white-space: nowrap;
 }
 
@@ -456,8 +456,8 @@
 }
 
 .aos-demo-dot {
-  background: #7eb6ff;
-  box-shadow: 0 0 0 4px rgba(126, 182, 255, 0.18);
+  background: var(--os-ansi-4);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--os-ansi-4) 18%, transparent);
 }
 
 .aos-demo-steps {
@@ -475,7 +475,7 @@
 .aos-demo-steps small,
 .aos-demo-steps p {
   display: block;
-  color: #c3c8d2;
+  color: var(--os-text-2);
 }
 
 .aos-demo-transcript {
@@ -483,10 +483,10 @@
   padding: 12px;
   overflow: auto;
   white-space: pre-wrap;
-  background: #090b0f;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 12px;
+  background: var(--os-bg-0);
+  border-radius: var(--os-r-md);
+  border: 1px solid var(--os-line-1);
+  font-size: 13px;
 }
 
 .aos-demo-builder {
@@ -502,31 +502,31 @@
   gap: 10px;
   align-items: stretch;
   padding: 12px;
-  border-radius: 16px;
-  border: 1px dashed rgba(126, 182, 255, 0.35);
-  background: rgba(8, 12, 20, 0.45);
+  border-radius: var(--os-r-lg);
+  border: 1px dashed color-mix(in srgb, var(--os-ansi-4) 35%, transparent);
+  background: rgba(12, 14, 18, 0.45);
 }
 
 .aos-demo-node {
   min-width: 140px;
   text-align: left;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: #121722;
+  border-radius: var(--os-r-lg);
+  border: 1px solid var(--os-line-1);
+  background: var(--os-surface-2);
   color: inherit;
   padding: 10px 12px;
 }
 
 .aos-demo-node.active {
-  border-color: rgba(126, 182, 255, 0.8);
-  box-shadow: 0 0 0 1px rgba(126, 182, 255, 0.35);
+  border-color: color-mix(in srgb, var(--os-ansi-4) 80%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--os-ansi-4) 35%, transparent);
 }
 
 .aos-demo-node span,
 .aos-demo-node small {
   display: block;
-  color: #8f96a3;
-  font-size: 11px;
+  color: var(--os-text-2);
+  font-size: 12px;
 }
 
 .aos-demo-inspector {
@@ -539,10 +539,10 @@
 .aos-field textarea {
   min-height: 72px;
   resize: vertical;
-  background: #090b0f;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--os-bg-0);
+  border: 1px solid var(--os-line-2);
   color: inherit;
-  border-radius: 12px;
+  border-radius: var(--os-r-md);
   padding: 10px;
 }
 
@@ -553,23 +553,23 @@
 @media (max-width: 900px) {
   .aos-demo-builder {
     grid-template-columns: 1fr;
-  }
+}
 }
 
 @media (max-width: 900px) {
   .aos-phase2-content {
     margin-left: 0;
     width: 100%;
-  }
+}
 
   .aos-product-banner {
     flex-wrap: wrap;
-  }
+}
 
   .aos-product-banner em {
     white-space: normal;
     margin-left: 0;
-  }
+}
 
   .aos-workspace-layout,
   .aos-split-layout,
@@ -581,5 +581,5 @@
   .aos-swarm-grid,
   .aos-layer-grid {
     grid-template-columns: 1fr;
-  }
+}
 }

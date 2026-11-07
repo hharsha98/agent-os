@@ -216,7 +216,7 @@
   margin-top: 1px;
   border: 1px solid var(--os-line-3);
   border-radius: 50%;
-  font: 500 11.5px/1 var(--os-font-mono);
+  font: 500 12px/1 var(--os-font-mono);
   color: var(--os-text-2);
 }
 .os-help-list b {

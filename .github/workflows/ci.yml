@@ -120,3 +120,8 @@ jobs:
       - name: Run the desktop shell's unit tests
         working-directory: desktop/src-tauri
         run: cargo test --locked
+      # THIRD_PARTY_NOTICES.md is written from package-lock.json and Cargo.lock (it needs cargo, so it
+      # runs here). One system is enough: the file is the same on all of them.
+      - name: Check the third-party notices are up to date
+        if: runner.os == 'Linux'
+        run: node scripts/build-notices.mjs --check

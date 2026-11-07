@@ -183,6 +183,19 @@ describe("desktop window", () => {
     assert.equal(conf.bundle.macOS.signingIdentity, "-", "the signing setting beside it is untouched");
   });
 
+  // MIT asks that licence notices travel with the software. prepare-desktop.mjs puts LICENSE and
+  // THIRD_PARTY_NOTICES.md into resources/server, and tauri.conf.json ships that folder in every installer.
+  test("the installers carry LICENSE and THIRD_PARTY_NOTICES.md", async () => {
+    const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
+    assert.equal(conf.bundle.resources["resources/server"], "resources/server");
+    const prepare = await read("scripts/prepare-desktop.mjs");
+    assert.match(prepare, /for \(const notice of \["LICENSE", "THIRD_PARTY_NOTICES\.md"\]\)/);
+    assert.match(prepare, /cp\(path\.join\(root, notice\), path\.join\(server, notice\)\)/);
+    assert.ok(prepare.indexOf("THIRD_PARTY_NOTICES.md") < prepare.indexOf('process.argv.includes("--skip-node")'), "copied before --skip-node returns (the release always passes it)");
+    assert.match(await read("LICENSE"), /MIT License/);
+    assert.match(await read("THIRD_PARTY_NOTICES.md"), /^# Third-party notices/);
+  });
+
   test("cannot be made smaller than 1024x640 (the smallest the laptop layout is built for)", async () => {
     const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
     const main = conf.app.windows.find((window) => window.label === "main");

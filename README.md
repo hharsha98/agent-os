@@ -358,7 +358,7 @@ Questions or problems: mechaharsh@gmail.com
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The licences of the third-party software Agent OS is built on are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and that file ships inside the app.
 
 ---
 

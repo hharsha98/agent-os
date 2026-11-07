@@ -671,7 +671,7 @@ test("output cleaning: 400 KB of repeated ESC ] finishes fast, and a 2.5 MB line
       assert.equal((await waitForTerminal(manager, second.id, 20000)).status, "succeeded");
       const lines = (await manager.readEvents(second.id)).filter((e) => e.type === "line");
       assert.ok(lines.length >= 3, `${lines.length} line events`);
-      assert.ok(lines.every((e) => e.text.length <= 1024 * 1024 + 8192), "no piece is bigger than the cap plus one chunk");
+      assert.ok(lines.every((e) => e.text.length <= 1024 * 1024), "no piece is bigger than the cap, on any system");
     });
   });
 });

@@ -269,9 +269,10 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       const text = stdoutBuf + chunk.toString("utf8");
       const lines = text.split("\n");
       stdoutBuf = lines.pop();
-      if (stdoutBuf.length >= MAX_PARTIAL_LINE_CHARS) {
-        lines.push(stdoutBuf);
-        stdoutBuf = "";
+      // Cut at exactly the cap: how much one read brings differs by system (64 KB on Linux).
+      while (stdoutBuf.length >= MAX_PARTIAL_LINE_CHARS) {
+        lines.push(stdoutBuf.slice(0, MAX_PARTIAL_LINE_CHARS));
+        stdoutBuf = stdoutBuf.slice(MAX_PARTIAL_LINE_CHARS);
       }
       for (const line of lines) processLine(state, plan, line, "stdout").catch(() => {});
     });
@@ -279,9 +280,9 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       const text = stderrBuf + chunk.toString("utf8");
       const lines = text.split("\n");
       stderrBuf = lines.pop();
-      if (stderrBuf.length >= MAX_PARTIAL_LINE_CHARS) {
-        lines.push(stderrBuf);
-        stderrBuf = "";
+      while (stderrBuf.length >= MAX_PARTIAL_LINE_CHARS) {
+        lines.push(stderrBuf.slice(0, MAX_PARTIAL_LINE_CHARS));
+        stderrBuf = stderrBuf.slice(MAX_PARTIAL_LINE_CHARS);
       }
       for (const line of lines) processLine(state, plan, line, "stderr").catch(() => {});
     });

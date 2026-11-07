@@ -135,6 +135,27 @@ export function isOsc52Read(data: string): boolean {
   return parts.length >= 2 && parts[1] === "?";
 }
 
+// OSC 52 write (a program put text on the clipboard): the terminal says so, so the change is never silent, and
+// an empty text is never written (bad base64 decodes to "", and a program must not be able to wipe the clipboard).
+// Returns the sentence to show, or null when nothing should be written.
+export function clipboardWriteNotice(text: string): string | null {
+  if (typeof text !== "string" || text.length === 0) return null;
+  return `A program in this terminal changed your clipboard (${Array.from(text).length} characters).`;
+}
+
+// An OSC 8 link's visible words can differ from its address. True when the words are not that same address
+// (after trimming, ignoring a trailing slash), so the person must see the real address before it opens.
+export function linkNeedsConfirm(visibleText: string, address: string): boolean {
+  const plain = (value: string) => String(value ?? "").trim().replace(/\/+$/, "");
+  const visible = plain(visibleText);
+  return visible === "" || visible !== plain(address);
+}
+
+// The sentence for a link the desktop could not open and copied instead; it carries the address.
+export function linkCopiedNotice(address: string): string {
+  return `Link copied. Open it in your browser: ${address}`;
+}
+
 export function isAsciiOnly(data: string): boolean {
   return /^[\x00-\x7f]*$/.test(data);
 }

@@ -8,7 +8,41 @@ To check that a download is the file this release made, compare it with `SHA256S
 
 **On Windows, quit Agent OS and run the new `setup.exe` by hand:** an update from inside the app may be blocked by the old version still running. (See Known limits.)
 
-## What's new in 0.4.0
+## What's new in 0.4.1
+
+This is a security release. After 0.4.0 I had the app, the release pipeline and everything public in the repo reviewed, and fixed what the review found. I know of no one being harmed by any of this. Update if you can.
+
+**One thing to know if you use Hermes.** 0.4.0 said Hermes would "always ask before deleting". That was not true. Hermes only asks about commands its own checks flag, such as `rm -r`, `git clean` or `DROP TABLE`. A plain `rm` of one file, `rmdir` or `git restore .` is not flagged, so it runs without asking. Hermes itself has not changed; Agent OS's words have. That choice now reads "Ask before flagged deletes". OpenClaw's reviewer also judges each command, so a plain delete of one file can run there without asking too.
+
+**Fixed in the app:**
+
+- A repo's `.claude/settings.json` could freeze Agent OS when you opened a Claude Code session in that folder, including Hold to stop all. It can't any more.
+- A web page open in your browser could make Agent OS start your installed agents' programs with `--version`, again and again, with no login. It could not read anything or choose a command. That route no longer starts anything.
+- A file Agent OS couldn't read, opened in Workspace, could crash the server and end every session.
+- A request with a saved login could read a `.json` file outside Agent OS's folder, or delete such a file and a folder beside it, through a crafted workflow name.
+- A saved API key could be sent to an address given in a test request.
+- Secrets are now kept out of helper programs, notifications and saved run output more thoroughly, and more kinds of key are recognised.
+- An OpenClaw approval with no real description can now only be denied.
+
+**New protections:**
+
+- A program in a terminal can still put text on your clipboard, as in most terminals, but Agent OS now tells you when it does, and a program can no longer empty it.
+- A terminal link whose words differ from its address now shows the real address and asks before opening.
+- The app's page now has a strict content policy: only its own scripts run, and it talks only to its own server.
+- Only one copy of the desktop app runs at a time. A second launch brings the first window forward, so a second copy can't mark live sessions as ended.
+- Labs, AI APIs no longer loads logos from other websites.
+
+**If you run from source or host it yourself:**
+
+- The optional builder add-on (`vendor/open-agent-builder`) is removed. It listened on the whole network, and its packages had a critical remote-code flaw. It was never in the desktop app.
+- Admin-token mode now requires the token on more read routes, and the address parameter `?adminToken=` is gone if you used it. Demo mode can no longer run installers.
+- The Docker image moved to Node 24 and no longer runs as root.
+
+**The release pipeline:** installers are built with the exact tools in the repo's lockfile, every GitHub Action is pinned to one commit, and the bundled Node is checked against hashes kept in the repo. Before this release, an automatic check built all four installers, then installed and started each one on a real Windows, Linux, Intel Mac and Apple silicon Mac machine.
+
+**Also new:** the third-party licence notices now ship inside the app, `SHA256SUMS.txt` lets you check a download, and `SECURITY.md` says how to report a problem. Third-party packages moved to fixed versions.
+
+## What was new in 0.4.0
 
 **Sessions.** Each agent now has its own real terminal inside Agent OS. New session asks for an agent and a folder, then runs your installed Claude Code, Codex, Cursor, Hermes or OpenClaw with your own sign-in and settings (if you picked an OpenRouter or Local brain for Claude Code or Codex in Agent OS, the session uses that brain), the way Terminal would. For Claude Code it also passes its own small settings file: hooks that only tell Agent OS what Claude is doing, such as asking for permission, and a status-line wrapper for the Live meter that still runs your own status line. Your own Claude settings are not changed.
 
@@ -30,7 +64,7 @@ To check that a download is the file this release made, compare it with `SHA256S
 
 **Agent updates.** The Agents page, in the desktop app, shows the latest version of each agent, with **Update** (it asks first) and **Check for updates**. An update uses the agent's own updater. It never stops a session: an open one keeps running on its old version, and **Restart session** offers to restart it on the new one, in the same tab, after you confirm. A dot in the sidebar footer shows when any agent has an update. Setup can also offer an update as a choice next to Keep. Hermes's update is offered only when its folder is an unchanged official copy, and it runs in a terminal you can type into.
 
-**Ask only for risky commands.** On the Agents page, on your click: OpenClaw can run routine commands on its own and ask only about risky ones, and Hermes can do the same (its smart mode, plus a rule to always ask before deleting). The Safety page words each row by the mode that is on.
+**Ask only for risky commands.** On the Agents page, on your click: OpenClaw can run routine commands on its own and ask only about risky ones, and Hermes can do the same (its smart mode, plus a rule to ask about flagged deletes; see What's new in 0.4.1). The Safety page words each row by the mode that is on.
 
 **Your plan.** On OpenClaw's Agents page and in Setup's "AI brain" step, a new card lets OpenClaw use the Claude plan you already pay for (through your own Claude Code) or your ChatGPT plan (OpenClaw's own "Sign in with ChatGPT", inside the card). It lists the models your account offers, asks you to tick OpenClaw's risk notice, and checks that the agent can answer before it says done. For Hermes, "Choose in Hermes" and "Add a sign-in in Hermes" open Hermes's own tools in Terminal.app. Fable models use usage credits.
 

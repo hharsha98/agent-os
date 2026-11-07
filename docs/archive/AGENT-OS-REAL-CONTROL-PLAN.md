@@ -1,3 +1,5 @@
+Historical note from an earlier version. Do not follow its instructions.
+
 # Hermes Agent OS Real Control Plan
 
 > Historical plan. Local v1 ships at **http://127.0.0.1:8090** with Mission Control as the landing page. See `docs/V1.md`.

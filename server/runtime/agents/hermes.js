@@ -109,13 +109,14 @@ const ASK_RISKY_CHOICE = {
   id: "ask-risky",
   label: "Ask only for risky commands",
   description:
-    "Sets approvals.mode to smart, Hermes's own reviewer mode: it lets routine commands run and asks you about risky ones. Agent OS also adds one rule to its reviewer: always ask before deleting."
+    "Sets approvals.mode to smart, Hermes's own reviewer mode: it lets routine commands run and asks you about the ones its checks flag as risky. Agent OS also adds one rule: always ask about a flagged command that deletes. A plain rm of one file isn't flagged, so it runs without asking."
 };
 
 const ASK_BEFORE_DELETE_CHOICE = {
   id: "ask-before-delete",
-  label: "Always ask before deleting",
-  description: "Adds one rule to Hermes's reviewer: always ask before a command deletes files, folders or databases."
+  label: "Ask before flagged deletes",
+  description:
+    "Adds one rule to Hermes's reviewer: when its checks flag a delete, such as rm -r, git clean or DROP TABLE, ask you. A plain rm of one file isn't flagged, so it runs without asking."
 };
 
 async function safetyStatus(detected) {
@@ -155,19 +156,19 @@ async function safetyStatus(detected) {
   const hasRule = policy === HERMES_DELETE_RULE.toLowerCase();
   const isEmpty = policy === "";
   if (mode === "manual") {
-    status.summary = "Hermes asks you about every command its checks flag (approvals.mode = manual).";
+    status.summary = "Hermes asks you about the commands its checks flag, not about every delete (approvals.mode = manual).";
     if (isEmpty || hasRule) status.choices.push(ASK_RISKY_CHOICE);
   } else if (hasRule) {
     status.summary =
-      "Hermes runs routine commands on its own and asks only for risky ones, always before deleting (approvals.mode = smart).";
+      "Hermes runs routine commands on its own and asks about the commands its checks flag, not about every delete (approvals.mode = smart).";
   } else if (policy === null || isEmpty) {
     status.summary =
-      "Hermes runs routine commands on its own; its reviewer decides which risky ones to ask about (approvals.mode = smart).";
+      "Hermes runs routine commands on its own; its reviewer asks about the commands its checks flag, not about every delete (approvals.mode = smart).";
     if (isEmpty) status.choices.push(ASK_BEFORE_DELETE_CHOICE);
   } else {
     // The person's own rules: Agent OS never overwrites them.
     status.summary =
-      "Hermes runs routine commands on its own; its reviewer also follows your own rules (approvals.mode = smart).";
+      "Hermes runs routine commands on its own; its reviewer asks about the commands its checks flag and also follows your own rules (approvals.mode = smart).";
   }
   return status;
 }

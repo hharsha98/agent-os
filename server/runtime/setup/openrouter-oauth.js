@@ -242,7 +242,7 @@ export function createOpenRouterStartHandler() {
     }
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+      CALLBACK_PAGE_CSP
     );
     res.status(result.status).type("html").send(renderCallbackPage(result.kind));
   };
@@ -326,6 +326,14 @@ const PAGE_TEXT = {
 // A tiny self-contained page. It only ever shows the fixed sentences above:
 // no key, code or state is ever put in it. The script removes ?code=&state=
 // from the address bar and history of the person's browser.
+const CALLBACK_PAGE_SCRIPT = `try{history.replaceState(null,"",location.pathname)}catch(e){}`;
+// These two pages carry their own policy (it replaces the app's page policy). The one inline script is allowed by
+// its hash, not by 'unsafe-inline', so nothing else could run in them.
+const CALLBACK_PAGE_CSP = `default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${crypto
+  .createHash("sha256")
+  .update(CALLBACK_PAGE_SCRIPT)
+  .digest("base64")}'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`;
+
 export function renderCallbackPage(kind) {
   const [title, message] = PAGE_TEXT[kind] || PAGE_TEXT.failed;
   const mark = kind === "connected" ? "&#10003;" : "&#9632;";
@@ -337,7 +345,7 @@ export function renderCallbackPage(kind) {
 main{max-width:30rem;padding:2rem}h1{margin:0 0 .5rem;font-size:1.4rem}p{margin:0;color:#A7B2C2}
 .m{display:block;margin-bottom:.75rem;font-size:1.6rem;color:${color}}</style></head>
 <body><main><span class="m" aria-hidden="true">${mark}</span><h1>${title}</h1><p>${message}</p></main>
-<script>try{history.replaceState(null,"",location.pathname)}catch(e){}</script></body></html>`;
+<script>${CALLBACK_PAGE_SCRIPT}</script></body></html>`;
 }
 
 function respond(httpStatus, kind) {
@@ -473,7 +481,7 @@ export function createOpenRouterCallbackHandler() {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+      CALLBACK_PAGE_CSP
     );
     res.type("html");
     const state = req.query?.state;

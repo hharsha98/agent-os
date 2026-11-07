@@ -178,11 +178,11 @@ async function safetyStatus(detected) {
       id: "exec-auto",
       label: "Ask only for risky commands",
       description:
-        "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run and asks you about risky ones, like deleting."
+        "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run, and asks you about or refuses the ones it rates risky. It judges each command, so a plain delete of one file can run without asking."
     });
   } else if (execValue === "auto") {
     summaries.push(
-      "OpenClaw runs routine commands on its own and asks only for risky ones (tools.exec.mode = auto)."
+      "OpenClaw runs routine commands on its own; its reviewer asks you about or refuses the ones it rates risky (tools.exec.mode = auto). It judges each command, so a plain delete of one file can run without asking."
     );
   } else {
     summaries.push(`OpenClaw tools.exec.mode is "${execValue}".`);

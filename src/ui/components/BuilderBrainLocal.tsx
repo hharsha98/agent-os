@@ -106,7 +106,7 @@ export default function BuilderBrainLocal({
         )}
       </p>
       <ul className="os-bb-facts">
-        <li>Runs on this computer, so your task never leaves it. Free once downloaded.</li>
+        <li>The AI model runs on this computer. Free once downloaded.</li>
         <li>
           <span className="os-bb-exp">Experimental:</span> {note?.replace(/^Experimental:\s*/i, "") || "local models use tools less reliably."} Needs Ollama{" "}
           {OLLAMA_MIN[agentId]} or newer.

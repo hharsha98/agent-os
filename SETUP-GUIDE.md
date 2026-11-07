@@ -107,7 +107,7 @@ Compose publishes **127.0.0.1:8090** on the host. Inside the container `HOST=0.0
 - Do not distribute `.env`, the runtime store, or workflow runs.
 - Keep the process on `127.0.0.1`. Public Internet exposure is discouraged. Remote personal use is an SSH tunnel. Auth is required if you reverse-proxy it. See `docs/HOSTING.md`.
 - `HERMES_AGENT_OS_PUBLIC_MODE` is an admin lock, not a product mode. Leave it at `0`.
-- `DEMO_PUBLIC=1` is an optional local screenshot gallery. It locks host execution. The live operator lane (`DEMO_PUBLIC=0`, `AGENT_OS_LIVE_CHAT=1`) is for the owner of this machine. Plan: `docs/FULL-PRODUCT-PLAN.md`. The old public Contabo site was removed (`docs/HANDOFF-CONTABO.md`).
+- `DEMO_PUBLIC=1` is an optional local screenshot gallery. It locks host execution. The live operator lane (`DEMO_PUBLIC=0`, `AGENT_OS_LIVE_CHAT=1`) is for the owner of this machine. Plan: `docs/FULL-PRODUCT-PLAN.md`. An old public demo site on a VPS was removed.
 
 ## OmniRoute, Hermes, and OpenClaw
 
@@ -140,4 +140,4 @@ npm start   # separate terminal
 npm run smoke:local
 ```
 
-Hiring-manager demo path (under 10 minutes): Mission Control → Unified Chat dry-run → Workspace sandbox → Machine Control checklist. Leave Labs extras for later.
+Quick demo path for someone evaluating it (under 10 minutes): Mission Control → Unified Chat dry-run → Workspace sandbox → Machine Control checklist. Leave Labs extras for later.

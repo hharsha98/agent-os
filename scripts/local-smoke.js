@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Local v1 smoke — hiring-manager path in under a minute after `npm start`.
+ * Local v1 smoke — the quick path for someone evaluating it, in under a minute after `npm start`.
  * Usage: node scripts/local-smoke.js
  * Optional: BASE_URL=http://127.0.0.1:8090 node scripts/local-smoke.js
  */

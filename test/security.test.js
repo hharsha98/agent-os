@@ -778,6 +778,32 @@ test("26. R33: the page and a gated /api/ answer (signed in or not) say only the
   }
 });
 
+test("26b. U-M1: every answer carries the page's script and connection policy, with the request's own host for the WebSocket", async () => {
+  const { cookie, pageKey } = await claimSession();
+  const host = new URL(base).host;
+  const expected = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "font-src 'self' data:",
+    `connect-src 'self' ws://${host} wss://${host} ipc: http://ipc.localhost`,
+    "frame-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'self'"
+  ].join("; ");
+  const page = await fetch(`${base}/`);
+  assert.equal(page.headers.get("content-security-policy"), expected, "GET /");
+  const api = await fetch(`${base}/api/local-agents`, { headers: { cookie, "x-agent-os-key": pageKey } });
+  assert.equal(api.headers.get("content-security-policy"), expected, "an /api/ answer");
+  const html = await page.text();
+  assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)[^>]*>/i, "the page holds no inline script");
+  assert.doesNotMatch(html, /\son[a-z]+\s*=/i, "the page holds no inline event handler");
+});
+
 test("27. R33: a workspace file answer is never cached, stays sandboxed, and still says who may frame it", async () => {
   const { cookie, pageKey } = await claimSession();
   const write = await fetch(`${base}/api/workspace/files`, {

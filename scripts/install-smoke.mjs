@@ -174,11 +174,19 @@ async function checkServer(where) {
 
     const page = await fetch(`http://127.0.0.1:${port}/?launch=${token}&desktop=1`, { redirect: "manual" });
     if (page.status !== 200) throw new Error(`/ with the login token answered ${page.status}, not 200`);
+    // The page's script and connection policy (U-M1): sent on the page, naming this server's own WebSocket address,
+    // and the page itself holds no inline script it would block.
+    const csp = page.headers.get("content-security-policy") || "";
+    for (const part of ["default-src 'self'", "script-src 'self'", "object-src 'none'", "base-uri 'none'", `connect-src 'self' ws://127.0.0.1:${port} wss://127.0.0.1:${port} ipc: http://ipc.localhost`, "frame-ancestors 'self'"]) {
+      if (!csp.split("; ").includes(part)) throw new Error(`the page's Content-Security-Policy lacks "${part}". It was: ${csp || "missing"}`);
+    }
+    const html = await page.text();
+    if (/<script(?![^>]*\ssrc=)[^>]*>/i.test(html) || /\son[a-z]+\s*=/i.test(html)) throw new Error("the page holds an inline script or event handler, which its Content-Security-Policy blocks");
 
     child.stdin.write(SHUTDOWN_LINE);
     const stopped = await waitFor(() => exited, 15000);
     if (!stopped) throw new Error("the server did not exit within 15 s of the quit line");
-    return `port ${port}, health ok, page 200, quit line stops it`;
+    return `port ${port}, health ok, page 200 with its policy, quit line stops it`;
   } finally {
     if (!exited) child.kill("SIGKILL");
     rmSync(home, { recursive: true, force: true });

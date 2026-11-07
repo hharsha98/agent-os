@@ -14996,7 +14996,7 @@ git add package.json package-lock.json desktop/src-tauri/Cargo.toml desktop/src-
 
 In plain English, the commit message says: the Workspace page now uses the new design instead of the old page frame, every file shows who saved it, there is a filter for files agents saved, an Undo for Team Room saves (it asks first and never appears when the history is gone), Copy path, and, only in the desktop app and only if approved, Show in Finder. End the commit message with the attribution line the session gives.
 
-This is a good place to stop for the session: the page works, the checks are green. After the commit, **remind the owner to push**, and show the file list and line counts first (`git show --stat HEAD`) with the check that no secrets, credentials or NDA terms are in the diff. Push to a private feature branch needs no extra question; anything going to a public repo or to `main` needs the owner's explicit yes.
+This is a good place to stop for the session: the page works, the checks are green. After the commit, **remind the owner to push**, and show the file list and line counts first (`git show --stat HEAD`) with the check that no secrets, credentials or private content are in the diff. Push to a private feature branch needs no extra question; anything going to a public repo or to `main` needs the owner's explicit yes.
 
 
 ---

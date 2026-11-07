@@ -410,7 +410,7 @@ This folder is the **sandbox** for local v1.
 - Memory vault exports land in \`vault/\`
 - You can write \`.md\`, \`.txt\`, or \`.html\` from the dashboard
 
-This file was seeded once so a hiring-manager demo is not an empty list. Delete it anytime — Agent OS will not recreate it after the seed marker is set.
+This file was seeded once so a first look is not an empty list. Delete it anytime — Agent OS will not recreate it after the seed marker is set.
 `;
 
 async function ensureWelcomeWorkspaceSeed() {

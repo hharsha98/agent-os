@@ -149,15 +149,42 @@ export function originCheckMiddleware() {
   };
 }
 
+// The page's script and connection limits (U-M1, D-M1): only this server's own scripts run, and the page may talk
+// only to this server (HTTP and its own WebSocket) and to the desktop shell's IPC. `host` is the request's Host
+// header, already checked against the allow-list by hostAllowlistMiddleware; it names the WebSocket address, since
+// 'self' does not cover ws: in every browser. Inline styles stay (the terminal and the React UI set some).
+export function pageContentSecurityPolicy(hostHeader) {
+  const hostname = parseHostHeader(hostHeader);
+  const raw = String(hostHeader || "").trim().toLowerCase();
+  // Only a plain host[:port] (letters, digits, dots, dashes, brackets, colons) can enter a header value.
+  const ws = isAllowedHost(hostname) && /^[a-z0-9.\-[\]:]+$/.test(raw) ? ` ws://${raw} wss://${raw}` : "";
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "font-src 'self' data:",
+    `connect-src 'self'${ws} ipc: http://ipc.localhost`,
+    "frame-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'self'"
+  ].join("; ");
+}
+
 export function securityHeadersMiddleware() {
-  return (_req, res, next) => {
+  return (req, res, next) => {
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("X-Content-Type-Options", "nosniff");
     // Only this server's own pages may frame it (R33). 'self' includes the port, so a page an agent serves on another
     // local port cannot lay a decoy over a signed-in Agent OS. A route that sets its own Content-Security-Policy keeps
     // frame-ancestors 'self' in it (the workspace raw route and the OpenRouter pages do).
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
-    res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
+    // The full policy goes on every response, except while the dev launcher's flag is on: Vite's dev server puts
+    // inline scripts in the page, so only the frame rule applies there.
+    res.setHeader("Content-Security-Policy", devOriginAllowed() ? "frame-ancestors 'self'" : pageContentSecurityPolicy(req.get("host")));
     next();
   };
 }

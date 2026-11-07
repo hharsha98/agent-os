@@ -3,7 +3,7 @@
 // The Agents panels read and change ONE profile: Hermes's from Agent OS's saved connection (resolveHermesHome), OpenClaw's
 // from the server's own environment. A session starts with the login shell's environment (H1), so a person whose shell
 // startup file exports HERMES_HOME (or an OpenClaw state or profile variable), and who opens Agent OS from the Dock,
-// has sessions in a profile the panel never looked at. "Always ask before deleting" on the panel then says nothing
+// has sessions in a profile the panel never looked at. "Ask before flagged deletes" on the panel then says nothing
 // about the profile a session runs in. This module notices the split from the cached login-shell read, so the panel
 // can say so and the Safety page can stop claiming a safeguard it never saw.
 //

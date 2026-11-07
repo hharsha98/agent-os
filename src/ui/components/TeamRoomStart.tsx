@@ -4,11 +4,11 @@
 // spend money on their own accounts.
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Bot, CheckCircle2, MessagesSquare, Play, RefreshCw, XCircle } from "lucide-react";
-import { getExecutionGateStatus, listAgents, listTeamRooms, startTeamRoom } from "../../api";
+import { getAgentDetail, getExecutionGateStatus, listAgents, listTeamRooms, startTeamRoom } from "../../api";
 import { navigateTo } from "../../nav";
 import type { AgentSummary, ExecutionGateStatus, TeamRoomSummary } from "../../types";
 import { withTimeout } from "../homeShared";
-import { COST_CAP_NOTE, OPENCLAW_MODEL_PATTERN, agentLabel, agentMaker, roomStatusView, usd } from "../teamRoomShared";
+import { COST_CAP_NOTE, OPENCLAW_MODEL_PATTERN, agentLabel, agentMaker, roomStatusView, teamRoomTalkOnlyText, usd } from "../teamRoomShared";
 import AgentConfirmModal from "./AgentConfirmModal";
 import Banner from "./Banner";
 import EmptyState from "./EmptyState";
@@ -83,6 +83,7 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
   const [gateFailed, setGateFailed] = useState(false);
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [agentsFailed, setAgentsFailed] = useState(false);
+  const [openclawMode, setOpenclawMode] = useState<string | null>(null);
   const [task, setTask] = useState("");
   const [turns, setTurns] = useState("6");
   const [minutes, setMinutes] = useState("10");
@@ -123,10 +124,21 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
       agentsInFlight.current = false;
     }
   }
+  // OpenClaw's tools.exec.mode, which words what Agent OS promises below (A-I3). A read that fails keeps the last
+  // answer, and no answer keeps the sentence the page always had.
+  async function loadOpenclawMode() {
+    try {
+      const detail = await withTimeout(getAgentDetail("openclaw"), AGENTS_TIMEOUT_MS);
+      setOpenclawMode(detail.safety?.mode ?? null);
+    } catch {
+      // Nothing to show for it.
+    }
+  }
   useEffect(() => {
     void loadRooms();
     void loadGate();
     void loadAgents();
+    void loadOpenclawMode();
   }, []);
   useInterval(() => void loadRooms(), 5000);
   useInterval(() => void loadGate(), 15000);
@@ -327,10 +339,7 @@ export default function TeamRoomStart({ onOpenRoom }: { onOpenRoom: (id: string)
           </p>
 
           <h2 className="os-team__h os-team__h--spaced">What Agent OS does by itself</h2>
-          <p className="os-team__lede-small">
-            Agent OS asks both agents to only talk. Hermes is limited to talking when its version allows it, and OpenClaw must ask before it
-            runs a command. Agent OS passes each message along, and it asks you before it saves anything.
-          </p>
+          <p className="os-team__lede-small">{teamRoomTalkOnlyText(openclawMode)}</p>
           <ul className="os-team__does">
             <li className="yes">
               <CheckCircle2 size={18} aria-hidden="true" />

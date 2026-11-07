@@ -5,8 +5,8 @@ import "./styles.css";
 import "./agent-os.css";
 import { claimSession } from "./sessionKey";
 
-// a "launch" query param carries the one-time local session
-// token printed in the terminal. Claim it (the server sets the session cookie
+// a "launch" query param carries the local session token printed in the terminal. It works until the server
+// stops, and is new on every launch unless AGENT_OS_TOKEN fixes it. Claim it (the server sets the session cookie
 // and answers with the page key, which claimSession keeps), strip it from the
 // URL (so it never lingers in history or gets sent as a Referer), then render.
 async function claimLaunchToken() {

@@ -470,6 +470,20 @@ test("brainOptions(): ALWAYS OpenRouter (even with a good local model on a big c
   });
 });
 
+test("Ollama's cloud-routed models (names ending -cloud or :cloud) are not offered as local models (U-M5)", async () => {
+  await withEnv({ AGENT_OS_OLLAMA_URL: `http://127.0.0.1:${mirrorPort}` }, async () => {
+    resetOllamaFake();
+    ollamaModels["gpt-oss:120b-cloud"] = { ...ollamaModels["llama3:8b"] };
+    ollamaModels["kimi-k2:cloud"] = { ...ollamaModels["llama3:8b"] };
+    clearBrainCacheForTest();
+    const names = (await listLocalModels({ ramGb: 32 })).map((m) => m.name);
+    assert.ok(names.includes("llama3:8b"), "a model that really runs here is still listed");
+    assert.ok(!names.some((name) => /[-:]cloud$/.test(name)), `no cloud model in ${names.join(", ")}`);
+    resetOllamaFake();
+    clearBrainCacheForTest();
+  });
+});
+
 // =====================================================================
 // 4. Defaults protect working agents
 // =====================================================================

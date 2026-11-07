@@ -75,7 +75,6 @@ interface Props {
 interface ShowcaseProvider {
   name: string;
   access: string;
-  logo: string;
   initials: string;
 }
 
@@ -87,8 +86,6 @@ interface ShowcaseGroup {
   providers: ShowcaseProvider[];
 }
 
-const iconify = (icon: string) => `https://api.iconify.design/${icon}.svg`;
-
 const SHOWCASE_GROUPS: ShowcaseGroup[] = [
   {
     id: "compatible",
@@ -96,9 +93,9 @@ const SHOWCASE_GROUPS: ShowcaseGroup[] = [
     count: "3 route formats",
     tone: "orange",
     providers: [
-      { name: "Anthropic compatible", access: "Messages", logo: iconify("logos:anthropic-icon"), initials: "AN" },
-      { name: "OpenAI compatible", access: "Chat", logo: iconify("logos:openai-icon"), initials: "OA" },
-      { name: "OpenAI Responses", access: "Responses", logo: iconify("logos:openai-icon"), initials: "OA" }
+      { name: "Anthropic compatible", access: "Messages", initials: "AN" },
+      { name: "OpenAI compatible", access: "Chat", initials: "OA" },
+      { name: "OpenAI Responses", access: "Responses", initials: "OA" }
     ]
   },
   {
@@ -107,21 +104,21 @@ const SHOWCASE_GROUPS: ShowcaseGroup[] = [
     count: "15 featured of 27",
     tone: "green",
     providers: [
-      { name: "Google Gemini", access: "Free tier", logo: iconify("logos:google-gemini"), initials: "GE" },
-      { name: "Groq", access: "Free tier", logo: iconify("bxl:groq-ai"), initials: "GQ" },
-      { name: "DeepSeek", access: "API access", logo: iconify("logos:deepseek-icon"), initials: "DS" },
-      { name: "Mistral AI", access: "Free tier", logo: iconify("logos:mistral-ai-icon"), initials: "MI" },
-      { name: "OpenRouter", access: "Free models", logo: iconify("simple-icons:openrouter"), initials: "OR" },
-      { name: "Cerebras", access: "Free tier", logo: "https://cdn.sanity.io/images/e4qjo92p/production/e7a55ae5ab7e2c4fdfd4e66a51f628d1f2f44207-967x967.png?w=128&h=128&fit=max&auto=format", initials: "CE" },
-      { name: "NVIDIA NIM", access: "Developer API", logo: iconify("logos:nvidia"), initials: "NV" },
-      { name: "Cloudflare Workers AI", access: "Free allocation", logo: iconify("logos:cloudflare-workers-icon"), initials: "CF" },
-      { name: "Hugging Face", access: "Free tier", logo: iconify("logos:hugging-face"), initials: "HF" },
-      { name: "Pollinations AI", access: "No key", logo: "https://pollinations.ai/favicon.ico", initials: "PA" },
-      { name: "Puter", access: "User-pays", logo: "https://puter.com/favicon.ico", initials: "PU" },
-      { name: "Ollama", access: "Local & free", logo: iconify("simple-icons:ollama"), initials: "OL" },
-      { name: "LocalAI", access: "Local & free", logo: "https://localai.io/favicon.svg", initials: "LA" },
-      { name: "Together AI", access: "Developer API", logo: "https://cdn.prod.website-files.com/69654e88dce9154b5f1206dd/699e382b218f39bfa0a115d9_favicon.png", initials: "TO" },
-      { name: "Stability AI", access: "Media API", logo: iconify("logos:stability-ai-icon"), initials: "ST" }
+      { name: "Google Gemini", access: "Free tier", initials: "GE" },
+      { name: "Groq", access: "Free tier", initials: "GQ" },
+      { name: "DeepSeek", access: "API access", initials: "DS" },
+      { name: "Mistral AI", access: "Free tier", initials: "MI" },
+      { name: "OpenRouter", access: "Free models", initials: "OR" },
+      { name: "Cerebras", access: "Free tier", initials: "CE" },
+      { name: "NVIDIA NIM", access: "Developer API", initials: "NV" },
+      { name: "Cloudflare Workers AI", access: "Free allocation", initials: "CF" },
+      { name: "Hugging Face", access: "Free tier", initials: "HF" },
+      { name: "Pollinations AI", access: "No key", initials: "PA" },
+      { name: "Puter", access: "User-pays", initials: "PU" },
+      { name: "Ollama", access: "Local & free", initials: "OL" },
+      { name: "LocalAI", access: "Local & free", initials: "LA" },
+      { name: "Together AI", access: "Developer API", initials: "TO" },
+      { name: "Stability AI", access: "Media API", initials: "ST" }
     ]
   },
   {
@@ -130,16 +127,16 @@ const SHOWCASE_GROUPS: ShowcaseGroup[] = [
     count: "10 featured of 16",
     tone: "blue",
     providers: [
-      { name: "GitHub", access: "OAuth", logo: iconify("logos:github-icon"), initials: "GH" },
-      { name: "Slack", access: "OAuth", logo: iconify("logos:slack-icon"), initials: "SL" },
-      { name: "Notion", access: "Free plan", logo: iconify("logos:notion-icon"), initials: "NO" },
-      { name: "Stripe", access: "Developer API", logo: iconify("logos:stripe"), initials: "SR" },
-      { name: "Twilio", access: "Trial", logo: iconify("logos:twilio-icon"), initials: "TW" },
-      { name: "Spotify", access: "OAuth", logo: iconify("logos:spotify-icon"), initials: "SP" },
-      { name: "Google Maps", access: "Developer API", logo: iconify("logos:google-maps"), initials: "GM" },
-      { name: "Discord", access: "OAuth", logo: iconify("logos:discord-icon"), initials: "DI" },
-      { name: "Airtable", access: "Free plan", logo: iconify("logos:airtable"), initials: "AT" },
-      { name: "Zapier", access: "Free plan", logo: iconify("logos:zapier"), initials: "ZA" }
+      { name: "GitHub", access: "OAuth", initials: "GH" },
+      { name: "Slack", access: "OAuth", initials: "SL" },
+      { name: "Notion", access: "Free plan", initials: "NO" },
+      { name: "Stripe", access: "Developer API", initials: "SR" },
+      { name: "Twilio", access: "Trial", initials: "TW" },
+      { name: "Spotify", access: "OAuth", initials: "SP" },
+      { name: "Google Maps", access: "Developer API", initials: "GM" },
+      { name: "Discord", access: "OAuth", initials: "DI" },
+      { name: "Airtable", access: "Free plan", initials: "AT" },
+      { name: "Zapier", access: "Free plan", initials: "ZA" }
     ]
   }
 ];
@@ -180,11 +177,10 @@ function CopyButton({ value, label = "Copy" }: { value: string; label?: string }
 }
 
 function ShowcaseLogo({ provider }: { provider: ShowcaseProvider }) {
-  const [failed, setFailed] = useState(false);
+  // The initials only: no logo is fetched, so opening this page sends nothing to any other website.
   return (
     <span className="aos-provider-logo" aria-hidden="true">
       <strong>{provider.initials}</strong>
-      {!failed ? <img src={provider.logo} alt="" onError={() => setFailed(true)} /> : null}
     </span>
   );
 }

@@ -1,3 +1,5 @@
+Historical note from an earlier version. Do not follow its instructions.
+
 *Historical document (written for v0.2). For the current state see the README.*
 
 # Hermes Agent OS Audit

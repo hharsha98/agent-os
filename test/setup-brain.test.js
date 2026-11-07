@@ -1085,6 +1085,20 @@ test("configure job: Hermes falls back to --api-key when its private prompt is r
   });
 });
 
+test("configure job: a pasted key with a stray space or line break is trimmed, so the literal scrub can find it", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await writeFile(path.join(home, ".fake-hermes-no-stdin-prompt"), "1");
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: `  ${VALID_KEY}\n`, model: "free/128k" });
+    const finished = await waitForJob(job.id);
+    assert.equal(finished.status, "succeeded");
+    const lines = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+    const withFlag = lines.filter((e) => e.argv[0] === "auth" && e.argv[1] === "add" && e.argv.includes("--api-key"));
+    assert.equal(withFlag.length, 1);
+    assert.equal(withFlag[0].argv[withFlag[0].argv.indexOf("--api-key") + 1], VALID_KEY, "no space or line break around the key");
+  });
+});
+
 test("configure job: per-agent targets touch only the ticked agent and may use different brains", posixSkip, async () => {
   await withTempSetupEnv(async ({ home }) => {
     await installFakeHermesShim(home);

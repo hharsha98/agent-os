@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { BLOCKED_AGENT_FLAGS } from "./agent-flags.js";
+import { cliCwd } from "./cli-cwd.js";
 import { isDemoPublic } from "./demo-public.js";
 import { isExecutionEnabled } from "./execution-gate.js";
 import { isLiveChatEnabled } from "./live-flags.js";
@@ -223,7 +223,7 @@ async function runArgv(commandPath, args, timeoutMs, env, deps, extraEnv = {}) {
   const runner = deps.runCommand || runCommand;
   const result = await runner(commandPath, args, timeoutMs, {
     env: childEnv(env, extraEnv),
-    cwd: os.tmpdir(),
+    cwd: cliCwd(),
     track: activeLiveChatChildren
   });
   const reply = scrubSecrets(

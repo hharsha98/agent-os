@@ -770,6 +770,39 @@ test("AI API guide exposes all ten upstream projects and health-tests saved gate
   });
 });
 
+test("a saved API key is sent only to the address it was saved with; another BASE_URL in the request must bring its own key", async () => {
+  await withTempRuntime(async () => {
+    const seen = { saved: [], other: [] };
+    const answer = (list) => (req, res) => {
+      list.push(req.headers.authorization || null);
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "m1" }] }));
+    };
+    await withHttpServer(answer(seen.saved), async (savedBase) => {
+      await withHttpServer(answer(seen.other), async (otherBase) => {
+        await configureApiIntegration("localai", { BASE_URL: `${savedBase}/v1`, API_KEY: "placeholder-saved-key" });
+        // The saved address, with or without it written out again: the saved key is used.
+        await testApiIntegration("localai");
+        await testApiIntegration("localai", { BASE_URL: `${savedBase}/v1/` });
+        assert.deepEqual(seen.saved, ["Bearer placeholder-saved-key", "Bearer placeholder-saved-key"]);
+        // Another address in the request: the saved key must not go there.
+        await testApiIntegration("localai", { BASE_URL: `${otherBase}/v1` });
+        assert.deepEqual(seen.other, [null], "no key at all was sent to the other address");
+        // Another address that brings its own key: that key, and only that one.
+        await testApiIntegration("localai", { BASE_URL: `${otherBase}/v1`, API_KEY: "placeholder-own-key" });
+        assert.deepEqual(seen.other, [null, "Bearer placeholder-own-key"]);
+        assert.equal(JSON.stringify(seen.other).includes("placeholder-saved-key"), false);
+      });
+    });
+    // A key-required gateway refuses to test at a different address with no key of its own.
+    await configureApiIntegration("omniroute", { BASE_URL: "http://127.0.0.1:9/v1", API_KEY: "placeholder-gateway-key" });
+    await assert.rejects(
+      () => testApiIntegration("omniroute", { BASE_URL: "http://127.0.0.1:10/v1" }),
+      (error) => error?.status === 412
+    );
+  });
+});
+
 test("workflow agent nodes route through the provider router and record usage", async () => {
   await withTempRuntime(async () => {
     await withEnv(PROVIDER_ENV_RESET, async () => {
@@ -1154,11 +1187,14 @@ test("workflow graph while loops respect iteration and max-step guards", async (
   });
 });
 
-test("builder status points at vendored upstream source without local secrets", async () => {
+test("builder status says the vendored add-on was removed, without local secrets", async () => {
   const status = await getBuilderStatus();
   assert.equal(status.source, "vendor/open-agent-builder");
   assert.equal(status.upstream, "https://github.com/firecrawl/open-agent-builder");
-  assert.equal(status.upstreamFilePresent, true);
+  assert.equal(status.upstreamFilePresent, false);
+  assert.equal(status.sourcePresent, false);
+  assert.equal(status.status, "missing_source");
+  assert.match(status.reason, /removed from this version of Agent OS because its dependencies had known security flaws/);
   assert.ok(status.supervisor);
   assert.ok(Array.isArray(status.diagnostics.required));
   assert.equal(JSON.stringify(status).includes(os.homedir()), false);
@@ -1244,7 +1280,7 @@ test("builder smoke test reports credential readiness without exposing secrets",
 
 test("builder supervisor blocks unsafe starts and reports provider-card diagnostics", async () => {
   await withTempRuntime(async () => {
-    await assert.rejects(() => startBuilderSupervisor(), /Builder is not ready to boot/);
+    await assert.rejects(() => startBuilderSupervisor(), /optional builder add-on was removed from this version of Agent OS because its dependencies had known security flaws/);
     let logs = await getBuilderLogs();
     assert.ok(logs.logs.some((entry) => entry.message.includes("start blocked")));
 
@@ -1256,7 +1292,10 @@ test("builder supervisor blocks unsafe starts and reports provider-card diagnost
     });
     await configureConnection("provider-firecrawl", { FIRECRAWL_API_KEY: "placeholder-firecrawl-key" });
     const status = await getBuilderStatus();
-    if (!status.dependenciesInstalled) {
+    if (!status.sourcePresent) {
+      assert.equal(status.readyToBoot, false);
+      assert.equal(status.status, "missing_source");
+    } else if (!status.dependenciesInstalled) {
       assert.equal(status.readyToBoot, false);
       assert.equal(status.status, "needs_install");
     } else {

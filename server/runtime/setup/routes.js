@@ -173,6 +173,16 @@ export function createSetupRouter({ sessionManager = null, updateChecks = null }
   const sessions = () => sessionManager ?? getSessionManager();
   const checks = () => updateChecks ?? getUpdateChecks();
 
+  // The public demo has no login, and every route below that is not a read runs something on the host (an installer, a
+  // configure step, a model download). Reads stay open; nothing else is allowed there.
+  router.use((req, res, next) => {
+    if (isDemoPublic() && req.method !== "GET" && req.method !== "HEAD") {
+      res.status(403).json({ ok: false, error: "The public demo is read-only, so it does not run set-up steps on this computer." });
+      return;
+    }
+    next();
+  });
+
   router.get("/check", async (req, res, next) => {
     try {
       res.json(await systemCheck({ refresh: req.query.refresh === "1" }));
@@ -522,7 +532,8 @@ export function createSetupRouter({ sessionManager = null, updateChecks = null }
       if (targetList.some((t) => t.mode === "openrouter")) {
         const pasted = req.body?.apiKey;
         if (typeof pasted === "string" && pasted.trim()) {
-          apiKey = pasted;
+          // Trimmed: a stray space or line break around a pasted key would stop the literal scrub from finding it.
+          apiKey = pasted.trim();
         } else {
           const flowId = req.body?.keySource?.flowId;
           if (flowId === undefined) {

@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import { containsBlockedFlag } from "../agent-flags.js";
 import { childEnv } from "../live-chat.js";
 import { killProcessTree, spawnTracked } from "../process-tree.js";
-import { programLaunch, redactText, withSiblingNodePath } from "../safety.js";
+import { programLaunch, redactSecretShapes, redactText, withSiblingNodePath } from "../safety.js";
 import {
   appendRunEventLine,
   countRunEvents,
@@ -69,7 +69,13 @@ function quoteArg(value) {
 // Matches SGR/cursor escape codes and OSC sequences a CLI may emit for
 // colour or a terminal title; stripped before redaction/parsing so neither
 // ever has to deal with them.
-const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g;
+// The OSC part excludes \x1b too: with only \x07 excluded, a long line of repeated "ESC ]" and no BEL made every start scan to
+// the end (quadratic, 33 s at 400 KB), freezing the server.
+const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*\x07/g;
+
+// A line with no newline is flushed as a line once it reaches this size, so a program that never prints one cannot grow
+// the buffer without limit.
+const MAX_PARTIAL_LINE_CHARS = 1024 * 1024;
 
 // A progress bar redraws a line with \r instead of \n; only the text after
 // the last \r is what was actually left on screen.
@@ -244,7 +250,9 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
 
   async function processLine(state, plan, rawLine, stream) {
     const cleaned = stripAnsi(rawLine);
-    const redacted = redactSecrets(cleaned, plan.redact || []);
+    // The literal strings of plan.redact first, then the key shapes (sk-..., ghp_..., Bearer ...) on every line, so a
+    // key no plan knew about (an update job has none) is not saved or shown as the program printed it.
+    const redacted = redactSecretShapes(redactSecrets(cleaned, plan.redact || []));
     const parsed = typeof plan.parseLine === "function" ? plan.parseLine(redacted, stream) : null;
     if (parsed === false) return; // parseLine asked to drop this line entirely
     const events = Array.isArray(parsed) && parsed.length ? parsed : [{ type: "line", text: redacted }];
@@ -261,12 +269,20 @@ export function createRunManager({ maxConcurrent = 4, maxOutputBytes = 5 * 1024 
       const text = stdoutBuf + chunk.toString("utf8");
       const lines = text.split("\n");
       stdoutBuf = lines.pop();
+      if (stdoutBuf.length >= MAX_PARTIAL_LINE_CHARS) {
+        lines.push(stdoutBuf);
+        stdoutBuf = "";
+      }
       for (const line of lines) processLine(state, plan, line, "stdout").catch(() => {});
     });
     child.stderr?.on("data", (chunk) => {
       const text = stderrBuf + chunk.toString("utf8");
       const lines = text.split("\n");
       stderrBuf = lines.pop();
+      if (stderrBuf.length >= MAX_PARTIAL_LINE_CHARS) {
+        lines.push(stderrBuf);
+        stderrBuf = "";
+      }
       for (const line of lines) processLine(state, plan, line, "stderr").catch(() => {});
     });
 

@@ -11,9 +11,9 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { ADAPTERS } from "../agents/index.js";
+import { cliCwd } from "../cli-cwd.js";
 import { childEnv } from "../live-chat.js";
 import { getRunManager } from "../runs/run-manager.js";
 import { redactText, runCommand } from "../safety.js";
@@ -214,7 +214,7 @@ async function startSignInLocked(agentId, def) {
     title: `${def.label} sign-in`,
     command: detected.path,
     args: def.loginArgs,
-    cwd: os.tmpdir(),
+    cwd: cliCwd(),
     env: browserEnv(),
     timeoutMs: SIGNIN_TIMEOUT_MS
   });

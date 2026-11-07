@@ -36,6 +36,7 @@ import { resolveBrainForRun } from "../builders/resolve.js";
 import { isExecutionEnabled } from "../execution-gate.js";
 import { timingSafeEqualStrings } from "../local-session.js";
 import { killProcessTree } from "../process-tree.js";
+import { redactText } from "../safety.js";
 import { getServerPort } from "../server-info.js";
 import { registerShutdownTask } from "../shutdown.js";
 import { RUNTIME_VERSION, ensurePrivateDir, readJson, runtimePaths, writeJson as writeJsonFile } from "../store.js";
@@ -865,7 +866,9 @@ export function createSessionManager({
     broadcast(state, { t: "alert", kind: after.kind, text: after.text }, { queue: true });
     if (sameKind) return;
     if (after.kind === "waiting" || after.kind === "approval") {
-      addMarkerTo(state, { type: "permission", text: after.text }).catch(() => {});
+      // The marker lives in meta.json until Delete recording, so a key typed into the asked-for command is taken out of it.
+      // The card the person answers uses the alert frame above, which keeps the text exactly as it was.
+      addMarkerTo(state, { type: "permission", text: redactText(after.text) }).catch(() => {});
     }
     if (typeof onAlertLine === "function") {
       // B-M2: at most one waiting or approval notification per session in ALERT_LINE_GAP_MS. The frame above and the
@@ -877,7 +880,8 @@ export function createSessionManager({
         state.alertLineAt = at;
       }
       try {
-        onAlertLine({ sessionId: state.meta.id, agent: state.meta.agentLabel, kind: after.kind, text: after.text });
+        // Only the desktop notification text is redacted (it stays in Notification Center).
+        onAlertLine({ sessionId: state.meta.id, agent: state.meta.agentLabel, kind: after.kind, text: redactText(after.text) });
       } catch {
         // a notification must never stop the session
       }

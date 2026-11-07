@@ -2,8 +2,8 @@
 // (see detect.js) rather than hard-coded, because Hermes ships new flags
 // every few days.
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { cliCwd } from "../cli-cwd.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "../connections.js";
 import { runCommand } from "../safety.js";
 import { expandHome } from "../store.js";
@@ -248,7 +248,7 @@ const service = {
       title: "Hermes gateway start",
       command: detected.path,
       args: ["gateway", "start"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   },
@@ -259,7 +259,7 @@ const service = {
       title: "Hermes gateway stop",
       command: detected.path,
       args: ["gateway", "stop"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   },
@@ -270,7 +270,7 @@ const service = {
       title: "Hermes gateway restart",
       command: detected.path,
       args: ["gateway", "restart"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   }
@@ -413,7 +413,7 @@ function configSetPlan(detected, home, title, key, value) {
     title,
     command: detected.path,
     args: ["config", "set", key, value],
-    cwd: os.tmpdir(),
+    cwd: cliCwd(),
     env: home ? { HERMES_HOME: home } : {},
     redact: [home].filter(Boolean),
     timeoutMs: SAFETY_ACTION_TIMEOUT_MS,

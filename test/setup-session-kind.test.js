@@ -65,6 +65,7 @@ const PTY_MESSAGE = "Agent OS could not load its terminal module on this compute
 const OPENCLAW_MISSING = "OpenClaw isn't installed, or Agent OS can't find it. Install it in Setup, then try again.";
 const UNKNOWN_SESSION = { error: "unknown_session", message: "That session doesn't exist anymore." };
 const NOT_AVAILABLE = { status: 404, body: { error: "not_available" } };
+const DEMO_REFUSED = { status: 403, body: { ok: false, error: "The public demo is read-only, so it does not run set-up steps on this computer." } };
 // The admin-token public mode: index.js's requireAdminWhenPublic answers a request without the token first.
 const ADMIN_TOKEN = "admin-test";
 const AS_ADMIN = { "x-hermes-admin-token": ADMIN_TOKEN };
@@ -936,8 +937,9 @@ test("outside local mode nothing starts: the public demo and an admin request ge
         // The public demo: requireAdminWhenPublic lets every request through, and requireLocalMode answers.
         for (const vars of [{ DEMO_PUBLIC: "1" }, { HERMES_AGENT_OS_DEMO_PUBLIC: "1" }]) {
           await withEnv(vars, async () => {
-            assert.deepEqual(await call("POST", SIGNIN_PATH, { confirm: true }), NOT_AVAILABLE, JSON.stringify(vars));
-            assert.deepEqual(await call("POST", SIGNIN_PATH, {}), NOT_AVAILABLE, "local mode is checked before the body");
+            // The public demo refuses every non-read setup route first (403), before the local-mode check.
+            assert.deepEqual(await call("POST", SIGNIN_PATH, { confirm: true }), DEMO_REFUSED, JSON.stringify(vars));
+            assert.deepEqual(await call("POST", SIGNIN_PATH, {}), DEMO_REFUSED, "refused before the body is read");
             assert.deepEqual(await call("GET", SIGNIN_PATH), NOT_AVAILABLE);
           });
         }

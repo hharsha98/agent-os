@@ -6,10 +6,9 @@ import { authRequired, isAdminRequest } from "./auth.js";
 import { isDemoPublic } from "./demo-public.js";
 
 const DEFAULT_ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-// "/agent-builder-source" has no trailing slash so the bare proxy path is gated too.
 // "/oauth/" is gated too, so the ONE address below that is let through stays
 // the only one: any other /oauth/ path needs the session like /api/ does.
-const GATED_PREFIXES = ["/api/", "/agent-builder-source", "/_next/", "/oauth/"];
+const GATED_PREFIXES = ["/api/", "/oauth/"];
 // OpenRouter's sign-in sends the person's normal browser (which has no Agent
 // OS session cookie) back to exactly this address.
 const OAUTH_CALLBACK_PATH = "/oauth/openrouter/callback";
@@ -110,7 +109,7 @@ export function devOriginAllowed(env = process.env) {
 
 // Whether `origin` is this server's own page: scheme and host AND PORT exactly as the request's Host header
 // says (so a page on 127.0.0.1:3000 is not the page on 127.0.0.1:8090), or the dev page above.
-function isOwnOrigin(origin, hostHeader) {
+export function isOwnOrigin(origin, hostHeader) {
   const wanted = String(origin).trim().toLowerCase();
   const host = String(hostHeader || "").trim().toLowerCase();
   if (host && (wanted === `http://${host}` || wanted === `https://${host}`)) return true;

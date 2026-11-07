@@ -12,7 +12,7 @@ import { addMemory } from "./memory.js";
 import { getMemoryOverview } from "./memory.js";
 import { appendModuleLog, readModuleLogs, readModuleRuns } from "./module-logs.js";
 import { checkProviderHealth, getRouterStatus, runRouter } from "./router.js";
-import { commandVersion, publicEnvConfigured, redactText, runCommand, sanitizeObject, which } from "./safety.js";
+import { commandVersion, envWithoutServerSecrets, publicEnvConfigured, redactText, runCommand, sanitizeObject, which } from "./safety.js";
 import { getSchedulerOverview } from "./scheduler.js";
 import { getLocalSelfModuleStatus, getVideoWorkerStatus, isLocalSelfModule, runGoalLoop, runSeoAudit, runSeoDiscovery, runSeoRankSnapshot, runVideoJob, upsertKanbanCard } from "./self-modules.js";
 import { getSkillRegistryOverview } from "./skills.js";
@@ -3275,7 +3275,7 @@ export async function startModuleSession(id, input = {}) {
 
   const child = spawnTracked(commandPath, invocation.args, {
     cwd: invocation.workspace.cwd || undefined,
-    env: process.env,
+    env: envWithoutServerSecrets(),
     stdio: ["ignore", "pipe", "pipe"]
   });
   const startedAt = now();

@@ -387,7 +387,10 @@ export async function testApiIntegration(id, input = {}) {
   const stored = await getStoredConnectionConfig();
   const profile = stored[profileId(id)] || {};
   const baseUrl = cleanBaseUrl(input.BASE_URL || profile.BASE_URL || item.defaultBaseUrl);
-  const apiKey = String(input.API_KEY || profile.API_KEY || "").trim();
+  // A saved key goes only to the address it was saved with. A different BASE_URL in the request has to bring its own
+  // key; otherwise the test call goes out with no key (a request must not be able to point a saved key at another host).
+  const savedBaseUrl = cleanBaseUrl(profile.BASE_URL || item.defaultBaseUrl);
+  const apiKey = String(input.API_KEY || (baseUrl === savedBaseUrl ? profile.API_KEY : "") || "").trim();
   if (item.apiKeyRequired && !apiKey) {
     const error = new Error(`${item.name} needs an API or gateway key before testing.`);
     error.status = 412;

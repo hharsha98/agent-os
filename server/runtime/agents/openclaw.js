@@ -3,8 +3,8 @@
 // against fake CLIs in test/agents.test.js; see the deliverable report for
 // exactly which flags are assumed.
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { cliCwd } from "../cli-cwd.js";
 import { runCommand } from "../safety.js";
 import {
   cachedFeatures,
@@ -273,7 +273,7 @@ const service = {
       title: "OpenClaw gateway start",
       command: detected.path,
       args: ["gateway", "start"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   },
@@ -284,7 +284,7 @@ const service = {
       title: "OpenClaw gateway stop",
       command: detected.path,
       args: ["gateway", "stop"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   },
@@ -295,7 +295,7 @@ const service = {
       title: "OpenClaw gateway restart",
       command: detected.path,
       args: ["gateway", "restart"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   }
@@ -568,7 +568,7 @@ function safetyAction(actionId, detected) {
     title: `OpenClaw config set ${setting[0]} ${setting[1]}`,
     command: detected.path,
     args: ["config", "set", ...setting],
-    cwd: os.tmpdir(),
+    cwd: cliCwd(),
     timeoutMs: SAFETY_ACTION_TIMEOUT_MS,
     restartsGateway
   };

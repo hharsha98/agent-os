@@ -9,7 +9,18 @@ const SECRET_VALUE_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{12,}/,
   /xox[baprs]-[A-Za-z0-9-]{10,}/,
   /gh[pousr]_[A-Za-z0-9_]{20,}/,
-  /AIza[0-9A-Za-z_-]{20,}/
+  /AIza[0-9A-Za-z_-]{20,}/,
+  // Other common key shapes. Each needs its prefix and a long run of key characters, so ordinary words and names such
+  // as npm_config_cache, hf_home or xai-grok stay as they are.
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/,
+  /\bglpat-[A-Za-z0-9_-]{20,}/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bgsk_[A-Za-z0-9]{20,}/,
+  /\bxai-[A-Za-z0-9]{20,}/,
+  /\bhf_[A-Za-z0-9]{30,}/,
+  /\b[sr]k_live_[A-Za-z0-9]{16,}/,
+  /\bnpm_[A-Za-z0-9]{30,}/,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/
 ];
 // Global ("g") copies so redactText replaces every match, not only the first.
 // Kept separate on purpose: a "g" regex remembers where its last match ended
@@ -48,9 +59,22 @@ export function withSiblingNodePath(command, env = process.env) {
   return { ...env, PATH: [dir, ...parts].join(path.delimiter) };
 }
 
+// The server's own environment minus its secrets, for the agent programs it starts only to read from (version checks,
+// config reads, voice tasks): a plugin one of them loads could otherwise read the admin or launch token and use the
+// whole API. Drops AGENT_OS_TOKEN, HERMES_AGENT_OS_ADMIN_TOKEN and any AGENT_OS_* or HERMES_AGENT_OS_* name with TOKEN,
+// SECRET, KEY or PASSWORD in it. Every other name (the AGENT_OS_TEST_* knobs, PATH, HOME) stays.
+export function envWithoutServerSecrets(env = process.env) {
+  const clean = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (/^(HERMES_)?AGENT_OS_/i.test(name) && /TOKEN|SECRET|KEY|PASSWORD/i.test(name)) continue;
+    clean[name] = value;
+  }
+  return clean;
+}
+
 export function runCommand(command, args = [], timeout = 5000, options = {}) {
   return new Promise((resolve) => {
-    const env = withSiblingNodePath(command, options.env || process.env);
+    const env = withSiblingNodePath(command, options.env || envWithoutServerSecrets());
     // An npm .cmd shim on Windows starts as the program it points at (no shell); anything else is as it was.
     const launch = programLaunch(command, args, { env });
     const child = execFile(launch.command, launch.args, { timeout, cwd: options.cwd || undefined, env, signal: options.signal || undefined }, (error, stdout, stderr) => {
@@ -364,12 +388,19 @@ export function redactValue(key, value) {
   return text;
 }
 
-export function redactText(value, extraPatterns = []) {
+// Only the key-shaped text becomes "configured"; paths are left as they are (a run's output keeps its full paths).
+export function redactSecretShapes(value) {
   let text = String(value ?? "");
-  text = text.replaceAll(os.homedir(), "~");
   for (const pattern of SECRET_VALUE_PATTERNS_GLOBAL) {
     text = text.replaceAll(pattern, "configured");
   }
+  return text;
+}
+
+export function redactText(value, extraPatterns = []) {
+  let text = String(value ?? "");
+  text = text.replaceAll(os.homedir(), "~");
+  text = redactSecretShapes(text);
   for (const item of extraPatterns) {
     const raw = String(item || "");
     if (!raw) continue;

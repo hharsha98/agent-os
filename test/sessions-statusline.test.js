@@ -36,6 +36,7 @@ import {
   parseStatusLine,
   readClaudeSettingsLayers,
   statusLineCommand,
+  urlPatternMatches,
   writeStatusLineHelper
 } from "../server/runtime/sessions/claude-session.js";
 import { createClaudeAgentsPoller } from "../server/runtime/sessions/claude-agents-poll.js";
@@ -662,6 +663,25 @@ test("detectHooksOff: allowedHttpHookUrls patterns use * as the only wildcard an
   assert.equal(off({ project: { httpHookAllowedEnvVars: ["OTHER"] }, user: { httpHookAllowedEnvVars: ["AGENT_OS_HOOK_TOKEN"] } }).alerts, null);
   // Not a list: Agent OS does not read it as one (Claude's own validation decides).
   assert.equal(off({ user: { allowedHttpHookUrls: "http://localhost:*" } }).alerts, null);
+});
+
+test("urlPatternMatches: plain wildcard matching, and a run of stars from a repo's settings file cannot freeze the server", () => {
+  assert.equal(urlPatternMatches("http://a/b", "http://a/b"), true, "exact");
+  assert.equal(urlPatternMatches("http://a/b", "http://a/bc"), false, "exact, longer");
+  assert.equal(urlPatternMatches("http://a/*", "http://a/b/c"), true, "prefix*");
+  assert.equal(urlPatternMatches("http://a/*", "http://b/c"), false, "prefix*, no match");
+  assert.equal(urlPatternMatches("*/c", "http://a/b/c"), true, "*suffix");
+  assert.equal(urlPatternMatches("*/c", "http://a/b/d"), false, "*suffix, no match");
+  assert.equal(urlPatternMatches("a*b*c", "aXXbYYc"), true, "a*b*c");
+  assert.equal(urlPatternMatches("a*b*c", "acb"), false, "a*b*c, wrong order");
+  assert.equal(urlPatternMatches("a*a", "a"), false, "the pieces may not overlap");
+  assert.equal(urlPatternMatches("a**b", "ab"), true, "a run of stars");
+  assert.equal(urlPatternMatches("*", ""), true, "a lone star");
+  const started = Date.now();
+  const pattern = `${"*".repeat(40)}!`;
+  assert.equal(urlPatternMatches(pattern, `http://127.0.0.1:51234/hooks/sessions/${SESSION_ID}`), false, "40 stars and a non-matching tail");
+  assert.ok(Date.now() - started < 100, "finishes in well under 100 ms");
+  assert.equal(off({ project: { allowedHttpHookUrls: [pattern] } }).alerts, "http_hook_urls");
 });
 
 // =====================================================================

@@ -618,7 +618,12 @@ test("Every plan route answers 404 not_available outside local mode, and runs no
         ];
         for (const [method, url, body] of routes) {
           const refused = await call(method, url, body);
-          assert.deepEqual([refused.status, refused.body], [404, { error: "not_available" }], `${JSON.stringify(vars)} ${method} ${url}`);
+          // The public demo refuses every non-read setup route first (403); a read, and every other mode, reaches the 404.
+          const expected =
+            "DEMO_PUBLIC" in vars && method !== "GET"
+              ? [403, { ok: false, error: "The public demo is read-only, so it does not run set-up steps on this computer." }]
+              : [404, { error: "not_available" }];
+          assert.deepEqual([refused.status, refused.body], expected, `${JSON.stringify(vars)} ${method} ${url}`);
         }
       });
       assert.deepEqual(await openclawRecord(home), []);

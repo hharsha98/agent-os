@@ -733,8 +733,10 @@ test("POST /api/setup/hermes/model-terminal: 404 not_available outside local mod
         await withEnv({ ...LOCAL_MODE, ...mode }, async () => {
           for (const body of [{ confirm: true }, {}]) {
             const answer = await post(body);
-            assert.equal(answer.status, 404, JSON.stringify(mode));
-            assert.deepEqual(answer.json, NOT_AVAILABLE);
+            // The public demo refuses every non-read setup route first (403); the other modes reach the 404.
+            const demo = "DEMO_PUBLIC" in mode || "HERMES_AGENT_OS_DEMO_PUBLIC" in mode;
+            assert.equal(answer.status, demo ? 403 : 404, JSON.stringify(mode));
+            if (!demo) assert.deepEqual(answer.json, NOT_AVAILABLE);
           }
         });
       }
@@ -1021,8 +1023,10 @@ test("POST /api/setup/hermes/auth-terminal: 404 not_available outside local mode
           await withEnv({ ...LOCAL_MODE, ...mode }, async () => {
             for (const body of [{ confirm: true }, {}]) {
               const answer = await post(body);
-              assert.equal(answer.status, 404, JSON.stringify(mode));
-              assert.deepEqual(answer.json, NOT_AVAILABLE);
+              // The public demo refuses every non-read setup route first (403); the other modes reach the 404.
+              const demo = "DEMO_PUBLIC" in mode || "HERMES_AGENT_OS_DEMO_PUBLIC" in mode;
+              assert.equal(answer.status, demo ? 403 : 404, JSON.stringify(mode));
+              if (!demo) assert.deepEqual(answer.json, NOT_AVAILABLE);
             }
           });
         }

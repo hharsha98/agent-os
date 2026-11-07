@@ -15,6 +15,14 @@ export const ALL_PLAN_AGENT_IDS = [...OPERATOR_AGENT_IDS, ...CODING_AGENT_IDS];
 // "session"`, started through the update service). A job that names it is
 // refused (jobs.js builds its own plan, which never holds it).
 
+// What the Node step does, for the plan's "changes". The download is checked against the checksum list nodejs.org itself
+// publishes (that catches a damaged download, not a tampered nodejs.org). The second sentence is true whenever that folder
+// already holds a Node that is too old: Agent OS replaces the whole folder, and an agent installed inside it goes with it.
+const MANAGED_NODE_CHANGES = [
+  "Downloads Node 24 into ~/.agent-os/node (or %LOCALAPPDATA%\\AgentOS\\node on Windows), checked against the checksum nodejs.org publishes",
+  "If Agent OS already has its own Node in that folder and it is too old, it is replaced. Agents installed inside Agent OS's own Node (for example Codex) are removed and need installing again."
+];
+
 // The facts every step carries so the screen can group it, name it and add up
 // the size and time of what is ticked. Only installs have a size; Hermes and
 // OpenClaw sizes were never measured, so theirs stay null instead of invented.
@@ -172,7 +180,7 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean
         title: "Set up a Node 24 runtime for OpenClaw",
         description:
           "OpenClaw needs Node 24.16+ or 26.1+. A verified Node 24 build will be downloaded -- no Homebrew, winget, or admin password.",
-        changes: ["Downloads Node 24 into ~/.agent-os/node (or %LOCALAPPDATA%\\AgentOS\\node on Windows), verified by SHA-256"],
+        changes: [...MANAGED_NODE_CHANGES],
         passwordMoments: [],
         default: true,
         sourceUrl: "https://nodejs.org",
@@ -191,7 +199,7 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean
         title: "Set up a Node 24 runtime for Codex",
         description:
           "Codex needs Node 22 or newer. A verified Node 24 build will be downloaded -- no Homebrew, winget, or admin password.",
-        changes: ["Downloads Node 24 into ~/.agent-os/node (or %LOCALAPPDATA%\\AgentOS\\node on Windows), verified by SHA-256"],
+        changes: [...MANAGED_NODE_CHANGES],
         passwordMoments: [],
         default: true,
         sourceUrl: "https://nodejs.org",

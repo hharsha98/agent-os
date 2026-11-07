@@ -1,6 +1,4 @@
 import express from "express";
-import { createReadStream } from "node:fs";
-import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertAdminRequest, authRequired, clearAdminCookie, requireAdminWhenPublic, sessionStatus, setAdminCookie } from "./runtime/auth.js";
@@ -15,15 +13,11 @@ import {
   requireLocalMode,
   securityHeadersMiddleware
 } from "./runtime/local-session.js";
-import {
-  getBuilderReplayOverlay,
-  injectBuilderReplayOverlay
-} from "./runtime/builder-overlay.js";
+import { getBuilderReplayOverlay } from "./runtime/builder-overlay.js";
 import {
   getBuilderBootstrap,
   getBuilderLogs,
   getBuilderStatus,
-  getBuilderUrl,
   prepareBuilderBootstrap,
   runBuilderSmokeTest,
   startBuilderSupervisor,
@@ -47,6 +41,7 @@ import {
   getElizaStatus
 } from "./runtime/eliza.js";
 import { loadLocalEnv } from "./runtime/env.js";
+import { RUNTIME_VERSION } from "./runtime/store.js";
 import {
   getExecutionGateStatus,
   getMachineControlStatus,
@@ -72,7 +67,7 @@ import { getCodexApiStatus, runCodexPreview, testCodexApi } from "./runtime/code
 import { configureApiIntegration, listApiIntegrations, testApiIntegration } from "./runtime/api-integrations.js";
 import { getAgentOsReadiness, getKernelStatus } from "./runtime/kernel.js";
 import { exportVaultMarkdown } from "./runtime/vault-export.js";
-import { getWorkspaceFile, listWorkspaceFiles, resolveWorkspaceFile, streamWorkspaceFile, writeWorkspaceText } from "./runtime/workspace.js";
+import { getWorkspaceFile, listWorkspaceFiles, resolveWorkspaceFile, sendFileStream, streamWorkspaceFile, writeWorkspaceText } from "./runtime/workspace.js";
 import {
   cancelVideoRun,
   createSelfModuleItem,
@@ -255,7 +250,6 @@ function bindAddress() {
   return /^[A-Za-z0-9_.:%-]+$/.test(raw) ? raw : "127.0.0.1";
 }
 const bindHost = bindAddress();
-const originalBuilderUrl = getBuilderUrl();
 
 // Host allow-list and Origin check run first, in every mode, before body
 // parsing — a request from a browser tab on an untrusted origin never
@@ -272,7 +266,7 @@ app.use(securityHeadersMiddleware());
 // run first, and outside local mode every /hooks address answers 403.
 app.use("/hooks", createHooksRouter({ manager: getSessionManager() }));
 app.use(express.json({ limit: "2mb" }));
-// Local-mode only: every /api, /agent-builder-source, /_next request needs
+// Local-mode only: every /api and /oauth request needs
 // the session cookie or the x-agent-os-token header. Demo and public mode
 // use their own gates (demo stays anonymous; public keeps the admin token).
 // Getters, not the current value of `port` — with PORT=0 that's still 0 here
@@ -299,7 +293,7 @@ app.get("/api/admin/session", (req, res) => {
 app.post("/api/admin/login", (req, res, next) => {
   try {
     assertAdminRequest(req);
-    setAdminCookie(res, req.body?.adminToken || req.get("x-hermes-admin-token") || req.query?.adminToken || "");
+    setAdminCookie(res, req.body?.adminToken || req.get("x-hermes-admin-token") || "");
     res.json({ ok: true, session: sessionStatus(req) });
   } catch (error) {
     next(error);
@@ -333,7 +327,7 @@ app.post("/api/admin/execution-gate", async (req, res, next) => {
   }
 });
 
-app.get("/api/admin/machine-control", async (_req, res, next) => {
+app.get("/api/admin/machine-control", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(getMachineControlStatus());
   } catch (error) {
@@ -354,16 +348,17 @@ app.post("/api/admin/machine-control", async (req, res, next) => {
   }
 });
 
-app.get("/api/health", async (_req, res, next) => {
+// Open by design (no login), so it answers from constants and never starts an agent program:
+// getOsStatus() runs every installed agent with --version, and any web page could repeat that.
+app.get("/api/health", (_req, res, next) => {
   try {
-    const status = await getOsStatus();
     const demoPublic = isDemoPublic();
     res.json({
-      ok: status.ok,
-      service: status.service,
-      version: status.version,
-      mode: status.mode,
-      timestamp: status.generatedAt,
+      ok: true,
+      service: "agent-os-runtime",
+      version: RUNTIME_VERSION,
+      mode: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString(),
       bind: bindHost,
       port,
       packaged: isPackaged,
@@ -376,7 +371,7 @@ app.get("/api/health", async (_req, res, next) => {
   }
 });
 
-app.get("/api/os/status", async (_req, res, next) => {
+app.get("/api/os/status", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getOsStatus());
   } catch (error) {
@@ -384,7 +379,7 @@ app.get("/api/os/status", async (_req, res, next) => {
   }
 });
 
-app.get("/api/os/foundation", async (_req, res, next) => {
+app.get("/api/os/foundation", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json({
       elizaOS: await getElizaStatus(),
@@ -395,7 +390,7 @@ app.get("/api/os/foundation", async (_req, res, next) => {
   }
 });
 
-app.get("/api/os/kernel", async (_req, res, next) => {
+app.get("/api/os/kernel", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getKernelStatus());
   } catch (error) {
@@ -403,7 +398,7 @@ app.get("/api/os/kernel", async (_req, res, next) => {
   }
 });
 
-app.get("/api/os/readiness", async (_req, res, next) => {
+app.get("/api/os/readiness", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getAgentOsReadiness());
   } catch (error) {
@@ -411,7 +406,7 @@ app.get("/api/os/readiness", async (_req, res, next) => {
   }
 });
 
-app.get("/api/os/audit", async (_req, res, next) => {
+app.get("/api/os/audit", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getOsAudit());
   } catch (error) {
@@ -987,7 +982,7 @@ app.get("/api/skills/:id/logs", requireAdminWhenPublic, async (req, res, next) =
   }
 });
 
-app.get("/api/modules", async (_req, res, next) => {
+app.get("/api/modules", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json({ modules: await getModules() });
   } catch (error) {
@@ -995,7 +990,7 @@ app.get("/api/modules", async (_req, res, next) => {
   }
 });
 
-app.get("/api/modules/:id", async (req, res, next) => {
+app.get("/api/modules/:id", requireAdminWhenPublic, async (req, res, next) => {
   try {
     const module = await getModule(req.params.id);
     if (!module) {
@@ -1136,7 +1131,7 @@ app.post("/api/modules/:id/sessions/:sessionId/messages", requireAdminWhenPublic
   }
 });
 
-app.get("/api/installers", (_req, res) => {
+app.get("/api/installers", requireAdminWhenPublic, (_req, res) => {
   res.json({ installers: listInstallRecipes() });
 });
 
@@ -1285,13 +1280,13 @@ app.get("/api/self/video/runs/:runId/download/:fileName", requireAdminWhenPublic
     res.setHeader("Content-Type", file.contentType);
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Content-Disposition", `attachment; filename="${String(file.downloadName || "download").replace(/"/g, "")}"`);
-    createReadStream(file.filePath).pipe(res);
+    sendFileStream(file.filePath, res, next);
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/api/connections", async (_req, res, next) => {
+app.get("/api/connections", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getConnections());
   } catch (error) {
@@ -1415,7 +1410,7 @@ app.get("/api/workspace/file", requireAdminWhenPublic, async (req, res, next) =>
 app.get("/api/workspace/raw", requireAdminWhenPublic, async (req, res, next) => {
   try {
     const file = await resolveWorkspaceFile(String(req.query?.id || ""));
-    streamWorkspaceFile(file, res);
+    streamWorkspaceFile(file, res, next);
   } catch (error) {
     next(error);
   }
@@ -1437,7 +1432,7 @@ app.post("/api/workspace/vault/export", requireAdminWhenPublic, async (_req, res
   }
 });
 
-app.get("/api/agent-os/codex/status", async (_req, res, next) => {
+app.get("/api/agent-os/codex/status", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getCodexApiStatus());
   } catch (error) {
@@ -1461,7 +1456,7 @@ app.post("/api/agent-os/codex/preview", requireAdminWhenPublic, async (req, res,
   }
 });
 
-app.get("/api/agent-os/api-integrations", async (_req, res, next) => {
+app.get("/api/agent-os/api-integrations", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await listApiIntegrations());
   } catch (error) {
@@ -1629,7 +1624,7 @@ app.post("/api/admin/export/prepare", async (req, res, next) => {
   }
 });
 
-app.get("/api/builder/status", async (_req, res, next) => {
+app.get("/api/builder/status", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getBuilderStatus());
   } catch (error) {
@@ -1637,7 +1632,7 @@ app.get("/api/builder/status", async (_req, res, next) => {
   }
 });
 
-app.get("/api/builder/bootstrap", async (_req, res, next) => {
+app.get("/api/builder/bootstrap", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getBuilderBootstrap());
   } catch (error) {
@@ -1693,60 +1688,8 @@ app.get("/api/builder/replay-overlay", requireAdminWhenPublic, async (req, res, 
   }
 });
 
-async function proxyOriginalBuilder(req, res, next) {
-  try {
-    const incomingPath = req.originalUrl.startsWith("/agent-builder-source")
-      ? req.originalUrl.replace(/^\/agent-builder-source\/?/, "/")
-      : req.originalUrl;
-    const target = new URL(incomingPath || "/", originalBuilderUrl);
-    const upstream = await fetch(target, {
-      method: req.method,
-      headers: {
-        accept: req.get("accept") || "*/*",
-        "accept-language": req.get("accept-language") || "en-US,en;q=0.9",
-        "user-agent": req.get("user-agent") || "HermesAgentOSProxy/1.0"
-      },
-      body: ["GET", "HEAD"].includes(req.method) ? undefined : req,
-      duplex: ["GET", "HEAD"].includes(req.method) ? undefined : "half"
-    });
-
-    res.status(upstream.status);
-    upstream.headers.forEach((value, key) => {
-      if (["content-encoding", "content-length", "transfer-encoding", "connection"].includes(key.toLowerCase())) return;
-      res.setHeader(key, value);
-    });
-
-    const contentType = upstream.headers.get("content-type") || "";
-    if (contentType.includes("text/html")) {
-      let html = await upstream.text();
-      html = html
-        .replaceAll('href="/_next/', 'href="/_next/')
-        .replaceAll('src="/_next/', 'src="/_next/')
-        .replaceAll(originalBuilderUrl, "")
-        .replaceAll("http://127.0.0.1:3000", "")
-        .replaceAll("http://127.0.0.1:3100", "")
-        .replaceAll("http://localhost:3000", "");
-      html = injectBuilderReplayOverlay(html);
-      res.send(html);
-      return;
-    }
-
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-    Readable.fromWeb(upstream.body).pipe(res);
-  } catch (error) {
-    next(error);
-  }
-}
-
-app.all("/agent-builder-source", proxyOriginalBuilder);
-app.all("/agent-builder-source/*", proxyOriginalBuilder);
-app.all("/_next/*", proxyOriginalBuilder);
-
 // Compatibility aliases for the previous dashboard build.
-app.get("/api/integrations", async (_req, res, next) => {
+app.get("/api/integrations", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     const [status, modules] = await Promise.all([getOsStatus(), getModules()]);
     res.json(modulesToLegacySnapshot(status, modules));
@@ -1755,7 +1698,7 @@ app.get("/api/integrations", async (_req, res, next) => {
   }
 });
 
-app.get("/api/connections/templates", async (_req, res, next) => {
+app.get("/api/connections/templates", requireAdminWhenPublic, async (_req, res, next) => {
   try {
     res.json(await getConnections());
   } catch (error) {

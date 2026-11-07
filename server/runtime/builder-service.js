@@ -7,7 +7,7 @@ import { killProcessTree, spawnTracked } from "./process-tree.js";
 import { redactValue, sanitizeObject } from "./safety.js";
 
 const PACKAGED = () => process.env.AGENT_OS_PACKAGED === "1";
-const PACKAGED_REASON = "Open Agent Builder needs a source checkout; not included in the desktop app.";
+const PACKAGED_REASON = "The optional builder add-on was removed from this version of Agent OS because its dependencies had known security flaws.";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -311,7 +311,7 @@ export async function getBuilderStatus() {
     url: builderUrl,
     proxiedUrl: "/agent-builder-source/?view=builder",
     sourcePresent,
-    reason: packaged ? PACKAGED_REASON : null,
+    reason: !sourcePresent ? PACKAGED_REASON : null,
     dependenciesInstalled,
     upstreamFilePresent,
     live,
@@ -579,6 +579,12 @@ export async function startBuilderSupervisor() {
     throw error;
   }
   const status = await getBuilderStatus();
+  if (status.status === "missing_source") {
+    addSupervisorLog("warn", "Builder supervisor start blocked: the add-on was removed from this version.");
+    const error = new Error(PACKAGED_REASON);
+    error.status = 409;
+    throw error;
+  }
   if (builderProcess && builderProcess.exitCode == null && !builderProcess.killed) {
     addSupervisorLog("info", "Builder supervisor already running.", { pid: builderProcess.pid });
     return getBuilderStatus();

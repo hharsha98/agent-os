@@ -32,6 +32,7 @@ import {
   APPROVALS_CALL_LIMIT_MS,
   APPROVALS_POLL_MS,
   APPROVAL_DECISIONS,
+  APPROVAL_NOT_SHOWN,
   APPROVAL_SUMMARY_MAX,
   APPROVAL_TOO_LONG,
   createOpenclawApprovals,
@@ -740,6 +741,33 @@ test("L1: the page's card (the snapshot) carries cut; resolve refuses Allow once
     // A card that fits is allowed as before.
     assert.deepEqual(await approvals.resolve("appr-fits", "allow-once"), { message: null });
     assert.deepEqual(cli.resolves().map((call) => call.args.slice(2)), [["appr-cut", "deny"], ["appr-fits", "allow-once"]]);
+  } finally {
+    await approvals.stop();
+  }
+});
+
+test("A-M9: resolve refuses Allow once for a card with an empty summary or OpenClaw's \"(summary unavailable)\" (409 approval_not_shown), sends nothing, and takes a Deny", async () => {
+  const NOT_SHOWN = "Agent OS can't show what this would run, so it can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
+  assert.equal(APPROVAL_NOT_SHOWN, NOT_SHOWN, "the sentence, word for word");
+  const manager = fakeManager();
+  manager.open(S1);
+  const t = Date.now();
+  const rows = [
+    fakeApproval({ id: "appr-empty", sessionKey: keyOf(S1), summary: "", createdAtMs: t - 1000, expiresAtMs: t + 300000 }),
+    fakeApproval({ id: "appr-unavail", sessionKey: keyOf(S1), summary: "(summary unavailable)", createdAtMs: t - 2000, expiresAtMs: t + 300000 }),
+    fakeApproval({ id: "appr-real", sessionKey: keyOf(S1), summary: "npm test", createdAtMs: t - 3000, expiresAtMs: t + 300000 })
+  ];
+  const cli = fakeCli(async (args) => (args[1] === "pending" ? listed(rows) : { ok: true, code: 0, aborted: false, stdout: "resolved\n", stderr: "" }));
+  const approvals = createOpenclawApprovals({ manager, runCli: cli.run, intervalMs: 60000 });
+  try {
+    await waitFor(() => approvals.snapshot().approvals.length === 3);
+    for (const id of ["appr-empty", "appr-unavail"]) {
+      await assert.rejects(approvals.resolve(id, "allow-once"), { status: 409, code: "approval_not_shown", message: NOT_SHOWN }, id);
+    }
+    assert.equal(cli.resolves().length, 0, "nothing was sent");
+    assert.deepEqual(await approvals.resolve("appr-empty", "deny"), { message: null }, "Deny stays");
+    assert.deepEqual(await approvals.resolve("appr-real", "allow-once"), { message: null }, "a card with a summary is allowed as before");
+    assert.deepEqual(cli.resolves().map((call) => call.args.slice(2)), [["appr-empty", "deny"], ["appr-real", "allow-once"]]);
   } finally {
     await approvals.stop();
   }

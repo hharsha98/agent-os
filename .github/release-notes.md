@@ -4,6 +4,8 @@
 - **Windows:** when SmartScreen says "Windows protected your PC", click **More info**, then **Run anyway**.
 - **Linux:** an AppImage needs permission to run: `chmod +x Agent.OS_*.AppImage`, then double-click it or run it from a terminal.
 
+To check that a download is the file this release made, compare it with `SHA256SUMS.txt` on this page (how: see `SECURITY.md`).
+
 **On Windows, quit Agent OS and run the new `setup.exe` by hand:** an update from inside the app may be blocked by the old version still running. (See Known limits.)
 
 ## What's new in 0.4.0
@@ -61,7 +63,7 @@
 - OpenClaw sessions start in your home folder. OpenClaw's Gateway decides where its work happens, so the New session dialog does not offer a folder for it.
 - Stop cannot cancel a step that OpenClaw's Gateway is already running. A Claude Code task moved to the background with `/bg` may keep running if Agent OS cannot find it.
 - Quitting from the Dock menu, the app switcher or by logging out does not ask first. Live sessions end, and you can resume them.
-- On Windows and Linux, closing the window quits (after asking), and opening Agent OS twice can mark the first one's live sessions as ended.
+- On Windows and Linux, closing the window quits (after asking). Opening Agent OS a second time now brings the first window forward; on Linux that needs a desktop session bus, and without one two copies can still run and mark each other's sessions as ended.
 - The OpenClaw ChatGPT sign-in needs OpenClaw 2026.9.7 or newer.
 - The Claude plan check cannot tell a Claude Console (usage-billed) sign-in from a plan sign-in.
 - Team Room has been tested with test agents. I have not hand-tested a full room with the real Hermes and OpenClaw for this release.

@@ -124,7 +124,8 @@ export function runStreamingCommand(command, args = [], timeout = 5000, options 
     };
     const child = spawn(command, args, {
       cwd: options.cwd || undefined,
-      env: options.env || undefined,
+      // Same rule as runCommand: without its own environment the program gets the server's minus its secrets.
+      env: options.env || envWithoutServerSecrets(),
       stdio: ["ignore", "pipe", "pipe"]
     });
     const abort = () => {

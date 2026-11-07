@@ -90,9 +90,15 @@ That runs, in order:
    carries node-pty's prebuilt terminal binary for the target computer in
    `build/server/node_modules/node-pty/` (see "Terminals (node-pty)" below)
 3. `npm run desktop:fetch-node` if the bundled Node is missing: downloads Node
-   from nodejs.org, **checks its SHA-256 against that release's
-   `SHASUMS256.txt`** (aborts on mismatch) and keeps only the `node` binary.
-   The pinned version is the `NODE_VERSION` constant in `scripts/fetch-node.mjs`.
+   from nodejs.org, **checks its SHA-256 against a hash written in
+   `scripts/fetch-node.mjs`** (the `NODE_SHA256` table; aborts on mismatch, and
+   refuses a target that has no hash there) and keeps only the `node` binary.
+   The hashes are in the repository on purpose: a list fetched from nodejs.org
+   would be replaced together with the download. The pinned version is the
+   `NODE_VERSION` constant in the same file. To bump it, change `NODE_VERSION`,
+   then replace the table with the new version's hashes from
+   `https://nodejs.org/dist/v<version>/SHASUMS256.txt` (check that list against
+   its `SHASUMS256.txt.asc` signature with gpg once).
    Downloads are cached in `desktop/.cache/` (git-ignored).
 4. `tauri build`
 
@@ -266,6 +272,30 @@ The workflow runs in three stages so there is exactly one draft and one
 3. `updater-json` runs last and writes `latest.json` from the files that are
    there. It checks that all four computers (Apple Silicon Mac, Intel Mac,
    Linux, Windows) are present and fails without uploading if one is missing.
+   It then writes `SHA256SUMS.txt` (`scripts/write-checksums.mjs`): the SHA-256 of
+   every installer in the draft, in the format `sha256sum -c` reads.
+
+Things the workflows rely on, so a change to them is a deliberate one:
+
+- Every action is pinned by its full commit SHA, with the tag in a comment, in
+  all three workflows. `.github/dependabot.yml` proposes the bumps monthly.
+  `test/release-config.test.js` fails if any `uses:` is not a 40-character SHA.
+- The release job runs the Tauri CLI from the lockfile (`tauriScript: npx
+  --no-install tauri`), builds with `-- --locked`, and uses no build caches,
+  because it holds the signing key.
+- `.github/workflows/package-check.yml` holds no secrets. For a pull request from
+  a `release/...` branch (or by hand) it builds the four installers without
+  signing, installs each on its own system and runs `scripts/install-smoke.mjs`
+  against the installed app (server start, node-pty, one copy only, the server
+  stops when the app dies). On Windows it also installs the newest published
+  release, keeps its `node.exe` running, and runs the new installer over it.
+- The Windows installer runs `windows/hooks.nsh` before it copies files: it stops
+  any `node.exe` inside `resources\node\` of the install folder, and nothing
+  else, so an update over a running copy is not blocked by the old server.
+- Only one copy of the app runs: `tauri-plugin-single-instance` is the first
+  plugin registered in `src/main.rs`. A second launch shows the first window and
+  exits. On Linux it talks over the D-Bus session bus; without one it logs a
+  warning and starts normally.
 
 ### One-time key setup (the owner does this, once)
 

@@ -1,7 +1,7 @@
 // Provisions a Node runtime for OpenClaw without touching Homebrew, winget,
 // or an admin password: if the system Node is already 24.16+/26.1+ we use
-// it as-is, otherwise we download the OFFICIAL nodejs.org build, verify its
-// published SHA-256, and unpack it into a fixed spot other code already
+// it as-is, otherwise we download the OFFICIAL nodejs.org build, check it
+// against nodejs.org's published SHA-256, and unpack it into a fixed spot other code already
 // knows about (safety.js's search dirs, agents/detect.js's fallback paths).
 import { createReadStream, createWriteStream, realpathSync } from "node:fs";
 import { promises as fs } from "node:fs";
@@ -110,6 +110,22 @@ function findAsset(shasumsText, pattern) {
   return null;
 }
 
+// A download counts only if the address it ENDED at (after any redirects) is https. The one exception is the
+// local test mirror: a plain http://127.0.0.1 address that was asked for and answered by that same address.
+export function assertSecureFinalUrl(response, requested) {
+  const asked = new URL(requested);
+  let final;
+  try {
+    final = new URL(response.url || asked.toString());
+  } catch {
+    throw new Error("Could not tell which address the Node download came from; refusing it.");
+  }
+  const mirror = asked.protocol === "http:" && asked.hostname === "127.0.0.1" && final.origin === asked.origin;
+  if (final.protocol !== "https:" && !mirror) {
+    throw new Error("The Node download was sent to an address that is not https; refusing it.");
+  }
+}
+
 async function downloadToFile(url, destPath, signal) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
@@ -120,6 +136,7 @@ async function downloadToFile(url, destPath, signal) {
     if (!response.ok || !response.body) {
       throw new Error(`Could not download ${url} (HTTP ${response.status}).`);
     }
+    assertSecureFinalUrl(response, url);
     await pipeline(Readable.fromWeb(response.body), createWriteStream(destPath));
   } finally {
     clearTimeout(timer);
@@ -191,6 +208,7 @@ export async function ensureManagedNode({ signal, onProgress = () => {}, accepts
   onProgress("Looking up the latest Node 24 release...");
   const shasumsRes = await fetch(new URL("SHASUMS256.txt", baseUrl), { signal });
   if (!shasumsRes.ok) throw new Error(`Could not read SHASUMS256.txt (HTTP ${shasumsRes.status}).`);
+  assertSecureFinalUrl(shasumsRes, new URL("SHASUMS256.txt", baseUrl));
   const shasumsText = await shasumsRes.text();
 
   const extRe = suffix.ext.replace(".", "\\.");
@@ -204,11 +222,11 @@ export async function ensureManagedNode({ signal, onProgress = () => {}, accepts
   const downloadPath = path.join(stagingRoot, asset.filename);
   await downloadToFile(fileUrl, downloadPath, signal);
 
-  onProgress("Verifying checksum...");
+  onProgress("Checking it against nodejs.org's published checksum...");
   const actualSha256 = await sha256File(downloadPath);
   if (actualSha256 !== asset.sha256) {
     await fs.rm(downloadPath, { force: true });
-    throw new Error("Downloaded Node build failed checksum verification; refusing to install it.");
+    throw new Error("The downloaded Node build does not match nodejs.org's published checksum; refusing to install it.");
   }
 
   const extractDir = await fs.mkdtemp(path.join(stagingRoot, "extract-"));
@@ -230,7 +248,7 @@ export async function ensureManagedNode({ signal, onProgress = () => {}, accepts
   await fs.rm(finalDir, { recursive: true, force: true });
   if (process.platform === "win32") {
     // Windows can hold the directory open (AV scan, Explorer) in ways that
-    // make an in-place rename flaky; copy the verified bits instead.
+    // make an in-place rename flaky; copy the checked bits instead.
     await fs.cp(versionedDir, finalDir, { recursive: true });
     await fs.rm(versionedDir, { recursive: true, force: true });
   } else {

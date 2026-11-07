@@ -11,3 +11,11 @@ desktop/src-tauri/resources/node
 desktop/src-tauri/target
 desktop/src-tauri/gen
 desktop/.cache
+
+# Secrets and private notes never go into git (only the example env files do).
+.env.*
+!.env.example
+!.env.empty
+*.pem
+*.key
+.superpowers/

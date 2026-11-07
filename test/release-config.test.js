@@ -79,7 +79,7 @@ describe("release workflow", async () => {
   test("can write the Release, runs every platform, and creates the release as a draft", () => {
     assert.match(workflow, /contents:\s*write/);
     assert.match(workflow, /fail-fast:\s*false/);
-    assert.match(workflow, /tauri-apps\/tauri-action@v1/);
+    assert.match(workflow, /tauri-apps\/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1/);
     assert.match(workflow, /tags:\s*\n\s*-\s*"v\*"/);
     assert.match(workflow, /workflow_dispatch:[\s\S]*?tag:[\s\S]*?required:\s*true/);
   });
@@ -162,6 +162,12 @@ describe("release workflow", async () => {
   test("the files it reads exist, and the release notes lead with the unsigned warning", async () => {
     const pubkey = await read("desktop/updater-pubkey.txt");
     assert.ok(pubkey.trim().length > 0);
+    // The exact public key (it is public). Replacing it would make later builds trust another key for the update
+    // after next, so changing it must be a deliberate edit of this line too (review D-M12).
+    assert.equal(
+      pubkey.trim(),
+      "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVBN0Q0QjExQTcxNjE5QkUKUldTK0dSYW5FVXQ5NnZTdW5CczFxcy9wSFkxN3NkaWRiL0Qwemc3K1RHOVRUR0UyRnFyTzA1bi8K"
+    );
     const notes = await read(".github/release-notes.md");
     const opening = notes.split("\n").slice(0, 8).join("\n").toLowerCase();
     assert.match(opening, /unsigned/);
@@ -664,5 +670,238 @@ describe("desktop packaging and the desktop CI job", async () => {
     const crlf = lf.replace(/\n/g, "\r\n");
     assert.ok(crlf.includes("(not\r\n`npm run desktop:build`"), "the copy really has Windows line endings inside the wrapped sentence");
     checkReadme(crlf);
+  });
+});
+
+describe("supply chain: pinned actions, the lockfile's Tauri CLI, and no caches or secrets where the key is (review D-I1, D-I2, D-M4, D-M6, D-M7)", async () => {
+  const files = {
+    "release.yml": await read(".github/workflows/release.yml"),
+    "ci.yml": await read(".github/workflows/ci.yml"),
+    "package-check.yml": await read(".github/workflows/package-check.yml")
+  };
+  const release = files["release.yml"];
+  const jobOf = (text, name) => {
+    const match = text.match(new RegExp(`\\n  ${name}:\\r?\\n([\\s\\S]*?)(?=\\r?\\n  [a-z][a-z-]*:\\r?\\n|$)`));
+    assert.ok(match, `job ${name} not found`);
+    return match[1];
+  };
+  const matrixOf = (text, jobName) => {
+    const job = jobOf(text, jobName);
+    const entries = [...job.matchAll(/- name: ([^\n]+)\n((?: {12}[a-z_]+: [^\n]+\n)+)/g)];
+    return entries.map((entry) => {
+      const fields = Object.fromEntries([...entry[2].matchAll(/ {12}([a-z_]+): ([^\n]+)/g)].map((field) => [field[1], field[2].trim()]));
+      return { name: entry[1].trim(), ...fields };
+    });
+  };
+
+  test("every action in every workflow is pinned to a full 40-character commit SHA, with its tag in a comment", () => {
+    let seen = 0;
+    for (const [name, text] of Object.entries(files)) {
+      for (const line of text.split(/\r?\n/)) {
+        const match = line.match(/^\s*(?:-\s+)?uses:\s*(\S+)(.*)$/);
+        if (!match) continue;
+        seen += 1;
+        assert.match(match[1], /^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/, `${name}: ${line.trim()} must be pinned by a 40-character SHA`);
+        assert.match(match[2], /^\s+# \S+/, `${name}: ${line.trim()} needs the tag in a comment`);
+      }
+    }
+    assert.ok(seen >= 20, `the check saw ${seen} uses: lines`);
+    const wanted = {
+      "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+      "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "Swatinem/rust-cache": "d1527c8f67ef9af357290475d4af4b0fab8f12e0",
+      "tauri-apps/tauri-action": "1deb371b0cd8bd54025b384f1cd735e725c4060f",
+      "dtolnay/rust-toolchain": "b725eda525362e7cf34af9a7243cac1e3f01a7ec"
+    };
+    for (const [action, sha] of Object.entries(wanted)) {
+      for (const [name, text] of Object.entries(files)) {
+        for (const match of text.matchAll(new RegExp(`uses: ${action}@(\\S+)`, "g"))) assert.equal(match[1], sha, `${name}: ${action}`);
+      }
+    }
+  });
+
+  test("rust-toolchain is told which toolchain, since a pinned SHA no longer names one", () => {
+    for (const [name, text] of Object.entries(files)) {
+      for (const match of text.matchAll(/uses: dtolnay\/rust-toolchain@\S+[^\n]*\n\s+with:\n((?:\s+\S[^\n]*\n)+)/g)) {
+        assert.match(match[1], /toolchain: stable/, name);
+      }
+    }
+  });
+
+  test("the release build runs the lockfile's Tauri CLI and cargo with --locked", () => {
+    const job = jobOf(release, "release");
+    assert.match(job, /tauriScript: npx --no-install tauri\n/);
+    assert.match(job, /args: \$\{\{ matrix\.args \}\} \$\{\{ steps\.updater\.outputs\.extra_args \}\} -- --locked\n/);
+  });
+
+  test("the key-holding release job has no build cache, and its checkout leaves no token in .git/config", () => {
+    const job = jobOf(release, "release");
+    assert.ok(!/cache:\s*npm/.test(job), "no npm cache in the release job");
+    assert.ok(!/rust-cache/i.test(job.replace(/#[^\n]*/g, "")), "no rust-cache step in the release job");
+    assert.match(job, /persist-credentials: false/);
+  });
+
+  test("the updater step asks whether a key exists without putting the key in its environment", () => {
+    const step = release.slice(release.indexOf("name: Updater (only if a signing key is configured)"), release.indexOf("name: Build and upload"));
+    assert.match(step, /HAS_KEY: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY != '' \}\}/);
+    assert.doesNotMatch(step.replace(/#[^\n]*/g, ""), /TAURI_SIGNING_PRIVATE_KEY:/);
+  });
+
+  test("ci.yml is read-only by default", () => {
+    assert.match(files["ci.yml"], /\npermissions:\n  contents: read\n/);
+  });
+
+  test("dependabot keeps the pinned actions current", async () => {
+    const dependabot = await read(".github/dependabot.yml");
+    assert.match(dependabot, /package-ecosystem: "github-actions"/);
+    assert.match(dependabot, /interval: "monthly"/);
+  });
+
+  test("updater-json also writes SHA256SUMS.txt, after latest.json", () => {
+    const job = jobOf(release, "updater-json");
+    assert.ok(job.indexOf("node scripts/assemble-latest-json.mjs") > 0);
+    assert.ok(job.indexOf("node scripts/write-checksums.mjs") > job.indexOf("node scripts/assemble-latest-json.mjs"));
+    assert.match(job, /Write SHA256SUMS\.txt[\s\S]*GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  });
+
+  test("package-check holds no secrets, only reads the repository, and builds the same four targets as the release", () => {
+    const check = files["package-check.yml"];
+    assert.doesNotMatch(check, /secrets\./);
+    assert.doesNotMatch(check, /TAURI_SIGNING|updater\.conf|createUpdaterArtifacts/);
+    assert.match(check, /\npermissions:\n  contents: read\n/);
+    assert.match(check, /pull_request:\n    branches: \[main\]/);
+    assert.match(check, /workflow_dispatch:/);
+    assert.match(check, /startsWith\(github\.head_ref, 'release\/'\)/);
+    const releaseMatrix = matrixOf(release, "release");
+    const checkMatrix = matrixOf(check, "build");
+    assert.equal(releaseMatrix.length, 4);
+    assert.deepEqual(checkMatrix, releaseMatrix, "same platform, rust_target, node_platform, node_arch and args");
+    assert.match(check, /npx --no-install tauri build \$\{\{ matrix\.args \}\} -- --locked/);
+    // CI=true on the build step only.
+    assert.equal([...check.matchAll(/^\s*CI:\s*true\b/gm)].length, 1);
+    for (const runner of ["windows-latest", "ubuntu-22.04", "macos-15", "macos-15-intel"]) assert.match(jobOf(check, "smoke"), new RegExp(runner));
+    assert.match(check, /node scripts\/install-smoke\.mjs/);
+    assert.match(check, /npm run smoke:docker/);
+    assert.match(check, /actions\/upload-artifact@[0-9a-f]{40}/);
+    assert.match(check, /actions\/download-artifact@[0-9a-f]{40}/);
+  });
+
+  test("the Node download is checked against hashes pinned in the repository, for every release target, and refuses any other", async () => {
+    const { NODE_SHA256, NODE_VERSION, pinnedSha256 } = await import("../scripts/fetch-node.mjs");
+    const fetchNode = await read("scripts/fetch-node.mjs");
+    assert.doesNotMatch(fetchNode, /SHASUMS256\.txt`\)/, "no checksum list is downloaded at build time");
+    assert.doesNotMatch(fetchNode, /download\(\`\$\{distUrl\}\/SHASUMS256/);
+    const osNames = { darwin: "darwin", linux: "linux", win32: "win" };
+    for (const target of matrixOf(release, "release")) {
+      const file = `node-v${NODE_VERSION}-${osNames[target.node_platform]}-${target.node_arch}.${target.node_platform === "win32" ? "zip" : "tar.gz"}`;
+      assert.match(pinnedSha256(file), /^[0-9a-f]{64}$/, `${file} has a pinned hash`);
+    }
+    for (const [file, hash] of Object.entries(NODE_SHA256)) {
+      assert.match(hash, /^[0-9a-f]{64}$/, file);
+      assert.ok(file.startsWith(`node-v${NODE_VERSION}-`), `${file} belongs to the pinned version`);
+    }
+    assert.equal(NODE_SHA256[`node-v${NODE_VERSION}-darwin-arm64.tar.gz`], "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a");
+    assert.throws(() => pinnedSha256("node-v99.0.0-linux-x64.tar.gz"), /No pinned SHA-256 for node-v99\.0\.0-linux-x64\.tar\.gz[\s\S]*NODE_SHA256[\s\S]*bumping NODE_VERSION/);
+    assert.throws(() => pinnedSha256("node-v24.22.2-freebsd-x64.tar.gz"), /No pinned SHA-256/);
+  });
+
+  test("the desktop plugins on the Rust side and the page's packages are on the same minor version", async () => {
+    const lock = await read("desktop/src-tauri/Cargo.lock");
+    const pkg = JSON.parse(await read("package.json"));
+    const npmLock = JSON.parse(await read("package-lock.json"));
+    const crate = (name) => lock.match(new RegExp(`name = "${name}"\\r?\\nversion = "([^"]+)"`))?.[1];
+    const minor = (version) => version.split(".").slice(0, 2).join(".");
+    for (const name of ["updater", "dialog", "opener", "process"]) {
+      const rust = crate(`tauri-plugin-${name}`);
+      const npm = npmLock.packages[`node_modules/@tauri-apps/plugin-${name}`]?.version;
+      assert.ok(rust && npm, `both halves of ${name} are locked`);
+      assert.equal(minor(npm), minor(rust), `@tauri-apps/plugin-${name} ${npm} and tauri-plugin-${name} ${rust}`);
+    }
+    assert.equal(pkg.dependencies["@tauri-apps/plugin-updater"], npmLock.packages["node_modules/@tauri-apps/plugin-updater"].version, "the updater package is pinned exactly and matches the lock");
+  });
+});
+
+describe("desktop shell hardening and the Windows installer hook (review D-M8, D-M9, Sa M5, Re I3)", async () => {
+  const main = await read("desktop/src-tauri/src/main.rs");
+
+  test("the developer fallback runs in debug builds only, and the server is told to listen on 127.0.0.1", () => {
+    const start = main.indexOf("fn resolve_launch(");
+    const end = main.indexOf("fn new_token(");
+    assert.ok(start >= 0 && end > start);
+    const resolve = main.slice(start, end);
+    assert.match(resolve, /if cfg!\(debug_assertions\) \{\s*let repo = PathBuf::from\(env!\("CARGO_MANIFEST_DIR"\)\)/);
+    assert.ok(resolve.indexOf("if cfg!(debug_assertions)") < resolve.indexOf('env!("CARGO_MANIFEST_DIR")'));
+    const spawn = main.slice(main.indexOf("fn spawn_server("), main.indexOf("fn parse_ready_line("));
+    assert.match(spawn, /\.env\("HOST", "127\.0\.0\.1"\)/);
+    assert.match(spawn, /\.env\("AGENT_OS_PORT", "0"\)/);
+    assert.doesNotMatch(main, /two copies never collide/, "the comment no longer says two copies are expected");
+  });
+
+  test("a second launch shows the first window and exits: the single-instance plugin is registered first", async () => {
+    const cargoToml = await read("desktop/src-tauri/Cargo.toml");
+    assert.match(cargoToml, /^tauri-plugin-single-instance = "2"$/m, "a stable 2.x, never the 3.0 alpha");
+    const lock = await read("desktop/src-tauri/Cargo.lock");
+    assert.match(lock.match(/name = "tauri-plugin-single-instance"\r?\nversion = "([^"]+)"/)?.[1] ?? "", /^2\.\d+\.\d+$/);
+    const builder = main.slice(main.indexOf("tauri::Builder::default()"), main.indexOf("if updater_configured {"));
+    const firstPlugin = builder.match(/\.plugin\((tauri_plugin_[a-z_]+)::/)[1];
+    assert.equal(firstPlugin, "tauri_plugin_single_instance");
+    assert.match(builder, /tauri_plugin_single_instance::init\(\|app, _args, _cwd\| \{\s*show_main_window\(app\);\s*\}\)/);
+    const capability = JSON.parse(await read("desktop/src-tauri/capabilities/default.json"));
+    const names = capability.permissions.map((permission) => (typeof permission === "string" ? permission : permission.identifier));
+    assert.ok(!names.some((name) => name.startsWith("single-instance")), "the plugin has no commands, so no permission is granted");
+  });
+
+  test("the Windows installer stops the server's node.exe inside its own folder, and nothing else, before it copies files", async () => {
+    const conf = JSON.parse(await read("desktop/src-tauri/tauri.conf.json"));
+    assert.equal(conf.bundle.windows.nsis.installerHooks, "./windows/hooks.nsh");
+    const hook = await read("desktop/src-tauri/windows/hooks.nsh");
+    assert.match(hook, /!macro NSIS_HOOK_PREINSTALL[\s\S]*!macroend/);
+    assert.match(hook, /nsExec::Exec/);
+    assert.match(hook, /-NoProfile -NonInteractive -ExecutionPolicy Bypass/);
+    // Only node.exe, only under $INSTDIR\resources\node, compared with a trailing backslash; the folder travels in an environment variable.
+    assert.match(hook, /\$INSTDIR\\resources\\node/);
+    assert.match(hook, /SetEnvironmentVariable\(t "AGENTOS_NODE_DIR"/);
+    assert.match(hook, /\$\$_\.Name -eq 'node\.exe'/);
+    assert.match(hook, /StartsWith\(\$\$dir, \[System\.StringComparison\]::OrdinalIgnoreCase\)/);
+    assert.match(hook, /TrimEnd\(\[char\]92\) \+ \[char\]92/);
+    assert.doesNotMatch(hook.replace(/;[^\n]*/g, ""), /taskkill|Stop-Process -Name|Remove-Item|\bDelete\b|RMDir/i, "it stops processes by id from the one folder and deletes nothing");
+    assert.match(hook, /exit 0/, "a failure never stops the install");
+  });
+});
+
+describe("install smoke, SECURITY.md and .gitignore", () => {
+  test("scripts/install-smoke.mjs checks the licence files, the server, node-pty and the real app, and prints no token", async () => {
+    const script = await read("scripts/install-smoke.mjs");
+    for (const text of ["THIRD_PARTY_NOTICES.md", "node_modules", "node-pty", "AGENT_OS_READY:", "/api/health", "AGENT_OS_SHUTDOWN", "cmd.exe", "/bin/sh", "dbus-run-session", "xvfb-run", "SIGKILL"]) {
+      assert.ok(script.includes(text), `install-smoke mentions ${text}`);
+    }
+    for (const env of ["AGENT_OS_PORT", "AGENT_OS_TOKEN", "AGENT_OS_STATIC_DIR", "AGENT_OS_PACKAGED", "AGENT_OS_STDIN_SHUTDOWN", "AGENT_OS_LAUNCH_PATH", "HOST", "AGENT_OS_HOME"]) {
+      assert.ok(script.includes(env), `it sets ${env}, as spawn_server does`);
+    }
+    assert.doesNotMatch(script, /console\.\w+\([^)]*\btoken\b/i, "no console call prints the token");
+  });
+
+  test("SECURITY.md names the one public contact and how to check SHA256SUMS.txt", async () => {
+    const security = await read("SECURITY.md");
+    assert.match(security, /mechaharsh@gmail\.com/);
+    assert.ok(!/@/.test(security.replace(/mechaharsh@gmail\.com/g, "")), "no other email address");
+    assert.ok(!security.includes("\u2014"), "no em dash");
+    for (const text of ["SHA256SUMS.txt", "shasum -a 256", "sha256sum", "Get-FileHash", "unsigned"]) assert.ok(security.includes(text), text);
+  });
+
+  test(".gitignore keeps env files (but not the examples), keys and private notes out of git", async () => {
+    const ignore = (await read(".gitignore")).split(/\r?\n/);
+    for (const line of [".env.*", "!.env.example", "!.env.empty", "*.pem", "*.key", ".superpowers/"]) assert.ok(ignore.includes(line), line);
+    assert.ok(ignore.indexOf("!.env.example") > ignore.indexOf(".env.*"), "the exceptions come after the pattern");
+  });
+
+  test("the Dockerfile runs Node 24 as the node user, with the data folder handed to it", async () => {
+    const dockerfile = await read("Dockerfile");
+    assert.match(dockerfile, /^FROM node:24-bookworm-slim$/m);
+    assert.match(dockerfile, /chown -R node:node \/data/);
+    assert.match(dockerfile, /^USER node$/m);
+    assert.ok(dockerfile.indexOf("chown -R node:node /data") < dockerfile.indexOf("VOLUME"), "the folder is handed over before it becomes a volume");
+    const ignore = await read(".dockerignore");
+    for (const line of [".claude", ".superpowers", "desktop/src-tauri/resources"]) assert.ok(ignore.split(/\r?\n/).includes(line), `.dockerignore has ${line}`);
   });
 });

@@ -6,7 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { envWithoutServerSecrets, redactSecretShapes, redactText, redactValue, runCommand } from "../server/runtime/safety.js";
+import { envWithoutServerSecrets, redactSecretShapes, redactText, redactValue, runCommand, runStreamingCommand } from "../server/runtime/safety.js";
+import { taskLine } from "../server/runtime/runs/task-line.js";
 
 // Built from pieces so this file holds no key-shaped text of its own.
 const SHAPES = {
@@ -104,4 +105,34 @@ test("runCommand's default environment hides the admin and launch tokens from a 
     Object.assign(process.env, saved);
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("runStreamingCommand's default environment hides the admin and launch tokens too, and a caller's own environment is used as given", { skip: process.platform === "win32" ? "a shell script stands in for the CLI" : false }, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-streaming-env-"));
+  const saved = { ...process.env };
+  try {
+    const cli = path.join(dir, "fake-cli");
+    await writeFile(cli, '#!/bin/sh\necho "admin=${HERMES_AGENT_OS_ADMIN_TOKEN-unset} launch=${AGENT_OS_TOKEN-unset} knob=${AGENT_OS_TEST_FAKE_KNOB-unset}"\n');
+    await chmod(cli, 0o755);
+    process.env.HERMES_AGENT_OS_ADMIN_TOKEN = "admin-secret-value";
+    process.env.AGENT_OS_TOKEN = "launch-secret-value";
+    process.env.AGENT_OS_TEST_FAKE_KNOB = "on";
+    const seen = await runStreamingCommand(cli, [], 5000);
+    assert.equal(seen.stdout, "admin=unset launch=unset knob=on");
+    const own = await runStreamingCommand(cli, [], 5000, { env: { PATH: process.env.PATH, HERMES_AGENT_OS_ADMIN_TOKEN: "explicit" } });
+    assert.equal(own.stdout, "admin=explicit launch=unset knob=unset");
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a run's task line hides every key shape redactText hides (it uses the same list), and keeps ordinary words", () => {
+  for (const [name, shape] of Object.entries({ ...SHAPES, ...OLD_SHAPES })) {
+    const line = taskLine(`Use ${shape} to deploy`);
+    assert.ok(!line.includes(shape), `${name} reached the saved task line`);
+    assert.equal(line, redactText(`Use ${shape} to deploy`), name);
+  }
+  for (const word of ORDINARY) assert.equal(taskLine(word), redactText(word), word);
 });

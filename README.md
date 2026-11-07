@@ -42,6 +42,14 @@ I have not paid for Apple or Microsoft developer certificates, so your computer 
 - **Windows:** when SmartScreen says "Windows protected your PC", click **More info**, then **Run anyway**.
 - **Linux:** an AppImage needs permission to run: `chmod +x Agent.OS_*.AppImage`, then double-click it or run it from a terminal.
 
+**Check your download (optional).** Each release has a file called `SHA256SUMS.txt` next to the installers. It lists a fingerprint (a SHA-256 hash) for each installer. Save it in the same folder as your download, open a terminal there, and run the line for your system. The long string it prints must match your file's line in `SHA256SUMS.txt`, letter for letter.
+
+- **Mac:** `shasum -a 256 "<the file you downloaded>"`
+- **Linux:** `sha256sum "<the file you downloaded>"`
+- **Windows (PowerShell):** `Get-FileHash ".\<the file you downloaded>" -Algorithm SHA256`
+
+If they differ, delete the file and do not run it. To report a problem, see [SECURITY.md](SECURITY.md).
+
 The first time it opens, Agent OS starts a small private server on your computer. You do not need to install Node or anything else first. The **Setup Assistant** checks your computer and offers to install the five agents. **Nothing is installed until you click for it.** (The desktop app does look up new agent versions by itself. See "Safety by default".)
 
 ---
@@ -293,7 +301,7 @@ The stack: React 18, TypeScript and Vite on the front. Node and Express on the b
 - **Hermes's Update is offered only for an unchanged official copy,** and its real update has not been run (see Tested on).
 - **An update on the Agents page has no Cancel.** Stopping an agent's own updater half way can leave it half-updated.
 - **Quitting from the Dock menu, the app switcher or by logging out does not ask first.** Live sessions end, and you can resume them from their recordings.
-- **On Windows and Linux, opening Agent OS twice can mark the first one's live sessions as ended.** Two copies using the same data folder (or `npm start` next to the app) do not know about each other's sessions.
+- **Only one copy of the desktop app runs at a time.** Opening it a second time brings the first window forward instead. On Linux this needs a desktop session (the D-Bus session bus, which every normal desktop has); without one, two copies can run, and they do not know about each other's sessions. `npm start` next to the app does the same: it shares the data folder and does not know about the app's sessions.
 - **The Claude plan check cannot tell every sign-in apart.** Claude Code reports a sign-in to an Anthropic Console account (billed by usage) the same way as a plan sign-in, so in that one case the card cannot warn you.
 - **The OpenClaw ChatGPT sign-in needs OpenClaw 2026.9.7 or newer.**
 - **Team Room** works with Hermes Agent and OpenClaw only, and has been proven with test agents, not by hand with the real ones for this release.

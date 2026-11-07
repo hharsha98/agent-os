@@ -179,12 +179,12 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean
         action: "prereq-node",
         title: "Set up a Node 24 runtime for OpenClaw",
         description:
-          "OpenClaw needs Node 24.16+ or 26.1+. A verified Node 24 build will be downloaded -- no Homebrew, winget, or admin password.",
+          "OpenClaw needs Node 24.16+ or 26.1+. A Node 24 build, checked against nodejs.org's published checksum, will be downloaded -- no Homebrew, winget, or admin password.",
         changes: [...MANAGED_NODE_CHANGES],
         passwordMoments: [],
         default: true,
         sourceUrl: "https://nodejs.org",
-        commandPreview: "Download and verify the official Node 24 build for this computer",
+        commandPreview: "Download the official Node 24 build for this computer and check it against nodejs.org's published checksum",
         ...stepMeta(recipe),
         approxMb: NODE_DOWNLOAD_MB,
         approxMinutes: NODE_DOWNLOAD_MINUTES
@@ -198,12 +198,12 @@ export function buildSetupPlan(check, { agents = OPERATOR_AGENT_IDS, hermesClean
         action: "prereq-node",
         title: "Set up a Node 24 runtime for Codex",
         description:
-          "Codex needs Node 22 or newer. A verified Node 24 build will be downloaded -- no Homebrew, winget, or admin password.",
+          "Codex needs Node 22 or newer. A Node 24 build, checked against nodejs.org's published checksum, will be downloaded -- no Homebrew, winget, or admin password.",
         changes: [...MANAGED_NODE_CHANGES],
         passwordMoments: [],
         default: true,
         sourceUrl: "https://nodejs.org",
-        commandPreview: "Download and verify the official Node 24 build for this computer",
+        commandPreview: "Download the official Node 24 build for this computer and check it against nodejs.org's published checksum",
         ...stepMeta(recipe),
         approxMb: NODE_DOWNLOAD_MB,
         approxMinutes: NODE_DOWNLOAD_MINUTES

@@ -3952,3 +3952,29 @@ test("worktree offer (X9 review M8): a hand-off from a session whose copy was re
     assert.equal(world.ptys.length, before, "no session was started in the path that is gone");
   });
 });
+
+// Review Sa M4: a key typed into the command an approval asks about is taken out of the desktop notification and out of the
+// saved "permission asked" marker, while the card the person answers (the alert frame) still shows the text exactly.
+test("approval text: the notification and the saved permission marker are redacted, the alert frame and the session's alert keep the exact text", async () => {
+  await withSessionEnv(async ({ agentOsHome, project }) => {
+    const lines = [];
+    const world = fakeWorld({ onAlertLine: (payload) => lines.push(payload) });
+    const summary = await world.manager.create({ agentId: "codex", folder: project });
+    const win = await attachFake(world.manager, summary.id, "w");
+    assert.equal(world.manager.focus(summary.id, "w"), true);
+    world.ptys[0].emit("ready");
+    world.clock = T0 + 5000;
+    const key = ["sk", "-or-v1-", "A1b2C3d4E5f6G7h8I9j0"].join("");
+    const text = `Approval requested: curl -H "Authorization: Bearer ${key}" https://example.com`;
+    world.manager.applySignal(summary.id, { kind: "waiting", text, source: "osc" });
+    const frame = win.frames.find((item) => item.t === "alert");
+    assert.equal(frame.text, text, "the card's text is unchanged");
+    assert.equal((await world.manager.get(summary.id)).alert.text, text, "the session's alert is unchanged");
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].text.includes(key), false, "the notification has no key");
+    assert.match(lines[0].text, /^Approval requested: curl -H "Authorization: (Bearer )?configured/);
+    const stored = await markersOnDisk(agentOsHome, summary.id, 1);
+    assert.equal(stored[0].type, "permission");
+    assert.equal(JSON.stringify(stored).includes(key), false, "the saved marker has no key");
+  });
+});

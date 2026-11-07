@@ -64,6 +64,9 @@ function recordHome() {
   if (process.env.FAKE_HERMES_RECORD_HOME) {
     appendFileSync(process.env.FAKE_HERMES_RECORD_HOME, \`\${JSON.stringify({ key: args[2], home: process.env.HERMES_HOME ?? null })}\\n\`);
   }
+  if (process.env.FAKE_HERMES_RECORD_ADMIN) {
+    appendFileSync(process.env.FAKE_HERMES_RECORD_ADMIN, \`\${process.env.HERMES_AGENT_OS_ADMIN_TOKEN ?? "unset"}\\n\`);
+  }
 }
 
 if (args.includes("--version")) {
@@ -1064,7 +1067,7 @@ test(
           id: "exec-auto",
           label: "Ask only for risky commands",
           description:
-            "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run and asks you about risky ones, like deleting."
+            "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run, and asks you about or refuses the ones it rates risky. It judges each command, so a plain delete of one file can run without asking."
         }
       ]);
       assert.deepEqual(status.notes, [approvalClientNote]);
@@ -1078,7 +1081,7 @@ test(
       assert.deepEqual(status.notes, [approvalClientNote]);
       assert.equal(
         status.summary,
-        "OpenClaw runs routine commands on its own and asks only for risky ones (tools.exec.mode = auto)."
+        "OpenClaw runs routine commands on its own; its reviewer asks you about or refuses the ones it rates risky (tools.exec.mode = auto). It judges each command, so a plain delete of one file can run without asking."
       );
     });
     // Any other value (allowlist, deny, ...) is shown as it is, with no choice and no note.
@@ -1354,20 +1357,21 @@ testWithHermesHome(
       id: "ask-risky",
       label: "Ask only for risky commands",
       description:
-        "Sets approvals.mode to smart, Hermes's own reviewer mode: it lets routine commands run and asks you about risky ones. Agent OS also adds one rule to its reviewer: always ask before deleting."
+        "Sets approvals.mode to smart, Hermes's own reviewer mode: it lets routine commands run and asks you about the ones its checks flag as risky. Agent OS also adds one rule: always ask about a flagged command that deletes. A plain rm of one file isn't flagged, so it runs without asking."
     };
     const ASK_BEFORE_DELETE = {
       id: "ask-before-delete",
-      label: "Always ask before deleting",
-      description: "Adds one rule to Hermes's reviewer: always ask before a command deletes files, folders or databases."
+      label: "Ask before flagged deletes",
+      description:
+        "Adds one rule to Hermes's reviewer: when its checks flag a delete, such as rm -r, git clean or DROP TABLE, ask you. A plain rm of one file isn't flagged, so it runs without asking."
     };
-    const MANUAL = "Hermes asks you about every command its checks flag (approvals.mode = manual).";
+    const MANUAL = "Hermes asks you about the commands its checks flag, not about every delete (approvals.mode = manual).";
     const SMART_EMPTY =
-      "Hermes runs routine commands on its own; its reviewer decides which risky ones to ask about (approvals.mode = smart).";
+      "Hermes runs routine commands on its own; its reviewer asks about the commands its checks flag, not about every delete (approvals.mode = smart).";
     const SMART_RULE =
-      "Hermes runs routine commands on its own and asks only for risky ones, always before deleting (approvals.mode = smart).";
+      "Hermes runs routine commands on its own and asks about the commands its checks flag, not about every delete (approvals.mode = smart).";
     const SMART_MINE =
-      "Hermes runs routine commands on its own; its reviewer also follows your own rules (approvals.mode = smart).";
+      "Hermes runs routine commands on its own; its reviewer asks about the commands its checks flag and also follows your own rules (approvals.mode = smart).";
 
     // The rule is the spec's sentence, word for word, and has no colon (so nothing in it can be read as YAML).
     assert.equal(
@@ -1489,6 +1493,28 @@ testWithHermesHome(
 );
 
 testWithHermesHome(
+  "hermes.safetyStatus(): the config reads do not pass the admin token to the Hermes program, with or without a profile",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.22.5", features: {} };
+    await withTempDir("agents-admin-env-", async (dir) => {
+      const record = path.join(dir, "admin.txt");
+      const seen = async () => {
+        await rm(record, { force: true });
+        await withEnv({ FAKE_HERMES_RECORD_ADMIN: record, HERMES_AGENT_OS_ADMIN_TOKEN: "placeholder-admin-token" }, () =>
+          hermes.safetyStatus(detected)
+        );
+        return (await readFile(record, "utf8")).split("\n").filter(Boolean);
+      };
+      assert.deepEqual(await seen(), ["unset", "unset"], "no profile set");
+      await withEnv({ HERMES_HOME: "/custom/hermes-home" }, async () => {
+        assert.deepEqual(await seen(), ["unset", "unset"], "with a profile set");
+      });
+    });
+  }
+);
+
+testWithHermesHome(
   "hermes.safetyAction(): both plans carry the same Hermes profile as the reads, in env and in redact; without one they carry none",
   { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
   async () => {
@@ -1532,7 +1558,7 @@ testWithHermesHome(
       const status = await hermes.safetyStatus(detected);
       assert.equal(status.permissive, false);
       assert.notEqual(status.known, false);
-      assert.match(status.summary, /^Hermes asks you about every command/);
+      assert.match(status.summary, /^Hermes asks you about the commands its checks flag/);
       assert.deepEqual(status.actions, []);
     });
     await withEnv({ ...clean, FAKE_HERMES_APPROVALS: "on" }, async () => {

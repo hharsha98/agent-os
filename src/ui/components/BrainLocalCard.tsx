@@ -175,12 +175,14 @@ export default function BrainLocalCard({
       <header className="os-brain-card__head">
         <h3 id="os-brain-local-title">Local (Ollama)</h3>
         <span className="os-brain-card__badges">
-          <span className="os-chip">Private</span>
+          <span className="os-chip" title="The AI model runs on this computer.">
+            On this computer
+          </span>
         </span>
       </header>
 
       <ul className="os-brain-card__facts">
-        <li>Runs on this computer, so your messages never leave it. Free once downloaded.</li>
+        <li>The AI model runs on this computer. Free once downloaded.</li>
         <li>Agents need 64K of working memory. Agent OS sets that up for the model you pick (no extra download).</li>
       </ul>
 

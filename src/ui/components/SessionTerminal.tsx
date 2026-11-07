@@ -6,7 +6,7 @@
 // Sessions page's own key handler. Every other key, Ctrl+K, Ctrl+R and Ctrl+\ included, reaches the agent.
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
-import type { ITerminalOptions, ITheme } from "@xterm/xterm";
+import type { IBufferRange, ITerminalOptions, ITheme } from "@xterm/xterm";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import type { IClipboardProvider } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
@@ -19,6 +19,7 @@ import "../terminal.css";
 import { openSessionSocket } from "../../sessionsApi";
 import type { SessionSocket } from "../../sessionsApi";
 import type { AlertKind, SessionSnapshot, SessionStateFrame } from "../../types";
+import AgentConfirmModal from "./AgentConfirmModal";
 import { isDesktopApp } from "../desktop";
 import { togglePalette } from "../palette";
 import { isAppShortcut, isMacPlatform, MAX_COLS, MAX_ROWS } from "../sessionsShared";
@@ -27,8 +28,11 @@ import {
   INPUT_NOT_SENT_NOTICE,
   isAsciiOnly,
   isAutomaticReport,
+  clipboardWriteNotice,
   isOsc52Read,
   linkAllowed,
+  linkCopiedNotice,
+  linkNeedsConfirm,
   RECONNECT_ATTEMPTS,
   reconnectDelay,
   restoreScreen,
@@ -54,7 +58,6 @@ const WORDS = {
   reconnecting: "Reconnecting…",
   lost: "Lost the connection to this session.",
   reconnect: "Reconnect",
-  linkCopied: "Link copied. Open it in your browser.",
   linkNotCopied: "Agent OS couldn't open or copy that link.",
   inputNotSent: INPUT_NOT_SENT_NOTICE
 } as const;
@@ -128,25 +131,54 @@ async function openLink(uri: string, say: (text: string) => void): Promise<void>
   } catch {
     try {
       await navigator.clipboard.writeText(uri);
-      say(WORDS.linkCopied);
+      say(linkCopiedNotice(uri));
     } catch {
       say(WORDS.linkNotCopied);
     }
   }
 }
 
-// OSC 52: a program may put text on the clipboard; reading it is refused (spec). Read requests never get
-// this far: the guard registered after the addon swallows them first (see below).
-const CLIPBOARD: IClipboardProvider = {
-  readText: () => "",
-  async writeText(_selection: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // The window would not allow it: nothing is copied.
+// OSC 52: a program may put text on the clipboard (spec), and the person is told when it does, so it is never
+// silent; an empty text is never written (clipboardWriteNotice). Reading is refused: read requests never get
+// this far, the guard registered after the addon swallows them first (see below).
+function clipboardProvider(say: (text: string) => void): IClipboardProvider {
+  return {
+    readText: () => "",
+    async writeText(_selection: string, text: string) {
+      const notice = clipboardWriteNotice(text);
+      if (notice === null) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        say(notice);
+      } catch {
+        // The window would not allow it: nothing is copied, so nothing is said.
+      }
     }
+  };
+}
+
+// The address as the browser will read it (a look-alike international name shows in its plain "xn--" form).
+function displayAddress(uri: string): string {
+  try {
+    return new URL(uri).href;
+  } catch {
+    return uri;
   }
-};
+}
+
+// The link's visible words, read from the buffer range xterm hands over (1-based, end inclusive).
+function linkVisibleText(t: Terminal, range: IBufferRange): string {
+  const buffer = t.buffer.active;
+  let text = "";
+  for (let y = range.start.y; y <= range.end.y; y++) {
+    const line = buffer.getLine(y - 1);
+    if (!line) continue;
+    const from = y === range.start.y ? range.start.x - 1 : 0;
+    const to = y === range.end.y ? range.end.x : undefined;
+    text += line.translateToString(false, from, to);
+  }
+  return text;
+}
 
 const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(function SessionTerminal(props, ref) {
   const { sessionId, label, kittyKeyboard, webgl, autoFocus = false, active = true, ended = false, sizesItself = false } = props;
@@ -165,6 +197,8 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
   const latest = useRef(props);
   latest.current = props;
   const [connection, setConnection] = useState<TerminalConnection>("connecting");
+  // An OSC 8 link whose visible words are not its address, waiting for the person's answer.
+  const [pendingLink, setPendingLink] = useState<string | null>(null);
 
   useImperativeHandle(
     ref,
@@ -282,9 +316,17 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
         vtExtensions: { kittyKeyboard: latest.current.kittyKeyboard },
         // OSC 8 links: only http and https are shown as links (xterm's own rule while allowNonHttpProtocols
         // is false), and openLink checks the scheme again. An OSC 8 link hides its target behind its text, so
-        // while the pointer is on one, the real address is the terminal box's tooltip (title).
+        // while the pointer is on one, the real address is the terminal box's tooltip (title). A click on a link
+        // whose words are not its address first shows the real address and asks (linkNeedsConfirm).
         linkHandler: {
-          activate: (_event, uri) => void openLink(uri, say),
+          activate: (_event, uri, range) => {
+            if (!linkAllowed(uri)) return;
+            if (!term || linkNeedsConfirm(linkVisibleText(term, range), uri)) {
+              if (!disposed) setPendingLink(uri);
+              return;
+            }
+            void openLink(uri, say);
+          },
           hover: (_event, uri) => {
             if (linkAllowed(uri)) host.title = uri;
           },
@@ -304,8 +346,18 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       t.unicode.activeVersion = "11";
       // Plain-text links: the addon's own pattern needs "//" after the scheme, so `mailto:` text is never a
       // link (Q45); openLink lets only http and https through.
-      t.loadAddon(new WebLinksAddon((_event, uri) => void openLink(uri, say)));
-      t.loadAddon(new ClipboardAddon(undefined, CLIPBOARD));
+      // A printed address is its own words, so it asks only when the address can pass for another site
+      // (user name or look-alike international name, see linkNeedsConfirm).
+      t.loadAddon(
+        new WebLinksAddon((_event, uri) => {
+          if (linkAllowed(uri) && linkNeedsConfirm(uri, uri)) {
+            if (!disposed) setPendingLink(uri);
+            return;
+          }
+          void openLink(uri, say);
+        })
+      );
+      t.loadAddon(new ClipboardAddon(undefined, clipboardProvider(say)));
       // Registered after the clipboard addon, so xterm asks it first ("The most recently added handler is
       // tried first", xterm.d.ts registerOscHandler): a READ request is answered with nothing at all, and a
       // write goes on to the addon.
@@ -599,6 +651,29 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
   return (
     <div className="os-term" role="group" aria-label={label} data-connection={connection}>
       <div className="os-term__screen" ref={hostRef} />
+      {pendingLink ? (
+        <AgentConfirmModal
+          title="Open this link?"
+          confirmLabel="Open"
+          cancelLabel="Cancel"
+          onClose={() => setPendingLink(null)}
+          onConfirm={() => {
+            const uri = pendingLink;
+            setPendingLink(null);
+            void openLink(uri, (text) => {
+              try {
+                latest.current.onNotice?.(text);
+              } catch {
+                // The page's callback failed; the terminal carries on.
+              }
+            });
+          }}
+        >
+          <p style={{ overflowWrap: "anywhere" }}>
+            This link goes to: <code>{displayAddress(pendingLink)}</code>
+          </p>
+        </AgentConfirmModal>
+      ) : null}
       <div className={notice ? (lost ? "os-term__notice os-term__notice--lost" : "os-term__notice") : "os-term__notice os-term__notice--empty"}>
         <p className="os-term__notice-text" role="status">
           {notice ?? ""}

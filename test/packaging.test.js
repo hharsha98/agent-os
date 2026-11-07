@@ -131,6 +131,7 @@ test("copyNodePty copies lib, package.json and only the target's prebuild, with 
       const result = await copyNodePty({ from: realNodePty, to, platform, arch });
       assert.equal(result.prebuild, prebuild);
       assert.ok(result.files.includes("package.json"));
+      assert.ok(result.files.includes("LICENSE"), "node-pty's licence text (it also covers conpty.dll and OpenConsole.exe) is copied beside package.json");
       assert.ok(result.files.includes("lib/index.js"));
       assert.ok(result.files.includes("lib/worker/conoutSocketWorker.js"), "the Windows output worker comes with lib/");
       assert.deepEqual(await readdir(path.join(to, "prebuilds")), [prebuild], "only the target's prebuild");

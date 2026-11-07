@@ -5,6 +5,7 @@ import { appendModuleLog } from "./module-logs.js";
 import { addMemory } from "./memory.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
 import { isDemoPublic } from "./demo-public.js";
+import { withMessageTerminator } from "./live-chat.js";
 import { getExecutionGateStatus, isExecutionEnabled, isMachineControlActive } from "./execution-gate.js";
 import { expandHome, runtimePaths } from "./store.js";
 import { redactText, runCommand, sanitizeObject, which } from "./safety.js";
@@ -1327,7 +1328,8 @@ async function executeAction(action, context) {
         result.error = "Codex CLI is not installed or not on PATH.";
         result.output = result.error;
       } else {
-        const executed = await runCommand(codex, [message], context.codexTimeoutMs || 300000);
+        // "--" first, so a message that is exactly an option name (for example "--version") is read as text, not as that option.
+        const executed = await runCommand(codex, withMessageTerminator([message], message), context.codexTimeoutMs || 300000);
         result.ok = executed.ok;
         result.output = redactText(executed.stdout || executed.stderr);
         result.error = executed.ok ? null : redactText(executed.stderr || "codex task failed");

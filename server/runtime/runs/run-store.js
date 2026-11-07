@@ -48,7 +48,7 @@ export async function readRunMeta(dir, id) {
 }
 
 export async function appendRunEventLine(dir, id, line) {
-  await fs.appendFile(eventsFile(dir, id), line);
+  await fs.appendFile(eventsFile(dir, id), line, { mode: 0o600 });
 }
 
 export async function readRunEvents(dir, id, fromSeq = 0) {

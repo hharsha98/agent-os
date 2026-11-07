@@ -36308,12 +36308,12 @@ Expected:
 - in `push-scan.txt` only made-up test values, each read by hand. Known fine values: `sk-ant-not-a-real-key`, `sk-ant-test-not-real`, the synthetic `sk-ant-oat01-…` redaction fixtures, and any `sk-or-` test key the keep-going tests use, shown shortened, never whole;
 - `0` (no local path of the owner's and no e-mail address in added lines).
 
-Then read the diff's added docs, test fixtures and sentences for anything private that should not be public (an employer's, client's or internal project's name or data). There is no word list: this is a read, not a search. A real secret, a credentials file or an NDA term stops the push: a worker removes it first, and it is never pushed in order to be removed later.
+Then read the diff's added docs, test fixtures and sentences for anything private that should not be public (a client's, a company's or an internal project's name or data). There is no word list: this is a read, not a search. A real secret, a credentials file or private content stops the push: a worker removes it first, and it is never pushed in order to be removed later.
 
 Before the push command, say in chat what is being pushed (his CLAUDE.md "show me what I am approving"):
 - the branch and the commit range;
 - the diff summary (files changed, lines added and removed);
-- the scan's result (the made-up test values and why they are fine, no credentials file, no NDA term, no local path).
+- the scan's result (the made-up test values and why they are fine, no credentials file, nothing private, no local path).
 
 Then push. His `git push` prompt is his go-ahead:
 

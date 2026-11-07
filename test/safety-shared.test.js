@@ -146,7 +146,7 @@ test("agent checks: Hermes on or off, from the real safety answer", () => {
   assert.deepEqual(mixed.map((r) => r.state), ["on", "on", "off"]);
 });
 
-test("the Safety rows word the check by mode: 'asks before risky commands' for OpenClaw in auto and Hermes in smart, the old words for every other mode (final fix, Re I4)", () => {
+test("the Safety rows word the check by mode: Hermes in smart or manual 'asks about commands its checks flag' (A-I1), OpenClaw in auto 'asks before risky commands', the old words for every other mode (final fix, Re I4)", () => {
   const rows = (hermesMode, openclawMode) =>
     safety.agentGuardRows(
       detail({ safety: { permissive: false, actions: [], mode: hermesMode } }),
@@ -154,19 +154,22 @@ test("the Safety rows word the check by mode: 'asks before risky commands' for O
       CHECKED
     );
   const risky = rows("smart", "auto");
-  assert.equal(risky[0].title, "Hermes asks before risky commands");
+  assert.equal(risky[0].title, "Hermes asks about commands its checks flag");
+  assert.match(risky[0].sub, /^A plain delete of one file isn't flagged\. Open Hermes on Agents to change it\.$/);
+  assert.equal(rows("manual", "ask")[0].title, "Hermes asks about commands its checks flag", "manual mode says the same");
   assert.equal(risky[1].title, "OpenClaw asks before risky commands");
   assert.deepEqual(risky.map((r) => r.state), ["on", "on", "on"], "the state is what it was");
-  for (const [hermes, openclaw] of [["manual", "ask"], [undefined, undefined], ["paranoid", "allowlist"], ["manual", "full"]]) {
+  for (const [hermes, openclaw] of [[undefined, undefined], ["paranoid", "allowlist"], ["off", "full"]]) {
     const old = rows(hermes, openclaw);
     assert.equal(old[0].title, "Hermes asks before running commands", `${hermes}`);
+    assert.equal(old[0].sub, "Open Hermes on Agents to change it.", `${hermes}`);
     assert.equal(old[1].title, "OpenClaw asks before running commands", `${openclaw}`);
   }
   // Only the mode that matters changes its agent's words: Hermes smart leaves OpenClaw ask alone, and the other way round.
-  assert.deepEqual(rows("smart", "ask").slice(0, 2).map((r) => r.title), ["Hermes asks before risky commands", "OpenClaw asks before running commands"]);
-  assert.deepEqual(rows("manual", "auto").slice(0, 2).map((r) => r.title), ["Hermes asks before running commands", "OpenClaw asks before risky commands"]);
+  assert.deepEqual(rows("smart", "ask").slice(0, 2).map((r) => r.title), ["Hermes asks about commands its checks flag", "OpenClaw asks before running commands"]);
+  assert.deepEqual(rows("manual", "auto").slice(0, 2).map((r) => r.title), ["Hermes asks about commands its checks flag", "OpenClaw asks before risky commands"]);
   // The spoken name uses the same words.
-  assert.match(safety.guardRowLabel(risky[0]), /^Hermes asks before risky commands\. On\./);
+  assert.match(safety.guardRowLabel(risky[0]), /^Hermes asks about commands its checks flag\. On\./);
   assert.match(safety.guardRowLabel(risky[1]), /^OpenClaw asks before risky commands\. On\./);
 });
 

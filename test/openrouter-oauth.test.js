@@ -324,6 +324,12 @@ test("round trip through the routes: connect -> start address (cookie) -> OpenRo
     }
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.match(response.headers.get("content-security-policy") || "", /(^|;)\s*frame-ancestors 'self'(;|$)/, "R33: this page's own CSP still says who may frame it");
+    // The page's one inline script is allowed by its hash, not by 'unsafe-inline' (U-M1: nothing else could run).
+    const csp = response.headers.get("content-security-policy") || "";
+    const script = /<script>([\s\S]*?)<\/script>/.exec(page)?.[1] ?? "";
+    assert.ok(script.includes("history.replaceState"));
+    assert.ok(csp.includes(`script-src 'sha256-${crypto.createHash("sha256").update(script).digest("base64")}'`), "the script's hash is in the page's policy");
+    assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/);
     assert.equal(hits.exchange, 1);
 
     const statusText = await (await fetch(`${base}/api/setup/openrouter/connect/${started.flowId}`, { headers: authedHeaders })).text();

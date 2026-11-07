@@ -149,6 +149,10 @@ async function ollamaReachable() {
   }
 }
 
+// Ollama's cloud-routed models (names ending -cloud or :cloud) are listed by its /api/tags too, but they run on
+// Ollama's servers, not on this computer, so they are never offered as a local model (U-M5).
+const CLOUD_MODEL_NAME = /[-:]cloud$/i;
+
 // The installed models, with their size on disk in bytes.
 async function ollamaTagEntries() {
   try {
@@ -158,7 +162,7 @@ async function ollamaTagEntries() {
     const models = Array.isArray(body?.models) ? body.models : [];
     return models
       .map((m) => ({ name: m?.name || m?.model || "", sizeBytes: typeof m?.size === "number" ? m.size : null }))
-      .filter((m) => m.name);
+      .filter((m) => m.name && !CLOUD_MODEL_NAME.test(m.name));
   } catch {
     return [];
   }

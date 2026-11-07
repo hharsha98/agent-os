@@ -156,7 +156,7 @@ let shimDir = null; // holds a fake OLD "node" shim (v22.1.0) for the "too old" 
 let mirrorServer = null;
 let mirrorPort = 0;
 let mirrorHits = {};
-const mirrorState = { hermesScript: "", openclawScript: "", nodeShasums: "", nodeTarballName: "", nodeTarballBuffer: Buffer.alloc(0) };
+const mirrorState = { hermesScript: "", openclawScript: "", nodeShasums: "", nodeTarballName: "", nodeTarballBuffer: Buffer.alloc(0), redirectHermesTo: "" };
 
 function resetMirrorHits() {
   mirrorHits = {};
@@ -207,6 +207,11 @@ before(async () => {
 
   mirrorServer = http.createServer((req, res) => {
     mirrorHits[req.url] = (mirrorHits[req.url] || 0) + 1;
+    if (req.url === "/hermes-agent.nousresearch.com/install.sh" && mirrorState.redirectHermesTo) {
+      res.writeHead(302, { Location: mirrorState.redirectHermesTo });
+      res.end();
+      return;
+    }
     if (req.url === "/hermes-agent.nousresearch.com/install.sh") {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end(mirrorState.hermesScript);
@@ -1137,3 +1142,102 @@ test(
     }
   }
 );
+
+// Review I5: the public demo has no login, so the setup routes that run something on the host (installers, configure,
+// model downloads) must refuse every method except GET and HEAD there. A fake manager that fails on any use stands in for
+// the real one, and the routes are asked with a body that would start a job if they got through.
+test("the public demo refuses every non-read setup route with 403 and starts nothing", async () => {
+  const { default: express } = await import("express");
+  const { createSetupRouter } = await import("../server/runtime/setup/routes.js");
+  const touched = [];
+  const trap = new Proxy({}, { get: (_target, name) => (touched.push(String(name)), () => assert.fail(`manager.${String(name)} was used`)) });
+  const app = express();
+  app.use(express.json());
+  app.use("/api/setup", createSetupRouter({ sessionManager: trap, updateChecks: trap }));
+  const server = await new Promise((resolve) => {
+    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
+  });
+  const before = process.env.DEMO_PUBLIC;
+  process.env.DEMO_PUBLIC = "1";
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/api/setup`;
+    const attempts = [
+      ["POST", "/jobs", { confirm: true, steps: ["node"] }],
+      ["POST", "/jobs/abc/retry", {}],
+      ["POST", "/configure", { confirm: true }],
+      ["POST", "/agents/hermes/model", { confirm: true, model: "a/b" }],
+      ["POST", "/ollama/pull", { confirm: true, model: "x" }],
+      ["POST", "/signin/hermes", { confirm: true }],
+      ["DELETE", "/openrouter/connect/abc", undefined],
+      ["PUT", "/jobs", {}],
+      ["PATCH", "/configure", {}]
+    ];
+    for (const [method, route, body] of attempts) {
+      const response = await fetch(`${base}${route}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body)
+      });
+      assert.equal(response.status, 403, `${method} ${route}`);
+      const answer = await response.json();
+      assert.equal(answer.ok, false);
+      assert.match(answer.error, /public demo is read-only/);
+    }
+    assert.deepEqual(touched, [], "no manager or update-check call");
+    // A read is not refused by this guard (it may answer 404 or 200, but never this 403).
+    const read = await fetch(`${base}/jobs/abc`);
+    assert.notEqual(read.status, 403);
+    const head = await fetch(`${base}/jobs/abc`, { method: "HEAD" });
+    assert.notEqual(head.status, 403);
+  } finally {
+    if (before === undefined) delete process.env.DEMO_PUBLIC;
+    else process.env.DEMO_PUBLIC = before;
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+// Review A-M10: the test-only mirror variables are never honoured by the shipped desktop app, and an installer download that
+// ends on a plain http address (other than the test mirror itself) is refused.
+test("applyMirror(), mirrorOrigin() and npmRegistryBase(): AGENT_OS_SETUP_MIRROR and AGENT_OS_TEST_NPM_REGISTRY are ignored when AGENT_OS_PACKAGED=1", async () => {
+  const { mirrorOrigin } = await import("../server/runtime/setup/recipes.js");
+  const { npmRegistryBase } = await import("../server/runtime/updates/checks.js");
+  const vars = { AGENT_OS_SETUP_MIRROR: "http://127.0.0.1:4321", AGENT_OS_TEST_NPM_REGISTRY: "http://127.0.0.1:4322" };
+  await withEnv({ ...vars, AGENT_OS_PACKAGED: undefined }, async () => {
+    assert.equal(mirrorOrigin(), "http://127.0.0.1:4321", "honoured outside the shipped app");
+    assert.match(applyMirror("https://openclaw.ai/install.sh"), /^http:\/\/127\.0\.0\.1:4321\/openclaw\.ai\/install\.sh$/);
+    assert.equal(npmRegistryBase(), "http://127.0.0.1:4322");
+  });
+  await withEnv({ ...vars, AGENT_OS_PACKAGED: "1" }, async () => {
+    assert.equal(mirrorOrigin(), null);
+    assert.equal(applyMirror("https://openclaw.ai/install.sh"), "https://openclaw.ai/install.sh");
+    assert.equal(getInstallRecipe("hermes", "darwin", "arm64").installerUrl, "https://hermes-agent.nousresearch.com/install.sh");
+    assert.equal(npmRegistryBase(), "https://registry.npmjs.org");
+  });
+});
+
+test("startSetupJob(): an installer download that is redirected to a plain http address is refused and never run", posixSkip, async () => {
+  await withTempSetupEnv(async () => {
+    // A second local server on another port: the redirect ends on http, and not on the mirror's own address.
+    let elsewhereHits = 0;
+    const elsewhere = http.createServer((_req, res) => {
+      elsewhereHits += 1;
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end(mirrorState.hermesScript);
+    });
+    await new Promise((resolve) => elsewhere.listen(0, "127.0.0.1", resolve));
+    mirrorState.redirectHermesTo = `http://127.0.0.1:${elsewhere.address().port}/install.sh`;
+    try {
+      const job = await startSetupJob({ steps: ["hermes-install"] });
+      const finished = await waitForJob(job.id);
+      assert.equal(finished.status, "failed");
+      const step = finished.steps.find((s) => s.id === "hermes-install");
+      assert.equal(step.status, "failed");
+      assert.match(JSON.stringify(step), /did not end on a secure \(HTTPS\) address/);
+      assert.equal(elsewhereHits, 1, "the redirect was followed once, and its answer was never run");
+      assert.deepEqual(step.runIds, [], "no installer ran");
+    } finally {
+      mirrorState.redirectHermesTo = "";
+      await new Promise((resolve) => elsewhere.close(resolve));
+    }
+  });
+});

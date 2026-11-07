@@ -169,7 +169,7 @@ git commit -m "Setup: a retry right after a job fails waits for its final save"
 
 This project has no UI test runner. Every visual and behavioural check in SP1 runs through one scratch script: a throwaway server with fake agents and a headless Chrome. It lives in the session scratchpad. It must never be added to the repo.
 
-**Files** (`<scratchpad>` = `/private/tmp/claude-501/-Users-harsha-agent-os--claude-worktrees-epic-vaughan-c2e6ef/99da1686-664c-4c07-82c4-11601dde2612/scratchpad`):
+**Files** (`<scratchpad>` = `/tmp/scratchpad`):
 - Create: `<scratchpad>/sp1/audit.mjs`
 - Create: `<scratchpad>/sp1/fake-bin/` (fake `claude`, `codex`, `agent`, `hermes`, `openclaw`)
 
@@ -1347,7 +1347,7 @@ git commit -m "Shell: Cobalt menu, top bar, buttons, fields and focus ring"
 - [ ] **Step 1: Full suite under the real-agent watcher.** Start the watcher in the background:
 
 ```bash
-S=/private/tmp/claude-501/-Users-harsha-agent-os--claude-worktrees-epic-vaughan-c2e6ef/99da1686-664c-4c07-82c4-11601dde2612/scratchpad; rm -f $S/stop-watch-sp1 $S/ps-watch-sp1.log; touch $S/ps-watch-sp1.log; while [ ! -f $S/stop-watch-sp1 ]; do ps -axo pid,ppid,command | grep -E "\.hermes/hermes-agent/venv/bin/hermes|/\.agent-os/node/bin/openclaw|/Users/[^/]+/\.local/bin/(hermes|codex|agent|claude)" | grep -v -E "grep|\.hermes/tools/python|input-format stream-json" >> $S/ps-watch-sp1.log; sleep 0.5; done
+S=/tmp/scratchpad; rm -f $S/stop-watch-sp1 $S/ps-watch-sp1.log; touch $S/ps-watch-sp1.log; while [ ! -f $S/stop-watch-sp1 ]; do ps -axo pid,ppid,command | grep -E "\.hermes/hermes-agent/venv/bin/hermes|/\.agent-os/node/bin/openclaw|/Users/[^/]+/\.local/bin/(hermes|codex|agent|claude)" | grep -v -E "grep|\.hermes/tools/python|input-format stream-json" >> $S/ps-watch-sp1.log; sleep 0.5; done
 ```
 
 Then run the suite:

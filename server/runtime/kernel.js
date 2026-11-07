@@ -139,9 +139,9 @@ function buildAgentOsReadiness({ modules, router, routerHealth, builder, schedul
       target: "firecrawl-builder",
       evidence: byId.get("firecrawl-builder")?.status === "connected"
         ? "Firecrawl Builder has auth, storage, and Firecrawl configuration."
-        : "Builder design can be present, but upstream execution still needs Convex, Clerk, Firecrawl, and LLM keys.",
+        : "The optional builder add-on was removed from this version of Agent OS because its dependencies had known security flaws.",
       missing: byId.get("firecrawl-builder")?.missing || [],
-      nextAction: byId.get("firecrawl-builder")?.status === "connected" ? "Open Agent Builder and run a workflow." : "Configure builder dependencies before claiming visual builder execution."
+      nextAction: byId.get("firecrawl-builder")?.status === "connected" ? "Open Agent Builder and run a workflow." : "Nothing to set up: the builder add-on is not part of this version."
     })
   ];
   const blocked = required.filter((item) => item.status !== "ready");

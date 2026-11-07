@@ -331,7 +331,13 @@ export async function configureApiIntegration(id, fields = {}) {
     MODEL: String(fields.MODEL || item.defaultModel || "").trim().slice(0, 200)
   };
   if (String(fields.API_KEY || "").trim()) safeFields.API_KEY = String(fields.API_KEY).trim().slice(0, 10000);
-  const saved = await configureConnection(profileId(id), safeFields);
+  // A saved key stays tied to the address it was saved with. A new address with no new key drops the old key,
+  // so a later test or run cannot send it somewhere else.
+  const stored = await getStoredConnectionConfig();
+  const profile = stored[profileId(id)] || {};
+  const savedBaseUrl = cleanBaseUrl(profile.BASE_URL || item.defaultBaseUrl);
+  const dropKey = !safeFields.API_KEY && baseUrl !== savedBaseUrl;
+  const saved = await configureConnection(profileId(id), safeFields, dropKey ? { removeFields: ["API_KEY"] } : {});
   return {
     ok: true,
     id,
@@ -387,7 +393,10 @@ export async function testApiIntegration(id, input = {}) {
   const stored = await getStoredConnectionConfig();
   const profile = stored[profileId(id)] || {};
   const baseUrl = cleanBaseUrl(input.BASE_URL || profile.BASE_URL || item.defaultBaseUrl);
-  const apiKey = String(input.API_KEY || profile.API_KEY || "").trim();
+  // A saved key goes only to the address it was saved with. A different BASE_URL in the request has to bring its own
+  // key; otherwise the test call goes out with no key (a request must not be able to point a saved key at another host).
+  const savedBaseUrl = cleanBaseUrl(profile.BASE_URL || item.defaultBaseUrl);
+  const apiKey = String(input.API_KEY || (baseUrl === savedBaseUrl ? profile.API_KEY : "") || "").trim();
   if (item.apiKeyRequired && !apiKey) {
     const error = new Error(`${item.name} needs an API or gateway key before testing.`);
     error.status = 412;

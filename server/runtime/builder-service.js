@@ -7,7 +7,7 @@ import { killProcessTree, spawnTracked } from "./process-tree.js";
 import { redactValue, sanitizeObject } from "./safety.js";
 
 const PACKAGED = () => process.env.AGENT_OS_PACKAGED === "1";
-const PACKAGED_REASON = "Open Agent Builder needs a source checkout; not included in the desktop app.";
+export const PACKAGED_REASON = "The optional builder add-on was removed from this version of Agent OS because its dependencies had known security flaws.";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,13 +26,6 @@ const LLM_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROQ
 const BUILDER_CONFIG_IDS = ["firecrawl-builder", "provider-convex", "provider-clerk", "provider-firecrawl", "provider-openai", "provider-anthropic", "provider-gemini"];
 const MAX_LOGS = 200;
 const BOOTSTRAP_COMMANDS = [
-  {
-    id: "install-builder-dependencies",
-    label: "Install upstream builder dependencies",
-    command: "npm run builder:install",
-    mode: "manual",
-    target: "vendor/open-agent-builder"
-  },
   {
     id: "create-convex-project",
     label: "Create or link Convex project",
@@ -311,7 +304,7 @@ export async function getBuilderStatus() {
     url: builderUrl,
     proxiedUrl: "/agent-builder-source/?view=builder",
     sourcePresent,
-    reason: packaged ? PACKAGED_REASON : null,
+    reason: !sourcePresent ? PACKAGED_REASON : null,
     dependenciesInstalled,
     upstreamFilePresent,
     live,
@@ -321,8 +314,8 @@ export async function getBuilderStatus() {
     readyToBoot,
     status,
     supervisor,
-    installCommand: "npm run builder:install",
-    startCommand: "npm run builder:start",
+    installCommand: null,
+    startCommand: null,
     stopCommand: "POST /api/builder/stop",
     theme: "Hermes purple CSS override only",
     resetPolicy: "upstream source plus isolated purple theme; no Hermes demo workflow modifications"
@@ -346,8 +339,7 @@ export async function getBuilderBootstrap() {
       "Builder dependencies",
       status.dependenciesInstalled ? "done" : "action_required",
       true,
-      status.dependenciesInstalled ? "Next.js dependency is installed." : "Run npm run builder:install.",
-      { commandId: "install-builder-dependencies" }
+      status.dependenciesInstalled ? "Next.js dependency is installed." : PACKAGED_REASON
     ),
     bootstrapStep(
       "convex",
@@ -435,7 +427,7 @@ export async function prepareBuilderBootstrap(input = {}) {
   const mode = executeRequested && installRequested && executeEnabled ? "manual_guarded" : "dry_run";
   const message = mode === "dry_run"
     ? "Builder bootstrap prepared as a dry run. Run the listed commands or save the listed provider fields with user-owned credentials."
-    : "Automatic dependency installation is intentionally guarded; run npm run builder:install from the project root for this package.";
+    : "Automatic dependency installation is intentionally guarded; nothing is installed, because the builder add-on was removed from this version.";
 
   addSupervisorLog("info", "Builder bootstrap prepared.", {
     mode,
@@ -485,7 +477,7 @@ export async function runBuilderSmokeTest(input = {}) {
       label: "Builder dependencies",
       required: true,
       status: status.dependenciesInstalled ? "passed" : "failed",
-      detail: status.dependenciesInstalled ? "Next.js dependency found." : "Run npm run builder:install."
+      detail: status.dependenciesInstalled ? "Next.js dependency found." : PACKAGED_REASON
     },
     {
       id: "convex",
@@ -579,6 +571,12 @@ export async function startBuilderSupervisor() {
     throw error;
   }
   const status = await getBuilderStatus();
+  if (status.status === "missing_source") {
+    addSupervisorLog("warn", "Builder supervisor start blocked: the add-on was removed from this version.");
+    const error = new Error(PACKAGED_REASON);
+    error.status = 409;
+    throw error;
+  }
   if (builderProcess && builderProcess.exitCode == null && !builderProcess.killed) {
     addSupervisorLog("info", "Builder supervisor already running.", { pid: builderProcess.pid });
     return getBuilderStatus();

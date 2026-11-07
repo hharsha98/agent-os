@@ -426,8 +426,7 @@ test("16. changing the letter case of a protected path does not skip the session
     ["GET", "/Api/Agents"],
     ["POST", "/API/runs"],
     ["POST", "/Api/Agents/hermes/message"],
-    ["GET", "/_NEXT/x"],
-    ["GET", "/Agent-Builder-Source"]
+    ["GET", "/OAUTH/openrouter/start/x"]
   ];
   for (const [method, urlPath] of attempts) {
     const response = await fetch(`${base}${urlPath}`, {
@@ -779,6 +778,32 @@ test("26. R33: the page and a gated /api/ answer (signed in or not) say only the
   }
 });
 
+test("26b. U-M1: every answer carries the page's script and connection policy, with the request's own host for the WebSocket", async () => {
+  const { cookie, pageKey } = await claimSession();
+  const host = new URL(base).host;
+  const expected = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "font-src 'self' data:",
+    `connect-src 'self' ws://${host} wss://${host} ipc: http://ipc.localhost`,
+    "frame-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'self'"
+  ].join("; ");
+  const page = await fetch(`${base}/`);
+  assert.equal(page.headers.get("content-security-policy"), expected, "GET /");
+  const api = await fetch(`${base}/api/local-agents`, { headers: { cookie, "x-agent-os-key": pageKey } });
+  assert.equal(api.headers.get("content-security-policy"), expected, "an /api/ answer");
+  const html = await page.text();
+  assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)[^>]*>/i, "the page holds no inline script");
+  assert.doesNotMatch(html, /\son[a-z]+\s*=/i, "the page holds no inline event handler");
+});
+
 test("27. R33: a workspace file answer is never cached, stays sandboxed, and still says who may frame it", async () => {
   const { cookie, pageKey } = await claimSession();
   const write = await fetch(`${base}/api/workspace/files`, {
@@ -796,4 +821,239 @@ test("27. R33: a workspace file answer is never cached, stays sandboxed, and sti
   assert.match(csp, /(^|;)\s*frame-ancestors 'self'(;|$)/);
   assert.equal(raw.headers.get("x-frame-options"), "SAMEORIGIN");
   assert.equal(raw.headers.get("x-content-type-options"), "nosniff");
+});
+
+// ---- Review I2: the open health answer must not start agent programs -----------------------------------------------------
+// /api/health needs no login, so any web page can call it in a loop. It used to run every installed agent with --version.
+
+test("28. I2: /api/health needs no token and starts no agent program, however often it is asked", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-health-starts-"));
+  const bin = path.join(dir, "bin");
+  const record = path.join(dir, "starts.log");
+  const { mkdir, readFile, writeFile, chmod } = await import("node:fs/promises");
+  await mkdir(bin, { recursive: true });
+  for (const name of ["claude", "codex", "agent", "cursor-agent", "hermes", "openclaw", "openclaude", "gemini", "opencode"]) {
+    const file = path.join(bin, name);
+    await writeFile(file, `#!/bin/sh\necho "${name} $*" >> '${record}'\necho "${name} 0.0.0"\n`);
+    await chmod(file, 0o755);
+  }
+  const started = async () => (await readFile(record, "utf8").catch(() => "")).trim();
+  const probePort = await freePort();
+  const probeBase = `http://127.0.0.1:${probePort}`;
+  const probe = spawnServer(baseEnv(dir, probePort, { AGENT_OS_TOKEN: TOKEN, PATH: `${bin}:/usr/bin:/bin` }));
+  const probeLogs = collectLogs(probe);
+  try {
+    await waitForHealth(probeBase, probe, probeLogs);
+    for (let i = 0; i < 3; i += 1) {
+      const response = await fetch(`${probeBase}/api/health`, { headers: { Origin: "https://evil.example" } });
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.ok, true);
+      assert.equal(body.service, "agent-os-runtime");
+      for (const key of ["version", "mode", "timestamp", "bind", "port", "packaged", "demoPublic", "liveChat", "badge"]) {
+        assert.ok(key in body, `${key} is still in the answer`);
+      }
+    }
+    assert.equal(await started(), "", "no agent program was started");
+    // The same shims do get started by a route that is meant to look for agents, so the check above is not vacuous.
+    const status = await fetch(`${probeBase}/api/os/status`, { headers: { "x-agent-os-token": TOKEN } });
+    assert.equal(status.status, 200);
+    assert.notEqual(await started(), "", "the recording shims do work");
+  } finally {
+    await killChild(probe);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Review I3: in admin-token mode the read routes that were left open need the admin token --------------------------
+// (Local mode has its own gate; demo mode has no admin token and stays open and read-only.)
+
+const ADMIN_TOKEN = "admin-token-for-tests";
+const ADMIN_MODE_READS = [
+  "/api/admin/machine-control",
+  "/api/os/status",
+  "/api/os/foundation",
+  "/api/os/kernel",
+  "/api/os/readiness",
+  "/api/os/audit",
+  "/api/modules",
+  "/api/modules/codex",
+  "/api/integrations",
+  "/api/connections",
+  "/api/connections/templates",
+  "/api/installers",
+  "/api/agent-os/codex/status",
+  "/api/agent-os/api-integrations",
+  "/api/builder/status",
+  "/api/builder/bootstrap"
+];
+
+test("29. I3: in admin-token mode every read route answers 403 with no token, works with it, and /api/health stays open", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-admin-reads-"));
+  const adminPort = await freePort();
+  const adminBase = `http://127.0.0.1:${adminPort}`;
+  const server = spawnServer(
+    baseEnv(dir, adminPort, { HERMES_AGENT_OS_REQUIRE_AUTH: "1", HERMES_AGENT_OS_ADMIN_TOKEN: ADMIN_TOKEN })
+  );
+  const serverLogs = collectLogs(server);
+  try {
+    await waitForHealth(adminBase, server, serverLogs);
+    for (const route of ADMIN_MODE_READS) {
+      const without = await fetch(`${adminBase}${route}`);
+      assert.equal(without.status, 403, `${route} with no token`);
+      const wrong = await fetch(`${adminBase}${route}`, { headers: { "x-hermes-admin-token": "nope" } });
+      assert.equal(wrong.status, 403, `${route} with a wrong token`);
+    }
+    for (const route of ["/api/os/status", "/api/modules", "/api/connections", "/api/builder/status"]) {
+      const withToken = await fetch(`${adminBase}${route}`, { headers: { "x-hermes-admin-token": ADMIN_TOKEN } });
+      assert.equal(withToken.status, 200, `${route} with the token`);
+    }
+    assert.equal((await fetch(`${adminBase}/api/health`)).status, 200);
+  } finally {
+    await killChild(server);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Removed builder add-on: its refusal sentence, and no proxy for its old addresses -------------------------------------
+
+test("30. the optional builder add-on is gone: start says so in plain words, and its old proxy addresses fetch nothing", async () => {
+  const start = await fetch(`${base}/api/builder/start`, { method: "POST", headers: { "x-agent-os-token": TOKEN } });
+  assert.equal(start.status, 409);
+  const body = await start.json();
+  assert.match(body.error, /optional builder add-on was removed from this version of Agent OS because its dependencies had known security flaws/);
+  // Nothing proxies these any more: an address that used to be fetched for the caller now only gets the app page.
+  for (const route of ["/agent-builder-source//127.0.0.1:1/x", "/agent-builder-source/", "/_next/static/x.js"]) {
+    const answer = await fetch(`${base}${route}`, { headers: { "x-agent-os-token": TOKEN } });
+    assert.ok([200, 404].includes(answer.status), `${route}: ${answer.status}`);
+    assert.doesNotMatch(await answer.text(), /ECONNREFUSED|fetch failed/, route);
+  }
+  const status = await (await fetch(`${base}/api/builder/status`, { headers: { "x-agent-os-token": TOKEN } })).json();
+  assert.equal(status.status, "missing_source");
+});
+
+// ---- Review I4: a workflow id that tries to leave the store is a workflow that does not exist -----------------------------
+// The store root is AGENT_OS_HOME, so "..%2Foutside" reaches <home>/outside.json and the folder <home>/outside beside it.
+
+async function probeWorkflowEscapes(serverBase, home, headers) {
+  const { mkdir, readFile, stat, writeFile } = await import("node:fs/promises");
+  const outsideFile = path.join(home, "outside.json");
+  const outsideDir = path.join(home, "outside");
+  await mkdir(outsideDir, { recursive: true });
+  await writeFile(outsideFile, JSON.stringify({ secret: "keep-me" }));
+  await writeFile(path.join(outsideDir, "inner.txt"), "keep-me-too");
+  const attempts = [
+    ["GET", "/api/workflows/..%2Foutside"],
+    ["DELETE", "/api/workflows/..%2Foutside"],
+    ["GET", "/api/workflows/..%2F..%2Foutside"],
+    ["DELETE", "/api/workflows/..%5Coutside"],
+    ["GET", "/api/workflows/x/runs/..%2F..%2Foutside"],
+    ["GET", "/api/workflows/..%2Foutside/runs/x"],
+    ["GET", "/api/workflows/x/runs/..%2F..%2Foutside/events"],
+    ["GET", "/api/workflows/blank-open-agent-builder/runs/..%2F..%2F..%2Foutside/replay"],
+    ["POST", "/api/workflows/..%2Foutside/run"]
+  ];
+  for (const [method, route] of attempts) {
+    const answer = await fetch(`${serverBase}${route}`, { method, headers: { ...headers, "Content-Type": "application/json" }, ...(method === "POST" ? { body: "{}" } : {}) });
+    const text = await answer.text();
+    assert.equal(answer.status, 404, `${method} ${route}: ${answer.status} ${text.slice(0, 120)}`);
+    assert.doesNotMatch(text, /keep-me/, `${method} ${route} did not return the file`);
+  }
+  assert.equal(JSON.parse(await readFile(outsideFile, "utf8")).secret, "keep-me", "the file outside the store is untouched");
+  assert.equal(await readFile(path.join(outsideDir, "inner.txt"), "utf8"), "keep-me-too", "the folder outside the store is untouched");
+  assert.ok((await stat(outsideDir)).isDirectory());
+}
+
+test("31. I4: workflow ids with ..%2F forms answer 404 and touch nothing outside the store (local mode with the token)", async () => {
+  await probeWorkflowEscapes(base, homeDir, { "x-agent-os-token": TOKEN });
+});
+
+test("32. I4: the same ids answer 404 in demo mode with nothing sent", async () => {
+  const demoHome = await mkdtemp(path.join(os.tmpdir(), "agent-os-security-wf-demo-"));
+  const demoPort = await freePort();
+  const demoChild = spawnServer(baseEnv(demoHome, demoPort, { DEMO_PUBLIC: "1" }));
+  const demoLogs = collectLogs(demoChild);
+  try {
+    await waitForHealth(`http://127.0.0.1:${demoPort}`, demoChild, demoLogs);
+    await probeWorkflowEscapes(`http://127.0.0.1:${demoPort}`, demoHome, {});
+  } finally {
+    await killChild(demoChild);
+    await rm(demoHome, { recursive: true, force: true });
+  }
+});
+
+// ---- Review I6: a file Agent OS can't read must not end the server ------------------------------------------------------
+
+test("33. I6: a workspace file with no read permission gets an error answer and the server keeps answering", { skip: process.platform === "win32" || (process.getuid && process.getuid() === 0) ? "needs a user that file permissions apply to" : false }, async () => {
+  const { chmod } = await import("node:fs/promises");
+  const write = await fetch(`${base}/api/workspace/files`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-agent-os-token": TOKEN },
+    body: JSON.stringify({ folder: "notes", name: "locked.txt", content: "hello" })
+  });
+  assert.equal(write.status, 201);
+  const { file } = await write.json();
+  const onDisk = path.join(homeDir, file.id);
+  await chmod(onDisk, 0o000);
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const raw = await fetch(`${base}/api/workspace/raw?id=${encodeURIComponent(file.id)}`, { headers: { "x-agent-os-token": TOKEN } });
+      assert.equal(raw.status, 500);
+      const body = await raw.json();
+      assert.equal(body.error, "Agent OS could not read that file.");
+      assert.equal(JSON.stringify(body).includes(homeDir), false, "no folder path in the answer");
+      assert.equal(raw.headers.get("content-disposition"), null);
+    }
+    assert.equal(child.exitCode, null, "the server process is still running");
+    assert.equal((await fetch(`${base}/api/health`)).status, 200);
+  } finally {
+    await chmod(onDisk, 0o600);
+  }
+});
+
+// ---- Review M8: admin token handling -----------------------------------------------------------------------------------
+
+test("34. M8: the admin token is not read from the address, the compare is constant time, and a cookie-only post from another port is refused", async (t) => {
+  // Constant time: both the wrong and the right token go through timingSafeEqual (no === on the secret).
+  const crypto = await import("node:crypto");
+  const { isAdminRequest } = await import("../server/runtime/auth.js");
+  const beforeEnv = process.env.HERMES_AGENT_OS_ADMIN_TOKEN;
+  process.env.HERMES_AGENT_OS_ADMIN_TOKEN = ADMIN_TOKEN;
+  const spy = t.mock.method(crypto.default, "timingSafeEqual");
+  try {
+    const fakeRequest = (headers, query = {}) => ({ method: "GET", query, body: {}, get: (name) => headers[name.toLowerCase()] });
+    assert.equal(isAdminRequest(fakeRequest({ "x-hermes-admin-token": ADMIN_TOKEN })), true);
+    assert.equal(isAdminRequest(fakeRequest({ "x-hermes-admin-token": "x".repeat(ADMIN_TOKEN.length) })), false);
+    assert.equal(spy.mock.callCount(), 2, "the same-length wrong token and the right one were both compared");
+    assert.equal(isAdminRequest(fakeRequest({}, { adminToken: ADMIN_TOKEN })), false, "the address form is not read");
+  } finally {
+    if (beforeEnv === undefined) delete process.env.HERMES_AGENT_OS_ADMIN_TOKEN;
+    else process.env.HERMES_AGENT_OS_ADMIN_TOKEN = beforeEnv;
+  }
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-os-admin-origin-"));
+  const adminPort = await freePort();
+  const adminBase = `http://127.0.0.1:${adminPort}`;
+  const server = spawnServer(baseEnv(dir, adminPort, { HERMES_AGENT_OS_REQUIRE_AUTH: "1", HERMES_AGENT_OS_ADMIN_TOKEN: ADMIN_TOKEN }));
+  const serverLogs = collectLogs(server);
+  try {
+    await waitForHealth(adminBase, server, serverLogs);
+    // The address form: refused, even for a read.
+    assert.equal((await fetch(`${adminBase}/api/os/status?adminToken=${ADMIN_TOKEN}`)).status, 403);
+    assert.equal((await fetch(`${adminBase}/api/os/status`, { headers: { Authorization: `Bearer ${ADMIN_TOKEN}` } })).status, 200);
+    // A real login gives the cookie.
+    const login = await fetch(`${adminBase}/api/admin/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ adminToken: ADMIN_TOKEN }) });
+    assert.equal(login.status, 200);
+    const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
+    assert.match(cookie, /^hermes_admin_token=/);
+    const stop = (headers) => fetch(`${adminBase}/api/builder/stop`, { method: "POST", headers });
+    assert.equal((await stop({ cookie })).status, 200, "the cookie with no Origin works");
+    assert.equal((await stop({ cookie, Origin: adminBase })).status, 200, "the cookie from the app's own page works");
+    assert.equal((await stop({ cookie, Origin: "http://127.0.0.1:9999" })).status, 403, "the cookie from a page on another port is refused");
+    assert.equal((await stop({ "x-hermes-admin-token": ADMIN_TOKEN, Origin: "http://127.0.0.1:9999" })).status, 200, "the token header is its own proof");
+    assert.equal((await fetch(`${adminBase}/api/os/status`, { headers: { cookie, Origin: "http://127.0.0.1:9999" } })).status, 200, "reads are unchanged");
+  } finally {
+    await killChild(server);
+    await rm(dir, { recursive: true, force: true });
+  }
 });

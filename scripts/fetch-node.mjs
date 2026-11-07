@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Downloads the official Node.js runtime the desktop app ships with, checks
-// it against the SHA-256 list nodejs.org publishes for that release, and
+// it against a SHA-256 hash pinned in THIS file (NODE_SHA256, below), and
 // unpacks only the `node` binary (plus its LICENSE) into
 // desktop/src-tauri/resources/node/.
 //
@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
@@ -29,9 +29,38 @@ import { fileURLToPath } from "node:url";
 // it must stay on the Node 24 LTS line (the server bundle targets node24).
 export const NODE_VERSION = "24.22.2";
 
+// The SHA-256 of each Node archive this app may ship, copied from nodejs.org's SHASUMS256.txt for that
+// release (and checked by hand against the GPG-signed SHASUMS256.txt.asc once). They live HERE, in the
+// repository, on purpose: a list fetched from nodejs.org at build time would be replaced together with the
+// file it describes. The names carry the version, so raising NODE_VERSION without adding the new hashes
+// makes the fetch refuse to run instead of trusting nothing.
+// To bump Node: change NODE_VERSION, then replace every line below with the same five archives of the new
+// version, from https://nodejs.org/dist/v<version>/SHASUMS256.txt (check that file against SHASUMS256.txt.asc
+// with gpg: the release keys are listed in https://github.com/nodejs/node#release-keys).
+export const NODE_SHA256 = {
+  "node-v24.22.2-linux-x64.tar.gz": "361718c444e49af2ca5a110c83ba6a8901143f23ab285ebbef0341f391f482a9",
+  "node-v24.22.2-darwin-arm64.tar.gz": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a",
+  "node-v24.22.2-darwin-x64.tar.gz": "d5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52",
+  "node-v24.22.2-win-x64.zip": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2",
+  "node-v24.22.2-linux-arm64.tar.gz": "95c264150aceb7f3437a29fd6984924f5f8d1511ea3cbd6c508b83f6c555dae2",
+};
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = path.join(root, "desktop", ".cache", "node");
 const defaultOutDir = path.join(root, "desktop", "src-tauri", "resources", "node");
+
+// The pinned hash for one archive, or an error that says how to add it.
+export function pinnedSha256(file) {
+  const hash = NODE_SHA256[file];
+  if (!hash) {
+    throw new Error(
+      `No pinned SHA-256 for ${file}. Agent OS only downloads a Node archive whose hash is listed in NODE_SHA256 in ` +
+        `scripts/fetch-node.mjs. When bumping NODE_VERSION, add the hash of every archive from ` +
+        `https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt (checked against its SHASUMS256.txt.asc signature).`
+    );
+  }
+  return hash;
+}
 
 function parseArgs(argv) {
   const args = { platform: process.platform, arch: process.arch, out: defaultOutDir };
@@ -92,20 +121,11 @@ async function main() {
   const { platform, arch, out: outDir } = parseArgs(process.argv.slice(2));
   const { base, file } = archiveInfo(platform, arch);
   const distUrl = `https://nodejs.org/dist/v${NODE_VERSION}`;
+  // Before any download: a target with no pinned hash is refused.
+  const expected = pinnedSha256(file);
   await mkdir(cacheDir, { recursive: true });
 
   const archivePath = path.join(cacheDir, file);
-  const sumsPath = path.join(cacheDir, `SHASUMS256-v${NODE_VERSION}.txt`);
-
-  // The checksum list is always re-fetched: a stale cached copy must never
-  // be the thing we trust.
-  console.log(`Fetching checksums for Node v${NODE_VERSION}...`);
-  await download(`${distUrl}/SHASUMS256.txt`, sumsPath);
-  const expected = (await readFile(sumsPath, "utf8"))
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/))
-    .find(([, name]) => name === file)?.[0];
-  if (!expected) throw new Error(`${file} is not listed in SHASUMS256.txt for v${NODE_VERSION}.`);
 
   if (!existsSync(archivePath) || (await sha256(archivePath)) !== expected) {
     console.log(`Downloading ${file}...`);
@@ -120,7 +140,7 @@ async function main() {
     await rm(archivePath, { force: true });
     throw new Error(`SHA-256 mismatch for ${file}.\n  expected ${expected}\n  got      ${actual}\nThe download was deleted. Aborting.`);
   }
-  console.log(`SHA-256 verified: ${actual}`);
+  console.log(`SHA-256 matches the hash pinned in scripts/fetch-node.mjs: ${actual}`);
 
   const scratch = await mkdtemp(path.join(os.tmpdir(), "agent-os-node-"));
   try {
@@ -162,7 +182,10 @@ async function main() {
   console.log(`Node v${NODE_VERSION} (${platform}/${arch}) is ready in ${shown}/`);
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+// Only run when started from the command line, not when a test imports it.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}

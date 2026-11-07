@@ -54,7 +54,7 @@ jobs:
 
       # Needs .github/release-notes.md from the tagged commit.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
@@ -157,29 +157,28 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # A manual run starts from a branch, not the tag. Check out the tag
           # itself so the release is exactly the tagged commit.
           ref: ${{ steps.tag.outputs.tag }}
+          # Install and build scripts run later in this job; they must not find
+          # the write token in .git/config.
+          persist-credentials: false
 
+      # No build cache in this job (neither npm's nor Rust's): this job holds the
+      # signing key, and a cache written by an earlier run on main could carry
+      # poisoned build output into the release. Builds are slower on purpose.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-          cache: npm
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.rust_target }}
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
-          # Two macOS legs share a runner type; keep their caches apart.
-          key: ${{ matrix.rust_target }}
 
       # Tauri v2's Linux prerequisites on ubuntu-22.04 (webkit2gtk 4.1, not 4.0).
       - name: Install Linux system dependencies
@@ -223,11 +222,12 @@ jobs:
         id: updater
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # "true" or "false" only: the key itself is not put in this step's environment.
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           pubkey="$(tr -d '\r\n ' < desktop/updater-pubkey.txt)"
           # A real Tauri public key is base64 that starts "untrusted comment:".
-          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [[ "$pubkey" == dW50cnVzdGVkIGNvbW1lbnQ6* ]]; then
+          if [ "$HAS_KEY" = "true" ] && [[ "$pubkey" == dW50cnVzdGVkIGNvbW1lbnQ6* ]]; then
             PUBKEY="$pubkey" node -e '
               const fs = require("fs");
               const config = {
@@ -252,7 +252,7 @@ jobs:
       # write latest.json (uploadUpdaterJson: false): four builds doing that at
       # once could overwrite each other, so the updater-json job does it last.
       - name: Build and upload
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Only read when updater artifacts are on. Empty is fine otherwise.
@@ -263,9 +263,17 @@ jobs:
           CI: true
         with:
           projectPath: desktop
+          # desktop/ has no package.json, so without this the action installs the
+          # newest @tauri-apps/cli from npm, outside the lockfile, in the step that
+          # holds the signing key. `npx --no-install` runs the lockfile's copy (from
+          # the repo root's node_modules) and never downloads one.
+          tauriScript: npx --no-install tauri
           releaseId: ${{ needs.create-release.outputs.release_id }}
           uploadUpdaterJson: false
-          args: ${{ matrix.args }} ${{ steps.updater.outputs.extra_args }}
+          # "-- --locked" goes last: tauri-action hands these arguments to `tauri build`
+          # as they are, and what follows "--" reaches cargo, which then refuses to
+          # change Cargo.lock.
+          args: ${{ matrix.args }} ${{ steps.updater.outputs.extra_args }} -- --locked
 
   # Stage 3: write latest.json once, after every build has uploaded. It checks
   # that all four computers are present and fails (uploading nothing) if not.
@@ -290,12 +298,12 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
 
@@ -306,3 +314,15 @@ jobs:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: node scripts/assemble-latest-json.mjs
+
+      # The builds are unsigned, so a person needs a way to check that a download is
+      # the file this release made. This lists the SHA-256 of every installer (not the
+      # .sig files or latest.json) in one file next to them. It runs last, after all
+      # four builds have uploaded.
+      - name: Write SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: node scripts/write-checksums.mjs

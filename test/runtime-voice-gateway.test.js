@@ -1135,3 +1135,34 @@ test(
   });
 });
 
+
+test(
+  "voice codex_task puts -- before the message, so a message that is an option name is read as text",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    await withTempRuntime(async (dir) => {
+      const bin = path.join(dir, "bin");
+      await mkdir(bin, { recursive: true });
+      const record = path.join(dir, "codex-argv.txt");
+      await writeFile(path.join(bin, "codex"), `#!/bin/sh\nfor a in "$@"; do echo "$a"; done > '${record}'\necho done\n`);
+      await chmod(path.join(bin, "codex"), 0o755);
+      // The planner (a fake local server in place of the model) asks for a codex_task whose message is exactly an option name.
+      await withHttpServer((_req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        const plan = { intent: "codex_task", summary: "Ask Codex.", confidence: 0.9, actions: [{ type: "codex_task", message: "--version" }] };
+        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(plan) } }] }));
+      }, async (baseUrl) => {
+        await withEnv(
+          { HERMES_AGENT_OS_ENABLE_EXEC: "1", PATH: `${bin}:/usr/bin:/bin`, OPENAI_API_KEY: "placeholder-openai-key", HERMES_VOICE_OPENAI_URL: `${baseUrl}/v1/chat/completions` },
+          async () => {
+            const result = await runVoiceCommand({ transcript: "please do the codex thing", dryRun: false });
+            assert.equal(result.mode, "executed");
+            const action = result.actions.find((item) => item.type === "codex_task");
+            assert.equal(action?.ok, true, JSON.stringify(result.actions));
+            assert.deepEqual((await readFile(record, "utf8")).trim().split("\n"), ["--", "--version"]);
+          }
+        );
+      });
+    });
+  }
+);

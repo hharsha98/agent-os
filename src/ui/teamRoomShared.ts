@@ -244,6 +244,16 @@ export function unreachableMessage(recheck: "room" | "rooms" = "room"): string {
 // with "-" (so it can't be read as a flag).
 export const OPENCLAW_MODEL_PATTERN = /^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$/;
 
+// What the start page says Agent OS does by itself, worded by OpenClaw's tools.exec.mode (A-I3). In `auto` OpenClaw's
+// own reviewer decides, so a routine command can run without asking, and the page must not say it "must ask". Every
+// other mode, and a mode that could not be read, keeps the sentence the page always had.
+export function teamRoomTalkOnlyText(openclawMode?: string | null): string {
+  if (openclawMode === "auto") {
+    return "Agent OS asks both agents to only talk. Hermes is limited to talking when its version allows it. OpenClaw's reviewer decides about its commands: routine ones can run without asking. Agent OS passes each message along, and it asks you before it saves anything of its own.";
+  }
+  return "Agent OS asks both agents to only talk. Hermes is limited to talking when its version allows it, and OpenClaw must ask before it runs a command. Agent OS passes each message along, and it asks you before it saves anything.";
+}
+
 export const COST_CAP_NOTE =
   "Hermes doesn't report cost (its model is a subscription or the version doesn't say); the cost cap only counts OpenClaw.";
 

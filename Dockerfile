@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:24-bookworm-slim
 
 WORKDIR /app
 
@@ -18,6 +18,12 @@ ENV NODE_ENV=production \
     HERMES_AGENT_OS_ENABLE_INSTALL=0 \
     HERMES_AGENT_OS_SCHEDULER=1 \
     HERMES_AGENT_OS_SCHEDULER_POLL_MS=30000
+
+# The server runs as the unprivileged "node" user that the image already has, not as root.
+# The data folder is made and handed over BEFORE it becomes a volume, so a new volume
+# starts out writable by that user.
+RUN mkdir -p /data/hermes-agent-os /data/hermes && chown -R node:node /data
+USER node
 
 VOLUME ["/data/hermes-agent-os"]
 EXPOSE 8090

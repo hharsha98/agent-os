@@ -30,7 +30,7 @@
 import path from "node:path";
 import { getAdapter } from "../agents/index.js";
 import { resolveHermesHome } from "../agents/hermes.js";
-import { runCommand } from "../safety.js";
+import { envWithoutServerSecrets, runCommand } from "../safety.js";
 import { claudeConfigDir, readRegularText } from "../sessions/claude-session.js";
 import { checkSessionFolder } from "../sessions/folders.js";
 import { isAgentUpdating } from "./activity.js";
@@ -90,6 +90,8 @@ const REGISTRY_ENV = "AGENT_OS_TEST_NPM_REGISTRY";
 // else is ignored with a warning, so a stray env var can never redirect a real
 // check. (The value is not printed: it could hold a user name and password.)
 export function npmRegistryBase() {
+  // The shipped desktop app never honours it (see mirrorOrigin in setup/recipes.js).
+  if (process.env.AGENT_OS_PACKAGED === "1") return NPM_REGISTRY;
   const raw = process.env[REGISTRY_ENV];
   if (!raw) return NPM_REGISTRY;
   try {
@@ -228,7 +230,7 @@ async function hermesLookup({ detected, installed, runCli, signal, limitMs }) {
   // Ask the Hermes profile that chat runs and the safety reads use: HERMES_HOME
   // from the server's own environment, else the stored connection value.
   const home = await resolveHermesHome();
-  const env = home ? { ...process.env, HERMES_HOME: home } : process.env;
+  const env = home ? { ...envWithoutServerSecrets(), HERMES_HOME: home } : envWithoutServerSecrets();
   const result = await runCli(detected.path, ["update", "--check"], { env, signal, timeoutMs: limitMs });
   const answer = parseHermesCheck({ code: exitCode(result), stdout: result?.stdout });
   if (!answer) throw new Error("Hermes's update check gave no readable answer.");

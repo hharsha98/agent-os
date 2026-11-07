@@ -413,3 +413,15 @@ test("saved card: 'You approved it' only when you did; an older room that saved 
   assert.match(olderSub, /Workspace sandbox/);
   assert.doesNotMatch(copy("saved", older, undefined, false).sub, /You approved|sandbox/);
 });
+
+test("the start page's promise is worded by OpenClaw's mode: in auto its reviewer decides, in every other mode the old sentence stays (A-I3)", () => {
+  const auto = shared.teamRoomTalkOnlyText("auto");
+  assert.equal(
+    auto,
+    "Agent OS asks both agents to only talk. Hermes is limited to talking when its version allows it. OpenClaw's reviewer decides about its commands: routine ones can run without asking. Agent OS passes each message along, and it asks you before it saves anything of its own."
+  );
+  assert.doesNotMatch(auto, /must ask/);
+  const today =
+    "Agent OS asks both agents to only talk. Hermes is limited to talking when its version allows it, and OpenClaw must ask before it runs a command. Agent OS passes each message along, and it asks you before it saves anything.";
+  for (const mode of ["ask", "allowlist", "full", "", undefined, null]) assert.equal(shared.teamRoomTalkOnlyText(mode), today, String(mode));
+});

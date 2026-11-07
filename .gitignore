@@ -6,12 +6,16 @@ build
 .data
 *.log
 *.tsbuildinfo
-vendor/open-agent-builder/node_modules
-vendor/open-agent-builder/.next
-vendor/open-agent-builder/.env
-vendor/open-agent-builder/.env.local
 desktop/src-tauri/resources/server
 desktop/src-tauri/resources/node
 desktop/src-tauri/target
 desktop/src-tauri/gen
 desktop/.cache
+
+# Secrets and private notes never go into git (only the example env files do).
+.env.*
+!.env.example
+!.env.empty
+*.pem
+*.key
+.superpowers/

@@ -12,6 +12,9 @@ const MIRROR_ENV = "AGENT_OS_SETUP_MIRROR";
 // string-prefix test would also accept "http://127.0.0.1:1@evil.example",
 // which really points at evil.example. Returns the origin, or null.
 export function mirrorOrigin() {
+  // The shipped desktop app never honours it: a same-user program could otherwise set it (launchctl setenv) and point the
+  // next Install at its own local server.
+  if (process.env.AGENT_OS_PACKAGED === "1") return null;
   const raw = process.env[MIRROR_ENV];
   if (!raw) return null;
   try {
@@ -33,7 +36,7 @@ export function mirrorOrigin() {
 
 export function applyMirror(url) {
   const mirror = process.env[MIRROR_ENV];
-  if (!mirror) return url;
+  if (!mirror || process.env.AGENT_OS_PACKAGED === "1") return url;
   const origin = mirrorOrigin();
   if (!origin) {
     // (The value is not printed: it could hold a user name and password.)

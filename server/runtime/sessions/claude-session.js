@@ -235,12 +235,22 @@ function mergedList(layers, key) {
 }
 
 // Claude's URL patterns: `*` matches any run of characters; everything else is literal.
-function urlPatternMatches(pattern, url) {
-  const source = pattern
-    .split("*")
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-  return new RegExp(`^${source}$`).test(url);
+// Plain linear matching, not a regular expression: a repo's own settings file supplies the pattern,
+// and a run of stars in a regular expression can keep the server busy for hours.
+export function urlPatternMatches(pattern, url) {
+  const parts = pattern.split("*");
+  if (parts.length === 1) return pattern === url;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  if (!url.startsWith(first) || !url.endsWith(last)) return false;
+  let at = first.length;
+  const end = url.length - last.length;
+  for (const part of parts.slice(1, -1)) {
+    const found = url.indexOf(part, at);
+    if (found === -1 || found + part.length > end) return false;
+    at = found + part.length;
+  }
+  return at <= end;
 }
 
 // The settings that keep Agent OS's hooks (alerts) or its statusLine (the Live meter) out of this

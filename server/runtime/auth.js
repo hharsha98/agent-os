@@ -1,3 +1,5 @@
+import { isOwnOrigin, timingSafeEqualStrings } from "./local-session.js";
+
 const COOKIE_NAME = "hermes_admin_token";
 
 function parseCookies(header = "") {
@@ -22,23 +24,31 @@ export function adminTokenConfigured() {
   return Boolean(process.env.HERMES_AGENT_OS_ADMIN_TOKEN);
 }
 
-export function providedAdminToken(req) {
+// The token is never read from the address (?adminToken=): addresses end up in proxy logs and browser history.
+function readAdminToken(req) {
   const bearer = String(req.get?.("authorization") || "").match(/^Bearer\s+(.+)$/i)?.[1];
-  const cookie = parseCookies(req.get?.("cookie") || "")[COOKIE_NAME];
-  return (
-    req.get?.("x-hermes-admin-token") ||
-    bearer ||
-    req.body?.adminToken ||
-    req.query?.adminToken ||
-    cookie ||
-    ""
-  );
+  const given = req.get?.("x-hermes-admin-token") || bearer || req.body?.adminToken || "";
+  if (given) return { token: given, viaCookie: false };
+  return { token: parseCookies(req.get?.("cookie") || "")[COOKIE_NAME] || "", viaCookie: true };
+}
+
+export function providedAdminToken(req) {
+  return readAdminToken(req).token;
 }
 
 export function isAdminRequest(req) {
   const expected = process.env.HERMES_AGENT_OS_ADMIN_TOKEN;
   if (!expected) return !authRequired();
-  return providedAdminToken(req) === expected;
+  const { token, viaCookie } = readAdminToken(req);
+  if (!timingSafeEqualStrings(token, expected)) return false;
+  // The cookie is sent along with a form post from a page on another local port (same site, different port), so a
+  // request that proves itself only by the cookie and names another page as its Origin is refused. A request with
+  // no Origin (curl, scripts) and every read are unchanged.
+  if (viaCookie && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    const origin = req.get?.("origin");
+    if (origin && !isOwnOrigin(origin, req.get?.("host"))) return false;
+  }
+  return true;
 }
 
 export function assertAdminRequest(req) {

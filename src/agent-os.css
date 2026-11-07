@@ -41,8 +41,8 @@ button { color: inherit; }
 .aos-sidebar-top { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 24px; }
 .aos-logo { display: flex; align-items: center; gap: 11px; }
 .aos-logo-mark {
-  width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
-  color: white; background: linear-gradient(145deg, #ff8238, #e84818); box-shadow: 0 8px 30px rgba(255,98,31,.24);
+  width: 38px; height: 38px; display: grid; place-items: center;
+  color: #eef0f2;
 }
 .aos-logo div:last-child { display: flex; flex-direction: column; gap: 2px; }
 .aos-logo strong { font-size: 16px; letter-spacing: -.02em; }
@@ -291,7 +291,7 @@ button { color: inherit; }
 .aos-builder { height: 100vh; min-height: 700px; display: flex; flex-direction: column; background: #080a0e; }
 .aos-builder-header { height: 64px; flex: 0 0 auto; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); background: #0d1014; position: relative; z-index: 20; }
 .aos-builder-left, .aos-builder-actions { display: flex; align-items: center; gap: 8px; }
-.aos-mini-logo { display: flex; align-items: center; gap: 7px; color: #ff7a32; font-size: 12px; font-weight: 800; }
+.aos-mini-logo { display: flex; align-items: center; gap: 7px; color: #eef0f2; font-size: 12px; font-weight: 800; }
 .aos-mini-logo span { color: #eef0f2; }
 .aos-divider { width: 1px; height: 23px; background: var(--line); margin: 0 5px; }
 .aos-builder-left > input { width: min(32vw, 360px); color: #e9ecef; background: transparent; border: 0; outline: 0; font-size: 13px; font-weight: 650; }

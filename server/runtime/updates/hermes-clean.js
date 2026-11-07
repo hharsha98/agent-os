@@ -29,7 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { getAdapter } from "../agents/index.js";
 import { resolveHermesHome } from "../agents/hermes.js";
-import { runCommand } from "../safety.js";
+import { envWithoutServerSecrets, runCommand } from "../safety.js";
 import { expandHome } from "../store.js";
 import { filterSettings } from "../sessions/changes.js";
 import { gitTopLevel, runGit } from "../sessions/git.js";
@@ -172,7 +172,7 @@ function channelIsDefault(result) {
 async function readHermesConfig(key, hermesHome) {
   const detected = await getAdapter("hermes").detect();
   if (!detected?.installed || !detected.path) return { ok: false, stdout: "", stderr: "" };
-  const env = hermesHome ? { ...process.env, HERMES_HOME: hermesHome } : process.env;
+  const env = hermesHome ? { ...envWithoutServerSecrets(), HERMES_HOME: hermesHome } : envWithoutServerSecrets();
   return runCommand(detected.path, ["config", "get", key], CONFIG_LIMIT_MS, { env });
 }
 

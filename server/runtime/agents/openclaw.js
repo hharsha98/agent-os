@@ -3,8 +3,8 @@
 // against fake CLIs in test/agents.test.js; see the deliverable report for
 // exactly which flags are assumed.
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { cliCwd } from "../cli-cwd.js";
 import { runCommand } from "../safety.js";
 import {
   cachedFeatures,
@@ -178,11 +178,11 @@ async function safetyStatus(detected) {
       id: "exec-auto",
       label: "Ask only for risky commands",
       description:
-        "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run and asks you about risky ones, like deleting."
+        "Sets tools.exec.mode to auto, OpenClaw's own recommended mode: its reviewer lets routine commands run, and asks you about or refuses the ones it rates risky. It judges each command, so a plain delete of one file can run without asking."
     });
   } else if (execValue === "auto") {
     summaries.push(
-      "OpenClaw runs routine commands on its own and asks only for risky ones (tools.exec.mode = auto)."
+      "OpenClaw runs routine commands on its own; its reviewer asks you about or refuses the ones it rates risky (tools.exec.mode = auto). It judges each command, so a plain delete of one file can run without asking."
     );
   } else {
     summaries.push(`OpenClaw tools.exec.mode is "${execValue}".`);
@@ -273,7 +273,7 @@ const service = {
       title: "OpenClaw gateway start",
       command: detected.path,
       args: ["gateway", "start"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   },
@@ -284,7 +284,7 @@ const service = {
       title: "OpenClaw gateway stop",
       command: detected.path,
       args: ["gateway", "stop"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   },
@@ -295,7 +295,7 @@ const service = {
       title: "OpenClaw gateway restart",
       command: detected.path,
       args: ["gateway", "restart"],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: GATEWAY_ACTION_TIMEOUT_MS
     };
   }
@@ -568,7 +568,7 @@ function safetyAction(actionId, detected) {
     title: `OpenClaw config set ${setting[0]} ${setting[1]}`,
     command: detected.path,
     args: ["config", "set", ...setting],
-    cwd: os.tmpdir(),
+    cwd: cliCwd(),
     timeoutMs: SAFETY_ACTION_TIMEOUT_MS,
     restartsGateway
   };

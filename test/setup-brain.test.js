@@ -470,6 +470,20 @@ test("brainOptions(): ALWAYS OpenRouter (even with a good local model on a big c
   });
 });
 
+test("Ollama's cloud-routed models (names ending -cloud or :cloud) are not offered as local models (U-M5)", async () => {
+  await withEnv({ AGENT_OS_OLLAMA_URL: `http://127.0.0.1:${mirrorPort}` }, async () => {
+    resetOllamaFake();
+    ollamaModels["gpt-oss:120b-cloud"] = { ...ollamaModels["llama3:8b"] };
+    ollamaModels["kimi-k2:cloud"] = { ...ollamaModels["llama3:8b"] };
+    clearBrainCacheForTest();
+    const names = (await listLocalModels({ ramGb: 32 })).map((m) => m.name);
+    assert.ok(names.includes("llama3:8b"), "a model that really runs here is still listed");
+    assert.ok(!names.some((name) => /[-:]cloud$/.test(name)), `no cloud model in ${names.join(", ")}`);
+    resetOllamaFake();
+    clearBrainCacheForTest();
+  });
+});
+
 // =====================================================================
 // 4. Defaults protect working agents
 // =====================================================================
@@ -1082,6 +1096,20 @@ test("configure job: Hermes falls back to --api-key when its private prompt is r
     assert.ok(brainStep.log.some((l) => /did not take the key from its private prompt/.test(l)));
     // The persisted job file and its step logs never contain the key.
     assert.ok(!JSON.stringify(finished).includes(VALID_KEY));
+  });
+});
+
+test("configure job: a pasted key with a stray space or line break is trimmed, so the literal scrub can find it", posixSkip, async () => {
+  await withTempSetupEnv(async ({ home }) => {
+    await installFakeHermesShim(home);
+    await writeFile(path.join(home, ".fake-hermes-no-stdin-prompt"), "1");
+    const job = await startConfigureJob({ mode: "openrouter", apiKey: `  ${VALID_KEY}\n`, model: "free/128k" });
+    const finished = await waitForJob(job.id);
+    assert.equal(finished.status, "succeeded");
+    const lines = await recordLines(path.join(home, ".fake-hermes-record.jsonl"));
+    const withFlag = lines.filter((e) => e.argv[0] === "auth" && e.argv[1] === "add" && e.argv.includes("--api-key"));
+    assert.equal(withFlag.length, 1);
+    assert.equal(withFlag[0].argv[withFlag[0].argv.indexOf("--api-key") + 1], VALID_KEY, "no space or line break around the key");
   });
 });
 

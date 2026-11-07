@@ -41,12 +41,23 @@ function elapsedMs(startedAt, finishedAt) {
   return Math.max(0, new Date(finishedAt).getTime() - new Date(startedAt).getTime());
 }
 
+// The characters saveWorkflow keeps in an id. An id from a request that has anything else (a "..%2F" form, a slash) can
+// only be an attempt to leave the store, so it is a workflow that does not exist.
+const SAFE_ID = /^[a-z0-9_-]+$/i;
+
+function assertSafeId(id) {
+  if (typeof id === "string" && SAFE_ID.test(id)) return id;
+  const error = new Error("Workflow not found.");
+  error.status = 404;
+  throw error;
+}
+
 function workflowFile(id) {
-  return path.join(runtimePaths().workflows, `${id}.json`);
+  return path.join(runtimePaths().workflows, `${assertSafeId(id)}.json`);
 }
 
 function runFile(workflowId, runId) {
-  return path.join(runtimePaths().runs, workflowId, `${runId}.json`);
+  return path.join(runtimePaths().runs, assertSafeId(workflowId), `${assertSafeId(runId)}.json`);
 }
 
 function runEvent(type, input = {}) {
@@ -311,7 +322,7 @@ export async function deleteWorkflow(id) {
     throw error;
   }
   await fs.rm(workflowFile(id), { force: true });
-  await fs.rm(path.join(runtimePaths().runs, id), { recursive: true, force: true });
+  await fs.rm(path.join(runtimePaths().runs, assertSafeId(id)), { recursive: true, force: true });
   return { ok: true, id };
 }
 

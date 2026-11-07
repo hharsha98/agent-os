@@ -184,8 +184,21 @@ export function approvalsForSession(cards: ReadonlyArray<ApprovalCard>, sessionI
 // the server's answer to an Allow once it still gets (409 approval_too_long); a test keeps the two equal.
 export const APPROVAL_TOO_LONG =
   "This command is too long to show in full, so Agent OS can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
-export function approvalCanAllow(card: Pick<ApprovalCard, "cut">): boolean {
-  return card.cut !== true;
+// The same for a card with no summary, or only OpenClaw's own "(summary unavailable)": the person would be allowing something
+// the card never described, so it is treated like a cut command. The server refuses it too (409 approval_not_shown); a test
+// keeps the two sentences equal.
+export const APPROVAL_NOT_SHOWN =
+  "Agent OS can't show what this would run, so it can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
+export function approvalSummaryMissing(summary: unknown): boolean {
+  const text = String(summary ?? "").trim();
+  return !text || /^\(?\s*summary unavailable\s*\)?\.?$/i.test(text);
+}
+export function approvalCanAllow(card: Pick<ApprovalCard, "cut" | "summary">): boolean {
+  return card.cut !== true && !approvalSummaryMissing(card.summary);
+}
+// The sentence under a card that has no Allow once: a cut command, else a command that is not shown at all.
+export function approvalBlockedSentence(card: Pick<ApprovalCard, "cut">): string {
+  return card.cut === true ? APPROVAL_TOO_LONG : APPROVAL_NOT_SHOWN;
 }
 
 export function approvalHeading(card: Pick<ApprovalCard, "kind">): string {

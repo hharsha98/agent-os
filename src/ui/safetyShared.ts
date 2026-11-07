@@ -266,13 +266,15 @@ export function agentGuardRows(hermes: AgentDetail | null, openclaw: AgentDetail
   const hermesOff = unreadable("hermes", "Hermes", "hermes-approvals", hermes, checked.hermes);
   if (hermesOff) rows.push(hermesOff);
   else if (hermes) {
+    const flagged = hermes.safety.mode === "smart" || hermes.safety.mode === "manual";
     rows.push({
       key: "hermes-approvals",
       agentId: "hermes",
       name: "Hermes",
-      // Smart mode lets routine commands run and asks only about risky ones, so the row says that (final review, Re I4).
-      title: hermes.safety.mode === "smart" ? "Hermes asks before risky commands" : "Hermes asks before running commands",
-      sub: change("Hermes"),
+      // Hermes's reviewer sees only the commands its own checks flag (smart and manual mode alike), so a plain delete of
+      // one file is never asked about. The row says that instead of promising every command or every delete (A-I1).
+      title: flagged ? "Hermes asks about commands its checks flag" : "Hermes asks before running commands",
+      sub: flagged ? `A plain delete of one file isn't flagged. ${change("Hermes")}` : change("Hermes"),
       state: hermes.safety.permissive ? "off" : "on"
     });
   }

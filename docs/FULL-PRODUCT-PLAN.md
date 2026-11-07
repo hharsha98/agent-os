@@ -4,7 +4,7 @@ Agent OS is a **local-first operator OS**. The product you ship is a clone-and-r
 
 Hosted multi-tenant Live is out of scope. **AgentOps Studio** remains the hosted ops product. This repository does not replace it and does not publish a public Live URL.
 
-The earlier public Contabo Caddy site was removed. Do not bring that hostname back as a product URL. A private loopback process for the owner (`127.0.0.1:8090`, or the same port on a VPS reached by SSH) may remain. That process is an operator console, not a marketing demo.
+An earlier public demo site on a VPS was removed. Do not bring that hostname back as a product URL. The live operator lane runs only on loopback (`127.0.0.1:8090`, or the same port on a VPS reached by SSH). It is an operator console, not a marketing demo.
 
 ## Product form
 
@@ -256,5 +256,5 @@ Recorded after the live lane shipped:
 - github.io stays a static gallery.
 - `DEMO_PUBLIC=1` stays an optional local simulation for screenshots.
 - The live operator lane is for the owner of the machine: localhost, or a private VPS behind SSH. Auth is required if that process is ever reverse-proxied.
-- Public multi-tenant Live, including the removed Contabo Caddy site, is not the product.
+- Public multi-tenant Live, including the removed public VPS site, is not the product.
 - AgentOps Studio remains the hosted ops product.

@@ -56,6 +56,14 @@ const APPROVAL_MISSING = "That approval isn't waiting anymore.";
 // same words (alertsShared.ts); a test keeps them equal.
 export const APPROVAL_TOO_LONG =
   "This command is too long to show in full, so Agent OS can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
+// The same for a card with no summary, or only OpenClaw's own "(summary unavailable)": there is nothing to show of what an
+// Allow once would run, so it is treated like a cut command (409 approval_not_shown). The page has the same words.
+export const APPROVAL_NOT_SHOWN =
+  "Agent OS can't show what this would run, so it can't allow it. Deny it here, or answer it in OpenClaw's Control UI or Mac app.";
+export function approvalSummaryMissing(summary) {
+  const text = String(summary ?? "").trim();
+  return !text || /^\(?\s*summary unavailable\s*\)?\.?$/i.test(text);
+}
 const APPROVAL_BUSY = "Agent OS is already sending your answer to this approval.";
 const RESOLVE_NO_REASON = "OpenClaw didn't take that answer and gave no reason.";
 const RESOLVE_TIMED_OUT = "OpenClaw didn't answer in time, so Agent OS can't tell whether your answer arrived.";
@@ -347,6 +355,9 @@ export function createOpenclawApprovals({
     // A command cut at the limit is never allowed from Agent OS: the part that made it risky can be the part that is not shown
     // (L1). The card is at hand here, so this is checked before anything reaches OpenClaw. Deny stays.
     if (decision === "allow-once" && card.cut) throw sessionError(409, "approval_too_long", APPROVAL_TOO_LONG);
+    // No summary to show (empty, or OpenClaw's "(summary unavailable)"): the person would be allowing something the card never
+    // described, so Deny only, the same as for a cut command.
+    if (decision === "allow-once" && approvalSummaryMissing(card.summary)) throw sessionError(409, "approval_not_shown", APPROVAL_NOT_SHOWN);
     if (resolving.has(id)) throw sessionError(409, "approval_busy", APPROVAL_BUSY);
     resolving.add(id);
     const session = sessions.find((entry) => entry.id === card.sessionId) ?? sessions[0];

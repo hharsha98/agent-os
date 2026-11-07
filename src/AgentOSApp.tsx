@@ -42,6 +42,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ApiGuidePage, { type ApiIntegration, type CodexApiStatus } from "./ApiGuidePage";
 import { apiFetch } from "./sessionKey";
 import AgentConfirmModal from "./ui/components/AgentConfirmModal";
+import Logo from "./ui/Logo";
 
 type AgentId = "openclaw" | "hermes";
 type Page = "home" | "builder" | "apis" | AgentId;
@@ -315,7 +316,7 @@ function GraphOverview({ workflow, selectedNodeId }: { workflow: AgentWorkflow; 
 function AppLogo() {
   return (
     <div className="aos-logo" aria-label="Agent OS">
-      <div className="aos-logo-mark"><CircleDot size={22} /></div>
+      <div className="aos-logo-mark"><Logo size={26} /></div>
       <div><strong>Agent OS</strong><span>Local agent studio</span></div>
     </div>
   );
@@ -872,7 +873,7 @@ function BuilderPage({
       <header className="aos-builder-header">
         <div className="aos-builder-left">
           <button className="aos-icon-button" onClick={onBack}><ArrowLeft size={19} /></button>
-          <div className="aos-mini-logo"><CircleDot size={18} /><span>Agent OS</span></div>
+          <div className="aos-mini-logo"><Logo size={18} /><span>Agent OS</span></div>
           <span className="aos-divider" />
           <input value={workflow.name} onChange={(event) => onChange({ ...workflow, name: event.target.value })} />
           <button className={`aos-engine-badge ${codexConfigured ? "" : "missing"}`} onClick={onOpenApis}><Sparkles size={14} /> {codexConfigured ? "Codex API" : "Connect Codex API"}</button>

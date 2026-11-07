@@ -38,15 +38,6 @@ const INSTALL_RECIPES = {
     executable: "opencode",
     safeAutoRun: true
   },
-  "firecrawl-builder": {
-    id: "firecrawl-builder",
-    label: "Open Agent Builder",
-    command: "npm run builder:install",
-    docsUrl: "https://github.com/firecrawl/open-agent-builder",
-    manager: "npm-script",
-    executable: "next",
-    safeAutoRun: false
-  },
   "elizaos-runtime": {
     id: "elizaos-runtime",
     label: "elizaOS Core",

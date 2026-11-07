@@ -410,7 +410,7 @@ This folder is the **sandbox** for local v1.
 - Memory vault exports land in \`vault/\`
 - You can write \`.md\`, \`.txt\`, or \`.html\` from the dashboard
 
-This file was seeded once so a hiring-manager demo is not an empty list. Delete it anytime — Agent OS will not recreate it after the seed marker is set.
+This file was seeded once so a first look is not an empty list. Delete it anytime — Agent OS will not recreate it after the seed marker is set.
 `;
 
 async function ensureWelcomeWorkspaceSeed() {
@@ -564,7 +564,7 @@ function translateLinkError(error) {
 export async function writeFileNoFollow(file, content) {
   let handle;
   try {
-    handle = await fs.open(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NO_FOLLOW, 0o666);
+    handle = await fs.open(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NO_FOLLOW, 0o600);
     await handle.writeFile(content, "utf8");
   } catch (error) {
     throw translateLinkError(error);
@@ -625,7 +625,26 @@ export async function writeWorkspaceText(input = {}, { maxParts = 2, savedBy = n
   return getWorkspaceFile(fileId);
 }
 
-export function streamWorkspaceFile(file, res) {
+// Sends a file. A file that can't be opened or read (no permission, deleted a moment after the check) becomes an error
+// answer, or a closed connection when the answer has already started, instead of an unhandled stream error that ends the
+// whole server. (pipeline() would destroy the response too, so the error answer could not be sent.)
+export function sendFileStream(filePath, res, next) {
+  const stream = createReadStream(filePath);
+  stream.on("error", (error) => {
+    if (res.headersSent || res.destroyed) {
+      res.destroy();
+      return;
+    }
+    res.removeHeader("Content-Disposition");
+    const failure = new Error("Agent OS could not read that file.");
+    failure.status = error?.code === "ENOENT" ? 404 : 500;
+    next(failure);
+  });
+  res.on("close", () => stream.destroy());
+  stream.pipe(res);
+}
+
+export function streamWorkspaceFile(file, res, next) {
   res.setHeader("Content-Type", file.mime);
   res.setHeader("X-Content-Type-Options", "nosniff");
   // No allow-* tokens: the served file gets a unique origin, so its scripts
@@ -636,5 +655,5 @@ export function streamWorkspaceFile(file, res) {
   // key. The page keeps its own copy (R33).
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `inline; filename="${file.name.replace(/"/g, "")}"`);
-  createReadStream(file.absolutePath).pipe(res);
+  sendFileStream(file.absolutePath, res, next);
 }

@@ -4,7 +4,7 @@ Agent OS is a local app. Run it on the machine that owns the agents, and open it
 
 Public Internet exposure is discouraged. The process can run CLIs, read a workspace, and hold API keys. A public URL is not the product. **AgentOps Studio** is the hosted ops product; this app is not.
 
-The old public Contabo Caddy site was removed. Do not recreate it.
+An old public demo site on a VPS was removed. Do not recreate it.
 
 ## Recommended topology
 

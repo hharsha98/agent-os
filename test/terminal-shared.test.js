@@ -204,6 +204,37 @@ test("OSC 52: a request to read the clipboard is recognised (so it is refused); 
   assert.equal(term.isOsc52Read(""), false);
 });
 
+test("OSC 52 write: the person is told with the character count, and an empty text is never written (U-I2)", () => {
+  assert.equal(term.clipboardWriteNotice("hello"), "A program in this terminal changed your clipboard (5 characters).");
+  assert.equal(term.clipboardWriteNotice("a😀"), "A program in this terminal changed your clipboard (2 characters).", "letters, not bytes");
+  assert.equal(term.clipboardWriteNotice(""), null, "bad base64 decodes to empty: nothing is written, so the clipboard is never wiped");
+  assert.equal(term.clipboardWriteNotice(undefined), null);
+});
+
+test("a link asks first unless its visible words are its address (U-I3)", () => {
+  assert.equal(term.linkNeedsConfirm("https://github.com/a/b", "https://github.com/a/b"), false);
+  assert.equal(term.linkNeedsConfirm("  https://github.com/a/b/ ", "https://github.com/a/b"), false, "trim and a trailing slash are ignored");
+  assert.equal(term.linkNeedsConfirm("github.com", "https://evil.example/"), true, "look-alike words, another address");
+  assert.equal(term.linkNeedsConfirm("github.com", "https://github.com/"), true, "words that are not the address ask too");
+  assert.equal(term.linkNeedsConfirm("https://github.com/a", "https://github.com/b"), true);
+  assert.equal(term.linkNeedsConfirm("", "https://github.com/"), true, "no visible words at all");
+  // Matching words are not enough when the address can pass for another site.
+  assert.equal(term.linkNeedsConfirm("https://github.com@evil.example/", "https://github.com@evil.example/"), true, "a user name in the address");
+  assert.equal(term.linkNeedsConfirm("https://user:pw@example.com/", "https://user:pw@example.com/"), true, "a password in the address");
+  assert.equal(term.linkNeedsConfirm("https://xn--pple-43d.com/", "https://xn--pple-43d.com/"), true, "a punycode host");
+  assert.equal(term.linkNeedsConfirm("https://\u0430pple.com/", "https://\u0430pple.com/"), true, "a non-ASCII host");
+  assert.equal(term.linkNeedsConfirm("https://github.com/x", "https://github.com/x"), false, "a plain address with matching words");
+  assert.equal(term.linkCopiedNotice("https://evil.example/x"), "Link copied. Open it in your browser: https://evil.example/x");
+});
+
+test("OSC 8 link text is read back from the buffer range in the real terminal (U-I3)", async () => {
+  const t = new HeadlessTerminal({ cols: 40, rows: 4, allowProposedApi: true });
+  await new Promise((resolve) => t.write("\x1b]8;;https://evil.example/login\x1b\\github.com\x1b]8;;\x1b\\ after", resolve));
+  const line = t.buffer.active.getLine(0);
+  // The range xterm hands to activate(): 1-based start, end exclusive 0-based (so end.x equals the cell count).
+  assert.equal(line.translateToString(false, 0, 10), "github.com");
+});
+
 test("binary mouse reports pass only when they are plain ASCII", () => {
   assert.equal(term.isAsciiOnly("\x1b[M !!"), true);
   assert.equal(term.isAsciiOnly(""), true);
@@ -346,7 +377,13 @@ test("wiring: the terminal uses the spec's options and words, leaves ⌘T/⌘1-9
     "latest.current.ended === true",
     "attempts >= RECONNECT_ATTEMPTS",
     "reconnectDelay(attempts, info.advice)",
-    "say(WORDS.linkCopied)",
+    "say(linkCopiedNotice(uri))",
+    // U-I2 and U-I3: a clipboard write is announced, and a link whose words are not its address asks first.
+    "clipboardProvider(say)",
+    "clipboardWriteNotice(text)",
+    "linkNeedsConfirm(linkVisibleText(term, range), uri)",
+    "linkNeedsConfirm(uri, uri)",
+    'This link goes to: <code>',
     "{WORDS.reconnect}",
     "@xterm/xterm/css/xterm.css",
     // Input that was not sent: told once per disconnect, never queued or replayed (ledger: Task U2 ruling).
@@ -394,8 +431,7 @@ test("wiring: the terminal uses the spec's options and words, leaves ⌘T/⌘1-9
     '"Connecting…"',
     '"Reconnecting…"',
     '"Lost the connection to this session."',
-    'reconnect: "Reconnect"',
-    '"Link copied. Open it in your browser."'
+    'reconnect: "Reconnect"'
   ]) {
     assert.ok(src.includes(needle), `SessionTerminal.tsx has ${needle}`);
   }

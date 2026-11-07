@@ -14,8 +14,8 @@ import { resolveApproval, sessionGotNoAnswer, sessionProblem } from "../../sessi
 import type { ApprovalCard as Card, ApprovalDecision } from "../../types";
 import {
   APPROVAL_NO_ANSWER,
-  APPROVAL_TOO_LONG,
   FROM_OPENCLAW,
+  approvalBlockedSentence,
   approvalCanAllow,
   approvalConfirm,
   approvalConfirmParts,
@@ -87,7 +87,7 @@ export default function ApprovalCard({
         {from ? <span className="os-approval__from">{FROM_OPENCLAW}</span> : null}
       </h3>
       {/* A command cut at the limit is not shown in full, so it can't be allowed from here (L1 of the last re-review). */}
-      {approvalCanAllow(card) ? null : <p className="os-approval__cut">{APPROVAL_TOO_LONG}</p>}
+      {approvalCanAllow(card) ? null : <p className="os-approval__cut">{approvalBlockedSentence(card)}</p>}
       {card.kind === "exec" ? (
         // The command with its real line breaks, in a box that scrolls when it is long (Sa 1 of the final review). Once
         // it really scrolls, the keys can reach it to read the rest.
@@ -294,7 +294,7 @@ export function ApprovalList({
           giveFocusBack={() => focusAfter.current === null}
           confirmDisabled={asking.decision === "allow-once" && !approvalCanAllow(asking.card)}
         >
-          {asking.decision === "allow-once" && !approvalCanAllow(asking.card) ? <p className="os-approval__cut">{APPROVAL_TOO_LONG}</p> : null}
+          {asking.decision === "allow-once" && !approvalCanAllow(asking.card) ? <p className="os-approval__cut">{approvalBlockedSentence(asking.card)}</p> : null}
           {parts ? (
             // The command in a box that keeps its line breaks and scrolls (Sa 1). It is not a stop on the Tab key here: the
             // dialog's first stop must stay Cancel.

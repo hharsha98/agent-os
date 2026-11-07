@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { timingSafeEqualStrings } from "./local-session.js";
 import { getSampleSkillManifests } from "./skills.js";
 import { defaultWorkflow } from "./workflows.js";
 import { ensureRuntimeStore, runtimePaths, writeJson } from "./store.js";
@@ -158,8 +159,8 @@ export function assertAdminToken(req) {
     error.status = 403;
     throw error;
   }
-  const provided = req.get("x-hermes-admin-token") || req.body?.adminToken || req.query?.adminToken;
-  if (provided !== expected) {
+  const provided = req.get("x-hermes-admin-token") || req.body?.adminToken;
+  if (!timingSafeEqualStrings(provided, expected)) {
     const error = new Error("Invalid admin token.");
     error.status = 403;
     throw error;

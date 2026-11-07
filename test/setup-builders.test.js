@@ -400,6 +400,13 @@ for (const osName of ["darwin", "linux", "win32"]) {
       assert.equal(node.action, "prereq-node");
       assert.match(node.description, /Node 22 or newer/);
       assert.ok(node.approxMb > 0);
+      // A-M10 / A-M11: honest words about the checksum, and the loss of agents installed inside Agent OS's own Node.
+      assert.ok(node.changes.some((line) => /checked against the checksum nodejs\.org publishes/.test(line)), node.changes.join(" | "));
+      assert.ok(!node.changes.some((line) => /verified by SHA-256/.test(line)));
+      assert.ok(
+        node.changes.some((line) => /Agents installed inside Agent OS's own Node \(for example Codex\) are removed and need installing again/.test(line)),
+        "the plan says what replacing the managed Node removes"
+      );
       const codex = plan.steps.find((s) => s.id === "codex-install");
       assert.equal(codex.commandPreview, "npm install -g @openai/codex");
       assert.match(codex.description, /npm install -g @openai\/codex/);

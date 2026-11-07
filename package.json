@@ -1,6 +1,6 @@
 {
   "name": "agent-os-runtime",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -21,9 +21,6 @@
     "smoke:local": "node scripts/local-smoke.js",
     "smoke:public": "node scripts/public-smoke.js",
     "smoke:live": "node scripts/live-smoke.js",
-    "builder:install": "npm --prefix vendor/open-agent-builder install",
-    "builder:start": "node scripts/start-builder.js",
-    "builder:build": "npm --prefix vendor/open-agent-builder run build",
     "prepare-export": "node scripts/prepare-export.js",
     "smoke:docker": "node scripts/docker-smoke.js"
   },
@@ -34,7 +31,7 @@
     "@tauri-apps/plugin-dialog": "2.8.3",
     "@tauri-apps/plugin-opener": "^2.7.1",
     "@tauri-apps/plugin-process": "^2.4.0",
-    "@tauri-apps/plugin-updater": "^2.13.1",
+    "@tauri-apps/plugin-updater": "2.14.1",
     "@vitejs/plugin-react": "^4.3.4",
     "@xterm/addon-clipboard": "0.3.0-beta.303",
     "@xterm/addon-fit": "0.12.0-beta.301",
@@ -61,7 +58,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "concurrently": "^9.1.2",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.25.12",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
   }

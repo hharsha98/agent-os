@@ -120,8 +120,9 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// Finds the bundled Node and server inside the app's resources. If they are
-/// missing (`cargo tauri dev` runs without a bundling step) it falls back to
-/// the system `node` and the repo checkout this crate lives in.
+/// missing (`cargo tauri dev` runs without a bundling step) a debug build falls
+/// back to the system `node` and the repo checkout this crate lives in. A release
+/// build never does.
 fn resolve_launch(app: &tauri::App) -> Result<Launch, String> {
     let node_rel = if cfg!(windows) {
         "node.exe"
@@ -143,16 +144,20 @@ fn resolve_launch(app: &tauri::App) -> Result<Launch, String> {
         }
     }
 
-    // Dev mode: desktop/src-tauri -> repo root.
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let entry = repo.join("server/index.js");
-    if entry.is_file() {
-        return Ok(Launch {
-            node: PathBuf::from("node"),
-            entry,
-            static_dir: repo.join("dist"),
-            working_dir: Some(repo),
-        });
+    // Dev mode: desktop/src-tauri -> repo root. Debug builds only: a release build must never run
+    // `node` from PATH on a path baked in at compile time (an installed app that lost its bundled
+    // files shows the error below instead).
+    if cfg!(debug_assertions) {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let entry = repo.join("server/index.js");
+        if entry.is_file() {
+            return Ok(Launch {
+                node: PathBuf::from("node"),
+                entry,
+                static_dir: repo.join("dist"),
+                working_dir: Some(repo),
+            });
+        }
     }
 
     Err(
@@ -227,11 +232,17 @@ fn spawn_server(launch: &Launch, token: &str) -> std::io::Result<Child> {
     let mut command = Command::new(&launch.node);
     command
         .arg(&launch.entry)
-        // AGENT_OS_PORT=0: let the OS pick a free port, so two copies never collide.
+        // AGENT_OS_PORT=0: let the OS pick a free port, so the server never collides with
+        // anything else on this computer. (Only one copy of the app runs: the
+        // single-instance plugin, see main().)
         // An AGENT_OS_ name, not PORT: the server's environment reaches every session
         // through the login shell minus the AGENT_OS_ names, and an agent's own dev
         // server must not see PORT=0.
         .env("AGENT_OS_PORT", "0")
+        // Never set HOST: the server's own default is 127.0.0.1, and a HOST here would reach every
+        // session's shell (zsh uses it as the machine name, dev servers bind to it). Remove an
+        // inherited one so an app started from a shell that exports HOST cannot widen the bind address.
+        .env_remove("HOST")
         .env("AGENT_OS_TOKEN", token)
         .env("AGENT_OS_STATIC_DIR", &launch.static_dir)
         .env("AGENT_OS_PACKAGED", "1")
@@ -599,6 +610,14 @@ fn main() {
         .is_some_and(|key| !key.trim().is_empty());
 
     let mut builder = tauri::Builder::default()
+        // Registered first, as the plugin's docs ask. A second copy of the app would mark the
+        // first copy's live sessions as ended and offer to resume them while they still run. So a
+        // second launch shows and focuses the first copy's window, and the second process exits.
+        // (On Linux without a session bus the plugin cannot reach the first copy; it logs that
+        // and lets the app start. See README.)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         // The stock macOS menu has items we don't want (and a Close Window
         // entry); the custom menu in setup() replaces it.
         .enable_macos_default_menu(false)

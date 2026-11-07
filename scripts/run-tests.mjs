@@ -95,7 +95,9 @@ const reporter = process.stdout.isTTY || flags.some((flag) => flag.startsWith("-
 // once its own tests have finished; their results are unchanged.
 const forceExit = process.platform === "win32" ? ["--test-force-exit"] : [];
 
-const child = spawn(process.execPath, ["--test", "--test-timeout=180000", ...reporter, ...forceExit, ...flags, ...files], {
+// The limit counts a whole file. On a busy computer the longest file (openclaw-plans-apply) added up to 156 seconds, so
+// 180 could cut it off with nothing wrong. A real hang is still caught, only later.
+const child = spawn(process.execPath, ["--test", "--test-timeout=300000", ...reporter, ...forceExit, ...flags, ...files], {
   cwd: root,
   env: testEnv,
   stdio: "inherit"

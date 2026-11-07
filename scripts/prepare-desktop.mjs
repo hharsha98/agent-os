@@ -49,6 +49,12 @@ async function main() {
   await mkdir(resources, { recursive: true });
   await cp(path.join(root, "build", "server"), server, { recursive: true });
   console.log(`Copied build/server -> desktop/src-tauri/resources/server (node-pty for ${target.platform}-${target.arch})`);
+  // The licence notices travel inside every installer: Agent OS's own MIT licence, and the third-party
+  // ones (scripts/build-notices.mjs writes THIRD_PARTY_NOTICES.md). They ride in resources/server, which
+  // tauri.conf.json already ships on every system.
+  for (const notice of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) {
+    await cp(path.join(root, notice), path.join(server, notice));
+  }
 
   if (process.argv.includes("--skip-node")) {
     console.log("--skip-node: leaving resources/node exactly as it is.");

@@ -11,11 +11,12 @@ import { Readable } from "node:stream";
 import { ADAPTERS } from "../agents/index.js";
 import { hermesApprovalsAreOff } from "../agents/hermes.js";
 import { clearDetectCaches } from "../agents/detect.js";
+import { cliCwd } from "../cli-cwd.js";
 import { isExecutionEnabled } from "../execution-gate.js";
 import { getRunManager } from "../runs/run-manager.js";
 import { runCommand, which } from "../safety.js";
 import { readJson, runtimePaths, writeJson } from "../store.js";
-import { agentGroup, getInstallRecipe } from "./recipes.js";
+import { agentGroup, getInstallRecipe, mirrorOrigin } from "./recipes.js";
 import { ensureManagedNode, isInsideManagedNode, managedNodeBinDir, nodeSatisfiesCodex, npmLaunch } from "./managed-node.js";
 import { ALL_PLAN_AGENT_IDS, buildSetupPlan } from "./plan.js";
 import { clearSystemCheckCache, systemCheck } from "./system-check.js";
@@ -199,6 +200,18 @@ async function downloadInstaller(agentId, recipe) {
   if (!response.ok || !response.body) {
     throw jobError("download_failed", "could not download the official installer (check your internet connection)");
   }
+  // A redirect after the first (HTTPS) address is not re-checked by fetch: the installer is run as a script, so where the
+  // download ended up must be HTTPS too. Only the test mirror (when honoured) may be plain http.
+  let finalUrl = null;
+  try {
+    finalUrl = new URL(response.url || url);
+  } catch {
+    finalUrl = null;
+  }
+  const mirror = mirrorOrigin();
+  if (finalUrl?.protocol !== "https:" && !(mirror && finalUrl?.origin === mirror)) {
+    throw jobError("download_failed", "Refused to use the installer because the download did not end on a secure (HTTPS) address.");
+  }
 
   const chunks = [];
   let total = 0;
@@ -292,7 +305,7 @@ const isCodingAgent = (agentId) => agentGroup(agentId) === "coding";
 const showsRunOutput = (agentId, action) => isCodingAgent(agentId) || action === "update";
 
 // Copies a run's output lines into step.log (the run manager already removed
-// colour codes and secrets). Events seen twice -- once while catching up, once
+// colour codes, the plan's own secret strings and any key-shaped text). Events seen twice -- once while catching up, once
 // live -- are skipped by their sequence number. Returns a function that stops it.
 async function mirrorRunOutput(manager, runId, step) {
   const seen = new Set();
@@ -350,7 +363,7 @@ async function runInstallerOnce(agentId, recipe, filePath, args, managedNodeBinD
     title: `${recipe.label} installer`,
     command,
     args: fullArgs,
-    cwd: os.tmpdir(),
+    cwd: cliCwd(),
     env: installerEnv(agentId, managedNodeBinDir),
     timeoutMs: INSTALL_TIMEOUT_MS
   });
@@ -409,7 +422,7 @@ async function runNpmInstall(job, step, recipe) {
     title: `${recipe.label} installer`,
     command,
     args: [...leading, "install", "-g", recipe.npmPackage, "--prefix", prefix],
-    cwd: os.tmpdir(),
+    cwd: cliCwd(),
     env: {
       ...installerEnv(step.agentId, node.binDir),
       NPM_CONFIG_UPDATE_NOTIFIER: "false",
@@ -598,7 +611,7 @@ async function executeStep(job, step, check) {
       title: `${recipe.label} update`,
       command: detected.path,
       args: recipe.updateArgs,
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       ...updaterEnv(step.agentId, detected.path),
       timeoutMs: INSTALL_TIMEOUT_MS
     });
@@ -1002,7 +1015,7 @@ async function configureHermesBrain(step, check, ctx, manager) {
         title,
         command: detected.path,
         args,
-        cwd: os.tmpdir(),
+        cwd: cliCwd(),
         redact: extra.redact || [],
         timeoutMs: extra.timeoutMs || CONFIGURE_RUN_TIMEOUT_MS,
         ...(typeof extra.stdin === "string" ? { stdin: extra.stdin } : {})
@@ -1080,7 +1093,7 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
       title: "openclaw onboard",
       command: detected.path,
       args,
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       redact: target.mode === "openrouter" && ctx.apiKey ? [ctx.apiKey] : [],
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
@@ -1097,7 +1110,7 @@ async function configureOpenclawBrain(step, check, ctx, manager) {
       // A local model is the 64K copy (see prepareLocalVariants), so OpenClaw
       // gets the same working memory as Hermes.
       args: ["models", "set", target.mode === "ollama" ? `ollama/${ctx.variants[target.model]}` : `openrouter/${target.model}`],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
     step
@@ -1122,7 +1135,7 @@ async function configureOpenclawSafeDefaults(job, step, check, manager) {
         title: "openclaw config set tools.exec.mode ask",
         command: detected.path,
         args: ["config", "set", "tools.exec.mode", "ask"],
-        cwd: os.tmpdir(),
+        cwd: cliCwd(),
         timeoutMs: CONFIG_GET_TIMEOUT_MS
       },
       step
@@ -1178,7 +1191,7 @@ async function ensureServices(job, step, check, manager) {
           title: "hermes gateway install",
           command: detected.path,
           args: ["gateway", "install"],
-          cwd: os.tmpdir(),
+          cwd: cliCwd(),
           timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
         },
         step
@@ -1361,7 +1374,7 @@ async function setHermesModel(job, step, check, ctx, manager) {
       title: `hermes config set ${args[2]}`,
       command: detected.path,
       args,
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     });
     if (!result.ok) throw jobError("configure_failed", `Hermes didn't accept ${target.model}${result.why ? `: ${result.why}` : "."}`);
@@ -1408,7 +1421,7 @@ async function setOpenclawModel(job, step, check, ctx, manager) {
   const target = ctx.targets.openclaw;
   const ref = openclawModelRef(target.model);
   const set = (title, args) =>
-    runModelSetCommand(manager, step, { agentId: "openclaw", kind: "configure", title, command: detected.path, args, cwd: os.tmpdir(), timeoutMs: CONFIGURE_RUN_TIMEOUT_MS });
+    runModelSetCommand(manager, step, { agentId: "openclaw", kind: "configure", title, command: detected.path, args, cwd: cliCwd(), timeoutMs: CONFIGURE_RUN_TIMEOUT_MS });
   const refused = (why) => jobError("configure_failed", `OpenClaw didn't accept ${target.model}${why ? `: ${why}` : "."}`);
 
   // OpenClaw is strict: it refuses a model it doesn't know. Ask first with
@@ -1732,7 +1745,7 @@ async function startConfigureJobLocked({
   const needsKey = [["hermes", hermesAction], ["openclaw", openclawAction]].some(
     ([agentId, action]) => action === "configure" && resolved[agentId].mode === "openrouter"
   );
-  let key = typeof apiKey === "string" && apiKey.trim() ? apiKey : "";
+  let key = typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : "";
   if (needsKey && !key) {
     if (keySource && typeof keySource === "object" && typeof keySource.flowId === "string") {
       key = takeKey(keySource.flowId) || "";
@@ -1934,7 +1947,7 @@ async function onboardOpenclawForClaudePlan(job, step, check, manager) {
   if (job.cancelRequested) throw jobError("cancelled", PLAN_CANCELLED);
   await runConfigureCommand(
     manager,
-    { agentId: "openclaw", kind: "configure", title: "openclaw onboard", command: detected.path, args, cwd: os.tmpdir(), timeoutMs: CONFIGURE_RUN_TIMEOUT_MS },
+    { agentId: "openclaw", kind: "configure", title: "openclaw onboard", command: detected.path, args, cwd: cliCwd(), timeoutMs: CONFIGURE_RUN_TIMEOUT_MS },
     step
   );
 }
@@ -2041,7 +2054,7 @@ async function setOpenclawPlanModel(job, step, check, manager) {
       title: "openclaw models set",
       command: detected.path,
       args: ["models", "set", `${PLAN_PROVIDER[job.plan]}/${job.model}`],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
     step
@@ -2093,7 +2106,7 @@ async function putPreviousPrimaryBack(job, step, detected, manager) {
       title: "openclaw models set",
       command: detected.path,
       args: ["models", "set", job.previousPrimary],
-      cwd: os.tmpdir(),
+      cwd: cliCwd(),
       timeoutMs: CONFIGURE_RUN_TIMEOUT_MS
     },
     step,

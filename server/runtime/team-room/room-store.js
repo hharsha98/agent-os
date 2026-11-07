@@ -243,7 +243,7 @@ export async function readNotebook(roomId) {
 
 export function appendNotebook(roomId, text) {
   return withLock(`${roomId}:notebook`, () =>
-    fs.appendFile(path.join(roomDir(roomId), "notebook.md"), `${text}\n\n`, "utf8")
+    fs.appendFile(path.join(roomDir(roomId), "notebook.md"), `${text}\n\n`, { encoding: "utf8", mode: 0o600 })
   );
 }
 
@@ -291,7 +291,7 @@ export function appendEvent(roomId, partial) {
     const seq = nextSeqByRoom.get(key);
     nextSeqByRoom.set(key, seq + 1);
     const event = { seq, t: new Date().toISOString(), ...partial };
-    await fs.appendFile(eventsFile(roomId), `${JSON.stringify(event)}\n`, "utf8");
+    await fs.appendFile(eventsFile(roomId), `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
     for (const listener of subscribers.get(roomId) || []) {
       try {
         listener(event);

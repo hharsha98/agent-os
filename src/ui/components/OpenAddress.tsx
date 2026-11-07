@@ -22,6 +22,15 @@ async function openInBrowser(href: string): Promise<void> {
   await openUrl(url.href);
 }
 
+function isWebAddress(href: string): boolean {
+  try {
+    const protocol = new URL(href).protocol;
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 // How long the empty status region sits in the page before its sentence is put in it.
 const STATUS_DELAY_MS = 120;
 const OPEN_FAILED = "Couldn't open it from here. Copy the address and paste it into your browser.";
@@ -67,6 +76,8 @@ export default function OpenAddress({
     return () => window.clearTimeout(timer);
   }, [openFailed]);
   if (!isDesktopApp()) {
+    // Only a web address is ever a link (never javascript: or data:); anything else shows as plain words.
+    if (!isWebAddress(href)) return <span className={className}>{children}</span>;
     return (
       <a className={className} href={href} target="_blank" rel="noreferrer">
         {children}

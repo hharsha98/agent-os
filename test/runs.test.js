@@ -618,3 +618,60 @@ async function collectSse(response, isDone) {
   }
   return blocks;
 }
+
+// Review A-M4: key shapes are removed from every line of a run's output, even when the plan named no secret.
+test("redaction: each common key shape is removed from stored output with no plan.redact, and ordinary words stay", async () => {
+  await withTempHome(async (home) => {
+    await withWorkDir(async (workDir) => {
+      const manager = createRunManager();
+      // Built from pieces so this file holds no key-shaped text of its own.
+      const shapes = {
+        githubFineGrained: ["github", "_pat_", "A1b2C3d4E5f6G7h8I9j0K1"].join(""),
+        gitlab: ["glpat", "-", "A1b2C3d4E5f6G7h8I9j0"].join(""),
+        awsAccessKey: ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""),
+        groq: ["gsk", "_", "A1b2C3d4E5f6G7h8I9j0K1"].join(""),
+        xai: ["xai", "-", "A1b2C3d4E5f6G7h8I9j0K1"].join(""),
+        huggingFace: ["hf", "_", "A1b2C3d4E5f6G7h8I9j0K1L2M3N4O5P6"].join(""),
+        stripeLive: ["sk", "_live_", "A1b2C3d4E5f6G7h8I9j0"].join(""),
+        stripeRestricted: ["rk", "_live_", "A1b2C3d4E5f6G7h8I9j0"].join(""),
+        npm: ["npm", "_", "A1b2C3d4E5f6G7h8I9j0K1L2M3N4O5P6"].join(""),
+        bearer: ["Bearer", " ", "eyJhbGciOiJIUzI1NiJ9.payload.signature"].join("")
+      };
+      const ordinary = ["npm_config_cache=/tmp/x", "hf_home is set", "xai-grok is a name", "a bearer of news", "the AKIA festival", "github_pat_ is a prefix"];
+      const source = [`var lines = ${JSON.stringify([...Object.values(shapes), ...ordinary])};`, "lines.forEach(function (l) { console.log('out ' + l); });", "process.exit(0);"].join("\n");
+      const fake = await writeFake(workDir, "shapes.cjs", source);
+      const started = await manager.startRun({ agentId: "fake", kind: "agent", title: "shapes", command: process.execPath, args: [fake], cwd: workDir });
+      const finished = await waitForTerminal(manager, started.id);
+      assert.equal(finished.status, "succeeded");
+      const rawJsonl = await readFile(path.join(home, "agent-runs", `${started.id}.jsonl`), "utf8");
+      for (const [name, value] of Object.entries(shapes)) {
+        assert.ok(!rawJsonl.includes(value), `${name} was removed`);
+      }
+      const texts = (await manager.readEvents(started.id)).filter((e) => e.type === "line").map((e) => e.text);
+      assert.equal(texts.length, Object.keys(shapes).length + ordinary.length);
+      assert.equal(texts.filter((text) => text === "out configured").length, Object.keys(shapes).length, "every key shape became configured");
+      for (const word of ordinary) assert.ok(texts.includes(`out ${word}`), `"${word}" is unchanged`);
+    });
+  });
+});
+
+// Review A-M13: a long line of repeated ESC ] must not freeze the server, and a line that never ends is cut into lines.
+test("output cleaning: 400 KB of repeated ESC ] finishes fast, and a 2.5 MB line with no newline is flushed in pieces", async () => {
+  await withTempHome(async (home) => {
+    await withWorkDir(async (workDir) => {
+      const manager = createRunManager();
+      const started = Date.now();
+      const escFake = await writeFake(workDir, "esc.cjs", "process.stdout.write('\\x1b]'.repeat(200000) + '\\n');\n");
+      const first = await manager.startRun({ agentId: "fake", kind: "agent", title: "esc", command: process.execPath, args: [escFake], cwd: workDir });
+      assert.equal((await waitForTerminal(manager, first.id, 20000)).status, "succeeded");
+      assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+
+      const longFake = await writeFake(workDir, "long.cjs", "process.stdout.write('a'.repeat(2.5 * 1024 * 1024));\n");
+      const second = await manager.startRun({ agentId: "fake", kind: "agent", title: "long", command: process.execPath, args: [longFake], cwd: workDir });
+      assert.equal((await waitForTerminal(manager, second.id, 20000)).status, "succeeded");
+      const lines = (await manager.readEvents(second.id)).filter((e) => e.type === "line");
+      assert.ok(lines.length >= 3, `${lines.length} line events`);
+      assert.ok(lines.every((e) => e.text.length <= 1024 * 1024), "no piece is bigger than the cap, on any system");
+    });
+  });
+});

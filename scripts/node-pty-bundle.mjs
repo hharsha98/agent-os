@@ -156,6 +156,8 @@ export async function copyNodePty({ from, to, platform, arch }) {
   await rm(to, { recursive: true, force: true });
   await mkdir(to, { recursive: true });
   await cp(path.join(from, "package.json"), path.join(to, "package.json"));
+  // Its licence text (it also covers conpty.dll and OpenConsole.exe) travels beside package.json.
+  if (existsSync(path.join(from, "LICENSE"))) await cp(path.join(from, "LICENSE"), path.join(to, "LICENSE"));
   await cp(path.join(from, "lib"), path.join(to, "lib"), {
     recursive: true,
     filter: (file) => !file.endsWith(".map") && !file.endsWith(".test.js")

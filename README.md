@@ -42,6 +42,14 @@ I have not paid for Apple or Microsoft developer certificates, so your computer 
 - **Windows:** when SmartScreen says "Windows protected your PC", click **More info**, then **Run anyway**.
 - **Linux:** an AppImage needs permission to run: `chmod +x Agent.OS_*.AppImage`, then double-click it or run it from a terminal.
 
+**Check your download (optional).** Each release has a file called `SHA256SUMS.txt` next to the installers. It lists a fingerprint (a SHA-256 hash) for each installer. Save it in the same folder as your download, open a terminal there, and run the line for your system. The long string it prints must match your file's line in `SHA256SUMS.txt`, letter for letter.
+
+- **Mac:** `shasum -a 256 "<the file you downloaded>"`
+- **Linux:** `sha256sum "<the file you downloaded>"`
+- **Windows (PowerShell):** `Get-FileHash ".\<the file you downloaded>" -Algorithm SHA256`
+
+If they differ, delete the file and do not run it. To report a problem, see [SECURITY.md](SECURITY.md).
+
 The first time it opens, Agent OS starts a small private server on your computer. You do not need to install Node or anything else first. The **Setup Assistant** checks your computer and offers to install the five agents. **Nothing is installed until you click for it.** (The desktop app does look up new agent versions by itself. See "Safety by default".)
 
 ---
@@ -142,7 +150,7 @@ The Setup Assistant walks through six steps: check your computer, plan, install,
 - It only uses the **official installers** of the five agents (Codex is an npm package, installed into your own folder). It shows what each one will change before you click.
 - An agent you already have is **kept** by default, not reinstalled. When an update exists, Setup can offer it as a choice next to Keep, and it runs the agent's own updater. Hermes's update is offered only when its folder is an unchanged official copy, and it runs in a terminal you can type into.
 - For the brain of Hermes and OpenClaw you can connect OpenRouter in your browser (free models to start), use a local Ollama model, or, for OpenClaw, use your plan (see above). Agent OS does not install Ollama. If you have it, Agent OS can ask it to download a model, after asking you.
-- By default Agent OS does not keep your OpenRouter key. It checks the key with OpenRouter and hands it to Hermes's or OpenClaw's own setup commands, which store it in their own config. One opt-in tick, "Remember for coding agents", saves the key in your Mac's Keychain (a private file on other systems) so Claude Code and Codex can run on OpenRouter later. You can forget it again.
+- By default Agent OS does not keep your OpenRouter key. It checks the key with OpenRouter and hands it to Hermes's or OpenClaw's own setup commands, which store it in their own config. One opt-in tick, "Remember for coding agents", saves the key in your Mac's Keychain (a private file on other systems) so Claude Code and Codex can run on OpenRouter later. Any program running as you can read that saved key with no prompt. You can forget it again.
 - Signing in to Claude Code, Codex and Cursor uses each agent's own login. Agent OS never sees your password and does not open the agents' credential files.
 - It will switch OpenClaw from `full` to "ask before running commands", after you confirm. On its Agents page you can then choose "Ask only for risky commands".
 
@@ -169,8 +177,8 @@ This is what Agent OS passes when you start a **run** from the Runs page (checke
 | Claude Code | print mode with `--permission-mode dontAsk` (`acceptEdits` only if you tick "allow edits") |
 | Codex | `codex exec` with a read-only sandbox (`workspace-write` only if you tick "allow edits") |
 | Cursor | proposes changes only. Agent OS never lets it apply them: open Cursor to do that |
-| Hermes Agent | runs through Hermes's own approval setting. Agent OS shows whether approvals are on. On your click: "Ask only for risky commands" (Hermes's smart mode, plus a rule to always ask before deleting), or "Always ask before deleting" |
-| OpenClaw | runs through OpenClaw's own settings. Agent OS can switch it to "ask before running commands" or, on your click, to "Ask only for risky commands" (`tools.exec.mode = auto`). In both modes OpenClaw asks for approval only while its Control UI or Mac app is open. Without one, it says no to commands that need approval |
+| Hermes Agent | runs through Hermes's own approval setting. Agent OS shows whether approvals are on. On your click: "Ask only for risky commands" (Hermes's smart mode, plus a rule to always ask about a flagged command that deletes), or "Ask before flagged deletes". Hermes's reviewer only sees the commands its own checks flag, so a plain `rm` of one file, `rmdir`, `unlink`, `git restore .` and `truncate` run without asking |
+| OpenClaw | runs through OpenClaw's own settings. Agent OS can switch it to "ask before running commands" or, on your click, to "Ask only for risky commands" (`tools.exec.mode = auto`: OpenClaw's own reviewer lets routine commands run, and asks you about or refuses the ones it rates risky; it judges each command, so a plain delete of one file can run without asking). In both modes OpenClaw asks for approval only while its Control UI or Mac app is open. Without one, it says no to commands that need approval |
 
 ---
 
@@ -199,8 +207,9 @@ What Agent OS does not do:
 - **Nothing answers for you.** Agent OS never answers an agent's question for you. The only text it types is a hand-off, hand-over or keep-going note, which it never sends.
 - **Nothing installs without a click.** Setup shows the plan first.
 - **It checks for new agent versions on its own, and changes nothing when it does.** In the desktop app, at start and every 24 hours, Agent OS asks the npm registry about the latest Claude Code and Codex, and runs `openclaw update --dry-run --json` and `hermes update --check`. For Claude Code it also reads one setting from your Claude `settings.json`, your update channel, and nothing else in that file. For Hermes it reads the state of its folder with read-only git commands. It asks only about agents that are installed. Cursor has no check command, so it is not asked. A check that fails shows "Couldn't check" and blocks nothing. From source (`npm start`) the checks do not run unless you set `AGENT_OS_UPDATE_CHECKS=1`.
-- **It does not keep your API keys by default.** The one exception is the opt-in "Remember for coding agents" tick. See Setup above.
-- **The server is local only.** It listens on `127.0.0.1`, checks the `Host` and `Origin` headers, and needs a login token. The token is new on every launch. The desktop app logs you in for you. From source, `npm start` prints a one-time login link. The terminals use a WebSocket (a live two-way connection) with its own checks of the host, origin, login cookie and a page key, so a cookie alone is refused. Claude Code's hooks call a separate address with a token that is different for each session.
+- **It does not keep your API keys by default.** There are two exceptions. One is the opt-in "Remember for coding agents" tick (see Setup above): the saved OpenRouter key is in the Keychain, but any program running as you can read it with no prompt. The other is a key you save under Labs, AI APIs: it sits as plain text in `config/connections.local.json`, readable only by your account.
+- **A program in a terminal can change your clipboard.** Agent OS tells you when that happens, with the number of characters. A program cannot read your clipboard through the terminal. A link that shows one address but goes to another asks you first, and shows where it goes.
+- **The server is local only.** It listens on `127.0.0.1`, checks the `Host` and `Origin` headers, and needs a login token. The token is new on every launch, unless you set `AGENT_OS_TOKEN` yourself. The desktop app logs you in for you. From source, `npm start` prints a login link that works until the server stops. The terminals use a WebSocket (a live two-way connection) with its own checks of the host, origin, login cookie and a page key, so a cookie alone is refused. Claude Code's hooks call a separate address with a token that is different for each session.
 - **Hold to stop all** stops every session and every run, Team Room turns included. It does not stop the Hermes background service, the OpenClaw Gateway or Agent OS's own setup jobs, and that includes an agent's Update that runs as a setup job. Hermes's update session is stopped, because it is a session. Each service has its own Stop on Agents.
 
 This is a safety design, not a guarantee. It has not had an outside security review. An agent you start at level 1 is a real program that can do real things inside its own permissions.
@@ -211,12 +220,13 @@ This is a safety design, not a guarantee. It has not had an outside security rev
 
 | Platform | State |
 | --- | --- |
-| macOS (Apple silicon, arm64) | Hand-tested. The v0.3.0 release installer was installed and launched on the author's Mac. For 0.4, earlier builds of the 0.4.0 work ran on the same Mac with real agents (see below). The v0.4.0 installer itself is built by the release workflow and was not installed by hand before publishing. |
-| macOS (Intel) | Built by the release workflow. **Not hand-tested.** |
-| Windows | Built by the release workflow. **Not hand-tested.** |
-| Linux | Built by the release workflow. **Not hand-tested.** |
+| macOS (Apple silicon, arm64) | Hand-tested. The v0.3.0 release installer was installed and launched on the author's Mac. For 0.4, earlier builds of the 0.4.0 work ran on the same Mac with real agents (see below), and a release build of 0.4.1 was run there too. The installers themselves are built by the release workflow. |
+| macOS (Intel) | Installed and started by an automatic check before each release (see below). **Not used by a person.** |
+| Windows | Installed and started by an automatic check before each release, including an update over a running older version. **Not used by a person.** |
+| Linux | The `.deb` is installed and started by an automatic check before each release. The AppImage is built, not started. **Not used by a person.** |
 
-- **Unit tests:** 2,194 tests (`npm test`). On the author's Mac: 2,189 pass, 5 skipped, 0 fail. They use fake agents, so no test starts a real one.
+- **Installers, automatically (0.4.1):** the package-check workflow builds all four installers on GitHub, then installs and starts each one on a fresh machine. The bundled server must answer, a real terminal must run a command, a second launch must close itself, and the server must stop when the app is killed.
+- **Unit tests:** 2,268 tests (`npm test`). On the author's Mac: 2,263 pass, 5 skipped, 0 fail. They use fake agents, so no test starts a real one.
 - **Sessions, by hand (Apple silicon Mac):** each of the five real agents was opened and stopped in a session. Resume was tried with Codex, Hermes and Cursor. Claude Code's Resume was only tried on a session where nothing had been sent, which correctly says there is nothing to resume. Resuming a real Claude Code conversation is covered by the automated tests with a fake agent, not by hand.
 - **The desktop app, by hand** (an earlier build, made before the plan-brains changes): with a live Claude Code session open (nothing was sent to it), ⌘Q asked first and named the session. "Keep running" kept both. Quit ended the session and the app. After reopening, the tab said the session ended when Agent OS quit, and Resume was offered. Closing the window left the session running, and the Dock icon brought the window back.
 - **Plan brains, by hand:** on 16 October 2026, with OpenClaw 2026.10.4, one Claude plan model and one ChatGPT plan model were applied from the card, and each passed the hello check. The first ChatGPT attempt stopped at the sign-in check (the internet had dropped, and the check was stricter than it needed to be). The next attempt passed, and the check was made less strict afterwards. The ChatGPT sign-in worked inside the card, and "Choose in Hermes" opened Hermes's picker in Terminal.app.
@@ -279,7 +289,7 @@ The stack: React 18, TypeScript and Vite on the front. Node and Express on the b
 
 - **Builds are unsigned.** Your OS will warn you on first launch (see Download).
 - **Auto-update has been proven on one Mac only.** An installed v0.3.0 (Apple silicon) offered v0.3.1, installed it and restarted on 1 October 2026. It has not been tried on Intel Macs, Windows or Linux.
-- **On Windows, quit Agent OS and run the new `setup.exe` by hand: an update from inside the app may be blocked by the old version still running.** This comes from reading the updater's code and the installer's behaviour, not from running it on Windows.
+- **Windows updates:** from 0.4.1 the installer stops the old version's server before it copies files, which used to block an update. An automatic check on GitHub's Windows machine proves it; no person has tried it on their own computer yet.
 - **Hermes Agent: Setup treats Intel Macs as unsupported** and says so instead of installing.
 - **Windows and Linux have not been hand-tested.** Intel Mac builds have not either.
 - **On Windows, agents installed with npm (Codex, for example) now start through a route that only CI has tried.** npm puts a `.cmd` file beside each such agent. Agent OS reads that file, never runs it, and starts the program it points to directly, with no shell. An automatic test in CI's Windows job starts a fake one. No person has tried it on a real Windows computer.
@@ -293,7 +303,7 @@ The stack: React 18, TypeScript and Vite on the front. Node and Express on the b
 - **Hermes's Update is offered only for an unchanged official copy,** and its real update has not been run (see Tested on).
 - **An update on the Agents page has no Cancel.** Stopping an agent's own updater half way can leave it half-updated.
 - **Quitting from the Dock menu, the app switcher or by logging out does not ask first.** Live sessions end, and you can resume them from their recordings.
-- **On Windows and Linux, opening Agent OS twice can mark the first one's live sessions as ended.** Two copies using the same data folder (or `npm start` next to the app) do not know about each other's sessions.
+- **Only one copy of the desktop app runs at a time.** Opening it a second time brings the first window forward instead. On Linux this needs a desktop session (the D-Bus session bus, which every normal desktop has); without one, two copies can run, and they do not know about each other's sessions. `npm start` next to the app does the same: it shares the data folder and does not know about the app's sessions.
 - **The Claude plan check cannot tell every sign-in apart.** Claude Code reports a sign-in to an Anthropic Console account (billed by usage) the same way as a plan sign-in, so in that one case the card cannot warn you.
 - **The OpenClaw ChatGPT sign-in needs OpenClaw 2026.9.7 or newer.**
 - **Team Room** works with Hermes Agent and OpenClaw only, and has been proven with test agents, not by hand with the real ones for this release.
@@ -358,7 +368,7 @@ Questions or problems: mechaharsh@gmail.com
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The licences of the third-party software Agent OS is built on are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and that file ships inside the app.
 
 ---
 

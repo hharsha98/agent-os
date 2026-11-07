@@ -17,6 +17,7 @@ import { generateAgentWorkflow, normalizeWorkflow } from "../server/runtime/agen
 import { configureApiIntegration, listApiIntegrations, testApiIntegration } from "../server/runtime/api-integrations.js";
 import { builderReplayOverlayUrl, getBuilderReplayOverlay, injectBuilderReplayOverlay } from "../server/runtime/builder-overlay.js";
 import {
+  PACKAGED_REASON as BUILDER_REMOVED_REASON,
   getBuilderBootstrap,
   getBuilderLogs,
   getBuilderStatus,
@@ -1866,25 +1867,26 @@ test(
   });
 });
 
-test("Firecrawl builder requires Convex, Clerk, and Firecrawl keys", async () => {
+test("the builder card says the add-on was removed and offers no keys, actions or commands", async () => {
   await withTempRuntime(async () => {
     await configureConnection("firecrawl-builder", { FIRECRAWL_API_KEY: "placeholder-firecrawl-key" });
-    let modules = await getModules();
-    let builder = modules.find((module) => module.id === "firecrawl-builder");
-    assert.equal(builder?.status, "ready_to_configure");
-    assert.ok(builder?.missing.includes("NEXT_PUBLIC_CONVEX_URL"));
-    assert.ok(builder?.missing.includes("CLERK_SECRET_KEY"));
-
-    await configureConnection("provider-convex", { NEXT_PUBLIC_CONVEX_URL: "https://example.convex.cloud" });
-    await configureConnection("provider-clerk", {
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_placeholder",
-      CLERK_SECRET_KEY: "placeholder-clerk-secret",
-      CLERK_JWT_ISSUER_DOMAIN: "https://example.clerk.accounts.dev"
-    });
-    modules = await getModules();
-    builder = modules.find((module) => module.id === "firecrawl-builder");
-    assert.equal(builder?.status, "connected");
+    const modules = await getModules();
+    const builder = modules.find((module) => module.id === "firecrawl-builder");
+    assert.equal(builder?.status, "disabled");
+    assert.equal(builder?.configured, false);
     assert.deepEqual(builder?.missing, []);
+    assert.deepEqual(builder?.configKeys, []);
+    assert.deepEqual(builder?.actions, []);
+    assert.equal(builder?.installHint, BUILDER_REMOVED_REASON);
+    assert.equal(builder?.publicSummary, BUILDER_REMOVED_REASON);
+    assert.equal(JSON.stringify(builder).includes("builder:install"), false);
+    assert.equal(JSON.stringify(builder).includes("builder:start"), false);
+    // The installer has no recipe for it, and the builder status offers no command.
+    assert.equal((await prepareInstall("firecrawl-builder")).mode, "not_found");
+    const status = await getBuilderStatus();
+    assert.equal(status.installCommand, null);
+    assert.equal(status.startCommand, null);
+    assert.equal(status.reason, BUILDER_REMOVED_REASON);
   });
 });
 

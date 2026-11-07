@@ -143,12 +143,27 @@ export function clipboardWriteNotice(text: string): string | null {
   return `A program in this terminal changed your clipboard (${Array.from(text).length} characters).`;
 }
 
+// An address that can pass for another site even when the words match it: one with a user name or password
+// (https://github.com@evil.example/ goes to evil.example), or a look-alike international name (a host that starts
+// xn-- or holds non-ASCII letters; the address parser turns those into xn-- form).
+function addressLooksTricky(address: string): boolean {
+  try {
+    const url = new URL(address);
+    if (url.username !== "" || url.password !== "") return true;
+    return /(^|\.)xn--/i.test(url.hostname) || /[^\x00-\x7f]/.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 // An OSC 8 link's visible words can differ from its address. True when the words are not that same address
-// (after trimming, ignoring a trailing slash), so the person must see the real address before it opens.
+// (after trimming, ignoring a trailing slash), so the person must see the real address before it opens. Also true
+// for a tricky address (addressLooksTricky) whatever the words say. A plain printed link passes its own address
+// as both arguments, so it asks only for a tricky address.
 export function linkNeedsConfirm(visibleText: string, address: string): boolean {
   const plain = (value: string) => String(value ?? "").trim().replace(/\/+$/, "");
   const visible = plain(visibleText);
-  return visible === "" || visible !== plain(address);
+  return visible === "" || visible !== plain(address) || addressLooksTricky(address);
 }
 
 // The sentence for a link the desktop could not open and copied instead; it carries the address.

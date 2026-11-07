@@ -239,8 +239,10 @@ fn spawn_server(launch: &Launch, token: &str) -> std::io::Result<Child> {
         // through the login shell minus the AGENT_OS_ names, and an agent's own dev
         // server must not see PORT=0.
         .env("AGENT_OS_PORT", "0")
-        // Never the whole network, even if the app was started from a shell that exports HOST.
-        .env("HOST", "127.0.0.1")
+        // Never set HOST: the server's own default is 127.0.0.1, and a HOST here would reach every
+        // session's shell (zsh uses it as the machine name, dev servers bind to it). Remove an
+        // inherited one so an app started from a shell that exports HOST cannot widen the bind address.
+        .env_remove("HOST")
         .env("AGENT_OS_TOKEN", token)
         .env("AGENT_OS_STATIC_DIR", &launch.static_dir)
         .env("AGENT_OS_PACKAGED", "1")

@@ -86,7 +86,7 @@ export async function getSetupState() {
       byId.get("firecrawl-builder")?.status === "connected",
       byId.get("firecrawl-builder")?.status === "connected"
         ? "Firecrawl builder auth, storage, and execution keys are configured."
-        : "Add Convex, Clerk, Firecrawl, and LLM keys before builder execution.",
+        : "The optional builder add-on was removed in 0.4.1, so there is nothing to set up here.",
       "firecrawl-builder"
     ),
     step(

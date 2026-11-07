@@ -247,8 +247,11 @@ export async function configureConnection(id, rawFields = {}, options = {}) {
     }
   }
   const current = await getStoredConnectionConfig();
+  const kept = { ...(current[id] || {}) };
+  // Empty values never clear a saved field; a caller that really wants one gone says so by name.
+  for (const key of options.removeFields || []) delete kept[key];
   current[id] = {
-    ...(current[id] || {}),
+    ...kept,
     ...Object.fromEntries(
       Object.entries(fields).filter(([, value]) => value != null && String(value).trim() !== "")
     )

@@ -6,8 +6,6 @@
 
 To check that a download is the file this release made, compare it with `SHA256SUMS.txt` on this page (how: see `SECURITY.md`).
 
-**On Windows, quit Agent OS and run the new `setup.exe` by hand:** an update from inside the app may be blocked by the old version still running. (See Known limits.)
-
 ## What's new in 0.4.1
 
 This is a security release. After 0.4.0 I had the app, the release pipeline and everything public in the repo reviewed, and fixed what the review found. I know of no one being harmed by any of this. Update if you can.
@@ -36,7 +34,7 @@ This is a security release. After 0.4.0 I had the app, the release pipeline and 
 
 - The optional builder add-on (`vendor/open-agent-builder`) is removed. It listened on the whole network, and its packages had a critical remote-code flaw. It was never in the desktop app.
 - Admin-token mode now requires the token on more read routes, and the address parameter `?adminToken=` is gone if you used it. Demo mode can no longer run installers.
-- The Docker image moved to Node 24 and no longer runs as root.
+- The Docker image moved to Node 24 and no longer runs as root. If you upgrade an existing Docker volume, give it to the new user once with `docker compose run --rm --user root hermes-agent-os chown -R node:node /data`.
 
 **The release pipeline:** installers are built with the exact tools in the repo's lockfile, every GitHub Action is pinned to one commit, and the bundled Node is checked against hashes kept in the repo. Before this release, an automatic check built all four installers, then installed and started each one on a real Windows, Linux, Intel Mac and Apple silicon Mac machine.
 
@@ -86,7 +84,7 @@ This is a security release. After 0.4.0 I had the app, the release pipeline and 
 
 ## Known limits
 
-- On Windows, quit Agent OS and run the new `setup.exe` by hand: an update from inside the app may be blocked by the old version still running. This comes from reading the updater's code and the installer's behaviour, not from running it on Windows.
+- On Windows, an update used to be blocked when the old version's server was still running. From 0.4.1 the installer stops that server first. An automatic check on GitHub's Windows machine installed 0.4.0, kept its server running and installed the new version over it; no person has tried it on their own computer yet.
 - On Windows, agents installed with npm now start through a route that only CI has tried. npm puts a `.cmd` file beside each such agent. Agent OS reads that file, never runs it, and starts the program it points to directly. An automatic test in CI's Windows job starts a fake one. No person has tried it on a real Windows computer.
 - Alerts depend on the agent. Hermes and Cursor are basic (a bell or a title sign, which may also mean it finished), and a Hermes or Cursor session can read "Live" while it waits.
 - OpenClaw's approval cards need its Control UI or Mac app open. Without one, OpenClaw says no to commands that need approval, and no card shows.
@@ -122,8 +120,10 @@ The desktop app does look for new agent versions by itself, and changes nothing 
 
 ## Tested on
 
-- Automated tests: 2,194 tests. On the author's Mac: 2,189 pass, 5 skipped, 0 fail. They use fake agents.
-- macOS on Apple silicon (arm64): the 0.4.0 work was tested by hand on the author's Mac, on earlier builds. An earlier desktop build (made before the plan-brains changes) ran with a live Claude Code session open (nothing was sent to it): the quit question, Keep running, Quit and reopen, and closing the window all behaved as described above. Each of the five agents was opened and stopped in a session. On 31 October, with real Claude Code, Hermes and OpenClaw: alerts, Claude Code's Keep going on OpenRouter (the plan limit was staged, not real), OpenClaw's approval cards, and macOS notifications from the built desktop app. On 5 November, the Update button was run for Claude Code, Codex, OpenClaw and Cursor through Agent OS on the author's Mac, and each open session was restarted onto the new version. Codex and OpenClaw were really moved by it; Claude Code's and Cursor's own updaters had already moved them. **Hermes's update was never run for real, by my choice; only its check was.** The fixes made after those checks, in the final review of 6 November, are covered by the automated tests only. This release's installer is built by GitHub and was not installed by hand before publishing.
-- macOS Intel, Windows and Linux: built automatically by GitHub, **not tested by hand**. If something breaks, please tell me.
+- Automated tests: 2,268 tests. On the author's Mac: 2,263 pass, 5 skipped, 0 fail. They use fake agents.
+- Installers, automatically, before this release: GitHub built all four installers, then installed and started each one on a fresh Windows, Linux (`.deb`), Intel Mac and Apple silicon Mac machine. On each, the bundled server answered, a real terminal ran a command, a second launch closed itself, and the server stopped when the app was killed. These are automatic checks, not a person using the app. The AppImage was built but not started.
+- 0.4.1 on the author's Mac (Apple silicon): a release build of the app ran one copy at a time, listened on 127.0.0.1 only, served its page with the new content policy, and its server stopped when the app was killed. With the real Claude Code and a test folder holding hostile settings, nothing in those settings ran before the trust question was answered, and it ran after the answer.
+- macOS on Apple silicon (arm64), for 0.4.0: the 0.4.0 work was tested by hand on the author's Mac, on earlier builds. An earlier desktop build (made before the plan-brains changes) ran with a live Claude Code session open (nothing was sent to it): the quit question, Keep running, Quit and reopen, and closing the window all behaved as described above. Each of the five agents was opened and stopped in a session. On 31 October, with real Claude Code, Hermes and OpenClaw: alerts, Claude Code's Keep going on OpenRouter (the plan limit was staged, not real), OpenClaw's approval cards, and macOS notifications from the built desktop app. On 5 November, the Update button was run for Claude Code, Codex, OpenClaw and Cursor through Agent OS on the author's Mac, and each open session was restarted onto the new version. Codex and OpenClaw were really moved by it; Claude Code's and Cursor's own updaters had already moved them. **Hermes's update was never run for real, by my choice; only its check was.** The fixes made after those checks, in the final review of 6 November, are covered by the automated tests only. This release's installer is built by GitHub and was not installed by hand before publishing.
+- macOS Intel, Windows and Linux: built, installed and started automatically by GitHub (see above), **not used by a person**. If something breaks, please tell me.
 
 Questions or problems: mechaharsh@gmail.com

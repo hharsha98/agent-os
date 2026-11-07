@@ -832,7 +832,8 @@ describe("desktop shell hardening and the Windows installer hook (review D-M8, D
     assert.match(resolve, /if cfg!\(debug_assertions\) \{\s*let repo = PathBuf::from\(env!\("CARGO_MANIFEST_DIR"\)\)/);
     assert.ok(resolve.indexOf("if cfg!(debug_assertions)") < resolve.indexOf('env!("CARGO_MANIFEST_DIR")'));
     const spawn = main.slice(main.indexOf("fn spawn_server("), main.indexOf("fn parse_ready_line("));
-    assert.match(spawn, /\.env\("HOST", "127\.0\.0\.1"\)/);
+    assert.match(spawn, /\.env_remove\("HOST"\)/, "HOST is removed, never set: a set HOST would reach every session's shell");
+    assert.doesNotMatch(spawn, /\.env\("HOST"/);
     assert.match(spawn, /\.env\("AGENT_OS_PORT", "0"\)/);
     assert.doesNotMatch(main, /two copies never collide/, "the comment no longer says two copies are expected");
   });
@@ -856,6 +857,11 @@ describe("desktop shell hardening and the Windows installer hook (review D-M8, D
     assert.equal(conf.bundle.windows.nsis.installerHooks, "./windows/hooks.nsh");
     const hook = await read("desktop/src-tauri/windows/hooks.nsh");
     assert.match(hook, /!macro NSIS_HOOK_PREINSTALL[\s\S]*!macroend/);
+    assert.match(
+      hook,
+      /!macro NSIS_HOOK_PREINSTALL\r?\n\s*!insertmacro CheckIfAppIsRunning "\$INSTDIR\\\$\{MAINBINARYNAME\}\.exe" "\$\{PRODUCTNAME\}"/,
+      "the hook asks to close an open Agent OS first, and only then stops a server left behind"
+    );
     assert.match(hook, /nsExec::Exec/);
     assert.match(hook, /-NoProfile -NonInteractive -ExecutionPolicy Bypass/);
     // Only node.exe, only under $INSTDIR\resources\node, compared with a trailing backslash; the folder travels in an environment variable.
@@ -899,6 +905,7 @@ describe("install smoke, SECURITY.md and .gitignore", () => {
     const dockerfile = await read("Dockerfile");
     assert.match(dockerfile, /^FROM node:24-bookworm-slim$/m);
     assert.match(dockerfile, /chown -R node:node \/data/);
+    assert.match(dockerfile, /mkdir -p \/data\/hermes-agent-os \/data\/hermes && chown -R node:node \/data/, "both volume folders exist and belong to node");
     assert.match(dockerfile, /^USER node$/m);
     assert.ok(dockerfile.indexOf("chown -R node:node /data") < dockerfile.indexOf("VOLUME"), "the folder is handed over before it becomes a volume");
     const ignore = await read(".dockerignore");

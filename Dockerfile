@@ -22,7 +22,7 @@ ENV NODE_ENV=production \
 # The server runs as the unprivileged "node" user that the image already has, not as root.
 # The data folder is made and handed over BEFORE it becomes a volume, so a new volume
 # starts out writable by that user.
-RUN mkdir -p /data/hermes-agent-os && chown -R node:node /data
+RUN mkdir -p /data/hermes-agent-os /data/hermes && chown -R node:node /data
 USER node
 
 VOLUME ["/data/hermes-agent-os"]

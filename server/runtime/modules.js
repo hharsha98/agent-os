@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { containsBlockedFlag } from "./agent-flags.js";
 import { killProcessTree, spawnTracked } from "./process-tree.js";
-import { getBuilderStatus } from "./builder-service.js";
+import { PACKAGED_REASON as BUILDER_REMOVED_REASON } from "./builder-service.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "./connections.js";
 import { withMessageTerminator } from "./live-chat.js";
 import { getElizaStatus } from "./eliza.js";
@@ -1365,7 +1365,7 @@ async function runHermesControl(module, input = {}) {
       ];
       const result = await runCommand(cli.commandPath, args, numericTimeout(input.timeoutMs || 15000), {
         env: {
-          ...process.env,
+          ...envWithoutServerSecrets(),
           HERMES_HOME: hermesHomeFrom(stored, input)
         }
       });
@@ -1414,7 +1414,7 @@ async function runHermesControl(module, input = {}) {
     } else if (taskControl.readOnly || (execEnabled && explicitExecution)) {
       const result = await runCommand(cli.commandPath, command.args, numericTimeout(input.timeoutMs || 20000), {
         env: {
-          ...process.env,
+          ...envWithoutServerSecrets(),
           HERMES_HOME: hermesHomeFrom(stored, input)
         }
       });
@@ -1483,7 +1483,7 @@ async function runHermesControl(module, input = {}) {
         ];
         const result = await runCommand(cli.commandPath, args, numericTimeout(input.timeoutMs || 30000), {
           env: {
-            ...process.env,
+            ...envWithoutServerSecrets(),
             HERMES_HOME: hermesHomeFrom(stored, input)
           }
         });
@@ -2547,45 +2547,23 @@ async function skillRegistryModule() {
   });
 }
 
-async function firecrawlBuilderModule(stored) {
-  const builder = await getBuilderStatus();
-  const configuredFrom = ["firecrawl-builder", "provider-convex", "provider-clerk", "provider-firecrawl"];
-  const requiredKeys = [
-    "NEXT_PUBLIC_CONVEX_URL",
-    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
-    "CLERK_SECRET_KEY",
-    "CLERK_JWT_ISSUER_DOMAIN",
-    "FIRECRAWL_API_KEY"
-  ];
-  const missing = requiredKeys.filter((key) =>
-    !publicEnvConfigured(key) &&
-    !configuredFrom.some((id) => Boolean(stored?.[id]?.[key]))
-  );
-  const configured = missing.length === 0;
-  const supervisorState = builder.supervisor?.state || "stopped";
+// The builder add-on was removed from this version: the card stays so other pages can name it, but it offers
+// no keys and no actions, and says what the builder status says.
+async function firecrawlBuilderModule() {
   return standardModule({
     id: "firecrawl-builder",
     label: "Firecrawl Agent Builder",
     category: "builder",
     type: "workflow_builder",
-    status: configured ? "connected" : "ready_to_configure",
-    configured,
-    missing,
-    capabilities: ["visual-workflows", "agent-nodes", "mcp-tools", "human-approval", "firecrawl", "process-supervisor", "boot-logs"],
-    configKeys: ["NEXT_PUBLIC_CONVEX_URL", "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "CLERK_SECRET_KEY", "CLERK_JWT_ISSUER_DOMAIN", "FIRECRAWL_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY", "ARCADE_API_KEY"],
-    actions: ["configure", "test", "run", "logs", "start", "stop"],
-    stats: {
-      sourcePresent: builder.sourcePresent,
-      dependenciesInstalled: builder.dependenciesInstalled,
-      live: builder.live,
-      supervisor: builder.supervisor,
-      firecrawlConfigured: builder.diagnostics?.firecrawlConfigured,
-      llmConfigured: builder.diagnostics?.llmConfigured
-    },
-    installHint: "Run npm run builder:install or use the supervisor after configuring Convex/Clerk. Add Firecrawl and LLM keys for execution.",
-    publicSummary: configured
-      ? `Builder auth, storage, and Firecrawl execution are configured; supervisor is ${supervisorState}.`
-      : "Design workflows after the upstream builder is configured; add Convex, Clerk, and Firecrawl keys before claiming builder execution."
+    status: "disabled",
+    configured: false,
+    missing: [],
+    capabilities: [],
+    configKeys: [],
+    actions: [],
+    stats: { sourcePresent: false },
+    installHint: BUILDER_REMOVED_REASON,
+    publicSummary: BUILDER_REMOVED_REASON
   });
 }
 
@@ -2633,7 +2611,7 @@ export async function getModules({ includeParked = false, includeInternal = fals
   const scheduler = await schedulerModule();
   const memory = await memoryModule();
   const skillRegistry = await skillRegistryModule();
-  const firecrawlBuilder = await firecrawlBuilderModule(stored);
+  const firecrawlBuilder = await firecrawlBuilderModule();
   const internalModules = await Promise.all(INTERNAL_MODULES.map(internalModule));
   const providerModules = await Promise.all(PROVIDER_MODULES.map((definition) => providerModule(definition, stored)));
   const modules = [

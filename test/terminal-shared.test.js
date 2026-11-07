@@ -218,6 +218,12 @@ test("a link asks first unless its visible words are its address (U-I3)", () => 
   assert.equal(term.linkNeedsConfirm("github.com", "https://github.com/"), true, "words that are not the address ask too");
   assert.equal(term.linkNeedsConfirm("https://github.com/a", "https://github.com/b"), true);
   assert.equal(term.linkNeedsConfirm("", "https://github.com/"), true, "no visible words at all");
+  // Matching words are not enough when the address can pass for another site.
+  assert.equal(term.linkNeedsConfirm("https://github.com@evil.example/", "https://github.com@evil.example/"), true, "a user name in the address");
+  assert.equal(term.linkNeedsConfirm("https://user:pw@example.com/", "https://user:pw@example.com/"), true, "a password in the address");
+  assert.equal(term.linkNeedsConfirm("https://xn--pple-43d.com/", "https://xn--pple-43d.com/"), true, "a punycode host");
+  assert.equal(term.linkNeedsConfirm("https://\u0430pple.com/", "https://\u0430pple.com/"), true, "a non-ASCII host");
+  assert.equal(term.linkNeedsConfirm("https://github.com/x", "https://github.com/x"), false, "a plain address with matching words");
   assert.equal(term.linkCopiedNotice("https://evil.example/x"), "Link copied. Open it in your browser: https://evil.example/x");
 });
 
@@ -376,6 +382,7 @@ test("wiring: the terminal uses the spec's options and words, leaves ⌘T/⌘1-9
     "clipboardProvider(say)",
     "clipboardWriteNotice(text)",
     "linkNeedsConfirm(linkVisibleText(term, range), uri)",
+    "linkNeedsConfirm(uri, uri)",
     'This link goes to: <code>',
     "{WORDS.reconnect}",
     "@xterm/xterm/css/xterm.css",

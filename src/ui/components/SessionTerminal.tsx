@@ -346,7 +346,17 @@ const SessionTerminal = forwardRef<SessionTerminalHandle, SessionTerminalProps>(
       t.unicode.activeVersion = "11";
       // Plain-text links: the addon's own pattern needs "//" after the scheme, so `mailto:` text is never a
       // link (Q45); openLink lets only http and https through.
-      t.loadAddon(new WebLinksAddon((_event, uri) => void openLink(uri, say)));
+      // A printed address is its own words, so it asks only when the address can pass for another site
+      // (user name or look-alike international name, see linkNeedsConfirm).
+      t.loadAddon(
+        new WebLinksAddon((_event, uri) => {
+          if (linkAllowed(uri) && linkNeedsConfirm(uri, uri)) {
+            if (!disposed) setPendingLink(uri);
+            return;
+          }
+          void openLink(uri, say);
+        })
+      );
       t.loadAddon(new ClipboardAddon(undefined, clipboardProvider(say)));
       // Registered after the clipboard addon, so xterm asks it first ("The most recently added handler is
       // tried first", xterm.d.ts registerOscHandler): a READ request is answered with nothing at all, and a

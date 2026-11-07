@@ -553,8 +553,8 @@ test("OS audit lists module fixes without leaking local paths", async () => {
     assert.ok(audit.items.find((item) => item.id === "firecrawl-builder"));
     assert.ok(audit.items.every((item) => ["ok", "setup", "action_required"].includes(item.severity)));
     const builderFix = audit.items.find((item) => item.id === "firecrawl-builder")?.fix || "";
-    assert.match(builderFix, /NEXT_PUBLIC_CONVEX_URL/);
-    assert.doesNotMatch(builderFix, /ANTHROPIC_API_KEY/);
+    assert.equal(builderFix, "The optional builder add-on was removed from this version of Agent OS because its dependencies had known security flaws.");
+    assert.doesNotMatch(builderFix, /ANTHROPIC_API_KEY|NEXT_PUBLIC_CONVEX_URL|builder:install/);
     assert.equal(JSON.stringify(audit).includes(os.homedir()), false);
   });
 });
@@ -800,6 +800,31 @@ test("a saved API key is sent only to the address it was saved with; another BAS
       () => testApiIntegration("omniroute", { BASE_URL: "http://127.0.0.1:10/v1" }),
       (error) => error?.status === 412
     );
+  });
+});
+
+test("saving a new address with no new key drops the saved API key, so a later test sends none", async () => {
+  await withTempRuntime(async () => {
+    const seen = { first: [], second: [] };
+    const answer = (list) => (req, res) => {
+      list.push(req.headers.authorization || null);
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "m1" }] }));
+    };
+    await withHttpServer(answer(seen.first), async (firstBase) => {
+      await withHttpServer(answer(seen.second), async (secondBase) => {
+        const first = await configureApiIntegration("localai", { BASE_URL: `${firstBase}/v1`, API_KEY: "placeholder-saved-key" });
+        assert.ok(first.configuredFields.includes("API_KEY"));
+        // Same address again with no key: the saved key stays.
+        const same = await configureApiIntegration("localai", { BASE_URL: `${firstBase}/v1/` });
+        assert.ok(same.configuredFields.includes("API_KEY"));
+        // A new address with no key: the old key is gone.
+        const moved = await configureApiIntegration("localai", { BASE_URL: `${secondBase}/v1` });
+        assert.equal(moved.configuredFields.includes("API_KEY"), false);
+        await testApiIntegration("localai", {});
+        assert.deepEqual(seen.second, [null], "the second address received no Authorization header");
+      });
+    });
   });
 });
 

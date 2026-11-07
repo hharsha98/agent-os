@@ -220,12 +220,13 @@ This is a safety design, not a guarantee. It has not had an outside security rev
 
 | Platform | State |
 | --- | --- |
-| macOS (Apple silicon, arm64) | Hand-tested. The v0.3.0 release installer was installed and launched on the author's Mac. For 0.4, earlier builds of the 0.4.0 work ran on the same Mac with real agents (see below). The v0.4.0 installer itself is built by the release workflow and was not installed by hand before publishing. |
-| macOS (Intel) | Built by the release workflow. **Not hand-tested.** |
-| Windows | Built by the release workflow. **Not hand-tested.** |
-| Linux | Built by the release workflow. **Not hand-tested.** |
+| macOS (Apple silicon, arm64) | Hand-tested. The v0.3.0 release installer was installed and launched on the author's Mac. For 0.4, earlier builds of the 0.4.0 work ran on the same Mac with real agents (see below), and a release build of 0.4.1 was run there too. The installers themselves are built by the release workflow. |
+| macOS (Intel) | Installed and started by an automatic check before each release (see below). **Not used by a person.** |
+| Windows | Installed and started by an automatic check before each release, including an update over a running older version. **Not used by a person.** |
+| Linux | The `.deb` is installed and started by an automatic check before each release. The AppImage is built, not started. **Not used by a person.** |
 
-- **Unit tests:** 2,194 tests (`npm test`). On the author's Mac: 2,189 pass, 5 skipped, 0 fail. They use fake agents, so no test starts a real one.
+- **Installers, automatically (0.4.1):** the package-check workflow builds all four installers on GitHub, then installs and starts each one on a fresh machine. The bundled server must answer, a real terminal must run a command, a second launch must close itself, and the server must stop when the app is killed.
+- **Unit tests:** 2,268 tests (`npm test`). On the author's Mac: 2,263 pass, 5 skipped, 0 fail. They use fake agents, so no test starts a real one.
 - **Sessions, by hand (Apple silicon Mac):** each of the five real agents was opened and stopped in a session. Resume was tried with Codex, Hermes and Cursor. Claude Code's Resume was only tried on a session where nothing had been sent, which correctly says there is nothing to resume. Resuming a real Claude Code conversation is covered by the automated tests with a fake agent, not by hand.
 - **The desktop app, by hand** (an earlier build, made before the plan-brains changes): with a live Claude Code session open (nothing was sent to it), ⌘Q asked first and named the session. "Keep running" kept both. Quit ended the session and the app. After reopening, the tab said the session ended when Agent OS quit, and Resume was offered. Closing the window left the session running, and the Dock icon brought the window back.
 - **Plan brains, by hand:** on 16 October 2026, with OpenClaw 2026.10.4, one Claude plan model and one ChatGPT plan model were applied from the card, and each passed the hello check. The first ChatGPT attempt stopped at the sign-in check (the internet had dropped, and the check was stricter than it needed to be). The next attempt passed, and the check was made less strict afterwards. The ChatGPT sign-in worked inside the card, and "Choose in Hermes" opened Hermes's picker in Terminal.app.
@@ -288,7 +289,7 @@ The stack: React 18, TypeScript and Vite on the front. Node and Express on the b
 
 - **Builds are unsigned.** Your OS will warn you on first launch (see Download).
 - **Auto-update has been proven on one Mac only.** An installed v0.3.0 (Apple silicon) offered v0.3.1, installed it and restarted on 1 October 2026. It has not been tried on Intel Macs, Windows or Linux.
-- **On Windows, quit Agent OS and run the new `setup.exe` by hand: an update from inside the app may be blocked by the old version still running.** This comes from reading the updater's code and the installer's behaviour, not from running it on Windows.
+- **Windows updates:** from 0.4.1 the installer stops the old version's server before it copies files, which used to block an update. An automatic check on GitHub's Windows machine proves it; no person has tried it on their own computer yet.
 - **Hermes Agent: Setup treats Intel Macs as unsupported** and says so instead of installing.
 - **Windows and Linux have not been hand-tested.** Intel Mac builds have not either.
 - **On Windows, agents installed with npm (Codex, for example) now start through a route that only CI has tried.** npm puts a `.cmd` file beside each such agent. Agent OS reads that file, never runs it, and starts the program it points to directly, with no shell. An automatic test in CI's Windows job starts a fake one. No person has tried it on a real Windows computer.

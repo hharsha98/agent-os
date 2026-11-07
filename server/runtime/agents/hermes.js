@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { cliCwd } from "../cli-cwd.js";
 import { getConfiguredValue, getStoredConnectionConfig } from "../connections.js";
-import { runCommand } from "../safety.js";
+import { envWithoutServerSecrets, runCommand } from "../safety.js";
 import { expandHome } from "../store.js";
 import {
   cachedFeatures,
@@ -128,7 +128,7 @@ async function safetyStatus(detected) {
   // the writes and chat runs use (HERMES_HOME from the server's own environment,
   // else the stored connection value), so what is read is what a click changes.
   const home = await resolveHermesHome();
-  const readOptions = { env: home ? { ...process.env, HERMES_HOME: home } : process.env };
+  const readOptions = { env: home ? { ...envWithoutServerSecrets(), HERMES_HOME: home } : envWithoutServerSecrets() };
   const [result, policyResult] = await Promise.all([
     runCommand(detected.path, ["config", "get", "approvals.mode"], APPROVALS_TIMEOUT_MS, readOptions),
     runCommand(detected.path, ["config", "get", "approvals.smart_policy"], APPROVALS_TIMEOUT_MS, readOptions)

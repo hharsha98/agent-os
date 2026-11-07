@@ -64,6 +64,9 @@ function recordHome() {
   if (process.env.FAKE_HERMES_RECORD_HOME) {
     appendFileSync(process.env.FAKE_HERMES_RECORD_HOME, \`\${JSON.stringify({ key: args[2], home: process.env.HERMES_HOME ?? null })}\\n\`);
   }
+  if (process.env.FAKE_HERMES_RECORD_ADMIN) {
+    appendFileSync(process.env.FAKE_HERMES_RECORD_ADMIN, \`\${process.env.HERMES_AGENT_OS_ADMIN_TOKEN ?? "unset"}\\n\`);
+  }
 }
 
 if (args.includes("--version")) {
@@ -1485,6 +1488,28 @@ testWithHermesHome(
         { key: "approvals.mode", home: "/stored/hermes-home" },
         { key: "approvals.smart_policy", home: "/stored/hermes-home" }
       ]);
+    });
+  }
+);
+
+testWithHermesHome(
+  "hermes.safetyStatus(): the config reads do not pass the admin token to the Hermes program, with or without a profile",
+  { skip: isWindows ? "spawns a shebang fake CLI (POSIX-only)" : false },
+  async () => {
+    const detected = { installed: true, path: hermesShim, version: "0.22.5", features: {} };
+    await withTempDir("agents-admin-env-", async (dir) => {
+      const record = path.join(dir, "admin.txt");
+      const seen = async () => {
+        await rm(record, { force: true });
+        await withEnv({ FAKE_HERMES_RECORD_ADMIN: record, HERMES_AGENT_OS_ADMIN_TOKEN: "placeholder-admin-token" }, () =>
+          hermes.safetyStatus(detected)
+        );
+        return (await readFile(record, "utf8")).split("\n").filter(Boolean);
+      };
+      assert.deepEqual(await seen(), ["unset", "unset"], "no profile set");
+      await withEnv({ HERMES_HOME: "/custom/hermes-home" }, async () => {
+        assert.deepEqual(await seen(), ["unset", "unset"], "with a profile set");
+      });
     });
   }
 );

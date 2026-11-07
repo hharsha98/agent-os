@@ -117,6 +117,8 @@ Day-to-day development: `npm run desktop:dev`. With no bundled resources it
 falls back to your system `node` and the repo's own `server/index.js` and
 `dist/` (run `npm run build` first).
 
+A `npm run desktop:dev` build has the same app identifier as the installed app, so while the installed app is open, the dev build brings that window forward and exits; quit the installed app first.
+
 ### Terminals (node-pty)
 
 Sessions run each agent in a real terminal through `node-pty`, a native

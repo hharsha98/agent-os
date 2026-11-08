@@ -23,7 +23,8 @@ const LOG_PREFIX = "[agent-os updater]";
 const SPACE_VAR = "--os-update-bar-space";
 
 // "checking": asking Agent OS which sessions run, before anything is downloaded.
-type Phase = "ready" | "checking" | "installing" | "failed";
+// "installed": the new version is on disk but the restart did not happen.
+type Phase = "ready" | "checking" | "installing" | "installed" | "failed";
 
 // A slim notice that appears only when a newer desktop build exists. It never
 // installs or restarts on its own: running agents may be mid-task, so the
@@ -40,10 +41,12 @@ export default function UpdateBanner() {
   // The quit question while it asks before the restart, otherwise null.
   const [ask, setAsk] = useState<QuitView | null>(null);
   const installingRef = useRef(false);
+  const installedRef = useRef(false);
+  const relaunchRef = useRef<(() => Promise<void>) | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  // The banner as it was before the question ("ready", or "failed" after a failed install), so Keep running
-  // puts back exactly that and a failed install is not forgotten.
+  // The banner as it was before the question ("ready", "failed" after a failed install, or "installed" after an
+  // install whose restart did not happen), so Keep running puts back exactly that and neither is forgotten.
   const phaseBefore = useRef<Phase>("ready");
 
   const checkForUpdate = useCallback(async () => {
@@ -95,22 +98,37 @@ export default function UpdateBanner() {
   async function installNow() {
     if (!update) return;
     setAsk(null);
-    setPhase("installing");
+    if (!installedRef.current) {
+      setPhase("installing");
+      try {
+        // Loaded before the install on purpose: installing replaces the page's own files on disk, so a lazy import
+        // after it can find its file gone (0.3.1 to 0.4.2 failed this way on 2026-11-08).
+        const { relaunch } = await import("@tauri-apps/plugin-process");
+        relaunchRef.current = relaunch;
+        await update.downloadAndInstall();
+      } catch (error) {
+        console.error(`${LOG_PREFIX} install failed:`, error);
+        installingRef.current = false;
+        setPhase("failed");
+        return;
+      }
+      installedRef.current = true;
+    }
+    // The new version is on disk. If the restart does not happen, say so: nothing is left to download again.
     try {
-      await update.downloadAndInstall();
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
+      if (!relaunchRef.current) throw new Error("the restart helper was not loaded");
+      await relaunchRef.current();
     } catch (error) {
-      console.error(`${LOG_PREFIX} install failed:`, error);
+      console.error(`${LOG_PREFIX} restart failed after the install:`, error);
       installingRef.current = false;
-      setPhase("failed");
+      setPhase("installed");
     }
   }
 
   async function install() {
     if (!update || installingRef.current) return;
     installingRef.current = true;
-    phaseBefore.current = phase === "failed" ? "failed" : "ready";
+    phaseBefore.current = phase === "failed" || phase === "installed" ? phase : "ready";
     setPhase("checking");
     // Every live session of both kinds, with its title (POST /api/sessions/quit-check, with its time limit).
     // Where sessions do not exist the answer is "none running", not "couldn't check".
@@ -127,7 +145,8 @@ export default function UpdateBanner() {
   }
 
   // Keep running: nothing was downloaded or restarted, and the banner is back as it was (also after a failed
-  // install: "The update didn't install" stays).
+  // install: "The update didn't install" stays, and after an install whose restart did not happen: "is installed"
+  // stays).
   function keepRunning() {
     setAsk(null);
     installingRef.current = false;
@@ -143,9 +162,11 @@ export default function UpdateBanner() {
         <div className="os-update__bar" ref={barRef}>
           <ArrowUpCircle size={16} className="os-update__icon" aria-hidden="true" />
           <span className="os-update__text">
-            {phase === "failed"
-              ? "The update didn't install. Nothing was changed; you can try again."
-              : `Agent OS ${update.version} is ready to install`}
+            {phase === "installed"
+              ? `Agent OS ${update.version} is installed. Quit Agent OS and open it again to finish.`
+              : phase === "failed"
+                ? "The update didn't install. Nothing was changed; you can try again."
+                : `Agent OS ${update.version} is ready to install`}
           </span>
           {notes ? (
             <button className="os-update__link" onClick={() => setNotesOpen((open) => !open)} aria-expanded={notesOpen}>
@@ -159,7 +180,7 @@ export default function UpdateBanner() {
             onClick={() => void install()}
             aria-disabled={phase === "checking" || phase === "installing" || ask !== null ? true : undefined}
           >
-            {phase === "checking" ? "Checking…" : phase === "installing" ? "Installing…" : phase === "failed" ? "Try again" : "Install & restart"}
+            {phase === "checking" ? "Checking…" : phase === "installing" ? "Installing…" : phase === "failed" ? "Try again" : phase === "installed" ? "Restart now" : "Install & restart"}
           </button>
         </div>
         {notesOpen && notes ? <pre className="os-update__notes">{notes}</pre> : null}

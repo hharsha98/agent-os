@@ -175,6 +175,16 @@ private half is a GitHub Actions secret (never committed). On 1 October 2026
 an installed v0.3.0 on an Apple-silicon Mac showed the banner, installed
 v0.3.1 and restarted. Intel Mac, Windows and Linux updates are untested.
 
+**The restart helper loads first.** Installing an update replaces the app's
+files on disk, including the page's own code, while the old window is still
+open. So the banner loads the restart helper (`@tauri-apps/plugin-process`)
+before it installs. Versions 0.3.0 to 0.4.2 loaded it afterwards, and a 0.3.1
+window found its file gone when updating to 0.4.2 (8 November 2026): the update
+was installed, but the restart failed. `public/assets/` keeps those versions'
+restart files (`index-Cg_zlgkt.js`, `core-D2Ebf996.js`, `index-C_bFS7M8.js` and
+`core-CGO7t-ar.js`) so their windows can still restart after updating.
+`test/update-compat-files.test.js` pins them. Never delete or rebuild them.
+
 On Windows, quit Agent OS and run the new `setup.exe` by hand: an update from
 inside the app may be blocked by the old version still running. The installer
 replaces the bundled `node.exe`, and the old server can still be holding it open.

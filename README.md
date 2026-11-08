@@ -58,7 +58,7 @@ The first time it opens, Agent OS starts a small private server on your computer
 
 Agent OS has a sidebar with eight main pages: Home, Sessions, Agents, Runs, Team Room, Workspace, Setup and Safety. A collapsed **Labs** group holds older, experimental pages, including the dry-run Chat. The pages below are the ones built for the desktop app.
 
-Version 0.4 has a new look: dark only, a cobalt-blue accent, a new logo (a ring with five dots), and fonts that ship inside the app so it looks the same offline. On a window about 1,366 px wide or less, the menu shrinks to icons. Press ⌘K (Ctrl+K on Windows and Linux) to search pages and actions.
+Version 0.4 has a new look (since 0.4.2 the Labs screens share it too): dark only, a cobalt-blue accent, a new logo (a ring with five dots), and fonts that ship inside the app so it looks the same offline. On a window about 1,366 px wide or less, the menu shrinks to icons. Press ⌘K (Ctrl+K on Windows and Linux) to search pages and actions.
 
 ### Sessions
 

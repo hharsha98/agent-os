@@ -6,7 +6,17 @@
 
 To check that a download is the file this release made, compare it with `SHA256SUMS.txt` on this page (how: see `SECURITY.md`).
 
-## What's new in 0.4.2
+## What's new in 0.4.3
+
+**Updating from 0.3 works again.** Install & restart did install the new version, but the restart step then failed, and the banner wrongly said "The update didn't install. Nothing was changed". **If you saw that message, quit Agent OS and open it again: you are already on the new version.**
+
+- Install & restart now loads everything it needs before it replaces any files, so a later update cannot fail this way.
+- If the restart itself ever fails, the banner now says the update is installed and asks you to quit and open Agent OS again, instead of saying nothing changed.
+- 0.4.3 keeps four small files (under 4 KB) from older versions, so a copy still on 0.3.0 to 0.4.2 can finish its restart after updating.
+
+Nothing else changed.
+
+## What was new in 0.4.2
 
 **One look everywhere.** The Labs screens (Dry-run chat, Mission Control, Goals, Kanban, Memory, Workflow studio, AI APIs and the rest) still used the old orange design. They now use the same dark, cobalt-blue design as the main screens, with the same buttons, cards and headings.
 

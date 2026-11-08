@@ -907,7 +907,10 @@ test("readChatgptReadiness: ready, not_ready or unknown from `models status --js
       const started = Date.now();
       assert.equal(await readChatgptReadiness(detected, { timeoutMs: 400 }), "unknown", "timed out");
       assert.ok(Date.now() - started < 6000, "it did not wait for the fake's whole sleep");
-      assert.deepEqual(await statusRuns(), [JSON_RUN], "a timeout does not fall back to --check");
+      // On a busy computer the fake can be cut off before it records its own start, so the record may be empty;
+      // what matters is that the timed-out read was not followed by the --check read.
+      const timedOutRuns = await statusRuns();
+      assert.ok(timedOutRuns.every((line) => line === JSON_RUN) && timedOutRuns.length <= 1, `a timeout does not fall back to --check: ${JSON.stringify(timedOutRuns)}`);
       await knob("FAKE_OPENCLAW_STATUS_JSON", null);
 
       // Not installed: nothing is run. A program that can't run at all: unknown.

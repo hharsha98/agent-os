@@ -1037,7 +1037,10 @@ test("the fake openclaw answers `approvals pending --json` and `approvals resolv
     let pid = null;
     const slow = call(["approvals", "pending", "--json"], { signal: controller.signal, onSpawn: (spawned) => (pid = spawned) });
     await waitFor(() => pid !== null);
-    setTimeout(() => controller.abort(), 300);
+    // Cut it off only once the fake has logged its call: a fixed wait could end it before it even started
+    // on a busy computer, and the log would then miss its line.
+    await waitFor(async () => (await readFakeLog(logFile)).length >= 6, { timeoutMs: 15000 });
+    controller.abort();
     assert.equal((await slow).aborted, true);
     await waitFor(() => !isAlive(pid), { timeoutMs: 3000 });
 

@@ -282,7 +282,10 @@ function ShellFrame({ page, onNavigate, demoPublic, children }: ShellProps) {
       { id: "notebook", label: "Notebook", icon: NotebookTabs },
       { id: "journal", label: "Journal", icon: BookOpen },
       { id: "home", label: "Workflow studio", icon: Home, hidden: demoPublic },
-      { id: "builder", label: demoPublic ? "Demo canvas" : "Agent Builder", icon: Workflow },
+      // The Agent Builder add-on was removed in 0.4.1, so outside the public demo
+      // there is no menu entry. "?page=builder" still opens the page, which shows
+      // the add-on's removal sentence.
+      { id: "builder", label: "Demo canvas", icon: Workflow, hidden: !demoPublic },
       { id: "apis", label: "AI APIs", icon: KeyRound },
       { id: "brain", label: "Brain", icon: Cpu },
       { id: "layers", label: "Capability map", icon: Layers3 },

@@ -6,7 +6,19 @@
 
 To check that a download is the file this release made, compare it with `SHA256SUMS.txt` on this page (how: see `SECURITY.md`).
 
-## What's new in 0.4.1
+## What's new in 0.4.2
+
+**One look everywhere.** The Labs screens (Dry-run chat, Mission Control, Goals, Kanban, Memory, Workflow studio, AI APIs and the rest) still used the old orange design. They now use the same dark, cobalt-blue design as the main screens, with the same buttons, cards and headings.
+
+- Small text is a little larger: nothing in the app is smaller than 12 pixels.
+- The faintest grey text is a little brighter, so it is easier to read.
+- Every button, link and field shows a clear blue outline when you move to it with the keyboard.
+- Hover effects ease in smoothly, and when your computer is set to reduce motion, Agent OS keeps animation to a minimum (spinners still turn, slowly).
+- Agent Builder is gone from the Labs menu: its add-on was removed in 0.4.1.
+
+Nothing else changed: no new features and no change to how agents run. If you are coming from 0.4.0, read the 0.4.1 notes below; they include a security fix and a correction about Hermes.
+
+## What was new in 0.4.1 (security release)
 
 This is a security release. After 0.4.0 I had the app, the release pipeline and everything public in the repo reviewed, and fixed what the review found. I know of no one being harmed by any of this. Update if you can.
 
@@ -122,6 +134,8 @@ The desktop app does look for new agent versions by itself, and changes nothing 
 
 - Automated tests: 2,268 tests. On the author's Mac: 2,263 pass, 5 skipped, 0 fail. They use fake agents.
 - Installers, automatically, before this release: GitHub built all four installers, then installed and started each one on a fresh Windows, Linux (`.deb`), Intel Mac and Apple silicon Mac machine. On each, the bundled server answered, a real terminal ran a command, a second launch closed itself, and the server stopped when the app was killed. These are automatic checks, not a person using the app. The AppImage was built but not started.
+- 0.4.2's new look: every Labs screen and the main screens were checked in a browser on the author's Mac at 1440 by 900, with no errors. The window was not checked at small sizes or on Windows and Linux by a person.
+- Updating, on the author's Mac (Apple silicon): a downloaded 0.4.0 showed "Agent OS 0.4.1 is ready to install", and Install & restart moved it to 0.4.1, which then started normally.
 - 0.4.1 on the author's Mac (Apple silicon): a release build of the app ran one copy at a time, listened on 127.0.0.1 only, served its page with the new content policy, and its server stopped when the app was killed. With the real Claude Code and a test folder holding hostile settings, nothing in those settings ran before the trust question was answered, and it ran after the answer.
 - macOS on Apple silicon (arm64), for 0.4.0: the 0.4.0 work was tested by hand on the author's Mac, on earlier builds. An earlier desktop build (made before the plan-brains changes) ran with a live Claude Code session open (nothing was sent to it): the quit question, Keep running, Quit and reopen, and closing the window all behaved as described above. Each of the five agents was opened and stopped in a session. On 31 October, with real Claude Code, Hermes and OpenClaw: alerts, Claude Code's Keep going on OpenRouter (the plan limit was staged, not real), OpenClaw's approval cards, and macOS notifications from the built desktop app. On 5 November, the Update button was run for Claude Code, Codex, OpenClaw and Cursor through Agent OS on the author's Mac, and each open session was restarted onto the new version. Codex and OpenClaw were really moved by it; Claude Code's and Cursor's own updaters had already moved them. **Hermes's update was never run for real, by my choice; only its check was.** The fixes made after those checks, in the final review of 6 November, are covered by the automated tests only. This release's installer is built by GitHub and was not installed by hand before publishing.
 - macOS Intel, Windows and Linux: built, installed and started automatically by GitHub (see above), **not used by a person**. If something breaks, please tell me.
